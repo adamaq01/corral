@@ -1,0 +1,20 @@
+[package]
+name = "corral-secrets-sealed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aes-gcm = { version = "0.11.1", features = ["zeroize"] }
+async-trait.workspace = true
+base64 = "0.23.1"
+corral-core = { path = "../corral-core" }
+secrecy.workspace = true
+zeroize = "1.9.2"
+
+[dev-dependencies]
+corral-core = { path = "../corral-core", features = ["contract", "fakes"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+uuid.workspace = true
+
+[lints]
+workspace = true
