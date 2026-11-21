@@ -27,6 +27,8 @@ pub enum Command {
     /// Generate keys.
     #[command(subcommand)]
     Keys(KeysCommand),
+    /// Exit 0 when both listeners answer `/healthz`, for container healthchecks.
+    Healthcheck,
 }
 
 #[derive(Subcommand)]
