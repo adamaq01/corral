@@ -6,8 +6,9 @@ use corral_core::ports::{Env, SecretStore};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
-use vaultrs::api::{
-    self, kv2::requests::ReadSecretRequest, kv2::requests::SetSecretRequestOptions,
+use vaultrs::api;
+use vaultrs::api::kv2::requests::{
+    ReadSecretRequest, SetSecretMetadataRequest, SetSecretRequestOptions,
 };
 use vaultrs::client::VaultClient;
 use vaultrs::error::ClientError;
@@ -59,7 +60,16 @@ impl OpenBaoStore {
                     .await?
                     .unwrap_or_default()
             };
-            if !change(&mut env) || write(&client, &self.mount, &path, &env, version).await? {
+            if !change(&mut env) {
+                return Ok(());
+            }
+            if write(&client, &self.mount, &path, &env, version).await? {
+                // The empty write already proved no other writer raced this one.
+                if env.is_empty() {
+                    kv2::delete_metadata(&*client, &self.mount, &path)
+                        .await
+                        .map_err(|err| openbao_error("metadata delete", &err))?;
+                }
                 return Ok(());
             }
         }
@@ -129,6 +139,15 @@ async fn write(
             "openbao secret {path} is at version {version}, beyond check-and-set range"
         ))
     })?;
+    // Set before the write, which then drops the previous version; set later, it lingers.
+    kv2::set_metadata(
+        client,
+        mount,
+        path,
+        Some(SetSecretMetadataRequest::builder().max_versions(1_u64)),
+    )
+    .await
+    .map_err(|err| openbao_error("metadata write", &err))?;
     let data: BTreeMap<&str, &str> = env
         .iter()
         .map(|(name, value)| (name.as_str(), value.expose_secret()))
