@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::domain::{CredentialName, User, UserId};
 use crate::ports::{CredentialRepo, Env, SecretStore};
@@ -25,6 +25,12 @@ impl Credentials {
         name: &CredentialName,
         value: SecretString,
     ) -> Result<()> {
+        if value.expose_secret().contains(['\n', '\r', '\0']) {
+            return Err(Error::Invalid(format!(
+                "credential {name} must be a single line without NUL bytes; \
+                 base64-encode multi-line values"
+            )));
+        }
         self.secrets.put(owner.id, name, value).await?;
         self.names.upsert(owner.id, name).await
     }
@@ -117,6 +123,39 @@ mod tests {
             w.credentials.remove(&adam, &gh).await,
             Err(Error::NotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn multi_line_values_are_rejected_without_echoing_them() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let name = credential("SSH_PRIVATE_KEY");
+        for value in [
+            "hunter-a\nhunter-b",
+            "hunter-c\rhunter-d",
+            "hunter-e\0hunter-f",
+        ] {
+            let err = w
+                .credentials
+                .set(&adam, &name, SecretString::from(value))
+                .await
+                .unwrap_err();
+            let printed = format!("{err} {err:?}");
+            assert!(matches!(err, Error::Invalid(_)), "{printed}");
+            assert!(printed.contains("SSH_PRIVATE_KEY"), "{printed}");
+            assert!(!printed.contains("hunter"), "{printed}");
+        }
+        assert_eq!(w.credentials.list(&adam).await.unwrap(), vec![]);
+        assert!(w.secrets.load_all(adam.id).await.unwrap().is_empty());
+
+        w.credentials
+            .set(&adam, &name, SecretString::from("bGluZS1vbmUKbGluZS10d28="))
+            .await
+            .unwrap();
+        assert_eq!(
+            exposed(&w.credentials.env_for(adam.id).await.unwrap()),
+            ["SSH_PRIVATE_KEY=bGluZS1vbmUKbGluZS10d28="]
+        );
     }
 
     #[tokio::test]
