@@ -3,6 +3,7 @@ pub mod crd;
 mod engine;
 mod error;
 pub mod exec;
+mod lifecycle;
 pub mod manifest;
 pub mod status;
 

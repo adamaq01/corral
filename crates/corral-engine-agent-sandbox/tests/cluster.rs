@@ -2,21 +2,32 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use corral_core::Error;
 use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName, SandboxState};
 use corral_core::ports::{
     Env, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
 };
 use corral_engine_agent_sandbox::crd::Sandbox;
-use corral_engine_agent_sandbox::manifest::SANDBOX_ID;
+use corral_engine_agent_sandbox::manifest::{CONTAINER, LAST_ACTIVE, SANDBOX_ID};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine, exec};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
-use kube::api::ListParams;
-use kube::{Api, Client};
+use kube::api::{AttachParams, AttachedProcess, ListParams};
+use kube::{Api, Client, ResourceExt};
 use secrecy::SecretString;
+use tokio::io::AsyncReadExt;
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 const READY_WITHIN: Duration = Duration::from_secs(180);
 const GONE_WITHIN: Duration = Duration::from_secs(120);
+const IDLE_TIMEOUT: Duration = Duration::from_mins(1);
+const LIFECYCLE_INTERVAL: Duration = Duration::from_secs(10);
+const ASLEEP_WITHIN: Duration = Duration::from_secs(120);
+const AGENT: &str = "/opt/containerssh-agent/usr/bin/containerssh-agent";
+
+// The tests share one namespace, and capacity checks and the idle reaper span all of it.
+static NAMESPACE: Mutex<()> = Mutex::const_new(());
 
 struct Cluster {
     namespace: String,
@@ -28,6 +39,30 @@ struct Cluster {
 }
 
 impl Cluster {
+    async fn connect(max_running: usize) -> Option<Self> {
+        let Ok(namespace) = std::env::var("CORRAL_TEST_KUBE_NAMESPACE") else {
+            eprintln!("skipped: CORRAL_TEST_KUBE_NAMESPACE is not set");
+            return None;
+        };
+        let client = Client::try_default().await.unwrap();
+        let config = AgentSandboxConfig {
+            namespace: namespace.clone(),
+            service_account: "corral-sandbox".to_owned(),
+            storage_class: "standard".to_owned(),
+            agent_image: std::env::var("CORRAL_AGENT_IMAGE")
+                .unwrap_or_else(|_| "containerssh/agent:v0.11.0".to_owned()),
+            max_running,
+        };
+        Some(Self {
+            engine: AgentSandboxEngine::new(client.clone(), config),
+            sandboxes: Api::namespaced(client.clone(), &namespace),
+            pods: Api::namespaced(client.clone(), &namespace),
+            secrets: Api::namespaced(client.clone(), &namespace),
+            claims: Api::namespaced(client, &namespace),
+            namespace,
+        })
+    }
+
     async fn exec(&self, id: &SandboxId, argv: &[&str]) -> (i32, String) {
         exec::run(&self.pods, &id.0, argv).await.unwrap()
     }
@@ -61,6 +96,12 @@ impl Cluster {
         assert_eq!(self.state(id).await, SandboxState::Running);
     }
 
+    async fn last_active(&self, id: &SandboxId) -> DateTime<Utc> {
+        let sandbox = self.sandboxes.get(&id.0).await.unwrap();
+        let value = &sandbox.annotations()[LAST_ACTIVE];
+        DateTime::parse_from_rfc3339(value).unwrap().into()
+    }
+
     async fn home_marker(&self, id: &SandboxId) -> String {
         let (code, contents) = self
             .exec(id, &["cat", "/home/sandbox/corral-test-marker"])
@@ -72,27 +113,11 @@ impl Cluster {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sandbox_lifecycle_against_agent_sandbox() {
-    let Ok(namespace) = std::env::var("CORRAL_TEST_KUBE_NAMESPACE") else {
-        eprintln!("skipped: CORRAL_TEST_KUBE_NAMESPACE is not set");
+    let _namespace = NAMESPACE.lock().await;
+    let Some(cluster) = Cluster::connect(1).await else {
         return;
     };
-    let client = Client::try_default().await.unwrap();
-    let config = AgentSandboxConfig {
-        namespace: namespace.clone(),
-        service_account: "corral-sandbox".to_owned(),
-        storage_class: "standard".to_owned(),
-        agent_image: std::env::var("CORRAL_AGENT_IMAGE")
-            .unwrap_or_else(|_| "containerssh/agent:v0.11.0".to_owned()),
-        max_running: 1,
-    };
-    let cluster = Arc::new(Cluster {
-        engine: AgentSandboxEngine::new(client.clone(), config),
-        sandboxes: Api::namespaced(client.clone(), &namespace),
-        pods: Api::namespaced(client.clone(), &namespace),
-        secrets: Api::namespaced(client.clone(), &namespace),
-        claims: Api::namespaced(client, &namespace),
-        namespace,
-    });
+    let cluster = Arc::new(cluster);
 
     let id = cluster
         .engine
@@ -226,6 +251,102 @@ async fn capacity_is_enforced(cluster: &Cluster) {
     cluster.engine.delete(&second).await.unwrap();
     assert_eq!(state, SandboxState::Sleeping);
     assert!(matches!(woke, Err(Error::LimitReached(_))), "{woke:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
+    let _namespace = NAMESPACE.lock().await;
+    let Some(cluster) = Cluster::connect(3).await else {
+        return;
+    };
+    let cluster = Arc::new(cluster);
+    let mut ids = Vec::new();
+    for name in ["herdr", "session", "idle"] {
+        let spec = SandboxSpec {
+            idle: IdlePolicy {
+                timeout: IDLE_TIMEOUT,
+            },
+            ..spec(name, &[])
+        };
+        ids.push(cluster.engine.create(spec).await.unwrap());
+    }
+    let scenario = tokio::spawn(idle_lifecycle(cluster.clone(), ids.clone())).await;
+    for id in &ids {
+        cluster.engine.delete(id).await.unwrap();
+    }
+    if let Err(failure) = scenario {
+        std::panic::resume_unwind(failure.into_panic());
+    }
+}
+
+async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
+    let [herdr, session, idle] = <[SandboxId; 3]>::try_from(ids).unwrap();
+    for id in [&herdr, &session, &idle] {
+        cluster.wake(id, &[]).await;
+    }
+    start_a_plain_process_under_herdr(&cluster, &herdr).await;
+    let ssh_session = open_containerssh_session(&cluster, &session).await;
+    let busy = [&herdr, &session];
+    let mut last_active = Vec::new();
+    for id in busy {
+        last_active.push(cluster.last_active(id).await);
+    }
+
+    let shutdown = CancellationToken::new();
+    let lifecycle = cluster
+        .engine
+        .spawn_lifecycle(LIFECYCLE_INTERVAL, shutdown.clone());
+    let started = tokio::time::Instant::now();
+    wait_until("the idle sandbox to sleep", ASLEEP_WITHIN, || async {
+        for id in busy {
+            assert_eq!(cluster.state(id).await, SandboxState::Running, "{}", id.0);
+        }
+        cluster.state(&idle).await == SandboxState::Sleeping
+    })
+    .await;
+    eprintln!("idle sandbox asleep after {:?}", started.elapsed());
+    tokio::time::sleep(2 * LIFECYCLE_INTERVAL).await;
+    for (id, before) in busy.into_iter().zip(last_active) {
+        assert_eq!(cluster.state(id).await, SandboxState::Running, "{}", id.0);
+        assert!(cluster.last_active(id).await > before, "{}", id.0);
+    }
+
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), lifecycle)
+        .await
+        .expect("the lifecycle stops on shutdown")
+        .unwrap();
+    ssh_session.abort();
+}
+
+async fn start_a_plain_process_under_herdr(cluster: &Cluster, id: &SandboxId) {
+    assert_eq!(
+        cluster
+            .exec(id, &["hc", "run", "--bg", "sleep", "600"])
+            .await
+            .0,
+        0
+    );
+    let (code, listing) = cluster.exec(id, &["hc", "ls", "--json"]).await;
+    assert_eq!(code, 0);
+    let listing: serde_json::Value = serde_json::from_str(&listing).unwrap();
+    let terminal = &listing["terminals"][0];
+    assert_eq!(terminal["state"], "live", "{listing}");
+    assert!(terminal.get("status").is_none(), "{listing}");
+}
+
+async fn open_containerssh_session(cluster: &Cluster, id: &SandboxId) -> AttachedProcess {
+    let session = [AGENT, "console", "--pid", "--", "/bin/sleep", "600"];
+    let params = AttachParams::default().container(CONTAINER).stderr(false);
+    let mut process = cluster.pods.exec(&id.0, session, &params).await.unwrap();
+    let mut pid = [0; 4];
+    process
+        .stdout()
+        .unwrap()
+        .read_exact(&mut pid)
+        .await
+        .unwrap();
+    process
 }
 
 async fn wait_until<F, Fut>(what: &str, within: Duration, mut done: F)

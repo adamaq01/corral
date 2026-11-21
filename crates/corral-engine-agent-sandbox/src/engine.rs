@@ -9,11 +9,14 @@ use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, Client};
 use serde_json::json;
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
+use tokio_util::sync::CancellationToken;
 
 use crate::AgentSandboxConfig;
 use crate::crd::{OperatingMode, Sandbox};
 use crate::error::kube_error;
+use crate::lifecycle::Reaper;
 use crate::manifest::{self, LAST_ACTIVE, MANAGED_BY, MANAGER, SANDBOX_ID};
 use crate::status;
 
@@ -38,6 +41,16 @@ impl AgentSandboxEngine {
             pods: Api::namespaced(client, namespace),
             config,
         }
+    }
+
+    #[must_use]
+    pub fn spawn_lifecycle(
+        &self,
+        interval: Duration,
+        shutdown: CancellationToken,
+    ) -> JoinHandle<()> {
+        let reaper = Reaper::new(self.sandboxes.clone(), self.pods.clone());
+        tokio::spawn(reaper.run(interval, shutdown))
     }
 
     async fn sandbox(&self, id: &SandboxId) -> Result<Sandbox> {
