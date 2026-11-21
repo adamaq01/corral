@@ -1,0 +1,49 @@
+name: corral
+
+services:
+  corral:
+    image: ghcr.io/adamaq01/corral:${CORRAL_VERSION:-latest}
+    restart: unless-stopped
+    # The Docker socket's owner and group differ between hosts; root can open it on all of them.
+    user: root
+    env_file: .env
+    volumes:
+      - ./config.toml:/etc/corral/config.toml:ro
+      - corral-data:/var/lib/corral
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8080:8080"
+    networks:
+      - corral
+    healthcheck:
+      test: ["CMD", "corral-server", "healthcheck"]
+      interval: 5s
+      timeout: 10s
+      retries: 3
+
+  containerssh:
+    image: containerssh/containerssh:v0.6.1
+    restart: unless-stopped
+    volumes:
+      - ./containerssh.yaml:/etc/containerssh/config.yaml:ro
+      - ./containerssh_host_key:/etc/containerssh/host_key:ro
+    ports:
+      - "48291:2222"
+    networks:
+      - corral
+      - corral-sandboxes
+    healthcheck:
+      test: ["CMD", "/containerssh", "--config", "/etc/containerssh/config.yaml", "--healthcheck"]
+      interval: 5s
+      timeout: 10s
+      retries: 3
+
+networks:
+  corral: {}
+  # Sandboxes join this network. Corral must never be on it: its internal listener answers with
+  # the key that opens every sandbox.
+  corral-sandboxes:
+    name: corral-sandboxes
+
+volumes:
+  corral-data: {}

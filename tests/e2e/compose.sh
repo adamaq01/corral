@@ -1,0 +1,435 @@
+#!/usr/bin/env bash
+# CORRAL_SERVER_IMAGE and CORRAL_SANDBOX_IMAGE name prebuilt images; when unset, both are built
+# from images/.
+set -euo pipefail
+
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+project=corral-e2e
+# Its own network and ports, so a run never touches a real install on the same host.
+sandbox_network=corral-e2e-sandboxes
+http_port=18080
+ssh_port=48292
+forward_port=18000
+base=http://127.0.0.1:$http_port
+
+started=$SECONDS
+passed=0
+work=
+stdin_holder=
+
+ok() {
+  passed=$((passed + 1))
+  echo "ok $passed - $*"
+}
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+expect() {
+  if [[ "$3" != "$2" ]]; then
+    fail "$1: expected [$2], got [$3]"
+  fi
+}
+
+hc_local() {
+  HOME=$work/hc-home XDG_RUNTIME_DIR=$work/hc-run hc "$@"
+}
+
+remove_stack() {
+  local container volumes volume
+  for container in $(docker ps --all --quiet --filter "network=$sandbox_network"); do
+    volumes=$(docker inspect --format '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$container")
+    docker rm --force "$container" >/dev/null
+    for volume in $volumes; do
+      docker volume rm "$volume" >/dev/null
+    done
+  done
+  (cd / && env -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME \
+    docker compose --project-name "$project" down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1)
+  docker network rm "$sandbox_network" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  local status=$?
+  if [[ -n "$work" && -d "$work/hc-home" ]]; then
+    hc_local server stop >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$stdin_holder" ]]; then
+    kill "$stdin_holder" 2>/dev/null || true
+  fi
+  if ((status != 0)) && [[ -n "$work" ]]; then
+    tail -n 60 "$work/run.log" >&2 2>/dev/null || true
+    (cd "$work" && docker compose logs --no-color --tail 40 >&2 2>&1) || true
+  fi
+  remove_stack || true
+  if [[ -n "$work" ]]; then
+    rm -rf "$work"
+  fi
+  return "$status"
+}
+trap cleanup EXIT
+trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
+
+for tool in docker ssh ssh-keygen curl jq hc; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
+cmp -s "$repo/crates/corral-server/config.compose.toml" "$repo/deploy/compose/config.toml" \
+  || fail "deploy/compose/config.toml differs from crates/corral-server/config.compose.toml, which its parse test covers"
+remove_stack
+work=$(mktemp -d "${TMPDIR:-/tmp}/corral-e2e.XXXXXX")
+log=$work/run.log
+
+server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
+sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
+if [[ -z "${CORRAL_SERVER_IMAGE:-}" ]]; then
+  docker build --file "$repo/images/server/Dockerfile" --tag "$server_image" "$repo" >>"$log" 2>&1
+fi
+if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
+  docker build --tag "$sandbox_image" "$repo/images/sandbox" >>"$log" 2>&1
+fi
+ok "images: server $server_image, sandbox $sandbox_image"
+
+cp -R "$repo/deploy/compose/." "$work/"
+cd "$work"
+chmod 700 .
+sed -e "s|^base_url = .*|base_url = \"$base\"|" -e 's|^public_host = .*|public_host = "127.0.0.1"|' \
+  "$repo/deploy/compose/config.toml" >config.toml
+cat >>config.toml <<EOF
+public_port = $ssh_port
+
+[engine]
+probe_interval_secs = 1
+
+[engine.docker]
+network = "$sandbox_network"
+
+[[catalog.images]]
+key = "dev"
+label = "Local build"
+reference = "$sandbox_image"
+EOF
+cat >compose.e2e.yaml <<EOF
+services:
+  corral:
+    image: $server_image
+    ports: !override
+      - "127.0.0.1:$http_port:8080"
+  containerssh:
+    ports: !override
+      - "127.0.0.1:$ssh_port:2222"
+networks:
+  corral-sandboxes:
+    name: $sandbox_network
+EOF
+export COMPOSE_PROJECT_NAME=$project COMPOSE_FILE=compose.yaml:compose.e2e.yaml
+ok "copied deploy/compose to a private directory and set base_url and public_host"
+
+docker compose run --rm corral keys generate >.env 2>>"$log"
+expect "keys generate" "CORRAL_SESSION_KEY CORRAL_SECRETS_KEY CORRAL_PROXY_PRIVATE_KEY" \
+  "$(cut -d= -f1 .env | xargs)"
+ok "docker compose run --rm corral keys generate > .env wrote the three keys"
+
+ssh-keygen -q -t ed25519 -N '' -C containerssh -f containerssh_host_key && chmod 644 containerssh_host_key
+ok "generated ContainerSSH's host key"
+
+docker compose up -d --wait >>"$log" 2>&1
+ok "docker compose up -d --wait: corral and containerssh are healthy"
+
+admin_password=$(head -c 18 /dev/urandom | base64)
+docker compose exec corral corral-server local-account create adam --admin <<<"$admin_password" >>"$log"
+ok "docker compose exec corral corral-server local-account create adam --admin"
+
+login() {
+  jq -cn --arg u "$1" --arg p "$2" '{username: $u, password: $p}' \
+    | curl -sS --fail-with-body -c "$work/$1.jar" -H 'Content-Type: application/json' \
+      --data @- "$base/auth/local" >/dev/null
+}
+
+api() {
+  local args=(-sS --fail-with-body -X "$2" -b "$work/$1.jar" -H 'Content-Type: application/json')
+  if (($# > 3)); then
+    args+=(--data "$4")
+  fi
+  curl "${args[@]}" "$base/$3"
+}
+
+http_status() {
+  curl -sS -o /dev/null -w '%{http_code}' -X "$2" -b "$work/$1.jar" "$base/$3"
+}
+
+add_key() {
+  api "$1" POST api/keys "$(jq -cn --arg k "$(cat "keys/$1.pub")" '{label: "e2e", publicKey: $k}')" >/dev/null
+}
+
+login adam "$admin_password"
+expect "GET /api/me" "adam admin" "$(api adam GET api/me | jq -r '"\(.handle) \(.role)"')"
+ok "adam logs in with POST /auth/local"
+
+mkdir -m 700 keys
+for name in adam bob stranger; do
+  ssh-keygen -q -t ed25519 -N '' -C "$name" -f "keys/$name"
+done
+add_key adam
+expect "sandbox ssh username" "adam+main" \
+  "$(api adam POST api/sandboxes '{"name":"main"}' | jq -r .ssh.username)"
+adam_container=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_network" \
+  --filter label=corral.adamaq01.fr/owner=adam)
+[[ -n "$adam_container" ]] || fail "no container for adam's sandbox on $sandbox_network"
+adam_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$adam_container")
+ok "adam registered a key and created sandbox main ($adam_container)"
+
+echo "[127.0.0.1]:$ssh_port $(cut -d' ' -f1,2 containerssh_host_key.pub)" >known_hosts
+cat >ssh_config <<EOF
+Host corral-e2e
+  HostName 127.0.0.1
+  Port $ssh_port
+  IdentitiesOnly yes
+  IdentityAgent none
+  BatchMode yes
+  PreferredAuthentications publickey
+  UserKnownHostsFile $work/known_hosts
+  StrictHostKeyChecking yes
+  ConnectTimeout 10
+  LogLevel ERROR
+EOF
+# ContainerSSH 0.6.1's sshproxy backend ends a session as soon as the client's stdin ends, and
+# can close it before relaying the command's last output. Hold stdin open, and let each command
+# pause before it exits.
+exec 3< <(exec sleep 3600)
+stdin_holder=$!
+
+as() {
+  ssh -F "$work/ssh_config" -i "$work/keys/$1" "$2@corral-e2e" \
+    "$3"$'\n''status=$?; sleep 0.2; exit $status' <&3
+}
+
+refused() {
+  local output
+  if output=$(as "$1" "$2" true 2>&1); then
+    fail "$2 let $1's key in"
+  fi
+  [[ "$output" == *"Permission denied"* ]] || fail "$2 with $1's key: unexpected error: $output"
+}
+
+expect "ssh adam+main id -un" sandbox "$(as adam adam+main "id -un")"
+as adam adam+main 'echo adam >~/owner'
+ok "ssh adam+main@127.0.0.1 -p $ssh_port runs as sandbox, ContainerSSH's host key pinned"
+
+printf '#!/bin/sh\ntouch "%s/asked"\necho guess\n' "$work" >askpass
+chmod 700 askpass
+if output=$(SSH_ASKPASS=$work/askpass SSH_ASKPASS_REQUIRE=force ssh -F ssh_config -o BatchMode=no \
+  -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=1 \
+  adam+main@corral-e2e true 2>&1 <&3); then
+  fail "a password login was let in"
+fi
+[[ "$output" == *"Permission denied"* ]] || fail "password login: unexpected error: $output"
+[[ -e asked ]] || fail "ssh never offered a password"
+ok "password and keyboard-interactive logins are refused"
+
+refused stranger adam+main
+ok "an unregistered key is refused"
+
+refused adam adam+missing
+ok "a nonexistent sandbox is refused"
+
+bob_password=$(head -c 18 /dev/urandom | base64)
+api adam POST api/admin/local-accounts \
+  "$(jq -cn --arg p "$bob_password" '{username: "bob", password: $p, role: "member"}')" >/dev/null
+login bob "$bob_password"
+add_key bob
+api bob POST api/sandboxes '{"name":"main"}' >/dev/null
+bob_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' \
+  "$(docker ps --quiet --filter "network=$sandbox_network" --filter label=corral.adamaq01.fr/owner=bob)")
+expect "ssh bob+main id -un" sandbox "$(as bob bob+main "id -un")"
+expect "bob's home" none "$(as bob bob+main 'cat ~/owner 2>/dev/null || echo none')"
+ok "bob, added with the admin API, reaches his own sandbox and home"
+
+refused adam bob+main
+ok "adam's key is refused for bob+main"
+
+mkdir -m 700 hc-home hc-run
+# ssh reads ~/.ssh/config from the passwd home, not $HOME, so hc gets the e2e's ssh command.
+hc_local machine add --name e2e --install \
+  --via "ssh -F $work/ssh_config -i $work/keys/adam adam+main@corral-e2e" >>"$log"
+expect "hc exec --on e2e echo ok" ok "$(hc_local exec --on e2e echo ok)"
+hc_local server stop >>"$log"
+ok "hc machine add over ContainerSSH, then hc exec --on e2e echo ok prints ok"
+
+as adam adam+main 'nohup node -e "require(\"http\").createServer((q, r) => r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" </dev/null >/dev/null 2>&1 &'
+inside=
+for _ in $(seq 50); do
+  inside=$(as adam adam+main 'curl -s http://127.0.0.1:8000/') && break
+  sleep 0.2
+done
+expect "the server inside the sandbox" forwarded "$inside"
+ssh -F ssh_config -i keys/adam -o ExitOnForwardFailure=yes -N \
+  -L "127.0.0.1:$forward_port:127.0.0.1:8000" adam+main@corral-e2e &
+forward=$!
+body=
+for _ in $(seq 50); do
+  body=$(curl -s "http://127.0.0.1:$forward_port/") && break
+  sleep 0.2
+done
+kill "$forward" 2>/dev/null || true
+wait "$forward" 2>/dev/null || true
+expect "ssh -L" forwarded "$body"
+ok "ssh -L $forward_port:127.0.0.1:8000 reaches a server inside the sandbox"
+
+corral_ip=$(docker inspect --format \
+  "{{(index .NetworkSettings.Networks \"${project}_corral\").IPAddress}}" "$project-corral-1")
+codes=
+for url in http://corral:8081/healthz "http://$corral_ip:8081/healthz" "http://$corral_ip:8080/healthz"; do
+  code=$(as adam adam+main "curl -s -m 5 -o /dev/null $url; echo \$?")
+  [[ "$code" =~ ^[0-9]+$ && "$code" != 0 ]] || fail "from the sandbox, $url answered (curl exit [$code])"
+  codes+=" $code"
+done
+ok "from the sandbox, Corral is unreachable by name and at $corral_ip (curl exits:$codes)"
+
+api adam POST api/sandboxes/main/stop >/dev/null
+expect "container after stop" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
+expect "state after stop" sleeping "$(api adam GET api/sandboxes/main | jq -r .state)"
+token="e2e-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
+api adam PUT api/credentials/E2E_TOKEN "$(jq -cn --arg v "$token" '{value: $v}')" >/dev/null
+listed=$(api adam GET api/credentials)
+expect "GET /api/credentials" E2E_TOKEN "$(jq -r '.[].name' <<<"$listed")"
+[[ "$listed" != *"$token"* ]] || fail "GET /api/credentials returned the value"
+woke_at=$SECONDS
+expect "after the wake" "$token adam" "$(as adam adam+main 'echo "$E2E_TOKEN $(cat ~/owner)"')"
+ok "a credential set while main slept reached SSH on the wake ($((SECONDS - woke_at))s), home kept"
+
+if docker compose logs --no-color 2>&1 | grep -qF "$token"; then
+  fail "the credential value appears in the service logs"
+fi
+ok "the credential value is in neither service's logs"
+
+bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
+api adam POST "api/admin/users/$bob_id/disable" >/dev/null
+refused bob bob+main
+expect "disabled bob's GET /api/me" 403 "$(http_status bob GET api/me)"
+ok "a disabled user is refused over SSH and by the API"
+
+docker compose restart corral >>"$log" 2>&1
+docker compose up -d --wait >>"$log" 2>&1
+login adam "$admin_password"
+expect "keys after the restart" 1 "$(api adam GET api/keys | jq length)"
+expect "sandboxes after the restart" main "$(api adam GET api/sandboxes | jq -r '.[].name')"
+expect "credentials after the restart" E2E_TOKEN "$(api adam GET api/credentials | jq -r '.[].name')"
+expect "ssh after the restart" sandbox "$(as adam adam+main "id -un")"
+api adam POST api/sandboxes/main/restart >/dev/null
+expect "the credential after an API restart" "$token" "$(as adam adam+main 'printenv E2E_TOKEN')"
+ok "after docker compose restart corral, the user, key, sandbox and credential persist"
+
+docker compose restart containerssh >>"$log" 2>&1
+docker compose up -d --wait >>"$log" 2>&1
+expect "ssh after a ContainerSSH restart" sandbox "$(as adam adam+main "id -un")"
+ok "after docker compose restart containerssh, the pinned host key still matches"
+
+for _ in 1 2 3 4 5; do
+  expect "a wrong password" 403 "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+    --data '{"username":"adam","password":"not the password"}' "$base/auth/local")"
+done
+expect "the right password after 5 wrong ones" 429 "$(jq -cn --arg p "$admin_password" \
+  '{username: "adam", password: $p}' | curl -sS -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' --data @- "$base/auth/local")"
+ok "after 5 wrong passwords, POST /auth/local answers 429 even to the right one"
+
+# Short timings for the rest: a wake deadline a slow wake can exceed, and a quick idle timeout.
+# The bind mount follows config.toml's inode, so it is rewritten in place.
+awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }' config.toml >config.new
+cat config.new >config.toml
+printf '\n[limits]\nidle_timeout_secs = 3\n' >>config.toml
+docker compose restart corral >>"$log" 2>&1
+docker compose up -d --wait >>"$log" 2>&1
+login adam "$admin_password"
+api adam POST api/sandboxes '{"name":"idle"}' >/dev/null
+idle=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_network" \
+  --filter label=corral.adamaq01.fr/sandbox=idle)
+idle_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$idle")
+ok "restarted corral with wake_deadline_secs = 2 and idle_timeout_secs = 3, created sandbox idle"
+
+state() {
+  docker inspect --format '{{.State.Status}}' "$idle"
+}
+
+sleeps_within() {
+  local waited=0
+  while [[ "$(state)" != exited ]]; do
+    ((waited < $1)) || fail "$idle was still $(state) after ${1}s"
+    sleep 1
+    waited=$((waited + 1))
+  done
+  echo "$waited"
+}
+
+as adam adam+idle 'sleep 6'
+expect "after a 6s SSH session" running "$(state)"
+ok "an SSH session longer than the idle timeout keeps idle awake"
+slept=$(sleeps_within 15)
+ok "with nothing running, idle slept ${slept}s after the session ended"
+
+as adam adam+idle 'sudo mv /usr/bin/pgrep /usr/bin/pgrep.off'
+sleep 6
+expect "6s after breaking the probes" running "$(state)"
+if ! docker compose logs --no-color corral 2>&1 | grep "activity probe failed, keeping the sandbox awake" \
+  | grep -qF "${idle#corral-}"; then
+  fail "no log line for idle's failed activity probe"
+fi
+as adam adam+idle 'sudo mv /usr/bin/pgrep.off /usr/bin/pgrep'
+slept=$(sleeps_within 15)
+ok "a failing activity probe keeps idle awake; once fixed, it slept ${slept}s later"
+
+as adam adam+idle 'hc run --bg "sleep 300" >/dev/null 2>&1'
+sleep 6
+expect "6s after starting a Herdr terminal" running "$(state)"
+as adam adam+idle 'sudo mv /usr/local/bin/hc /usr/local/bin/hc.off'
+slept=$(sleeps_within 15)
+ok "a live Herdr terminal keeps idle awake; with hc missing (exit 127) it slept ${slept}s later"
+
+# main keeps the default idle timeout, so the reaper leaves its slow wake alone. Starved of CPU,
+# it cannot wake within the deadline; the CPU comes back while ContainerSSH waits to retry.
+api adam POST api/sandboxes/main/stop >/dev/null
+cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$adam_container")
+docker update --cpus 0.01 "$adam_container" >/dev/null
+called=$(date +%s)
+answer=$(docker compose exec containerssh wget -q -O /dev/null --header 'Content-Type: application/json' \
+  --post-data '{"username":"adam+main","authenticatedUsername":"adam+main","remoteAddress":"127.0.0.1:1","connectionId":"e2e","clientVersion":"SSH-2.0-e2e"}' \
+  http://corral:8081/config 2>&1 || true)
+answered=$(($(date +%s) - called))
+[[ "$answer" == *" 503 "* ]] || fail "/config during a slow wake answered: $answer"
+((answered <= 5)) || fail "/config took ${answered}s to answer 503"
+woke_at=$SECONDS
+as adam adam+main "id -un" >slow-login.out &
+slow_login=$!
+sleep 3
+docker update --cpus "$(awk -v n="$cpus" 'BEGIN { print n / 1e9 }')" "$adam_container" >/dev/null
+wait "$slow_login" || true
+took=$((SECONDS - woke_at))
+expect "ssh into the slow sandbox" sandbox "$(cat slow-login.out)"
+((took >= 10)) || fail "ssh got in after ${took}s, before any ContainerSSH retry"
+ok "a wake past the deadline: /config answers 503 in ${answered}s, ssh gets in on ContainerSSH's retry (${took}s)"
+
+api adam POST "api/admin/users/$bob_id/enable" >/dev/null
+login bob "$bob_password"
+api bob DELETE api/sandboxes/main >/dev/null
+api adam DELETE api/sandboxes/main >/dev/null
+api adam DELETE api/sandboxes/idle >/dev/null
+expect "sandbox containers after the deletes" "" \
+  "$(docker ps --all --quiet --filter "network=$sandbox_network" --filter label=app.kubernetes.io/managed-by=corral)"
+for volume in "$adam_home" "$bob_home" "$idle_home"; do
+  if docker volume inspect "$volume" >/dev/null 2>&1; then
+    fail "$volume survived its sandbox's delete"
+  fi
+done
+ok "deleting the sandboxes through the API removed their containers and homes"
+
+docker compose down --volumes >>"$log" 2>&1
+expect "project containers after down" "" \
+  "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")"
+if docker network inspect "$sandbox_network" >/dev/null 2>&1; then
+  fail "docker compose down left $sandbox_network"
+fi
+ok "docker compose down --volumes removed the stack and both networks"
+
+echo "e2e: $passed checks passed in $((SECONDS - started))s"
