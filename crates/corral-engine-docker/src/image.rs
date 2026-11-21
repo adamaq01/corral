@@ -1,0 +1,63 @@
+use bollard::Docker;
+use bollard::query_parameters::CreateImageOptionsBuilder;
+use corral_core::{Error, Result};
+use futures_util::TryStreamExt;
+
+use crate::docker_error::{self, is_not_found};
+
+pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<()> {
+    match docker.inspect_image(reference).await {
+        Ok(_) => return Ok(()),
+        Err(err) if is_not_found(&err) => {}
+        Err(err) => {
+            return Err(docker_error::engine(
+                &format!("inspect image {reference}"),
+                &err,
+            ));
+        }
+    }
+    let options = CreateImageOptionsBuilder::default()
+        .from_image(&with_default_tag(reference))
+        .build();
+    docker
+        .create_image(Some(options), None, None)
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(|err| Error::Engine(format!("pull image {reference}: {err}")))?;
+    Ok(())
+}
+
+// The API pulls every tag of an image named without a tag or digest.
+fn with_default_tag(reference: &str) -> String {
+    let last = reference.rsplit('/').next().unwrap_or(reference);
+    if last.contains(':') || last.contains('@') {
+        reference.to_owned()
+    } else {
+        format!("{reference}:latest")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_default_tag;
+
+    #[test]
+    fn untagged_references_pull_latest_only() {
+        for (reference, expected) in [
+            ("ubuntu", "ubuntu:latest"),
+            (
+                "ghcr.io/adamaq01/corral-sandbox",
+                "ghcr.io/adamaq01/corral-sandbox:latest",
+            ),
+            ("localhost:5000/sandbox", "localhost:5000/sandbox:latest"),
+            (
+                "ghcr.io/adamaq01/corral-sandbox:1.0",
+                "ghcr.io/adamaq01/corral-sandbox:1.0",
+            ),
+            ("localhost:5000/sandbox:dev", "localhost:5000/sandbox:dev"),
+            ("ubuntu@sha256:abc", "ubuntu@sha256:abc"),
+        ] {
+            assert_eq!(with_default_tag(reference), expected);
+        }
+    }
+}
