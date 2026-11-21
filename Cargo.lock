@@ -597,6 +597,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "corral-activity",
  "corral-core",
  "k8s-openapi",
  "kube",
@@ -604,6 +605,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
+ "tracing",
  "uuid",
 ]
 
