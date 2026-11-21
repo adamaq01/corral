@@ -208,9 +208,9 @@ impl Sandboxes {
             .engine
             .status(&sandbox.id)
             .await
-            .unwrap_or_else(|error| SandboxStatus {
+            .unwrap_or_else(|_| SandboxStatus {
                 state: SandboxState::Failed,
-                detail: Some(error.to_string()),
+                detail: Some("engine status unavailable".to_owned()),
             });
         SandboxView { sandbox, status }
     }
@@ -471,7 +471,7 @@ mod tests {
     async fn list_and_get_report_engine_status() {
         let w = World::new();
         let adam = w.member("adam").await;
-        let main = w.sandbox(&adam, "main").await;
+        w.sandbox(&adam, "main").await;
         let dev = w.sandbox(&adam, "dev").await;
         w.sandboxes.stop(&adam, &dev.name).await.unwrap();
         let states: Vec<_> = w
@@ -499,12 +499,36 @@ mod tests {
                 },
             }
         );
+    }
 
+    #[tokio::test]
+    async fn engine_errors_stay_out_of_the_view() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let root = w.admin("root").await;
+        let main = w.sandbox(&adam, "main").await;
+        w.sandbox(&adam, "dev").await;
         w.engine.delete(&main.id).await.unwrap();
-        let lost = w.sandboxes.get(&adam, &main.name).await.unwrap().status;
-        assert_eq!(lost.state, SandboxState::Failed);
-        assert!(lost.detail.is_some());
-        assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 2);
+        let engine_error = w.engine.status(&main.id).await.unwrap_err().to_string();
+        assert!(engine_error.contains(&main.id.0), "{engine_error}");
+
+        let unavailable = SandboxStatus {
+            state: SandboxState::Failed,
+            detail: Some("engine status unavailable".to_owned()),
+        };
+        let views = [
+            vec![w.sandboxes.get(&adam, &main.name).await.unwrap()],
+            w.sandboxes.list(&adam).await.unwrap(),
+            w.sandboxes.list_all(&root).await.unwrap(),
+        ];
+        for view in views
+            .iter()
+            .flatten()
+            .filter(|view| view.sandbox.id == main.id)
+        {
+            assert_eq!(view.status, unavailable);
+        }
+        assert_eq!(views.iter().flatten().count(), 5);
     }
 
     #[tokio::test]
