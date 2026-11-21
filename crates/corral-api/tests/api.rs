@@ -390,6 +390,41 @@ async fn sixth_failed_local_login_within_the_window_is_429() {
 }
 
 #[tokio::test]
+async fn successful_local_logins_are_never_limited() {
+    let corral = Corral::new();
+    corral.account("adam", Role::Member).await;
+    let mut browser = corral.browser();
+    for attempt in 1..=10 {
+        let reply = browser.sign_in("adam", PASSWORD).await;
+        assert_eq!(reply.status, StatusCode::OK, "attempt {attempt}");
+    }
+}
+
+#[tokio::test]
+async fn a_successful_login_does_not_reset_the_failures() {
+    let corral = Corral::new();
+    corral.account("adam", Role::Member).await;
+    corral.account("eve", Role::Member).await;
+    let mut attacker = corral.browser_at("198.51.100.66:4000");
+    for attempt in 1..=4 {
+        let reply = attacker.sign_in("adam", &format!("guess {attempt}")).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "attempt {attempt}");
+    }
+    assert_eq!(
+        attacker.sign_in("eve", PASSWORD).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        attacker.sign_in("adam", "guess 5").await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        attacker.sign_in("eve", PASSWORD).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
 async fn trusted_forwarded_for_addresses_are_counted_separately() {
     let corral = Setup {
         trust_forwarded_for: true,

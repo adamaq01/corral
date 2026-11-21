@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::header::LOCATION;
@@ -6,6 +8,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::PrivateCookieJar;
 use chrono::Utc;
+use corral_core::Error;
 use corral_core::domain::User;
 use corral_core::ports::{IdentityProvider, LoginState};
 
@@ -79,14 +82,20 @@ async fn local(
     JsonBody(form): JsonBody<LocalLogin>,
 ) -> Result<impl IntoResponse, ApiError> {
     let local = local_accounts(&state)?;
-    if !state.logins.admit(&form.username, address) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many login attempts, try again later",
-        ));
+    let attempt = state
+        .logins
+        .admit(&form.username, address, Instant::now())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many failed logins, try again later",
+            )
+        })?;
+    let authenticated = local.authenticate(&form.username, form.password).await;
+    if !matches!(authenticated, Err(Error::Forbidden)) {
+        attempt.release();
     }
-    let principal = local.authenticate(&form.username, form.password).await?;
-    let user = state.accounts.login(principal).await?;
+    let user = state.accounts.login(authenticated?).await?;
     Ok((start_session(&state, jar, &user), Json(Me::from(&user))))
 }
 
