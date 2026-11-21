@@ -1,0 +1,23 @@
+ssh:
+  hostkeys:
+    - /etc/containerssh/host_key
+auth:
+  password:
+    method: ""
+  keyboardInteractive:
+    method: ""
+  publicKey:
+    method: webhook
+    webhook:
+      url: http://corral:8081
+configserver:
+  url: http://corral:8081/config
+  # Must exceed [ssh] wake_deadline_secs in config.toml (20 by default), or a sandbox that takes
+  # that long to wake is cut off before Corral answers.
+  timeout: 30s
+security:
+  forwarding:
+    forwardingMode: enable
+health:
+  enable: true
+  listen: 127.0.0.1:7000

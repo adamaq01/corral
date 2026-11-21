@@ -16,9 +16,44 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --all-features
 
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/server/Dockerfile
+          load: true
+          tags: corral-server:e2e
+          cache-from: type=gha,scope=corral
+      - uses: docker/build-push-action@v7
+        with:
+          context: images/sandbox
+          file: images/sandbox/Dockerfile
+          load: true
+          tags: corral-sandbox:e2e
+          cache-from: type=gha,scope=corral-sandbox
+      - name: Install hc, the version and checksum the sandbox image pins
+        run: |
+          version=$(sed -n 's/^ARG HERDR_CORE_VERSION=//p' images/sandbox/Dockerfile)
+          sha256=$(sed -n 's/^ARG HERDR_CORE_SHA256_AMD64=//p' images/sandbox/Dockerfile)
+          curl -fsSL -o "$RUNNER_TEMP/herdr-core.tar.gz" \
+            "https://releases.herdr.dev/core/$version/herdr-core-linux-x86_64.tar.gz"
+          echo "$sha256  $RUNNER_TEMP/herdr-core.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$RUNNER_TEMP/herdr-core.tar.gz" -C "$HOME/.local/bin" --no-same-owner herdr-core
+          ln -s herdr-core "$HOME/.local/bin/hc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: tests/e2e/compose.sh
+        env:
+          CORRAL_SERVER_IMAGE: corral-server:e2e
+          CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+
   publish:
     if: github.event_name == 'push'
-    needs: check
+    needs: [check, e2e]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,6 +83,7 @@ jobs:
           tags: |
             type=sha
             type=ref,event=tag
+            type=raw,value=latest,enable={{is_default_branch}}
       - uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}

@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod env;
+mod healthcheck;
 mod keys;
 mod local_account;
 mod serve;
@@ -34,6 +35,7 @@ async fn main() -> Result<()> {
         Command::LocalAccount(LocalAccountCommand::Create { username, admin }) => {
             local_account::create(&Config::load(&cli.config)?, &username, admin).await
         }
+        Command::Healthcheck => healthcheck::run(&Config::load(&cli.config)?).await,
         Command::Keys(KeysCommand::Generate) => {
             print!("{}", keys::generate()?);
             Ok(())

@@ -25,7 +25,7 @@ secrecy.workspace = true
 serde.workspace = true
 serde_path_to_error = "0.1.20"
 ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 tokio-util.workspace = true
 toml = "1.2.2"
 tower-http = { version = "0.7.1", features = ["fs"] }
