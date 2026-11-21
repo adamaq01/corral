@@ -53,6 +53,17 @@ impl LocalAccounts {
             role,
             created_at: Utc::now(),
         };
+        if self
+            .users
+            .by_subject(&subject(&account.username))
+            .await?
+            .is_some()
+        {
+            return Err(Error::Conflict(format!(
+                "local account {} exists or was deleted, and usernames are never reused",
+                account.username
+            )));
+        }
         self.accounts.insert(&account).await
     }
 
@@ -367,5 +378,52 @@ mod tests {
         w.local.delete(&root, "never").await.unwrap();
         assert!(w.accounts.require_active(root.id).await.is_ok());
         assert_eq!(w.local.list(&root).await.unwrap(), vec![]);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_username_that_logged_in_is_never_reused() {
+        let w = world_with(&[("adam", Role::Member), ("never", Role::Member)]).await;
+        let root = w.admin("root").await;
+        let principal = w
+            .local
+            .authenticate("adam", password(PASSWORD))
+            .await
+            .unwrap();
+        let adam = w.accounts.login(principal).await.unwrap();
+        w.keys.add(&adam, "laptop", ADAM_KEY).await.unwrap();
+        w.local.delete(&root, "adam").await.unwrap();
+        w.local.delete(&root, "never").await.unwrap();
+
+        for actor in [None, Some(&root)] {
+            assert!(matches!(
+                w.local
+                    .create(
+                        actor,
+                        "adam",
+                        password("a newcomer's password"),
+                        Role::Admin
+                    )
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert!(matches!(
+            w.local
+                .authenticate("adam", password("a newcomer's password"))
+                .await,
+            Err(Error::Forbidden)
+        ));
+        assert!(!w.access.authenticate("adam", ADAM_KEY).await.unwrap());
+
+        w.local
+            .create(Some(&root), "never", password(PASSWORD), Role::Member)
+            .await
+            .unwrap();
+        assert!(
+            w.local
+                .authenticate("never", password(PASSWORD))
+                .await
+                .is_ok()
+        );
     }
 }
