@@ -1,0 +1,36 @@
+[package]
+name = "corral-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+axum.workspace = true
+base64.workspace = true
+clap = { version = "4.6.9", features = ["derive", "env"] }
+corral-api = { path = "../corral-api" }
+corral-core = { path = "../corral-core" }
+corral-engine-agent-sandbox = { path = "../corral-engine-agent-sandbox" }
+corral-engine-docker = { path = "../corral-engine-docker" }
+corral-frontdoor-containerssh = { path = "../corral-frontdoor-containerssh" }
+corral-identity-local = { path = "../corral-identity-local" }
+corral-identity-oidc = { path = "../corral-identity-oidc" }
+corral-secrets-openbao = { path = "../corral-secrets-openbao" }
+corral-secrets-sealed = { path = "../corral-secrets-sealed" }
+corral-store-postgres = { path = "../corral-store-postgres" }
+corral-store-sqlite = { path = "../corral-store-sqlite" }
+kube.workspace = true
+rpassword = "7.5.5"
+secrecy.workspace = true
+serde.workspace = true
+serde_path_to_error = "0.1.20"
+ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio-util.workspace = true
+toml = "1.2.2"
+tower-http = { version = "0.7.1", features = ["fs"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true

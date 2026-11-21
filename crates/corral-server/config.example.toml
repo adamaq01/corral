@@ -1,0 +1,74 @@
+# Kubernetes homelab: agent-sandbox engine, OIDC login, Postgres.
+#
+# Secrets and the database come from the environment, never from this file:
+#   DATABASE_URL=postgres://corral:...@corral-db-rw:5432/corral
+#   CORRAL_SESSION_KEY, CORRAL_SECRETS_KEY, CORRAL_PROXY_PRIVATE_KEY (`corral-server keys generate`)
+#   CORRAL_OIDC_CLIENT_SECRET
+
+[http]
+public_addr = "0.0.0.0:8080"
+internal_addr = "0.0.0.0:8081"
+base_url = "https://corral.adamaq01.fr"
+# Behind Traefik every peer is the proxy, so password-login limits key on X-Forwarded-For.
+trust_forwarded_for = true
+
+[access]
+member_group = "corral-users"
+admin_group = "corral-admins"
+
+[identity.oidc]
+issuer = "https://auth.adamaq01.fr"
+client_id = "corral"
+
+[secrets]
+kind = "database"
+
+[engine]
+kind = "agent-sandbox"
+max_running = 6
+probe_interval_secs = 60
+
+[engine.agent-sandbox]
+namespace = "corral-sandboxes"
+service_account = "corral-sandbox"
+storage_class = "tns-csi-nvmeof"
+agent_image = "containerssh/agent:v0.11.0"
+
+[frontdoor]
+kind = "containerssh"
+
+[ssh]
+public_host = "corral.adamaq01.fr"
+public_port = 48291
+wake_deadline_secs = 20
+
+[limits]
+max_sandboxes_per_user = 5
+idle_timeout_secs = 1800
+
+[catalog]
+default_image = "ubuntu"
+default_size = "small"
+
+[[catalog.images]]
+key = "ubuntu"
+label = "Ubuntu 24.04"
+reference = "ghcr.io/adamaq01/corral-sandbox:latest"
+
+[[catalog.sizes]]
+key = "small"
+label = "Small: 2 CPUs, 4 GiB"
+cpu_request = "500m"
+cpu_limit = "2"
+memory_request = "1Gi"
+memory_limit = "4Gi"
+home_size = "10Gi"
+
+[[catalog.sizes]]
+key = "large"
+label = "Large: 4 CPUs, 8 GiB"
+cpu_request = "1"
+cpu_limit = "4"
+memory_request = "2Gi"
+memory_limit = "8Gi"
+home_size = "30Gi"

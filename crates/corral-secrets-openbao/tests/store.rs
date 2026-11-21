@@ -95,6 +95,48 @@ async fn concurrent_writes_for_one_user_lose_nothing() {
 }
 
 #[tokio::test]
+async fn overwritten_and_deleted_values_leave_no_readable_history() {
+    let bao = OpenBao::start().await;
+    let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
+    let adam = user();
+    store
+        .put(adam, &name("A_KEY"), secret("first"))
+        .await
+        .unwrap();
+    store
+        .put(adam, &name("A_KEY"), secret("second"))
+        .await
+        .unwrap();
+    store.put(adam, &name("B_KEY"), secret("b")).await.unwrap();
+    store.delete(adam, &name("B_KEY")).await.unwrap();
+
+    assert_eq!(
+        readable_versions(&bao, adam).await,
+        [BTreeMap::from([("A_KEY".into(), "second".into())])]
+    );
+
+    store.delete(adam, &name("A_KEY")).await.unwrap();
+    assert_eq!(readable_versions(&bao, adam).await, []);
+    let metadata = kv2::read_metadata(&bao.root, MOUNT, &path(adam)).await;
+    assert!(metadata.is_err(), "{metadata:?}");
+    assert!(store.load_all(adam).await.unwrap().is_empty());
+
+    store.put(adam, &name("C_KEY"), secret("c")).await.unwrap();
+    assert_eq!(exposed(&store.load_all(adam).await.unwrap()), ["C_KEY=c"]);
+}
+
+// Probes every version number the store could have written, not only those metadata lists.
+async fn readable_versions(bao: &OpenBao, user: UserId) -> Vec<BTreeMap<String, String>> {
+    let mut readable = Vec::new();
+    for version in 1..=10 {
+        if let Ok(data) = kv2::read_version(&bao.root, MOUNT, &path(user), version).await {
+            readable.push(data);
+        }
+    }
+    readable
+}
+
+#[tokio::test]
 async fn a_soft_deleted_secret_reads_empty_and_takes_new_writes() {
     let bao = OpenBao::start().await;
     let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
@@ -206,6 +248,10 @@ async fn kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expir
         ["A_KEY=a", "B_KEY=b"]
     );
     assert_eq!(*reviewed.lock().unwrap(), [first, second]);
+
+    store.delete(adam, &name("A_KEY")).await.unwrap();
+    store.delete(adam, &name("B_KEY")).await.unwrap();
+    assert!(store.load_all(adam).await.unwrap().is_empty());
     std::fs::remove_file(jwt_path).unwrap();
 }
 
@@ -227,7 +273,7 @@ async fn enable_kubernetes_auth(bao: &OpenBao, review_port: u16, token_ttl: &str
     .unwrap();
     let policy = format!(
         r#"path "{MOUNT}/data/{PREFIX}/*" {{ capabilities = ["create", "read", "update"] }}
-path "{MOUNT}/metadata/{PREFIX}/*" {{ capabilities = ["read"] }}"#
+path "{MOUNT}/metadata/{PREFIX}/*" {{ capabilities = ["read", "create", "update", "delete"] }}"#
     );
     sys::policy::set(&bao.root, "corral", &policy)
         .await

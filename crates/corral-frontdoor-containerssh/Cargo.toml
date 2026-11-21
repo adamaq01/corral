@@ -4,22 +4,22 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-axum = "0.8.9"
+axum.workspace = true
 corral-core = { path = "../corral-core" }
 secrecy.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["time"] }
-tracing = "0.1.44"
+tracing.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
 corral-core = { path = "../corral-core", features = ["fakes"] }
 serde_json.workspace = true
 ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
-tempfile = "3.27.0"
-testcontainers = "0.27.3"
+tempfile.workspace = true
+testcontainers.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "test-util"] }
-tower = { version = "0.5.3", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

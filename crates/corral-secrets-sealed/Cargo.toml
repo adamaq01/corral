@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 async-trait.workspace = true
-base64 = "0.23.1"
+base64.workspace = true
 corral-core = { path = "../corral-core" }
 secrecy.workspace = true
 zeroize = "1.9.2"
