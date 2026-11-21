@@ -1,12 +1,20 @@
 mod credential_name;
 mod handle;
+mod principal;
+mod sandbox;
 mod sandbox_name;
+mod ssh_key;
 mod ssh_username;
+mod user;
 
 pub use credential_name::CredentialName;
 pub use handle::Handle;
+pub use principal::Principal;
+pub use sandbox::{Sandbox, SandboxId, SandboxState, SandboxStatus};
 pub use sandbox_name::SandboxName;
+pub use ssh_key::SshKey;
 pub use ssh_username::SshUsername;
+pub use user::{Role, User, UserId};
 
 const SLUG_MAX_LEN: usize = 32;
 
