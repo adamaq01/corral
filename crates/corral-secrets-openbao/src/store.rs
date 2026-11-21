@@ -1,0 +1,165 @@
+use std::collections::BTreeMap;
+
+use async_trait::async_trait;
+use corral_core::domain::{CredentialName, UserId};
+use corral_core::ports::{Env, SecretStore};
+use corral_core::{Error, Result};
+use secrecy::{ExposeSecret, SecretString};
+use serde_json::Value;
+use vaultrs::api::{
+    self, kv2::requests::ReadSecretRequest, kv2::requests::SetSecretRequestOptions,
+};
+use vaultrs::client::VaultClient;
+use vaultrs::error::ClientError;
+use vaultrs::kv2;
+
+use crate::OpenBaoConfig;
+use crate::error::{openbao_error, status};
+use crate::session::Session;
+
+const WRITE_ATTEMPTS: usize = 10;
+
+pub struct OpenBaoStore {
+    session: Session,
+    mount: String,
+    path_prefix: String,
+}
+
+impl OpenBaoStore {
+    pub async fn connect(config: OpenBaoConfig) -> Result<Self> {
+        Ok(Self {
+            session: Session::start(config.address, config.auth).await?,
+            mount: config.mount.trim_matches('/').to_owned(),
+            path_prefix: config.path_prefix.trim_matches('/').to_owned(),
+        })
+    }
+
+    fn path(&self, user: UserId) -> String {
+        if self.path_prefix.is_empty() {
+            user.0.to_string()
+        } else {
+            format!("{}/{}", self.path_prefix, user.0)
+        }
+    }
+
+    async fn update(
+        &self,
+        user: UserId,
+        change: impl Fn(&mut Env) -> bool + Send + Sync,
+    ) -> Result<()> {
+        let path = self.path(user);
+        for _ in 0..WRITE_ATTEMPTS {
+            let client = self.session.client().await?;
+            // The map must come from the same version the write checks, or a racing writer is lost.
+            let version = current_version(&client, &self.mount, &path).await?;
+            let mut env = if version == 0 {
+                Env::new()
+            } else {
+                read(&client, &self.mount, &path, Some(version))
+                    .await?
+                    .unwrap_or_default()
+            };
+            if !change(&mut env) || write(&client, &self.mount, &path, &env, version).await? {
+                return Ok(());
+            }
+        }
+        Err(Error::Secrets(format!(
+            "openbao secret {path} changed under each of {WRITE_ATTEMPTS} write attempts"
+        )))
+    }
+}
+
+#[async_trait]
+impl SecretStore for OpenBaoStore {
+    async fn put(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()> {
+        self.update(user, |env| {
+            env.insert(name.clone(), value.clone());
+            true
+        })
+        .await
+    }
+
+    async fn delete(&self, user: UserId, name: &CredentialName) -> Result<()> {
+        self.update(user, |env| env.remove(name).is_some()).await
+    }
+
+    async fn load_all(&self, user: UserId) -> Result<Env> {
+        let client = self.session.client().await?;
+        let found = read(&client, &self.mount, &self.path(user), None).await?;
+        Ok(found.unwrap_or_default())
+    }
+}
+
+async fn read(
+    client: &VaultClient,
+    mount: &str,
+    path: &str,
+    version: Option<u64>,
+) -> Result<Option<Env>> {
+    let request = ReadSecretRequest::builder()
+        .mount(mount)
+        .path(path)
+        .version(version)
+        .build()
+        .expect("mount and path are set");
+    match api::exec_with_result(client, request).await {
+        Ok(secret) => parse_env(secret.data).map(Some),
+        Err(err) if status(&err) == Some(404) => Ok(None),
+        Err(err) => Err(openbao_error("read", &err)),
+    }
+}
+
+async fn current_version(client: &VaultClient, mount: &str, path: &str) -> Result<u64> {
+    match kv2::read_metadata(client, mount, path).await {
+        Ok(metadata) => Ok(metadata.current_version),
+        Err(err) if status(&err) == Some(404) => Ok(0),
+        Err(err) => Err(openbao_error("metadata read", &err)),
+    }
+}
+
+async fn write(
+    client: &VaultClient,
+    mount: &str,
+    path: &str,
+    env: &Env,
+    version: u64,
+) -> Result<bool> {
+    let cas = u32::try_from(version).map_err(|_| {
+        Error::Secrets(format!(
+            "openbao secret {path} is at version {version}, beyond check-and-set range"
+        ))
+    })?;
+    let data: BTreeMap<&str, &str> = env
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.expose_secret()))
+        .collect();
+    match kv2::set_with_options(client, mount, path, &data, SetSecretRequestOptions { cas }).await {
+        Ok(_) => Ok(true),
+        Err(ClientError::APIError { code: 400, errors })
+            if errors.iter().any(|error| error.contains("check-and-set")) =>
+        {
+            Ok(false)
+        }
+        Err(err) => Err(openbao_error("write", &err)),
+    }
+}
+
+fn parse_env(data: Value) -> Result<Env> {
+    let Value::Object(entries) = data else {
+        return Err(Error::Secrets("openbao secret data is not a map".into()));
+    };
+    entries
+        .into_iter()
+        .map(|(key, value)| {
+            let name = CredentialName::parse(&key).map_err(|_| {
+                Error::Secrets(format!("openbao key {key:?} is not a credential name"))
+            })?;
+            match value {
+                Value::String(value) => Ok((name, SecretString::from(value))),
+                _ => Err(Error::Secrets(format!(
+                    "openbao value of {name} is not a string"
+                ))),
+            }
+        })
+        .collect()
+}
