@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+home=/home/sandbox
+marker=$home/.corral-initialized
+
+if [[ -e "$marker" ]]; then
+  exit 0
+fi
+cp -R /etc/corral/skel/. "$home/"
+touch "$marker"
