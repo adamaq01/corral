@@ -92,6 +92,14 @@ impl DockerEngine {
             .map_err(|err| docker_error::engine(&format!("stop {name}"), &err))
     }
 
+    async fn observe(&self, id: &SandboxId) -> Result<SandboxStatus> {
+        let current = match self.inspect(&container::name(id)).await? {
+            Some(found) => Some(found),
+            None => self.inspect(&container::staged_name(id)).await?,
+        };
+        status::map(id, current.as_ref())
+    }
+
     async fn inspect(&self, name: &str) -> Result<Option<ContainerInspectResponse>> {
         match self.docker.inspect_container(name, None).await {
             Ok(found) => Ok(Some(found)),
@@ -250,11 +258,11 @@ impl SandboxEngine for DockerEngine {
     }
 
     async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
-        let current = match self.inspect(&container::name(id)).await? {
-            Some(found) => Some(found),
-            None => self.inspect(&container::staged_name(id)).await?,
-        };
-        status::map(id, current.as_ref())
+        self.observe(id).await.inspect_err(|err| {
+            if !matches!(err, Error::NotFound(_)) {
+                warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
+            }
+        })
     }
 
     async fn ensure_running(

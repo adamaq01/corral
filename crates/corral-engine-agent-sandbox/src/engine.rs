@@ -12,6 +12,7 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
 use crate::AgentSandboxConfig;
 use crate::crd::{OperatingMode, Sandbox};
@@ -132,7 +133,11 @@ impl SandboxEngine for AgentSandboxEngine {
     }
 
     async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
-        self.observe(id).await
+        self.observe(id).await.inspect_err(|err| {
+            if !matches!(err, Error::NotFound(_)) {
+                warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
+            }
+        })
     }
 
     async fn ensure_running(
