@@ -5,7 +5,7 @@ use secrecy::ExposeSecret;
 
 use crate::app::{
     AccessPolicy, Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
-    SandboxView, Sandboxes, SizePreset, SshEndpoint,
+    RegisteredKeyVerifier, SandboxView, Sandboxes, SizePreset, SshAccess, SshEndpoint,
 };
 use crate::domain::{CredentialName, Principal, Sandbox, SandboxName, User};
 use crate::fakes::{
@@ -17,6 +17,7 @@ use crate::ports::{Env, IdlePolicy, Resources, SandboxRepo};
 pub const MEMBERS: &str = "corral-users";
 pub const ADMINS: &str = "corral-admins";
 pub const MAX_SANDBOXES: usize = 3;
+pub const WAKE_DEADLINE: Duration = Duration::from_secs(7);
 
 pub const ADAM_KEY: &str = include_str!("../tests/fixtures/adam_ed25519.pub");
 pub const ADAM_FINGERPRINT: &str = "SHA256:0nvzQlr5lq8mmP7FV396FL0Mlt63oN/Y5WfWKMEYeFo";
@@ -116,6 +117,8 @@ pub struct World {
     pub credentials: Credentials,
     pub engine: Arc<FakeEngine>,
     pub sandboxes: Sandboxes,
+    pub key_repo: Arc<MemoryKeyRepo>,
+    pub access: SshAccess,
 }
 
 impl World {
@@ -136,20 +139,30 @@ impl World {
         let limits = Limits {
             max_sandboxes_per_user: MAX_SANDBOXES,
         };
+        let sandboxes = Sandboxes::new(
+            sandbox_repo,
+            engine.clone(),
+            credentials.clone(),
+            catalog(),
+            limits,
+        );
+        let key_repo = Arc::new(MemoryKeyRepo::default());
+        let access = SshAccess::new(
+            users.clone(),
+            sandboxes.clone(),
+            vec![Arc::new(RegisteredKeyVerifier::new(key_repo.clone()))],
+            WAKE_DEADLINE,
+        );
         Self {
             accounts: Accounts::new(users.clone(), policy),
-            keys: Keys::new(Arc::new(MemoryKeyRepo::default())),
-            sandboxes: Sandboxes::new(
-                sandbox_repo,
-                engine.clone(),
-                credentials.clone(),
-                catalog(),
-                limits,
-            ),
+            keys: Keys::new(key_repo.clone()),
+            sandboxes,
             credentials,
             engine,
             users,
             secrets,
+            key_repo,
+            access,
         }
     }
 
