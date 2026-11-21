@@ -1,5 +1,6 @@
 mod credential_name;
 mod handle;
+mod local_account;
 mod principal;
 mod sandbox;
 mod sandbox_name;
@@ -10,6 +11,7 @@ mod user;
 
 pub use credential_name::CredentialName;
 pub use handle::Handle;
+pub use local_account::LocalAccount;
 pub use principal::Principal;
 pub use sandbox::{Sandbox, SandboxId, SandboxState, SandboxStatus};
 pub use sandbox_name::SandboxName;

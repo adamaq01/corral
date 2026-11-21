@@ -5,12 +5,13 @@ use secrecy::ExposeSecret;
 
 use crate::app::{
     AccessPolicy, Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
-    RegisteredKeyVerifier, SandboxView, Sandboxes, SizePreset, SshAccess, SshEndpoint,
+    LocalAccounts, RegisteredKeyVerifier, SandboxView, Sandboxes, SizePreset, SshAccess,
+    SshEndpoint,
 };
 use crate::domain::{CredentialName, Principal, Sandbox, SandboxName, User};
 use crate::fakes::{
-    FakeEngine, MemoryCredentialRepo, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore,
-    MemoryUserRepo,
+    FakeEngine, FakePasswordHasher, MemoryCredentialRepo, MemoryKeyRepo, MemoryLocalAccountRepo,
+    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
 };
 use crate::ports::{Env, IdlePolicy, Resources, SandboxRepo};
 
@@ -119,6 +120,8 @@ pub struct World {
     pub sandboxes: Sandboxes,
     pub key_repo: Arc<MemoryKeyRepo>,
     pub access: SshAccess,
+    pub hasher: Arc<FakePasswordHasher>,
+    pub local: LocalAccounts,
 }
 
 impl World {
@@ -153,6 +156,14 @@ impl World {
             vec![Arc::new(RegisteredKeyVerifier::new(key_repo.clone()))],
             WAKE_DEADLINE,
         );
+        let hasher = Arc::new(FakePasswordHasher::default());
+        let local = LocalAccounts::new(
+            Arc::new(MemoryLocalAccountRepo::default()),
+            users.clone(),
+            hasher.clone(),
+            policy.clone(),
+        )
+        .unwrap();
         Self {
             accounts: Accounts::new(users.clone(), policy),
             keys: Keys::new(key_repo.clone()),
@@ -163,6 +174,8 @@ impl World {
             secrets,
             key_repo,
             access,
+            hasher,
+            local,
         }
     }
 

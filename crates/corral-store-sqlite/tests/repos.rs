@@ -60,6 +60,12 @@ async fn secret_blobs_meet_the_contract() {
 }
 
 #[tokio::test]
+async fn local_accounts_meet_the_contract() {
+    let (_dir, store) = store().await;
+    repos::local_account_repo(&*store.local_accounts()).await;
+}
+
+#[tokio::test]
 async fn connect_creates_a_wal_database_that_enforces_foreign_keys() {
     let dir = tempfile::tempdir().expect("temp dir");
     let store = SqliteStore::connect(&url(&dir)).await.expect("connect");

@@ -24,6 +24,13 @@ impl AccessPolicy {
             None
         }
     }
+
+    pub(super) fn groups(&self, role: Role) -> Vec<String> {
+        match role {
+            Role::Member => vec![self.member_group.clone()],
+            Role::Admin => vec![self.member_group.clone(), self.admin_group.clone()],
+        }
+    }
 }
 
 #[derive(Clone)]

@@ -2,19 +2,23 @@ mod credentials;
 mod decode;
 mod error;
 mod keys;
+mod local_accounts;
 mod sandboxes;
 mod secret_blobs;
 mod users;
 
 use std::sync::Arc;
 
-use corral_core::ports::{CredentialRepo, KeyRepo, SandboxRepo, SecretBlobRepo, UserRepo};
+use corral_core::ports::{
+    CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, SecretBlobRepo, UserRepo,
+};
 use corral_core::{Error, Result};
 use sqlx::postgres::PgPool;
 
 use credentials::Credentials;
 use error::db_error;
 use keys::Keys;
+use local_accounts::LocalAccounts;
 use sandboxes::Sandboxes;
 use secret_blobs::SecretBlobs;
 use users::Users;
@@ -64,6 +68,13 @@ impl PgStore {
     #[must_use]
     pub fn secret_blobs(&self) -> Arc<dyn SecretBlobRepo> {
         Arc::new(SecretBlobs {
+            pool: self.pool.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn local_accounts(&self) -> Arc<dyn LocalAccountRepo> {
+        Arc::new(LocalAccounts {
             pool: self.pool.clone(),
         })
     }

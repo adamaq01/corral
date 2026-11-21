@@ -31,6 +31,7 @@ async fn pg_store_meets_every_repo_contract() {
     repos::sandbox_repo(&*users, &*store.sandboxes()).await;
     repos::credential_repo(&*users, &*store.credentials()).await;
     repos::secret_blob_repo(&*users, &*store.secret_blobs()).await;
+    repos::local_account_repo(&*store.local_accounts()).await;
     credential_names_list_in_byte_order(&*users, &*store.credentials()).await;
 }
 
