@@ -14,11 +14,11 @@ url = "2.5.9"
 vaultrs = "0.8.0"
 
 [dev-dependencies]
-base64 = "0.23.1"
+base64.workspace = true
 corral-core = { path = "../corral-core", features = ["contract", "fakes"] }
-testcontainers = "0.27.3"
+testcontainers.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
-tracing-subscriber = "0.3.23"
+tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [lints]

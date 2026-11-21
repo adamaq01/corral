@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-axum = { version = "0.8.9", features = ["macros"] }
+axum = { workspace = true, features = ["macros"] }
 axum-extra = { version = "0.12.6", features = ["cookie-private"] }
 chrono = { workspace = true, features = ["serde"] }
 cookie = "0.18.2"
@@ -13,14 +13,14 @@ governor = "0.10.4"
 secrecy = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
-tracing = "0.1.44"
+tracing.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 async-trait.workspace = true
 corral-core = { path = "../corral-core", features = ["fakes"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
-tower = { version = "0.5.3", features = ["util"] }
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

@@ -7,12 +7,12 @@ edition.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 corral-core = { path = "../corral-core" }
-sqlx = { version = "0.9.1", default-features = false, features = ["chrono", "macros", "migrate", "runtime-tokio", "sqlite", "uuid"] }
+sqlx = { workspace = true, features = ["chrono", "macros", "migrate", "runtime-tokio", "sqlite", "uuid"] }
 uuid.workspace = true
 
 [dev-dependencies]
 corral-core = { path = "../corral-core", features = ["contract"] }
-tempfile = "3.27.0"
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

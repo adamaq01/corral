@@ -16,11 +16,21 @@ missing_errors_doc = "allow"
 
 [workspace.dependencies]
 async-trait = "0.1.92"
+axum = "0.8.9"
+base64 = "0.23.1"
 chrono = "0.4.45"
+kube = "5.1.0"
 secrecy = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sqlx = { version = "0.9.1", default-features = false }
 ssh-key = "0.6.7"
+tempfile = "3.27.0"
+testcontainers = "0.27.3"
 thiserror = "2.0.21"
 tokio = "1.54.1"
+tokio-util = "0.7.20"
+tower = "0.5.3"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
 uuid = { version = "1.29.3", features = ["v4"] }
