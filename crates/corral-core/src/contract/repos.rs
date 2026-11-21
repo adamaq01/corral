@@ -2,8 +2,12 @@ use uuid::Uuid;
 
 use super::{at, credential, new_user, seed_user, unique};
 use crate::Error;
-use crate::domain::{Handle, Role, Sandbox, SandboxId, SandboxName, SshKey, User, UserId};
-use crate::ports::{CredentialRepo, KeyRepo, SandboxRepo, SecretBlobRepo, UserRepo};
+use crate::domain::{
+    Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey, User, UserId,
+};
+use crate::ports::{
+    CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, SecretBlobRepo, UserRepo,
+};
 
 pub async fn user_repo(repo: &dyn UserRepo) {
     let older = new_user("adam", at(1));
@@ -317,6 +321,82 @@ pub async fn secret_blob_repo(users: &dyn UserRepo, blobs: &dyn SecretBlobRepo) 
         blobs.load_all(UserId(Uuid::new_v4())).await.unwrap(),
         vec![]
     );
+}
+
+pub async fn local_account_repo(repo: &dyn LocalAccountRepo) {
+    let prefix = unique("acct");
+    let account = |suffix: &str, role: Role, created: i64| LocalAccount {
+        username: handle(&format!("{prefix}{suffix}")),
+        password_hash: unique("hash"),
+        role,
+        created_at: at(created),
+    };
+    // Byte order puts '-' before digits, unlike most locale collations.
+    let hyphen = account("-b", Role::Admin, 2);
+    let digit = account("1", Role::Member, 1);
+    repo.insert(&digit).await.expect("insert account");
+    repo.insert(&hyphen).await.expect("insert account");
+
+    assert_eq!(
+        repo.get(&hyphen.username).await.unwrap(),
+        Some(hyphen.clone())
+    );
+    assert_eq!(
+        repo.get(&digit.username).await.unwrap(),
+        Some(digit.clone())
+    );
+    assert_eq!(repo.get(&handle(&unique("nobody"))).await.unwrap(), None);
+    let ours = |accounts: Vec<LocalAccount>| -> Vec<LocalAccount> {
+        accounts
+            .into_iter()
+            .filter(|a| a.username.as_str().starts_with(&prefix))
+            .collect()
+    };
+    assert_eq!(
+        ours(repo.list().await.unwrap()),
+        vec![hyphen.clone(), digit.clone()]
+    );
+
+    let duplicate = LocalAccount {
+        password_hash: unique("other"),
+        role: Role::Member,
+        ..hyphen.clone()
+    };
+    assert!(matches!(
+        repo.insert(&duplicate).await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(
+        repo.get(&hyphen.username).await.unwrap(),
+        Some(hyphen.clone())
+    );
+
+    let updated = LocalAccount {
+        password_hash: unique("rehashed"),
+        role: Role::Member,
+        created_at: at(3),
+        ..hyphen.clone()
+    };
+    repo.update(&updated).await.expect("update account");
+    assert_eq!(
+        repo.get(&hyphen.username).await.unwrap(),
+        Some(updated.clone())
+    );
+    assert_eq!(
+        repo.get(&digit.username).await.unwrap(),
+        Some(digit.clone())
+    );
+    let absent = account("-ghost", Role::Member, 4);
+    assert!(matches!(
+        repo.update(&absent).await,
+        Err(Error::NotFound(_))
+    ));
+    assert_eq!(repo.get(&absent.username).await.unwrap(), None);
+
+    assert!(repo.delete(&updated.username).await.unwrap());
+    assert!(!repo.delete(&updated.username).await.unwrap());
+    assert_eq!(repo.get(&updated.username).await.unwrap(), None);
+    assert_eq!(ours(repo.list().await.unwrap()), vec![digit]);
 }
 
 fn handle(value: &str) -> Handle {

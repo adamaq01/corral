@@ -1,0 +1,12 @@
+[package]
+name = "corral-identity-local"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+argon2 = "0.6.0"
+corral-core = { path = "../corral-core" }
+secrecy.workspace = true
+
+[lints]
+workspace = true
