@@ -9,7 +9,6 @@ axum-extra = { version = "0.12.6", features = ["cookie-private"] }
 chrono = { workspace = true, features = ["serde"] }
 cookie = "0.18.2"
 corral-core = { path = "../corral-core" }
-governor = "0.10.4"
 secrecy = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
