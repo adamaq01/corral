@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::Result;
-use crate::domain::Role;
+use crate::domain::{PictureUrl, Role};
 
 /// Who a provider established the person to be, however it did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,6 +10,7 @@ pub struct Identity {
     pub subject: String,
     pub username: String,
     pub email: Option<String>,
+    pub picture: Option<PictureUrl>,
     /// `None` for a verified person outside every role, so their user can be disabled.
     pub role: Option<Role>,
 }

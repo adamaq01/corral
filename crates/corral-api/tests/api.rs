@@ -59,6 +59,7 @@ async fn stub_finish(cookies: ProviderCookies, identities: Identities) -> Respon
         subject: "sub-1".to_owned(),
         username: "Adam".to_owned(),
         email: Some("adam@example.com".to_owned()),
+        picture: None,
         role: Some(Role::Member),
     };
     let cookies = cookies.remove(STEP);
@@ -182,7 +183,7 @@ async fn a_provider_sign_in_starts_a_session_and_me_returns_the_handle() {
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(
         reply.json(),
-        json!({ "handle": "adam", "email": null, "role": "member" })
+        json!({ "handle": "adam", "email": null, "picture": null, "role": "member" })
     );
     let me = browser.get("/api/me").await;
     assert_eq!(me.status, StatusCode::OK);
@@ -194,6 +195,33 @@ async fn a_provider_sign_in_starts_a_session_and_me_returns_the_handle() {
         browser.get("/api/me").await.status,
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn the_providers_picture_is_shown_for_the_user_as_of_their_last_login() {
+    let corral = Corral::new();
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut adam = corral.browser();
+    let picture = "https://idp.example.com/adam.png";
+    for (sent, shown) in [(json!(picture), json!(picture)), (json!(null), json!(null))] {
+        let login = json!({
+            "subject": "adam", "username": "adam", "role": "member", "picture": sent,
+        });
+        let reply = adam.post("/auth/test/login", login).await;
+        assert_eq!(reply.json()["picture"], shown);
+        assert_eq!(adam.get("/api/me").await.json()["picture"], shown);
+        let users = root.get("/api/admin/users").await.json();
+        let pictures: Vec<_> = users
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|user| (user["handle"].clone(), user["picture"].clone()))
+            .collect();
+        assert_eq!(
+            pictures,
+            [(json!("root"), json!(null)), (json!("adam"), shown.clone())]
+        );
+    }
 }
 
 #[tokio::test]
@@ -261,7 +289,7 @@ async fn provider_cookies_carry_a_login_between_steps_unreadable() {
     assert!(!browser.cookies.contains_key("corral_test_step"));
     assert_eq!(
         browser.get("/api/me").await.json(),
-        json!({ "handle": "adam", "email": "adam@example.com", "role": "member" })
+        json!({ "handle": "adam", "email": "adam@example.com", "picture": null, "role": "member" })
     );
 
     let replay = browser.get("/auth/test/finish").await;

@@ -54,6 +54,7 @@ impl Accounts {
             Some(user) => {
                 let user = User {
                     email: identity.email,
+                    picture: identity.picture,
                     role,
                     ..user
                 };
@@ -176,6 +177,7 @@ impl Accounts {
             subject,
             handle,
             email: identity.email,
+            picture: identity.picture,
             role,
             status: UserStatus::Active,
             created_at: Utc::now(),
@@ -195,9 +197,9 @@ mod tests {
     use uuid::Uuid;
 
     use crate::Error;
-    use crate::domain::{Role, User, UserId, UserStatus};
+    use crate::domain::{PictureUrl, Role, User, UserId, UserStatus};
     use crate::fakes::{ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, credential, identity};
-    use crate::ports::{SandboxEngine, UserRepo};
+    use crate::ports::{Identity, SandboxEngine, UserRepo};
 
     fn secret(value: &str) -> SecretString {
         SecretString::from(value)
@@ -258,6 +260,33 @@ mod tests {
         assert_eq!(again.id, first.id);
         assert_eq!(again.email.as_deref(), Some("renamed@example.com"));
         assert_eq!(w.users.get(first.id).await.unwrap(), Some(again));
+    }
+
+    #[tokio::test]
+    async fn each_login_refreshes_the_picture() {
+        let w = World::new();
+        let with_picture = |url: Option<&str>| Identity {
+            picture: url.map(|url| PictureUrl::parse(url).unwrap()),
+            ..identity("s1", "adam", Some(Role::Member))
+        };
+        let mut seen = Vec::new();
+        for url in [
+            Some("https://idp.example.com/a.png"),
+            Some("https://idp.example.com/b.png"),
+            None,
+        ] {
+            let user = w.accounts.login(PROVIDER, with_picture(url)).await.unwrap();
+            assert_eq!(w.users.get(user.id).await.unwrap(), Some(user.clone()));
+            seen.push(user.picture.map(String::from));
+        }
+        assert_eq!(
+            seen,
+            [
+                Some("https://idp.example.com/a.png".to_owned()),
+                Some("https://idp.example.com/b.png".to_owned()),
+                None
+            ]
+        );
     }
 
     #[tokio::test]

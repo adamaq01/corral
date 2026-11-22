@@ -80,7 +80,7 @@ async fn the_account_decides_the_role(pool: Pool) {
     let reply = log_in(&mut adam, "adam", PASSWORD).await;
     assert_eq!(
         reply.json(),
-        json!({ "handle": "adam", "email": null, "role": "member" })
+        json!({ "handle": "adam", "email": null, "picture": null, "role": "member" })
     );
     assert_eq!(adam.get("/api/me").await.json()["role"], "member");
     let mut root = corral.signed_in("root").await;

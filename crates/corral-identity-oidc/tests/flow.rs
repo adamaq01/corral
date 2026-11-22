@@ -15,9 +15,9 @@ use openidconnect::core::{
 use openidconnect::url::{Url, form_urlencoded};
 use openidconnect::{
     AdditionalClaims, Audience, AuthUrl, EmptyAdditionalProviderMetadata, EndUserEmail,
-    EndUserUsername, IdToken, IdTokenClaims, IssuerUrl, JsonWebKeyId, JsonWebKeySetUrl, Nonce,
-    PkceCodeChallenge, PkceCodeVerifier, PrivateSigningKey, ResponseTypes, StandardClaims,
-    SubjectIdentifier, TokenUrl,
+    EndUserPictureUrl, EndUserUsername, IdToken, IdTokenClaims, IssuerUrl, JsonWebKeyId,
+    JsonWebKeySetUrl, Nonce, PkceCodeChallenge, PkceCodeVerifier, PrivateSigningKey, ResponseTypes,
+    StandardClaims, SubjectIdentifier, TokenUrl,
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,7 @@ impl AdditionalClaims for Groups {}
 struct Issuer {
     server: MockServer,
     key: CoreRsaPrivateSigningKey,
+    picture: Option<&'static str>,
 }
 
 impl Issuer {
@@ -53,6 +54,7 @@ impl Issuer {
         let issuer = Self {
             server: MockServer::start().await,
             key: signing_key(FIRST_KEY, "first"),
+            picture: None,
         };
         issuer.serve_discovery().await;
         issuer
@@ -121,7 +123,11 @@ impl Issuer {
             Utc::now(),
             StandardClaims::new(SubjectIdentifier::new("sub-123".to_owned()))
                 .set_preferred_username(Some(EndUserUsername::new("Adam".to_owned())))
-                .set_email(Some(EndUserEmail::new("adam@example.com".to_owned()))),
+                .set_email(Some(EndUserEmail::new("adam@example.com".to_owned())))
+                .set_picture(
+                    self.picture
+                        .map(|picture| EndUserPictureUrl::new(picture.to_owned()).into()),
+                ),
             Groups {
                 groups: groups.map(|groups| groups.iter().map(ToString::to_string).collect()),
             },
@@ -235,7 +241,7 @@ async fn a_login_round_trip_starts_a_session() {
     assert!(!browser.cookies.contains_key("corral_oidc_login"));
     assert_eq!(
         me(&mut browser).await,
-        json!({ "handle": "adam", "email": "adam@example.com", "role": "member" })
+        json!({ "handle": "adam", "email": "adam@example.com", "picture": null, "role": "member" })
     );
     assert_eq!(auth.path(), "/authorize");
     assert_eq!(param(&auth, "response_type"), "code");
@@ -409,4 +415,43 @@ async fn login_still_works_after_the_issuer_rotates_its_signing_key() {
 
     assert_eq!(reply.status, StatusCode::FOUND, "{}", reply.text());
     assert_eq!(me(&mut browser).await["handle"], "adam");
+}
+
+#[tokio::test]
+async fn each_login_takes_the_picture_claim_when_it_is_an_https_url() {
+    let mut issuer = Issuer::start().await;
+    let app = issuer.corral().await;
+    for (claim, picture) in [
+        (
+            Some("https://idp.example.com/adam.png"),
+            json!("https://idp.example.com/adam.png"),
+        ),
+        (
+            Some("https://idp.example.com/new.png"),
+            json!("https://idp.example.com/new.png"),
+        ),
+        (Some("http://idp.example.com/adam.png"), json!(null)),
+        (Some("javascript:alert(1)"), json!(null)),
+        (Some("/adam.png"), json!(null)),
+        (None, json!(null)),
+    ] {
+        issuer.picture = claim;
+        issuer.server.reset().await;
+        issuer.serve_discovery().await;
+        let mut browser = browser(&app);
+        let auth = start(&mut browser).await;
+        issuer
+            .issue(issuer.id_token(&param(&auth, "nonce"), Some(&[MEMBERS])))
+            .await;
+
+        let reply = callback(&mut browser, &param(&auth, "state")).await;
+
+        assert_eq!(
+            reply.status,
+            StatusCode::FOUND,
+            "{claim:?}: {}",
+            reply.text()
+        );
+        assert_eq!(me(&mut browser).await["picture"], picture, "{claim:?}");
+    }
 }

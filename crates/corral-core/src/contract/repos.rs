@@ -23,6 +23,7 @@ async fn user_repo(repo: &dyn UserRepo) {
     let older = new_user("adam", at(1));
     let newer = User {
         email: None,
+        picture: None,
         ..new_user("eve", at(2))
     };
     repo.insert(&newer).await.expect("insert newer user");
@@ -87,6 +88,7 @@ async fn user_repo(repo: &dyn UserRepo) {
     let updated = User {
         handle: handle(&unique("renamed")),
         email: None,
+        picture: None,
         role: Role::Admin,
         status: UserStatus::Deleting,
         ..older.clone()

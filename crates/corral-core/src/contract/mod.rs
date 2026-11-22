@@ -4,7 +4,7 @@ pub mod secrets;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::domain::{Handle, Role, User, UserId, UserStatus};
+use crate::domain::{Handle, PictureUrl, Role, User, UserId, UserStatus};
 use crate::ports::UserRepo;
 
 fn at(seconds: i64) -> DateTime<Utc> {
@@ -21,6 +21,10 @@ fn new_user(label: &str, created_at: DateTime<Utc>) -> User {
         id: UserId(Uuid::new_v4()),
         subject: format!("subject-{handle}"),
         email: Some(format!("{handle}@example.com")),
+        picture: Some(
+            PictureUrl::parse(&format!("https://idp.example.com/{handle}.png"))
+                .expect("valid picture"),
+        ),
         handle: Handle::parse(&handle).expect("valid handle"),
         role: Role::Member,
         status: UserStatus::Active,

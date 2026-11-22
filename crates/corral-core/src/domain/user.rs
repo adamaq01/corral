@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::Handle;
+use super::{Handle, PictureUrl};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -31,6 +31,8 @@ pub struct User {
     pub subject: String,
     pub handle: Handle,
     pub email: Option<String>,
+    /// The identity provider's picture of the person, as of their last login.
+    pub picture: Option<PictureUrl>,
     pub role: Role,
     pub status: UserStatus,
     pub created_at: DateTime<Utc>,

@@ -44,6 +44,7 @@ pub fn identity(subject: &str, username: &str, role: Option<Role>) -> Identity {
         subject: subject.to_owned(),
         username: username.to_owned(),
         email: Some(format!("{username}@example.com")),
+        picture: None,
         role,
     }
 }

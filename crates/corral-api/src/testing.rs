@@ -10,7 +10,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use axum::routing::post;
 use cookie::{Cookie, Key};
-use corral_core::domain::Role;
+use corral_core::domain::{PictureUrl, Role};
 use corral_core::fakes::World;
 use corral_core::ports::Identity;
 use serde::Deserialize;
@@ -45,10 +45,12 @@ struct Trusted {
     subject: String,
     username: String,
     role: Option<Role>,
+    #[serde(default)]
+    picture: Option<PictureUrl>,
 }
 
 /// A provider whose `POST /login` signs in whoever `{"subject", "username", "role"}` names,
-/// with a null role for a person outside every role.
+/// with a null role for a person outside every role, and any `"picture"`.
 #[must_use]
 pub fn trusting_provider(id: &str) -> ProviderRoutes {
     ProviderRoutes {
@@ -67,6 +69,7 @@ async fn trusted_login(
             subject: trusted.subject,
             username: trusted.username,
             email: None,
+            picture: trusted.picture,
             role: trusted.role,
         })
         .await

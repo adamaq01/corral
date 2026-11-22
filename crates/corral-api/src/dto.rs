@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxView};
 use corral_core::domain::{
-    CredentialName, Handle, ImageKey, Role, SandboxName, SandboxStatus, SizeKey, SshKey,
-    SshUsername, User, UserStatus,
+    CredentialName, Handle, ImageKey, PictureUrl, Role, SandboxName, SandboxStatus, SizeKey,
+    SshKey, SshUsername, User, UserStatus,
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,7 @@ pub(crate) struct CredentialValue {
 pub(crate) struct Me {
     handle: Handle,
     email: Option<String>,
+    picture: Option<PictureUrl>,
     role: Role,
 }
 
@@ -34,6 +35,7 @@ impl From<&User> for Me {
         Self {
             handle: user.handle.clone(),
             email: user.email.clone(),
+            picture: user.picture.clone(),
             role: user.role,
         }
     }
@@ -185,6 +187,7 @@ pub(crate) struct UserDto {
     id: Uuid,
     handle: Handle,
     email: Option<String>,
+    picture: Option<PictureUrl>,
     role: Role,
     status: UserStatus,
     created_at: DateTime<Utc>,
@@ -197,6 +200,7 @@ impl From<User> for UserDto {
             role: user.role,
             handle: user.handle,
             email: user.email,
+            picture: user.picture,
             status: user.status,
             created_at: user.created_at,
         }

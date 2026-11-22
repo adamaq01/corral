@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use corral_api::provider_path;
-use corral_core::domain::Role;
+use corral_core::domain::{PictureUrl, Role};
 use corral_core::ports::{Identity, IdentityProvider};
 use corral_core::{Error, Result};
 use openidconnect::core::{
@@ -160,6 +160,10 @@ impl OidcProvider {
             subject: claims.subject().as_str().to_owned(),
             username: username.as_str().to_owned(),
             email: claims.email().map(|email| email.as_str().to_owned()),
+            picture: claims
+                .picture()
+                .and_then(|picture| picture.get(None))
+                .and_then(|picture| PictureUrl::parse(picture.as_str()).ok()),
             role,
         })
     }

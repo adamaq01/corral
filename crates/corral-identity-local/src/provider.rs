@@ -61,6 +61,7 @@ impl LocalProvider {
                 subject: account.username.to_string(),
                 username: account.username.to_string(),
                 email: None,
+                picture: None,
                 role: Some(account.role),
             }),
             _ => Err(Error::Forbidden),

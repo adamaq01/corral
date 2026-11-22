@@ -3,6 +3,7 @@ create table users (
     subject text not null unique,
     handle text not null unique,
     email text,
+    picture text,
     role text not null,
     status text not null,
     created_at timestamptz not null

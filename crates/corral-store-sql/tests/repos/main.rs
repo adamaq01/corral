@@ -59,6 +59,7 @@ fn user() -> User {
         subject: "subject-adam".to_owned(),
         handle: Handle::parse("adam").unwrap(),
         email: None,
+        picture: None,
         role: Role::Member,
         status: UserStatus::Active,
         created_at: Utc::now(),
