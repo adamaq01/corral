@@ -21,7 +21,7 @@ pub trait Sweepable: Send + Sync + 'static {
     type Listed: Send + Sync;
     type Exec: Exec;
 
-    fn last_active(&self) -> &LastActive;
+    fn activity(&self) -> &ActivityLock;
     fn idle_timeout(&self) -> Duration;
     async fn running(&self) -> Result<Vec<(SandboxId, Self::Listed)>>;
     fn exec(&self, id: &SandboxId) -> Self::Exec;
@@ -29,10 +29,11 @@ pub trait Sweepable: Send + Sync + 'static {
     async fn suspend(&self, id: &SandboxId, listed: &Self::Listed) -> Result<()>;
 }
 
-/// When each running sandbox was last seen active. Kept only in memory: a restart of Corral
-/// costs at most one extra idle period.
+/// When each running sandbox was last seen active, behind the engine-wide lock that wakes and
+/// idle suspends take. Kept only in memory: a restart of Corral costs at most one extra idle
+/// period.
 #[derive(Default)]
-pub struct LastActive(Mutex<HashMap<SandboxId, DateTime<Utc>>>);
+pub struct ActivityLock(Mutex<HashMap<SandboxId, DateTime<Utc>>>);
 
 /// Held by a wake from its capacity check to its start. Idle suspends and other wakes wait for
 /// it, so no sandbox is put to sleep under a wake and concurrent wakes cannot pass the running
@@ -41,7 +42,7 @@ pub struct Waking<'a> {
     _entries: MutexGuard<'a, HashMap<SandboxId, DateTime<Utc>>>,
 }
 
-impl LastActive {
+impl ActivityLock {
     pub async fn wake(&self, id: &SandboxId) -> Waking<'_> {
         let mut entries = self.0.lock().await;
         entries.insert(id.clone(), Utc::now());
@@ -74,7 +75,7 @@ async fn sweep<E: Sweepable>(engine: &E) {
         }
     };
     engine
-        .last_active()
+        .activity()
         .0
         .lock()
         .await
@@ -86,7 +87,7 @@ async fn sweep<E: Sweepable>(engine: &E) {
         if let Err(error) = &activity {
             warn!(sandbox, %error, "activity probe failed, keeping the sandbox awake");
         }
-        let mut last_active = engine.last_active().0.lock().await;
+        let mut last_active = engine.activity().0.lock().await;
         let now = Utc::now();
         if matches!(activity, Ok(true)) {
             last_active.insert(id.clone(), now);
@@ -113,7 +114,7 @@ mod tests {
     const HERDR_LIST: &str = "hc ls --json";
 
     struct Engine {
-        last_active: LastActive,
+        activity: ActivityLock,
         idle_timeout: Duration,
         sandboxes: Vec<(SandboxId, ScriptedExec)>,
         suspended: SyncMutex<Vec<SandboxId>>,
@@ -125,8 +126,8 @@ mod tests {
         type Listed = ();
         type Exec = ScriptedExec;
 
-        fn last_active(&self) -> &LastActive {
-            &self.last_active
+        fn activity(&self) -> &ActivityLock {
+            &self.activity
         }
 
         fn idle_timeout(&self) -> Duration {
@@ -154,7 +155,7 @@ mod tests {
 
     fn engine(idle_timeout: Duration, sandboxes: Vec<(&str, ScriptedExec)>) -> Engine {
         Engine {
-            last_active: LastActive::default(),
+            activity: ActivityLock::default(),
             idle_timeout,
             sandboxes: sandboxes
                 .into_iter()

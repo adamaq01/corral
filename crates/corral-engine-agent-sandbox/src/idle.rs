@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use corral_activity::{LastActive, Sessions, Sweepable};
+use corral_activity::{ActivityLock, Sessions, Sweepable};
 use corral_core::Result;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use kube::ResourceExt;
@@ -22,8 +22,8 @@ impl Sweepable for AgentSandboxEngine {
     type Listed = Option<String>;
     type Exec = PodExec;
 
-    fn last_active(&self) -> &LastActive {
-        &self.last_active
+    fn activity(&self) -> &ActivityLock {
+        &self.activity
     }
 
     fn idle_timeout(&self) -> Duration {

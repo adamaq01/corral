@@ -8,7 +8,7 @@ use bollard::query_parameters::{
     RemoveVolumeOptions, UploadToContainerOptionsBuilder,
 };
 use bollard::{Docker, body_full};
-use corral_activity::{Exec, LastActive};
+use corral_activity::{ActivityLock, Exec};
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
@@ -29,7 +29,7 @@ const SSHD_ACCEPTS: [&str; 3] = ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"];
 pub struct DockerEngine {
     pub(crate) docker: Docker,
     pub(crate) config: DockerConfig,
-    pub(crate) last_active: LastActive,
+    pub(crate) activity: ActivityLock,
 }
 
 impl DockerEngine {
@@ -53,7 +53,7 @@ impl DockerEngine {
         Ok(Self {
             docker,
             config,
-            last_active: LastActive::default(),
+            activity: ActivityLock::default(),
         })
     }
 
@@ -156,7 +156,7 @@ impl SandboxEngine for DockerEngine {
     async fn start(&self, id: &SandboxId, env: Env, deadline: Duration) -> Result<Readiness> {
         let called = Instant::now();
         let target = {
-            let _waking = self.last_active.wake(id).await;
+            let _waking = self.activity.wake(id).await;
             let current = self.inspect(id).await?.ok_or_else(|| missing(id))?;
             if !status::is_running(&current) {
                 self.boot(id, &env).await?;

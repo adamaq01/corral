@@ -12,4 +12,4 @@ pub use decide::{IdleDecision, decide};
 pub use error::ActivityError;
 pub use exec::{Exec, ExecOutput};
 pub use probe::{Sessions, is_active};
-pub use sweep::{LastActive, Sweepable, Waking, spawn};
+pub use sweep::{ActivityLock, Sweepable, Waking, spawn};

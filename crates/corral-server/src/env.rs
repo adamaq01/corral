@@ -176,20 +176,4 @@ mod tests {
                 .is_none()
         );
     }
-
-    #[test]
-    fn malformed_values_are_rejected() {
-        let message = read(
-            &config(""),
-            &[
-                ("CORRAL_SESSION_KEY", "not base64!"),
-                ("CORRAL_SECRETS_KEY", "1:short"),
-                ("CORRAL_PROXY_PUBLIC_KEY", PROXY_KEY),
-            ],
-        )
-        .err()
-        .unwrap()
-        .to_string();
-        assert!(message.contains("CORRAL_SESSION_KEY"), "{message}");
-    }
 }

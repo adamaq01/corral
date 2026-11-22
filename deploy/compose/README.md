@@ -82,7 +82,7 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
   `{"username": "...", "password": "...", "role": "member"}`, and disable one with
   `POST /api/admin/users/<id>/disable`.
 - A sandbox sleeps (its container stops) after 30 minutes with no SSH session and no Herdr
-  terminal at work, and wakes on the next SSH login. Sleep keeps the container, so its files
+  terminal at work (`timeout_secs` under `[idle]`), and wakes on the next SSH login. Sleep keeps the container, so its files
   survive until the sandbox is deleted.
 
 ## Security
@@ -132,7 +132,7 @@ the same tests.
 ## Optional adapters
 
 The defaults are SQLite, local accounts and the Docker engine. Each can be swapped in
-configuration; `crates/corral-server/config.example.toml` shows every setting.
+configuration; `crates/corral-server/config.example.toml` shows a Kubernetes install with OIDC.
 
 - Postgres: set `DATABASE_URL=postgres://user:password@host:5432/corral` in `.env`.
 - OIDC: add an `[identity.oidc]` section with `issuer` and `client_id`, set

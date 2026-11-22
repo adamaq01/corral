@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use corral_activity::LastActive;
+use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
@@ -27,7 +27,7 @@ pub struct AgentSandboxEngine {
     claims: Api<PersistentVolumeClaim>,
     pub(crate) pods: Api<Pod>,
     pub(crate) config: AgentSandboxConfig,
-    pub(crate) last_active: LastActive,
+    pub(crate) activity: ActivityLock,
 }
 
 impl AgentSandboxEngine {
@@ -40,7 +40,7 @@ impl AgentSandboxEngine {
             claims: Api::namespaced(client.clone(), namespace),
             pods: Api::namespaced(client, namespace),
             config,
-            last_active: LastActive::default(),
+            activity: ActivityLock::default(),
         }
     }
 
@@ -81,7 +81,7 @@ impl AgentSandboxEngine {
     }
 
     async fn resume(&self, id: &SandboxId, env: &Env) -> Result<()> {
-        let _waking = self.last_active.wake(id).await;
+        let _waking = self.activity.wake(id).await;
         if self.sandbox(id).await?.spec.operating_mode == OperatingMode::Running {
             return Ok(());
         }
