@@ -1,5 +1,5 @@
 [package]
-name = "corral-store-postgres"
+name = "corral-store-sql"
 version.workspace = true
 edition.workspace = true
 
@@ -9,11 +9,12 @@ chrono.workspace = true
 corral-core = { path = "../corral-core" }
 serde.workspace = true
 serde_json.workspace = true
-sqlx = { workspace = true, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio", "uuid"] }
+sqlx = { workspace = true, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio", "sqlite", "uuid"] }
 uuid.workspace = true
 
 [dev-dependencies]
-corral-core = { path = "../corral-core", features = ["contract"] }
+ssh-key.workspace = true
+tempfile.workspace = true
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 

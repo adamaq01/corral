@@ -913,8 +913,7 @@ dependencies = [
  "corral-identity-oidc",
  "corral-secrets-openbao",
  "corral-secrets-sealed",
- "corral-store-postgres",
- "corral-store-sqlite",
+ "corral-store-sql",
  "kube",
  "rpassword",
  "secrecy",
@@ -930,7 +929,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "corral-store-postgres"
+name = "corral-store-sql"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -939,22 +938,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
- "testcontainers-modules",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "corral-store-sqlite"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "corral-core",
- "serde",
- "serde_json",
- "sqlx",
+ "ssh-key",
  "tempfile",
+ "testcontainers-modules",
  "tokio",
  "uuid",
 ]

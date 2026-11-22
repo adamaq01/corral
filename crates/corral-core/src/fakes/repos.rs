@@ -251,37 +251,3 @@ impl LocalAccountRepo for MemoryLocalAccountRepo {
         Ok(lock(&self.accounts).values().cloned().collect())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        MemoryCredentialRepo, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo,
-        MemoryUserRepo,
-    };
-    use crate::contract::repos;
-
-    #[tokio::test]
-    async fn memory_user_repo_meets_the_contract() {
-        repos::user_repo(&MemoryUserRepo::default()).await;
-    }
-
-    #[tokio::test]
-    async fn memory_key_repo_meets_the_contract() {
-        repos::key_repo(&MemoryUserRepo::default(), &MemoryKeyRepo::default()).await;
-    }
-
-    #[tokio::test]
-    async fn memory_sandbox_repo_meets_the_contract() {
-        repos::sandbox_repo(&MemoryUserRepo::default(), &MemorySandboxRepo::default()).await;
-    }
-
-    #[tokio::test]
-    async fn memory_credential_repo_meets_the_contract() {
-        repos::credential_repo(&MemoryUserRepo::default(), &MemoryCredentialRepo::default()).await;
-    }
-
-    #[tokio::test]
-    async fn memory_local_account_repo_meets_the_contract() {
-        repos::local_account_repo(&MemoryLocalAccountRepo::default()).await;
-    }
-}

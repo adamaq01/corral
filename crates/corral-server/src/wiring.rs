@@ -15,6 +15,7 @@ use corral_identity_local::Argon2Hasher;
 use corral_identity_oidc::{OidcConfig, OidcProvider};
 use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig, OpenBaoStore};
 use corral_secrets_sealed::SealedStore;
+use corral_store_sql::Store;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
@@ -22,7 +23,7 @@ use tower_http::services::ServeDir;
 use crate::config::{Config, Engine, EngineBackend, FrontDoor, OpenBaoLogin, Secrets};
 use crate::env;
 use crate::keys::{self, ProxyKey};
-use crate::store::{Database, Repos};
+use crate::store;
 
 const SERVICE_ACCOUNT_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 
@@ -35,32 +36,27 @@ pub struct App {
 pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> {
     let session_key = keys::session_key(&env::secret(keys::SESSION_KEY)?)?;
     let proxy_key = ProxyKey::parse(&env::secret(keys::PROXY_PRIVATE_KEY)?)?;
-    let repos = Repos::connect(&Database::from_env()?).await?;
-    let credentials = Credentials::new(
-        Arc::clone(&repos.credentials),
-        secret_store(&config.secrets, &repos).await?,
-    );
+    let store = store::connect().await?;
+    let credentials = Credentials::new(store.clone(), secret_store(&config.secrets, &store).await?);
     let identity = identity(config).await?;
-    let local = local_accounts(config, &repos)?;
+    let local = local_accounts(config, &store)?;
     let (engine, lifecycle) = engine(&config.engine, &proxy_key, shutdown).await?;
     let sandboxes = Sandboxes::new(
-        Arc::clone(&repos.sandboxes),
+        store.clone(),
         engine,
         credentials.clone(),
         config.catalog.clone(),
         config.limits,
     );
     let access = SshAccess::new(
-        Arc::clone(&repos.users),
+        store.clone(),
         sandboxes.clone(),
-        vec![Arc::new(RegisteredKeyVerifier::new(Arc::clone(
-            &repos.keys,
-        )))],
+        vec![Arc::new(RegisteredKeyVerifier::new(store.clone()))],
         config.wake_deadline,
     );
     let api = ApiState {
-        accounts: Accounts::new(Arc::clone(&repos.users), config.access.clone()),
-        keys: Keys::new(Arc::clone(&repos.keys)),
+        accounts: Accounts::new(store.clone(), config.access.clone()),
+        keys: Keys::new(store.clone()),
         credentials,
         sandboxes,
         catalog: config.catalog.clone(),
@@ -77,27 +73,24 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     })
 }
 
-pub fn local_accounts(config: &Config, repos: &Repos) -> Result<Option<LocalAccounts>> {
+pub fn local_accounts(config: &Config, store: &Arc<Store>) -> Result<Option<LocalAccounts>> {
     if !config.identity.local {
         return Ok(None);
     }
     let accounts = LocalAccounts::new(
-        Arc::clone(&repos.local_accounts),
-        Arc::clone(&repos.users),
+        store.clone(),
+        store.clone(),
         Arc::new(Argon2Hasher),
         config.access.clone(),
     )?;
     Ok(Some(accounts))
 }
 
-async fn secret_store(secrets: &Secrets, repos: &Repos) -> Result<Arc<dyn SecretStore>> {
+async fn secret_store(secrets: &Secrets, store: &Arc<Store>) -> Result<Arc<dyn SecretStore>> {
     match secrets {
         Secrets::Database => {
             let keyring = keys::keyring(&env::secret(keys::SECRETS_KEY)?)?;
-            Ok(Arc::new(SealedStore::new(
-                Arc::clone(&repos.secret_blobs),
-                keyring,
-            )))
+            Ok(Arc::new(SealedStore::new(store.clone(), keyring)))
         }
         Secrets::OpenBao(bao) => {
             let auth = match &bao.login {

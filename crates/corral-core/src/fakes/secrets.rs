@@ -63,14 +63,9 @@ impl SecretBlobRepo for MemorySecretBlobRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemorySecretBlobRepo, MemorySecretStore};
-    use crate::contract::{repos, secrets};
+    use super::MemorySecretStore;
+    use crate::contract::secrets;
     use crate::fakes::MemoryUserRepo;
-
-    #[tokio::test]
-    async fn memory_secret_blob_repo_meets_the_contract() {
-        repos::secret_blob_repo(&MemoryUserRepo::default(), &MemorySecretBlobRepo::default()).await;
-    }
 
     #[tokio::test]
     async fn memory_secret_store_meets_the_contract() {

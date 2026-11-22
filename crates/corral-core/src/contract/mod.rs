@@ -1,4 +1,3 @@
-pub mod repos;
 pub mod secrets;
 
 use chrono::{DateTime, Utc};

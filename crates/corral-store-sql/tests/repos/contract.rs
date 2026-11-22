@@ -1,15 +1,15 @@
+use chrono::{DateTime, Utc};
+use corral_core::Error;
+use corral_core::domain::{
+    CredentialName, Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey,
+    SshPublicKey, User, UserId,
+};
+use corral_core::ports::{
+    CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, SecretBlobRepo, UserRepo,
+};
 use ssh_key::PublicKey;
 use ssh_key::public::{Ed25519PublicKey, KeyData};
 use uuid::Uuid;
-
-use super::{at, credential, new_user, seed_user, unique};
-use crate::Error;
-use crate::domain::{
-    Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
-};
-use crate::ports::{
-    CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, SecretBlobRepo, UserRepo,
-};
 
 pub async fn user_repo(repo: &dyn UserRepo) {
     let older = new_user("adam", at(1));
@@ -292,6 +292,22 @@ pub async fn credential_repo(users: &dyn UserRepo, credentials: &dyn CredentialR
     assert_eq!(credentials.list(eve.id).await.unwrap(), vec![gh]);
 }
 
+pub async fn credential_names_list_in_byte_order(
+    users: &dyn UserRepo,
+    credentials: &dyn CredentialRepo,
+) {
+    let user = seed_user(users, "collation").await;
+    let mut names: Vec<CredentialName> = ["A_A", "AB", "A1", "A_"]
+        .into_iter()
+        .map(credential)
+        .collect();
+    for name in &names {
+        credentials.upsert(user.id, name).await.expect("upsert");
+    }
+    names.sort();
+    assert_eq!(credentials.list(user.id).await.unwrap(), names);
+}
+
 pub async fn secret_blob_repo(users: &dyn UserRepo, blobs: &dyn SecretBlobRepo) {
     let adam = seed_user(users, "adam").await;
     let eve = seed_user(users, "eve").await;
@@ -437,4 +453,35 @@ fn new_sandbox(owner: UserId, name: &str, is_default: bool, created: i64) -> San
         is_default,
         created_at: at(created),
     }
+}
+
+fn at(seconds: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp(1_800_000_000 + seconds, 0).expect("timestamp in range")
+}
+
+fn unique(label: &str) -> String {
+    format!("{label}-{}", &Uuid::new_v4().simple().to_string()[..12])
+}
+
+fn credential(name: &str) -> CredentialName {
+    CredentialName::parse(name).expect("valid credential name")
+}
+
+fn new_user(label: &str, created_at: DateTime<Utc>) -> User {
+    let handle = unique(label);
+    User {
+        id: UserId(Uuid::new_v4()),
+        subject: format!("subject-{handle}"),
+        email: Some(format!("{handle}@example.com")),
+        handle: Handle::parse(&handle).expect("valid handle"),
+        role: Role::Member,
+        enabled: true,
+        created_at,
+    }
+}
+
+async fn seed_user(users: &dyn UserRepo, label: &str) -> User {
+    let user = new_user(label, at(0));
+    users.insert(&user).await.expect("seed user");
+    user
 }

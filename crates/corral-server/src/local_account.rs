@@ -5,12 +5,11 @@ use corral_core::domain::Role;
 use secrecy::SecretString;
 
 use crate::config::Config;
-use crate::store::{Database, Repos};
-use crate::wiring;
+use crate::{store, wiring};
 
 pub async fn create(config: &Config, username: &str, admin: bool) -> Result<()> {
-    let repos = Repos::connect(&Database::from_env()?).await?;
-    let accounts = wiring::local_accounts(config, &repos)?
+    let store = store::connect().await?;
+    let accounts = wiring::local_accounts(config, &store)?
         .context("local accounts are off: set [identity.local] enabled = true")?;
     let role = if admin { Role::Admin } else { Role::Member };
     accounts

@@ -13,7 +13,6 @@ create table ssh_keys (
     user_id uuid not null references users on delete cascade,
     label text not null,
     public_key text not null unique,
-    fingerprint text not null,
     created_at timestamptz not null
 );
 
@@ -44,4 +43,11 @@ create table credential_values (
     blob bytea not null,
     updated_at timestamptz not null,
     primary key (user_id, name)
+);
+
+create table local_accounts (
+    username text collate "C" primary key,
+    password_hash text not null,
+    role text not null,
+    created_at timestamptz not null
 );

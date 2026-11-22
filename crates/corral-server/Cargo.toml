@@ -17,8 +17,7 @@ corral-identity-local = { path = "../corral-identity-local" }
 corral-identity-oidc = { path = "../corral-identity-oidc" }
 corral-secrets-openbao = { path = "../corral-secrets-openbao" }
 corral-secrets-sealed = { path = "../corral-secrets-sealed" }
-corral-store-postgres = { path = "../corral-store-postgres" }
-corral-store-sqlite = { path = "../corral-store-sqlite" }
+corral-store-sql = { path = "../corral-store-sql" }
 kube.workspace = true
 rpassword = "7.5.5"
 secrecy.workspace = true
