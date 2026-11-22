@@ -10,6 +10,7 @@
 		title,
 		description,
 		submit,
+		ready = true,
 		onsubmit,
 		children
 	}: {
@@ -18,6 +19,8 @@
 		description: string;
 		/** The submit button's label. */
 		submit: string;
+		/** Whether the form can be sent yet. */
+		ready?: boolean;
 		/** Sends the form; the dialog closes when it succeeds and shows the error when it fails. */
 		onsubmit: () => Promise<void>;
 		/** The form's fields. */
@@ -66,7 +69,7 @@
 						<Button variant="outline" {...props}>Cancel</Button>
 					{/snippet}
 				</Dialog.Close>
-				<Button type="submit" disabled={pending}>
+				<Button type="submit" disabled={pending || !ready}>
 					{#if pending}
 						<Spinner />
 					{/if}

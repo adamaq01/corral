@@ -1,8 +1,8 @@
 <script lang="ts">
 	import BoxesIcon from '@lucide/svelte/icons/boxes';
 	import { allSandboxes } from '#lib/api/admin.js';
-	import { api } from '#lib/api/client.js';
-	import type { Catalog, Choice } from '#lib/api/generated/index.js';
+	import { sandboxes as sandboxApi } from '#lib/api/sandboxes.js';
+	import { choiceLabel } from '#lib/catalog.js';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
 	import SandboxStateBadge from '#lib/components/sandbox-state-badge.svelte';
@@ -18,17 +18,9 @@
 	const columns = [wide, '', '', wide, wide, wide];
 
 	const listing = new Remote(async () => {
-		const [sandboxes, catalog] = await Promise.all([
-			allSandboxes(),
-			api.get<Catalog>('/api/catalog')
-		]);
+		const [sandboxes, catalog] = await Promise.all([allSandboxes(), sandboxApi.catalog()]);
 		return { sandboxes, catalog };
 	});
-
-	/** A catalog entry's label, or its key once the catalog no longer offers it. */
-	function label(choices: Choice[], key: string): string {
-		return choices.find((choice) => choice.key === key)?.label ?? key;
-	}
 </script>
 
 <div class="space-y-6">
@@ -69,8 +61,8 @@
 					{:else}
 						{@const { sandboxes, catalog } = listing.current.value}
 						{#each sandboxes as sandbox (`${sandbox.owner.handle}+${sandbox.name}`)}
-							{@const image = label(catalog.images, sandbox.image)}
-							{@const size = label(catalog.sizes, sandbox.size)}
+							{@const image = choiceLabel(catalog.images, sandbox.image)}
+							{@const size = choiceLabel(catalog.sizes, sandbox.size)}
 							<Table.Row>
 								<Table.Cell class={wide}>
 									<div class="flex items-center gap-2">
@@ -87,14 +79,14 @@
 										<span class="flex items-center gap-2">
 											{sandbox.name}
 											{#if sandbox.isDefault}
-												<Badge variant="outline">Default</Badge>
+												<Badge variant="secondary">Default</Badge>
 											{/if}
 										</span>
 										<span class="text-xs font-medium sm:hidden">{sandbox.owner.handle}</span>
 										<span class="text-xs text-muted-foreground sm:hidden">{image} · {size}</span>
 									</div>
 								</Table.Cell>
-								<Table.Cell><SandboxStateBadge status={sandbox} /></Table.Cell>
+								<Table.Cell><SandboxStateBadge status={sandbox} detail /></Table.Cell>
 								<Table.Cell class={wide}>{image}</Table.Cell>
 								<Table.Cell class={wide}>{size}</Table.Cell>
 								<Table.Cell class={wide}><Timestamp value={sandbox.createdAt} /></Table.Cell>

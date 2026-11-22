@@ -9,23 +9,30 @@
 		open = $bindable(false),
 		title,
 		action,
+		ready = true,
 		onconfirm,
-		children
+		children,
+		fields
 	}: {
 		open: boolean;
 		title: string;
 		/** The destructive button's label. */
 		action: string;
+		/** Whether the destructive button can be pressed yet. */
+		ready?: boolean;
 		/** Runs the action; the dialog closes when it succeeds and shows the error when it fails. */
 		onconfirm: () => Promise<void>;
 		/** What the action does, in a sentence or two. */
 		children: Snippet;
+		/** Anything to fill in before the action can run. */
+		fields?: Snippet;
 	} = $props();
 
 	let pending = $state(false);
 	let error = $state<string | null>(null);
 
-	async function confirm() {
+	async function confirm(event: SubmitEvent) {
+		event.preventDefault();
 		pending = true;
 		error = null;
 		try {
@@ -48,21 +55,24 @@
 	}}
 >
 	<AlertDialog.Content>
-		<AlertDialog.Header>
-			<AlertDialog.Title>{title}</AlertDialog.Title>
-			<AlertDialog.Description>{@render children()}</AlertDialog.Description>
-		</AlertDialog.Header>
-		{#if error}
-			<p class="text-sm text-destructive first-letter:uppercase" role="alert">{error}</p>
-		{/if}
-		<AlertDialog.Footer>
-			<AlertDialog.Cancel disabled={pending}>Cancel</AlertDialog.Cancel>
-			<Button variant="destructive" disabled={pending} onclick={confirm}>
-				{#if pending}
-					<Spinner />
-				{/if}
-				{action}
-			</Button>
-		</AlertDialog.Footer>
+		<form class="grid gap-4" onsubmit={confirm}>
+			<AlertDialog.Header>
+				<AlertDialog.Title>{title}</AlertDialog.Title>
+				<AlertDialog.Description class="grid gap-2">{@render children()}</AlertDialog.Description>
+			</AlertDialog.Header>
+			{@render fields?.()}
+			{#if error}
+				<p class="text-sm text-destructive first-letter:uppercase" role="alert">{error}</p>
+			{/if}
+			<AlertDialog.Footer>
+				<AlertDialog.Cancel type="button" disabled={pending}>Cancel</AlertDialog.Cancel>
+				<Button type="submit" variant="destructive" disabled={pending || !ready}>
+					{#if pending}
+						<Spinner />
+					{/if}
+					{action}
+				</Button>
+			</AlertDialog.Footer>
+		</form>
 	</AlertDialog.Content>
 </AlertDialog.Root>

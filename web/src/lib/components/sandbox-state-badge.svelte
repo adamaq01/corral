@@ -1,29 +1,45 @@
-<script lang="ts" module>
-	import type { BadgeVariant } from '#lib/components/ui/badge/index.js';
-	import type { SandboxStatus } from '#lib/api/generated/index.js';
-
-	const states: Record<SandboxStatus['state'], { label: string; variant: BadgeVariant }> = {
-		starting: { label: 'Starting', variant: 'outline' },
-		running: { label: 'Running', variant: 'default' },
-		sleeping: { label: 'Sleeping', variant: 'secondary' },
-		failed: { label: 'Failed', variant: 'destructive' },
-		deleting: { label: 'Deleting', variant: 'outline' }
-	};
-</script>
-
 <script lang="ts">
+	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
+	import MoonIcon from '@lucide/svelte/icons/moon';
+	import type { SandboxStatus } from '#lib/api/generated/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Spinner } from '#lib/components/ui/spinner/index.js';
+	import { states } from '#lib/sandbox-status.js';
 
-	let { status }: { status: SandboxStatus } = $props();
-
-	const shown = $derived(states[status.state]);
+	/** With `detail`, a failed sandbox's reason shows under the badge, cut to fit a table cell. */
+	let { status, detail = false }: { status: SandboxStatus; detail?: boolean } = $props();
 </script>
 
-<div class="grid justify-items-start gap-1">
-	<Badge variant={shown.variant}>{shown.label}</Badge>
-	{#if status.state === 'failed'}
-		<span class="max-w-32 truncate text-xs text-muted-foreground sm:max-w-48" title={status.detail}>
-			{status.detail}
-		</span>
-	{/if}
-</div>
+{#snippet badge()}
+	<Badge
+		variant={status.state === 'failed' ? 'destructive' : 'outline'}
+		title={status.state === 'failed' ? status.detail : undefined}
+	>
+		{#if status.state === 'running'}
+			<span class="size-2 rounded-full bg-emerald-500" aria-hidden="true"></span>
+		{:else if status.state === 'sleeping'}
+			<MoonIcon aria-hidden="true" />
+		{:else if status.state === 'failed'}
+			<CircleAlertIcon aria-hidden="true" />
+		{:else}
+			<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+		{/if}
+		{states[status.state].label}
+	</Badge>
+{/snippet}
+
+{#if detail}
+	<div class="grid justify-items-start gap-1">
+		{@render badge()}
+		{#if status.state === 'failed'}
+			<span
+				class="max-w-32 truncate text-xs text-muted-foreground sm:max-w-48"
+				title={status.detail}
+			>
+				{status.detail}
+			</span>
+		{/if}
+	</div>
+{:else}
+	{@render badge()}
+{/if}
