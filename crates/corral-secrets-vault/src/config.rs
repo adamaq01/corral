@@ -5,18 +5,18 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OpenBaoConfig {
+pub struct VaultConfig {
     pub address: String,
     #[serde(default = "mount")]
     pub mount: String,
     #[serde(default = "path_prefix")]
     pub path_prefix: String,
-    pub auth: OpenBaoAuth,
+    pub auth: VaultAuth,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum OpenBaoAuth {
+pub enum VaultAuth {
     Kubernetes {
         role: String,
         #[serde(skip, default = "service_account_token")]

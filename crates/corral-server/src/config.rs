@@ -10,7 +10,7 @@ use corral_core::app::Catalog;
 use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
 use corral_identity_oidc::OidcConfig;
-use corral_secrets_openbao::OpenBaoConfig;
+use corral_secrets_vault::VaultConfig;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -104,8 +104,7 @@ pub struct Local {}
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Secrets {
     Database {},
-    #[serde(rename = "openbao")]
-    OpenBao(OpenBaoConfig),
+    Vault(VaultConfig),
 }
 
 impl Default for Secrets {
@@ -210,7 +209,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use corral_secrets_openbao::OpenBaoAuth;
+    use corral_secrets_vault::VaultAuth;
 
     use super::{Config, Engine, Secrets};
 
@@ -323,44 +322,44 @@ mod tests {
 
     #[test]
     fn secret_stores_select_their_fields() {
-        let openbao = |auth: &str| {
+        let secrets = |auth: &str| {
             format!(
-                "{MINIMAL}\n[secrets]\nkind = \"openbao\"\naddress = \"http://bao:8200\"\n\
+                "{MINIMAL}\n[secrets]\nkind = \"vault\"\naddress = \"http://vault:8200\"\n\
                  [secrets.auth]\n{auth}"
             )
         };
-        let message = rejection(&openbao("kind = \"kubernetes\""));
+        let message = rejection(&secrets("kind = \"kubernetes\""));
         assert!(message.contains("missing field `role`"), "{message}");
-        let message = rejection(&openbao("kind = \"token\"\nrole = \"corral\""));
+        let message = rejection(&secrets("kind = \"token\"\nrole = \"corral\""));
         assert!(message.contains("unknown field `role`"), "{message}");
-        let message = rejection(&openbao("kind = \"token\"\ntoken = \"s.in-the-file\""));
+        let message = rejection(&secrets("kind = \"token\"\ntoken = \"s.in-the-file\""));
         assert!(message.contains("unknown field `token`"), "{message}");
-        let message = rejection(&format!("{MINIMAL}\n[secrets]\nkind = \"openbao\""));
+        let message = rejection(&format!("{MINIMAL}\n[secrets]\nkind = \"vault\""));
         assert!(message.contains("missing field `address`"), "{message}");
         let message = rejection(&format!(
             "{MINIMAL}\n[secrets]\nkind = \"database\"\naddress = \"x\""
         ));
         assert!(message.contains("unknown field `address`"), "{message}");
 
-        let config = Config::parse(&openbao("kind = \"kubernetes\"\nrole = \"corral\"")).unwrap();
-        let Secrets::OpenBao(bao) = config.secrets else {
-            panic!("openbao was configured");
+        let config = Config::parse(&secrets("kind = \"kubernetes\"\nrole = \"corral\"")).unwrap();
+        let Secrets::Vault(vault) = config.secrets else {
+            panic!("vault was configured");
         };
         assert_eq!(
-            (bao.mount.as_str(), bao.path_prefix.as_str()),
+            (vault.mount.as_str(), vault.path_prefix.as_str()),
             ("secret", "corral")
         );
         assert!(matches!(
-            bao.auth,
-            OpenBaoAuth::Kubernetes { role, jwt_path }
+            vault.auth,
+            VaultAuth::Kubernetes { role, jwt_path }
                 if role == "corral"
                     && jwt_path.ends_with("kubernetes.io/serviceaccount/token")
         ));
 
-        let config = Config::parse(&openbao("kind = \"token\"")).unwrap();
+        let config = Config::parse(&secrets("kind = \"token\"")).unwrap();
         assert!(matches!(
             config.secrets,
-            Secrets::OpenBao(bao) if matches!(bao.auth, OpenBaoAuth::Token { .. })
+            Secrets::Vault(vault) if matches!(vault.auth, VaultAuth::Token { .. })
         ));
     }
 

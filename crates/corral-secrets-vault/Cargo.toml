@@ -1,5 +1,5 @@
 [package]
-name = "corral-secrets-openbao"
+name = "corral-secrets-vault"
 version.workspace = true
 edition.workspace = true
 

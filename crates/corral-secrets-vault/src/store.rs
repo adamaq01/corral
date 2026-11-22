@@ -14,20 +14,20 @@ use vaultrs::client::VaultClient;
 use vaultrs::error::ClientError;
 use vaultrs::kv2;
 
-use crate::OpenBaoConfig;
-use crate::error::{openbao_error, status};
+use crate::VaultConfig;
+use crate::error::{status, vault_error};
 use crate::session::Session;
 
 const WRITE_ATTEMPTS: usize = 10;
 
-pub struct OpenBaoStore {
+pub struct VaultStore {
     session: Session,
     mount: String,
     path_prefix: String,
 }
 
-impl OpenBaoStore {
-    pub async fn connect(config: OpenBaoConfig) -> Result<Self> {
+impl VaultStore {
+    pub async fn connect(config: VaultConfig) -> Result<Self> {
         Ok(Self {
             session: Session::start(config.address, config.auth).await?,
             mount: config.mount.trim_matches('/').to_owned(),
@@ -68,14 +68,14 @@ impl OpenBaoStore {
             }
         }
         Err(Error::internal(
-            format!("openbao secret {path}"),
+            format!("vault secret {path}"),
             format!("changed under each of {WRITE_ATTEMPTS} write attempts"),
         ))
     }
 }
 
 #[async_trait]
-impl SecretStore for OpenBaoStore {
+impl SecretStore for VaultStore {
     async fn set(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()> {
         self.update(user, |env| {
             env.insert(name.clone(), value.clone());
@@ -94,7 +94,7 @@ impl SecretStore for OpenBaoStore {
         match kv2::delete_metadata(&*client, &self.mount, &self.path(user)).await {
             Ok(()) => Ok(()),
             Err(err) if status(&err) == Some(404) => Ok(()),
-            Err(err) => Err(openbao_error("delete", err)),
+            Err(err) => Err(vault_error("delete", err)),
         }
     }
 
@@ -124,7 +124,7 @@ async fn read(
     match api::exec_with_result(client, request).await {
         Ok(secret) => parse_env(secret.data).map(Some),
         Err(err) if status(&err) == Some(404) => Ok(None),
-        Err(err) => Err(openbao_error("read", err)),
+        Err(err) => Err(vault_error("read", err)),
     }
 }
 
@@ -132,7 +132,7 @@ async fn current_version(client: &VaultClient, mount: &str, path: &str) -> Resul
     match kv2::read_metadata(client, mount, path).await {
         Ok(metadata) => Ok(metadata.current_version),
         Err(err) if status(&err) == Some(404) => Ok(0),
-        Err(err) => Err(openbao_error("metadata read", err)),
+        Err(err) => Err(vault_error("metadata read", err)),
     }
 }
 
@@ -145,7 +145,7 @@ async fn write(
 ) -> Result<bool> {
     let cas = u32::try_from(version).map_err(|_| {
         Error::internal(
-            format!("openbao secret {path}"),
+            format!("vault secret {path}"),
             format!("at version {version}, beyond check-and-set range"),
         )
     })?;
@@ -157,7 +157,7 @@ async fn write(
         Some(SetSecretMetadataRequest::builder().max_versions(1_u64)),
     )
     .await
-    .map_err(|err| openbao_error("metadata write", err))?;
+    .map_err(|err| vault_error("metadata write", err))?;
     let data: BTreeMap<&str, &str> = env
         .iter()
         .map(|(name, value)| (name.as_str(), value.expose_secret()))
@@ -169,27 +169,27 @@ async fn write(
         {
             Ok(false)
         }
-        Err(err) => Err(openbao_error("write", err)),
+        Err(err) => Err(vault_error("write", err)),
     }
 }
 
 fn parse_env(data: Value) -> Result<CredentialMap> {
     let Value::Object(entries) = data else {
-        return Err(Error::internal("openbao secret", "data is not a map"));
+        return Err(Error::internal("vault secret", "data is not a map"));
     };
     entries
         .into_iter()
         .map(|(key, value)| {
             let name = CredentialName::parse(&key).map_err(|_| {
                 Error::internal(
-                    "openbao secret",
+                    "vault secret",
                     format!("key {key:?} is not a credential name"),
                 )
             })?;
             match value {
                 Value::String(value) => Ok((name, SecretString::from(value))),
                 _ => Err(Error::internal(
-                    "openbao secret",
+                    "vault secret",
                     format!("value of {name} is not a string"),
                 )),
             }

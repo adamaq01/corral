@@ -11,8 +11,8 @@ pub(crate) fn status(err: &ClientError) -> Option<u16> {
     }
 }
 
-pub(crate) fn openbao_error(action: &str, err: ClientError) -> Error {
-    let context = format!("openbao {action}");
+pub(crate) fn vault_error(action: &str, err: ClientError) -> Error {
+    let context = format!("vault {action}");
     match (&err, status(&err)) {
         (ClientError::APIError { errors, .. }, Some(code)) if !errors.is_empty() => {
             Error::internal(context, format!("status {code}: {}", errors.join("; ")))

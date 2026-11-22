@@ -144,6 +144,7 @@ configuration; `crates/corral-server/config.example.toml` shows a Kubernetes ins
   `admin_group` (default `corral-admins`) as admins; anyone else is refused, and a user who
   leaves both groups is disabled at their next login. Local accounts keep working alongside
   it, and `GET /auth/providers` lists the login methods that are on.
-- OpenBao: add a `[secrets]` section with `kind = "openbao"` and `address`, and a
-  `[secrets.auth]` section with `kind = "token"`, with `CORRAL_OPENBAO_TOKEN` in `.env`, to keep
-  credentials there instead of in the database.
+- Vault or OpenBao: add a `[secrets]` section with `kind = "vault"` and `address`, and a
+  `[secrets.auth]` section with `kind = "token"`, with `CORRAL_VAULT_TOKEN` in `.env`, to keep
+  credentials in a KV v2 mount (`secret` by default) instead of in the database. The adapter
+  speaks the Vault KV v2 API, which HashiCorp Vault and OpenBao both serve.

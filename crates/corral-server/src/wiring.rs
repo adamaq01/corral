@@ -12,7 +12,7 @@ use corral_engine_docker::DockerEngine;
 use corral_identity_local::LocalProvider;
 use corral_identity_oidc::OidcProvider;
 use corral_secrets_database::DatabaseSecretStore;
-use corral_secrets_openbao::OpenBaoStore;
+use corral_secrets_vault::VaultStore;
 use corral_sql::Pool;
 use corral_store_sql::Store;
 use tokio::task::JoinHandle;
@@ -106,7 +106,7 @@ async fn secret_store(choice: SecretsChoice, pool: &Pool) -> Result<Arc<dyn Secr
         SecretsChoice::Database(keyring) => {
             Arc::new(DatabaseSecretStore::open(pool.clone(), keyring).await?)
         }
-        SecretsChoice::OpenBao(config) => Arc::new(OpenBaoStore::connect(config).await?),
+        SecretsChoice::Vault(config) => Arc::new(VaultStore::connect(config).await?),
     })
 }
 

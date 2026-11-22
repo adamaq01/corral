@@ -6,7 +6,7 @@ use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
 use corral_identity_oidc::OidcConfig;
 use corral_secrets_database::Keyring;
-use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig};
+use corral_secrets_vault::{VaultAuth, VaultConfig};
 use secrecy::SecretString;
 use ssh_key::PublicKey;
 
@@ -16,7 +16,7 @@ use crate::keys::{self, PROXY_PUBLIC_KEY, SECRETS_KEY, SESSION_KEY};
 const DATABASE_URL: &str = "DATABASE_URL";
 const DEFAULT_DATABASE_URL: &str = "sqlite:///var/lib/corral/corral.db";
 const STATIC_DIR: &str = "CORRAL_STATIC_DIR";
-const OPENBAO_TOKEN: &str = "CORRAL_OPENBAO_TOKEN";
+const VAULT_TOKEN: &str = "CORRAL_VAULT_TOKEN";
 const OIDC_CLIENT_SECRET: &str = "CORRAL_OIDC_CLIENT_SECRET";
 
 /// The adapters the config selects, each with the secrets it reads from the environment.
@@ -31,7 +31,7 @@ pub struct Adapters {
 
 pub enum SecretsChoice {
     Database(Keyring),
-    OpenBao(OpenBaoConfig),
+    Vault(VaultConfig),
 }
 
 pub enum EngineChoice {
@@ -55,14 +55,14 @@ impl Adapters {
     fn read(config: &Config, lookup: impl Fn(&str) -> Option<String>) -> Result<Self> {
         // An empty value counts as unset, so a `.env` line left blank falls back to the default.
         let var = |name: &str| lookup(name).filter(|value| !value.is_empty());
-        let openbao_token = matches!(
+        let vault_token = matches!(
             &config.secrets,
-            Secrets::OpenBao(bao) if matches!(bao.auth, OpenBaoAuth::Token { .. })
+            Secrets::Vault(vault) if matches!(vault.auth, VaultAuth::Token { .. })
         );
         let missing: Vec<&str> = [
             (SESSION_KEY, true),
             (SECRETS_KEY, matches!(config.secrets, Secrets::Database {})),
-            (OPENBAO_TOKEN, openbao_token),
+            (VAULT_TOKEN, vault_token),
             (OIDC_CLIENT_SECRET, config.identity.oidc.is_some()),
             (PROXY_PUBLIC_KEY, matches!(config.engine, Engine::Docker(_))),
         ]
@@ -79,12 +79,12 @@ impl Adapters {
         let secret = |name: &str| SecretString::from(set(name));
         let secrets = match &config.secrets {
             Secrets::Database {} => SecretsChoice::Database(keys::keyring(&secret(SECRETS_KEY))?),
-            Secrets::OpenBao(bao) => {
-                let mut bao = bao.clone();
-                if let OpenBaoAuth::Token { token } = &mut bao.auth {
-                    *token = secret(OPENBAO_TOKEN);
+            Secrets::Vault(vault) => {
+                let mut vault = vault.clone();
+                if let VaultAuth::Token { token } = &mut vault.auth {
+                    *token = secret(VAULT_TOKEN);
                 }
-                SecretsChoice::OpenBao(bao)
+                SecretsChoice::Vault(vault)
             }
         };
         let engine = match &config.engine {
@@ -125,7 +125,7 @@ fn database_url_from(value: Option<String>) -> String {
 mod tests {
     use std::collections::HashMap;
 
-    use corral_secrets_openbao::OpenBaoAuth;
+    use corral_secrets_vault::VaultAuth;
     use secrecy::ExposeSecret;
 
     use super::{Adapters, EngineChoice, SecretsChoice};
@@ -164,7 +164,7 @@ mod tests {
     fn every_missing_variable_is_reported_together() {
         let config = config(
             "[identity.oidc]\nissuer = \"https://idp\"\nclient_id = \"corral\"\n\
-             [secrets]\nkind = \"openbao\"\naddress = \"http://bao\"\n[secrets.auth]\nkind = \"token\"",
+             [secrets]\nkind = \"vault\"\naddress = \"http://vault\"\n[secrets.auth]\nkind = \"token\"",
         );
         let message = read(&config, &[("CORRAL_SESSION_KEY", "")])
             .err()
@@ -172,7 +172,7 @@ mod tests {
             .to_string();
         for name in [
             "CORRAL_SESSION_KEY",
-            "CORRAL_OPENBAO_TOKEN",
+            "CORRAL_VAULT_TOKEN",
             "CORRAL_OIDC_CLIENT_SECRET",
             "CORRAL_PROXY_PUBLIC_KEY",
         ] {
@@ -189,7 +189,7 @@ mod tests {
             "CORRAL_OIDC_CLIENT_SECRET".to_owned(),
             "oidc-secret".to_owned(),
         ));
-        vars.push(("CORRAL_OPENBAO_TOKEN".to_owned(), "s.bao-token".to_owned()));
+        vars.push(("CORRAL_VAULT_TOKEN".to_owned(), "s.vault-token".to_owned()));
         let vars: Vec<(&str, &str)> = vars
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
@@ -207,7 +207,7 @@ mod tests {
 
         let elsewhere = config(
             "[identity.oidc]\nissuer = \"https://idp\"\nclient_id = \"corral\"\n\
-             [secrets]\nkind = \"openbao\"\naddress = \"http://bao\"\n[secrets.auth]\nkind = \"token\"\n\
+             [secrets]\nkind = \"vault\"\naddress = \"http://vault\"\n[secrets.auth]\nkind = \"token\"\n\
              [engine]\nkind = \"agent-sandbox\"\nnamespace = \"n\"\nservice_account = \"s\"\n\
              storage_class = \"c\"\nagent_image = \"a\"",
         );
@@ -217,12 +217,12 @@ mod tests {
             .filter(|(name, _)| *name != "CORRAL_PROXY_PUBLIC_KEY")
             .collect();
         let adapters = read(&elsewhere, &without_proxy).unwrap();
-        let SecretsChoice::OpenBao(bao) = adapters.secrets else {
-            panic!("openbao was configured");
+        let SecretsChoice::Vault(vault) = adapters.secrets else {
+            panic!("vault was configured");
         };
         assert!(matches!(
-            bao.auth,
-            OpenBaoAuth::Token { token } if token.expose_secret() == "s.bao-token"
+            vault.auth,
+            VaultAuth::Token { token } if token.expose_secret() == "s.vault-token"
         ));
         assert!(matches!(adapters.engine, EngineChoice::AgentSandbox(_)));
         assert_eq!(

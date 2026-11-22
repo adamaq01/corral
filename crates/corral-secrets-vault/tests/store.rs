@@ -11,10 +11,10 @@ use corral_core::contract::secrets;
 use corral_core::domain::{CredentialName, UserId};
 use corral_core::fakes::exposed;
 use corral_core::ports::SecretStore;
-use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig, OpenBaoStore};
+use corral_secrets_vault::{VaultAuth, VaultConfig, VaultStore};
 use secrecy::SecretString;
 use serde_json::{Value, json};
-use support::{MOUNT, OpenBao, PREFIX};
+use support::{KvServer, MOUNT, PREFIX, Server};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
@@ -24,6 +24,17 @@ use vaultrs::api::auth::kubernetes::requests::{
 };
 use vaultrs::auth::kubernetes;
 use vaultrs::{kv2, sys};
+
+against_each_server!(
+    meets_the_secret_store_contract,
+    each_user_owns_one_secret_holding_every_credential,
+    concurrent_writes_for_one_user_lose_nothing,
+    overwritten_and_deleted_values_leave_no_readable_history,
+    a_soft_deleted_secret_reads_empty_and_takes_new_writes,
+    malformed_secrets_fail_without_quoting_values,
+    connect_rejects_a_bad_address_or_token,
+    kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expires,
+);
 
 fn user() -> UserId {
     UserId(Uuid::new_v4())
@@ -41,35 +52,32 @@ fn path(user: UserId) -> String {
     format!("{PREFIX}/{}", user.0)
 }
 
-#[tokio::test]
-async fn meets_the_secret_store_contract() {
-    let bao = OpenBao::start().await;
-    let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
+async fn meets_the_secret_store_contract(server: Server) {
+    let kv = KvServer::start(server).await;
+    let store = VaultStore::connect(kv.root_config()).await.unwrap();
     secrets::secret_store(&store).await;
 }
 
-#[tokio::test]
-async fn each_user_owns_one_secret_holding_every_credential() {
-    let bao = OpenBao::start().await;
-    let mut config = bao.root_config();
+async fn each_user_owns_one_secret_holding_every_credential(server: Server) {
+    let kv = KvServer::start(server).await;
+    let mut config = kv.root_config();
     config.mount = format!("{MOUNT}/");
     config.path_prefix = format!("/{PREFIX}/");
-    let store = OpenBaoStore::connect(config).await.unwrap();
+    let store = VaultStore::connect(config).await.unwrap();
     let adam = user();
     store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
     store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
 
-    let stored: BTreeMap<String, String> = kv2::read(&bao.root, MOUNT, &path(adam)).await.unwrap();
+    let stored: BTreeMap<String, String> = kv2::read(&kv.root, MOUNT, &path(adam)).await.unwrap();
     assert_eq!(
         stored,
         BTreeMap::from([("A_KEY".into(), "a".into()), ("B_KEY".into(), "b".into())])
     );
 }
 
-#[tokio::test]
-async fn concurrent_writes_for_one_user_lose_nothing() {
-    let bao = OpenBao::start().await;
-    let store = Arc::new(OpenBaoStore::connect(bao.root_config()).await.unwrap());
+async fn concurrent_writes_for_one_user_lose_nothing(server: Server) {
+    let kv = KvServer::start(server).await;
+    let store = Arc::new(VaultStore::connect(kv.root_config()).await.unwrap());
     let adam = user();
     let mut writers = JoinSet::new();
     for i in 0..8 {
@@ -88,10 +96,9 @@ async fn concurrent_writes_for_one_user_lose_nothing() {
     assert_eq!(exposed(&store.load(adam).await.unwrap()), expected);
 }
 
-#[tokio::test]
-async fn overwritten_and_deleted_values_leave_no_readable_history() {
-    let bao = OpenBao::start().await;
-    let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
+async fn overwritten_and_deleted_values_leave_no_readable_history(server: Server) {
+    let kv = KvServer::start(server).await;
+    let store = VaultStore::connect(kv.root_config()).await.unwrap();
     let adam = user();
     store
         .set(adam, &name("A_KEY"), secret("first"))
@@ -105,12 +112,12 @@ async fn overwritten_and_deleted_values_leave_no_readable_history() {
     store.remove(adam, &name("B_KEY")).await.unwrap();
 
     assert_eq!(
-        readable_versions(&bao, adam).await,
+        readable_versions(&kv, adam).await,
         [BTreeMap::from([("A_KEY".into(), "second".into())])]
     );
 
     store.remove(adam, &name("A_KEY")).await.unwrap();
-    assert_eq!(readable_versions(&bao, adam).await, [BTreeMap::new()]);
+    assert_eq!(readable_versions(&kv, adam).await, [BTreeMap::new()]);
     assert!(store.load(adam).await.unwrap().is_empty());
 
     store.set(adam, &name("C_KEY"), secret("c")).await.unwrap();
@@ -118,23 +125,22 @@ async fn overwritten_and_deleted_values_leave_no_readable_history() {
 }
 
 // Probes every version number the store could have written, not only those metadata lists.
-async fn readable_versions(bao: &OpenBao, user: UserId) -> Vec<BTreeMap<String, String>> {
+async fn readable_versions(kv: &KvServer, user: UserId) -> Vec<BTreeMap<String, String>> {
     let mut readable = Vec::new();
     for version in 1..=10 {
-        if let Ok(data) = kv2::read_version(&bao.root, MOUNT, &path(user), version).await {
+        if let Ok(data) = kv2::read_version(&kv.root, MOUNT, &path(user), version).await {
             readable.push(data);
         }
     }
     readable
 }
 
-#[tokio::test]
-async fn a_soft_deleted_secret_reads_empty_and_takes_new_writes() {
-    let bao = OpenBao::start().await;
-    let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
+async fn a_soft_deleted_secret_reads_empty_and_takes_new_writes(server: Server) {
+    let kv = KvServer::start(server).await;
+    let store = VaultStore::connect(kv.root_config()).await.unwrap();
     let adam = user();
     store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
-    kv2::delete_latest(&bao.root, MOUNT, &path(adam))
+    kv2::delete_latest(&kv.root, MOUNT, &path(adam))
         .await
         .unwrap();
 
@@ -143,10 +149,9 @@ async fn a_soft_deleted_secret_reads_empty_and_takes_new_writes() {
     assert_eq!(exposed(&store.load(adam).await.unwrap()), ["B_KEY=b"]);
 }
 
-#[tokio::test]
-async fn malformed_secrets_fail_without_quoting_values() {
-    let bao = OpenBao::start().await;
-    let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
+async fn malformed_secrets_fail_without_quoting_values(server: Server) {
+    let kv = KvServer::start(server).await;
+    let store = VaultStore::connect(kv.root_config()).await.unwrap();
     let adam = user();
     for (data, culprit) in [
         (json!({"A_KEY": "sk-quoted-1", "B_KEY": 42}), "B_KEY"),
@@ -155,9 +160,7 @@ async fn malformed_secrets_fail_without_quoting_values() {
             "lower",
         ),
     ] {
-        kv2::set(&bao.root, MOUNT, &path(adam), &data)
-            .await
-            .unwrap();
+        kv2::set(&kv.root, MOUNT, &path(adam), &data).await.unwrap();
         match store.load(adam).await {
             Err(error @ Error::Internal { .. }) => {
                 let message = error.to_string();
@@ -171,17 +174,16 @@ async fn malformed_secrets_fail_without_quoting_values() {
     }
 }
 
-#[tokio::test]
-async fn connect_rejects_a_bad_address_or_token() {
-    let bao = OpenBao::start().await;
-    let mut config = bao.root_config();
+async fn connect_rejects_a_bad_address_or_token(server: Server) {
+    let kv = KvServer::start(server).await;
+    let mut config = kv.root_config();
     config.address = "not a url".into();
     assert!(matches!(
-        OpenBaoStore::connect(config.clone()).await,
+        VaultStore::connect(config.clone()).await,
         Err(Error::Invalid(_))
     ));
     config.address = "http://127.0.0.1:1".into();
-    match OpenBaoStore::connect(config).await {
+    match VaultStore::connect(config).await {
         Err(error @ Error::Internal { .. }) => {
             let message = error.to_string();
             assert!(message.contains("Connection refused"), "{message}");
@@ -190,10 +192,10 @@ async fn connect_rejects_a_bad_address_or_token() {
         Ok(_) => panic!("connected to a closed port"),
     }
 
-    let wrong = bao.config(OpenBaoAuth::Token {
+    let wrong = kv.config(VaultAuth::Token {
         token: secret("s.wrong-token-value"),
     });
-    match OpenBaoStore::connect(wrong).await {
+    match VaultStore::connect(wrong).await {
         Err(error @ Error::Internal { .. }) => {
             let message = error.to_string();
             assert!(
@@ -208,32 +210,31 @@ async fn connect_rejects_a_bad_address_or_token() {
 
 #[test]
 fn config_debug_hides_the_token() {
-    let config = OpenBaoConfig {
-        address: "http://bao:8200".into(),
+    let config = VaultConfig {
+        address: "http://vault:8200".into(),
         mount: MOUNT.into(),
         path_prefix: PREFIX.into(),
-        auth: OpenBaoAuth::Token {
+        auth: VaultAuth::Token {
             token: secret("s.very-secret"),
         },
     };
     let debug = format!("{config:?}");
     assert!(
-        debug.contains("http://bao:8200") && !debug.contains("very-secret"),
+        debug.contains("http://vault:8200") && !debug.contains("very-secret"),
         "{debug}"
     );
 }
 
-#[tokio::test]
-async fn kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expires() {
+async fn kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expires(server: Server) {
     let reviewed = Arc::new(Mutex::new(Vec::new()));
     let review_port = serve_token_reviews(Arc::clone(&reviewed)).await;
-    let bao = OpenBao::start().await;
-    enable_kubernetes_auth(&bao, review_port, "3s").await;
-    let jwt_path = std::env::temp_dir().join(format!("corral-openbao-{}.jwt", Uuid::new_v4()));
+    let kv = KvServer::start(server).await;
+    enable_kubernetes_auth(&kv, review_port, "3s").await;
+    let jwt_path = std::env::temp_dir().join(format!("corral-vault-{}.jwt", Uuid::new_v4()));
     let (first, second) = (service_account_jwt(), service_account_jwt());
     std::fs::write(&jwt_path, format!("{first}\n")).unwrap();
 
-    let store = OpenBaoStore::connect(bao.config(OpenBaoAuth::Kubernetes {
+    let store = VaultStore::connect(kv.config(VaultAuth::Kubernetes {
         role: "corral".into(),
         jwt_path: jwt_path.clone(),
     }))
@@ -258,12 +259,12 @@ async fn kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expir
     std::fs::remove_file(jwt_path).unwrap();
 }
 
-async fn enable_kubernetes_auth(bao: &OpenBao, review_port: u16, token_ttl: &str) {
-    sys::auth::enable(&bao.root, "kubernetes", "kubernetes", None)
+async fn enable_kubernetes_auth(kv: &KvServer, review_port: u16, token_ttl: &str) {
+    sys::auth::enable(&kv.root, "kubernetes", "kubernetes", None)
         .await
         .unwrap();
     kubernetes::configure(
-        &bao.root,
+        &kv.root,
         "kubernetes",
         &format!("http://host.docker.internal:{review_port}"),
         Some(
@@ -278,11 +279,9 @@ async fn enable_kubernetes_auth(bao: &OpenBao, review_port: u16, token_ttl: &str
         r#"path "{MOUNT}/data/{PREFIX}/*" {{ capabilities = ["create", "read", "update"] }}
 path "{MOUNT}/metadata/{PREFIX}/*" {{ capabilities = ["read", "create", "update"] }}"#
     );
-    sys::policy::set(&bao.root, "corral", &policy)
-        .await
-        .unwrap();
+    sys::policy::set(&kv.root, "corral", &policy).await.unwrap();
     kubernetes::role::create(
-        &bao.root,
+        &kv.root,
         "kubernetes",
         "corral",
         Some(

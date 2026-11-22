@@ -888,7 +888,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "corral-secrets-openbao"
+name = "corral-secrets-vault"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -923,7 +923,7 @@ dependencies = [
  "corral-identity-local",
  "corral-identity-oidc",
  "corral-secrets-database",
- "corral-secrets-openbao",
+ "corral-secrets-vault",
  "corral-sql",
  "corral-store-sql",
  "kube",
