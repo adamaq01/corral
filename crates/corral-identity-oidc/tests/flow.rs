@@ -213,7 +213,7 @@ async fn login_yields_the_identity_from_the_id_token() {
     assert_eq!(
         identity,
         Identity {
-            subject: "oidc:sub-123".to_owned(),
+            subject: "sub-123".to_owned(),
             username: "Adam".to_owned(),
             email: Some("adam@example.com".to_owned()),
             role: Some(Role::Member),
@@ -351,7 +351,7 @@ async fn login_still_works_after_the_issuer_rotates_its_signing_key() {
         .await
         .unwrap();
 
-    assert_eq!(identity.subject, "oidc:sub-123");
+    assert_eq!(identity.subject, "sub-123");
 }
 
 #[tokio::test]

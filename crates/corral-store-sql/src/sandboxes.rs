@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use corral_core::domain::{Sandbox, SandboxId, SandboxName, UserId};
+use corral_core::domain::{ImageKey, Sandbox, SandboxId, SandboxName, SizeKey, UserId};
 use corral_core::ports::SandboxRepo;
 use corral_core::{Error, Result};
 use uuid::Uuid;
@@ -27,8 +27,8 @@ impl TryFrom<SandboxRow> for Sandbox {
             id: SandboxId(row.id),
             owner: UserId(row.owner),
             name: parsed("sandbox name", SandboxName::parse(&row.name))?,
-            image: row.image,
-            size: row.size,
+            image: parsed("image key", ImageKey::parse(&row.image))?,
+            size: parsed("size key", SizeKey::parse(&row.size))?,
             created_at: row.created_at,
         })
     }
@@ -95,8 +95,8 @@ impl SandboxRepo for Store {
             .bind(&sandbox.id.0)
             .bind(sandbox.owner.0)
             .bind(sandbox.name.as_str())
-            .bind(&sandbox.image)
-            .bind(&sandbox.size)
+            .bind(sandbox.image.as_str())
+            .bind(sandbox.size.as_str())
             .bind(sandbox.created_at)
             .execute(&mut *tx)
             .await?;

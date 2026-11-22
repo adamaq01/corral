@@ -30,7 +30,10 @@ impl World {
             .await
             .unwrap();
         let root = logins
-            .login(provider.verify(answer("root", PASSWORD)).await.unwrap())
+            .login(
+                provider.id(),
+                provider.verify(answer("root", PASSWORD)).await.unwrap(),
+            )
             .await
             .unwrap();
         for &(username, role) in accounts {
@@ -98,7 +101,7 @@ async fn the_account_decides_the_role() {
     assert_eq!(
         w.verify("adam", PASSWORD).await.unwrap(),
         Identity {
-            subject: "local:adam".to_owned(),
+            subject: "adam".to_owned(),
             username: "adam".to_owned(),
             email: None,
             role: Some(Role::Member),
@@ -242,7 +245,7 @@ async fn deleting_an_account_disables_its_user() {
     let admin = w.admin();
     let adam = w
         .accounts
-        .login(w.verify("adam", PASSWORD).await.unwrap())
+        .login(w.provider.id(), w.verify("adam", PASSWORD).await.unwrap())
         .await
         .unwrap();
 
@@ -281,7 +284,7 @@ async fn a_deleted_username_that_logged_in_is_never_reused() {
     let w = World::with(&[("adam", Role::Member), ("never", Role::Member)]).await;
     let admin = w.admin();
     w.accounts
-        .login(w.verify("adam", PASSWORD).await.unwrap())
+        .login(w.provider.id(), w.verify("adam", PASSWORD).await.unwrap())
         .await
         .unwrap();
     w.admin_api().delete(&admin, &handle("adam")).await.unwrap();

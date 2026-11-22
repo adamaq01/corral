@@ -7,7 +7,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use corral_core::app::SshAccess;
 use corral_core::domain::{Handle, User, UserId};
-use corral_core::fakes::{FakeEngine, MemoryKeyRepo};
+use corral_core::fakes::{FakeEngine, MemoryKeyRepo, admin_proof};
 use corral_core::ports::{SshTarget, UserRepo};
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::router;
@@ -78,7 +78,7 @@ async fn disable(w: &Fixture, member: &Member) {
     let root = w.world.admin("root").await;
     w.world
         .accounts
-        .set_enabled(&root, member.user.id, false)
+        .set_enabled(&admin_proof(&root), member.user.id, false)
         .await
         .unwrap();
 }

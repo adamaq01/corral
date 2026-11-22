@@ -64,7 +64,8 @@ mod tests {
     use crate::domain::User;
     use crate::fakes::EngineCall;
     use crate::fakes::{
-        ADAM_CERT, ADAM_KEY, EVE_KEY, WAKE_DEADLINE, World, algorithm_and_blob, credential, exposed,
+        ADAM_CERT, ADAM_KEY, EVE_KEY, WAKE_DEADLINE, World, admin_proof, algorithm_and_blob,
+        credential, exposed,
     };
     use crate::ports::{Readiness, SshTarget};
 
@@ -128,7 +129,10 @@ mod tests {
             assert!(!w.access.authenticate(u, ADAM_KEY).await.unwrap(), "{u}");
         }
         let root = w.admin("root").await;
-        w.accounts.set_enabled(&root, adam.id, false).await.unwrap();
+        w.accounts
+            .set_enabled(&admin_proof(&root), adam.id, false)
+            .await
+            .unwrap();
         assert!(!w.access.authenticate("adam+main", ADAM_KEY).await.unwrap());
         assert!(!w.access.authenticate("adam", ADAM_KEY).await.unwrap());
     }
@@ -161,7 +165,10 @@ mod tests {
     async fn route_refuses_without_waking_anything() {
         let (w, _, eve) = adam_and_eve().await;
         let root = w.admin("root").await;
-        w.accounts.set_enabled(&root, eve.id, false).await.unwrap();
+        w.accounts
+            .set_enabled(&admin_proof(&root), eve.id, false)
+            .await
+            .unwrap();
         let calls_before = w.engine.calls().len();
         for u in [
             "nobody",

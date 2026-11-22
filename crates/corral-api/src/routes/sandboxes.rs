@@ -7,7 +7,7 @@ use corral_core::domain::SandboxName;
 use corral_core::ports::Readiness;
 
 use crate::auth::CurrentUser;
-use crate::dto::{NewSandbox, SandboxDto, Wake};
+use crate::dto::{SandboxDto, Wake};
 use crate::error::ApiError;
 use crate::extract::{JsonBody, PathParam};
 use crate::state::AppState;
@@ -38,19 +38,9 @@ async fn list(
 async fn create(
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
-    JsonBody(request): JsonBody<NewSandbox>,
+    JsonBody(request): JsonBody<CreateSandbox>,
 ) -> Result<(StatusCode, Json<SandboxDto>), ApiError> {
-    let view = state
-        .sandboxes
-        .create(
-            &user,
-            CreateSandbox {
-                name: request.name,
-                image: request.image,
-                size: request.size,
-            },
-        )
-        .await?;
+    let view = state.sandboxes.create(&user, request).await?;
     Ok((StatusCode::CREATED, Json(SandboxDto::new(view, &state.ssh))))
 }
 

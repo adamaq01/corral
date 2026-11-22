@@ -13,10 +13,3 @@ pub use failure_window::{Attempt, FailureWindow, Network};
 pub use keys::Keys;
 pub use sandboxes::{CreateSandbox, Limits, SandboxView, Sandboxes};
 pub use ssh_access::SshAccess;
-
-use crate::Result;
-use crate::domain::{Admin, User};
-
-fn require_admin(actor: &User) -> Result<()> {
-    Admin::check(actor).map(drop)
-}

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use corral_core::domain::{CredentialName, UserId};
-use corral_core::ports::{Env, SecretStore};
+use corral_core::ports::{CredentialMap, SecretStore};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
@@ -46,7 +46,7 @@ impl OpenBaoStore {
     async fn update(
         &self,
         user: UserId,
-        change: impl Fn(&mut Env) -> bool + Send + Sync,
+        change: impl Fn(&mut CredentialMap) -> bool + Send + Sync,
     ) -> Result<bool> {
         let path = self.path(user);
         for _ in 0..WRITE_ATTEMPTS {
@@ -54,7 +54,7 @@ impl OpenBaoStore {
             // The map must come from the same version the write checks, or a racing writer is lost.
             let version = current_version(&client, &self.mount, &path).await?;
             let mut env = if version == 0 {
-                Env::new()
+                CredentialMap::new()
             } else {
                 read(&client, &self.mount, &path, Some(version))
                     .await?
@@ -93,7 +93,7 @@ impl SecretStore for OpenBaoStore {
         Ok(self.load(user).await?.into_keys().collect())
     }
 
-    async fn load(&self, user: UserId) -> Result<Env> {
+    async fn load(&self, user: UserId) -> Result<CredentialMap> {
         let client = self.session.client().await?;
         let found = read(&client, &self.mount, &self.path(user), None).await?;
         Ok(found.unwrap_or_default())
@@ -105,7 +105,7 @@ async fn read(
     mount: &str,
     path: &str,
     version: Option<u64>,
-) -> Result<Option<Env>> {
+) -> Result<Option<CredentialMap>> {
     let request = ReadSecretRequest::builder()
         .mount(mount)
         .path(path)
@@ -131,7 +131,7 @@ async fn write(
     client: &VaultClient,
     mount: &str,
     path: &str,
-    env: &Env,
+    env: &CredentialMap,
     version: u64,
 ) -> Result<bool> {
     let cas = u32::try_from(version).map_err(|_| {
@@ -164,7 +164,7 @@ async fn write(
     }
 }
 
-fn parse_env(data: Value) -> Result<Env> {
+fn parse_env(data: Value) -> Result<CredentialMap> {
     let Value::Object(entries) = data else {
         return Err(Error::internal("openbao secret", "data is not a map"));
     };

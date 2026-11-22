@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use corral_core::Error;
 use corral_core::domain::{
-    Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
+    Handle, ImageKey, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey,
+    SshPublicKey, User, UserId,
 };
 use corral_core::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
 use ssh_key::PublicKey;
@@ -380,8 +381,8 @@ fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         id: SandboxId(unique("sbx")),
         owner,
         name: sandbox_name(name),
-        image: "default".to_owned(),
-        size: "small".to_owned(),
+        image: ImageKey::parse("default").unwrap(),
+        size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
     }
 }

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use corral_core::domain::{Allocation, Resources, SandboxId};
 use corral_core::ports::labels::{self, MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{Env, SandboxSpec};
+use corral_core::ports::{CredentialMap, SandboxSpec};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
     Container, EnvFromSource, ImageVolumeSource, PersistentVolumeClaimSpec,
@@ -58,7 +58,7 @@ pub fn build(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Sa
 }
 
 #[must_use]
-pub fn env_secret(id: &SandboxId, env: &Env, namespace: &str) -> Secret {
+pub fn env_secret(id: &SandboxId, env: &CredentialMap, namespace: &str) -> Secret {
     let data = env
         .iter()
         .map(|(name, value)| {
@@ -198,7 +198,7 @@ mod tests {
     use corral_core::domain::{
         Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName,
     };
-    use corral_core::ports::{Env, SandboxSpec};
+    use corral_core::ports::{CredentialMap, SandboxSpec};
     use secrecy::SecretString;
     use serde_json::{Value, json};
 
@@ -218,7 +218,7 @@ mod tests {
         }
     }
 
-    fn env() -> Env {
+    fn env() -> CredentialMap {
         [
             ("ANTHROPIC_API_KEY", "sk-ant-1"),
             ("GH_TOKEN", "gh#\"quoted\\"),

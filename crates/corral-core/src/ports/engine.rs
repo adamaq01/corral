@@ -7,7 +7,7 @@ use secrecy::SecretString;
 use crate::Result;
 use crate::domain::{CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus};
 
-pub type Env = BTreeMap<CredentialName, SecretString>;
+pub type CredentialMap = BTreeMap<CredentialName, SecretString>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxSpec {
@@ -44,7 +44,12 @@ pub trait SandboxEngine: Send + Sync {
     async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()>;
     /// Starts a stopped sandbox with `env` and waits up to `deadline` for it to accept SSH. A
     /// running sandbox is left as it is. Refuses with `LimitReached` beyond the running limit.
-    async fn start(&self, id: &SandboxId, env: Env, deadline: Duration) -> Result<Readiness>;
+    async fn start(
+        &self,
+        id: &SandboxId,
+        env: CredentialMap,
+        deadline: Duration,
+    ) -> Result<Readiness>;
     /// Returns once the sandbox no longer runs.
     async fn stop(&self, id: &SandboxId) -> Result<()>;
     async fn delete(&self, id: &SandboxId) -> Result<()>;

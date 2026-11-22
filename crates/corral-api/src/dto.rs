@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxView};
 use corral_core::domain::{
-    CredentialName, Handle, LocalAccount, Role, SandboxName, SandboxStatus, SshKey, SshUsername,
-    User,
+    CredentialName, Handle, ImageKey, LocalAccount, Role, SandboxName, SandboxStatus, SizeKey,
+    SshKey, SshUsername, User,
 };
 use corral_core::ports::{IdentityProvider, Method};
 use secrecy::SecretString;
@@ -15,13 +15,6 @@ use crate::state::SshEndpoint;
 pub(crate) struct PasswordLogin {
     pub username: String,
     pub password: SecretString,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct NewSandbox {
-    pub name: SandboxName,
-    pub image: Option<String>,
-    pub size: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -87,28 +80,13 @@ pub(crate) struct Choice {
 }
 
 #[derive(Serialize)]
-pub(crate) struct Endpoint {
-    host: String,
-    port: u16,
-}
-
-impl From<&SshEndpoint> for Endpoint {
-    fn from(ssh: &SshEndpoint) -> Self {
-        Self {
-            host: ssh.host.clone(),
-            port: ssh.port,
-        }
-    }
-}
-
-#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CatalogDto {
     images: Vec<Choice>,
     sizes: Vec<Choice>,
     default_image: String,
     default_size: String,
-    ssh: Endpoint,
+    ssh: SshEndpoint,
 }
 
 impl CatalogDto {
@@ -120,19 +98,19 @@ impl CatalogDto {
         let images: Vec<Choice> = catalog
             .images()
             .iter()
-            .map(|image| choice(&image.key, &image.label))
+            .map(|image| choice(image.key.as_str(), &image.label))
             .collect();
         let sizes: Vec<Choice> = catalog
             .sizes()
             .iter()
-            .map(|size| choice(&size.key, &size.label))
+            .map(|size| choice(size.key.as_str(), &size.label))
             .collect();
         Self {
             default_image: images[0].key.clone(),
             default_size: sizes[0].key.clone(),
             images,
             sizes,
-            ssh: Endpoint::from(ssh),
+            ssh: ssh.clone(),
         }
     }
 }
@@ -141,15 +119,15 @@ impl CatalogDto {
 pub(crate) struct SandboxSsh {
     username: SshUsername,
     #[serde(flatten)]
-    endpoint: Endpoint,
+    endpoint: SshEndpoint,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SandboxDto {
     name: SandboxName,
-    image: String,
-    size: String,
+    image: ImageKey,
+    size: SizeKey,
     is_default: bool,
     #[serde(flatten)]
     status: SandboxStatus,
@@ -170,7 +148,7 @@ impl SandboxDto {
                     handle: owner,
                     sandbox: Some(sandbox.name.clone()),
                 },
-                endpoint: Endpoint::from(ssh),
+                endpoint: ssh.clone(),
             },
             name: sandbox.name,
             image: sandbox.image,

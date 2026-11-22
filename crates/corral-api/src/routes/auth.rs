@@ -73,7 +73,7 @@ async fn finish_redirect_login(
     let identity = provider
         .verify(Answer::Redirect { pending, params })
         .await?;
-    Ok(state.accounts.login(identity).await?)
+    Ok(state.accounts.login(provider.id(), identity).await?)
 }
 
 async fn finish_password(
@@ -87,7 +87,7 @@ async fn finish_password(
         .providers
         .verify_password(&id, form.username, form.password, address)
         .await?;
-    let user = state.accounts.login(identity).await?;
+    let user = state.accounts.login(&id, identity).await?;
     Ok((session.start(user.id, Utc::now()), Json(Me::from(&user))))
 }
 

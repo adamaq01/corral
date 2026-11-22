@@ -149,7 +149,7 @@ impl OidcProvider {
             None
         };
         Ok(Identity {
-            subject: format!("{}:{}", Self::ID, claims.subject().as_str()),
+            subject: claims.subject().as_str().to_owned(),
             username: username.as_str().to_owned(),
             email: claims.email().map(|email| email.as_str().to_owned()),
             role,

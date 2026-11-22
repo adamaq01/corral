@@ -6,7 +6,8 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::Error;
 use corral_core::domain::{
-    Handle, Role, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
+    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey, SshPublicKey, User,
+    UserId,
 };
 use corral_core::ports::{KeyRepo, SandboxRepo, UserRepo};
 use corral_store_sql::Store;
@@ -132,8 +133,8 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         id: SandboxId(format!("sbx-{}", 9 - i)),
         owner: owner.id,
         name: SandboxName::parse(&format!("box-{}", 9 - i)).unwrap(),
-        image: "default".to_owned(),
-        size: "small".to_owned(),
+        image: ImageKey::parse("default").unwrap(),
+        size: SizeKey::parse("small").unwrap(),
         created_at: second + offset,
     })
     .collect();

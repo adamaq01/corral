@@ -11,7 +11,7 @@ use bollard::{Docker, body_full};
 use corral_activity::{ActivityLock, Exec};
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
 use ssh_key::PublicKey;
 use tracing::warn;
@@ -98,7 +98,7 @@ impl DockerEngine {
     }
 
     // Runs under a wake, which holds other wakes off until the container has started.
-    async fn boot(&self, id: &SandboxId, env: &Env) -> Result<()> {
+    async fn boot(&self, id: &SandboxId, env: &CredentialMap) -> Result<()> {
         let max = self.max_running;
         if self.running_ids().await?.len() >= max {
             return Err(Error::LimitReached(format!(
@@ -160,7 +160,12 @@ impl SandboxEngine for DockerEngine {
             .map_err(|err| Error::internal(format!("create {name}"), err))
     }
 
-    async fn start(&self, id: &SandboxId, env: Env, deadline: Duration) -> Result<Readiness> {
+    async fn start(
+        &self,
+        id: &SandboxId,
+        env: CredentialMap,
+        deadline: Duration,
+    ) -> Result<Readiness> {
         let called = Instant::now();
         let target = {
             let _waking = self.activity.wake(id).await;

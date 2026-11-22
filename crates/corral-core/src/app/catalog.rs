@@ -2,20 +2,20 @@ use std::collections::BTreeSet;
 
 use serde::Deserialize;
 
-use crate::domain::Resources;
+use crate::domain::{ImageKey, Resources, SizeKey};
 use crate::{Error, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageOption {
-    pub key: String,
+    pub key: ImageKey,
     pub label: String,
     pub reference: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SizePreset {
-    pub key: String,
+    pub key: SizeKey,
     pub label: String,
     pub resources: Resources,
 }
@@ -44,20 +44,20 @@ impl Catalog {
         &self.sizes
     }
 
-    pub fn image(&self, key: Option<&str>) -> Result<&ImageOption> {
+    pub fn image(&self, key: Option<&ImageKey>) -> Result<&ImageOption> {
         pick("image", &self.images, key, |image| &image.key)
     }
 
-    pub fn size(&self, key: Option<&str>) -> Result<&SizePreset> {
+    pub fn size(&self, key: Option<&SizeKey>) -> Result<&SizePreset> {
         pick("size", &self.sizes, key, |size| &size.key)
     }
 }
 
-fn pick<'a, T>(
+fn pick<'a, T, K: PartialEq + std::fmt::Display>(
     kind: &str,
     options: &'a [T],
-    key: Option<&str>,
-    key_of: impl Fn(&T) -> &String,
+    key: Option<&K>,
+    key_of: impl Fn(&T) -> &K,
 ) -> Result<&'a T> {
     let Some(key) = key else {
         return Ok(&options[0]);
@@ -65,7 +65,7 @@ fn pick<'a, T>(
     options
         .iter()
         .find(|option| key_of(option) == key)
-        .ok_or_else(|| Error::Invalid(format!("unknown {kind} {key:?}")))
+        .ok_or_else(|| Error::Invalid(format!("unknown {kind} \"{key}\"")))
 }
 
 fn check_keys<'a>(kind: &str, keys: impl Iterator<Item = &'a str>) -> Result<()> {
@@ -85,6 +85,7 @@ fn check_keys<'a>(kind: &str, keys: impl Iterator<Item = &'a str>) -> Result<()>
 mod tests {
     use super::Catalog;
     use crate::Error;
+    use crate::domain::{ImageKey, SizeKey};
     use crate::fakes::catalog;
 
     #[test]
@@ -113,13 +114,21 @@ mod tests {
             c.image(None).unwrap().reference,
             "ghcr.io/adamaq01/corral-sandbox:1"
         );
+        let image = |key: &str| ImageKey::parse(key).unwrap();
+        let size = |key: &str| SizeKey::parse(key).unwrap();
         assert_eq!(
-            c.image(Some("tools")).unwrap().reference,
+            c.image(Some(&image("tools"))).unwrap().reference,
             "ghcr.io/adamaq01/corral-tools:2"
         );
-        assert_eq!(c.size(None).unwrap().key, "small");
-        assert_eq!(c.size(Some("large")).unwrap().key, "large");
-        assert!(matches!(c.image(Some("nope")), Err(Error::Invalid(_))));
-        assert!(matches!(c.size(Some("nope")), Err(Error::Invalid(_))));
+        assert_eq!(c.size(None).unwrap().key, size("small"));
+        assert_eq!(c.size(Some(&size("large"))).unwrap().key, size("large"));
+        assert!(matches!(
+            c.image(Some(&image("nope"))),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            c.size(Some(&size("nope"))),
+            Err(Error::Invalid(_))
+        ));
     }
 }

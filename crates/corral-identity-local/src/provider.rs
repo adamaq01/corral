@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use corral_core::domain::{Admin, Handle, LocalAccount, Role, User};
 use corral_core::ports::{
-    AccountAdmin, Answer, Challenge, Identity, IdentityProvider, LocalAccountRepo, Method, UserRepo,
+    AccountAdmin, Answer, Challenge, Identity, IdentityProvider, LocalAccountRepo, Method,
+    UserRepo, user_subject,
 };
 use corral_core::{Error, Result};
 use secrecy::SecretString;
@@ -55,7 +56,7 @@ impl LocalProvider {
 }
 
 fn subject(username: &Handle) -> String {
-    format!("{ID}:{username}")
+    user_subject(ID, username.as_str())
 }
 
 #[async_trait]
@@ -88,7 +89,7 @@ impl IdentityProvider for LocalProvider {
         let verified = password::verify(&password, hash);
         match account {
             Some(account) if verified => Ok(Identity {
-                subject: subject(&account.username),
+                subject: account.username.to_string(),
                 username: account.username.to_string(),
                 email: None,
                 role: Some(account.role),

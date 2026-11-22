@@ -3,7 +3,7 @@ use std::sync::Arc;
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::domain::{CredentialName, UserId};
-use crate::ports::{Env, SecretStore};
+use crate::ports::{CredentialMap, SecretStore};
 use crate::{Error, Result};
 
 #[derive(Clone)]
@@ -44,7 +44,7 @@ impl Credentials {
         self.store.names(user).await
     }
 
-    pub async fn load(&self, user: UserId) -> Result<Env> {
+    pub async fn load(&self, user: UserId) -> Result<CredentialMap> {
         self.store.load(user).await
     }
 }

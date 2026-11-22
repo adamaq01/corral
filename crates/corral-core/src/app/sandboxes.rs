@@ -4,9 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use serde::Deserialize;
 
-use super::{Catalog, Credentials, require_admin};
-use crate::domain::{Handle, Sandbox, SandboxId, SandboxName, SandboxStatus, User, UserId};
+use super::{Catalog, Credentials};
+use crate::domain::{
+    Admin, Handle, ImageKey, Sandbox, SandboxId, SandboxName, SandboxStatus, SizeKey, User, UserId,
+};
 use crate::ports::{Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
 use crate::{Error, Result};
 
@@ -16,11 +19,11 @@ pub struct Limits {
     pub wake_deadline: Duration,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct CreateSandbox {
     pub name: SandboxName,
-    pub image: Option<String>,
-    pub size: Option<String>,
+    pub image: Option<ImageKey>,
+    pub size: Option<SizeKey>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,8 +70,8 @@ impl Sandboxes {
     }
 
     pub async fn create(&self, owner: &User, request: CreateSandbox) -> Result<SandboxView> {
-        let image = self.catalog.image(request.image.as_deref())?;
-        let size = self.catalog.size(request.size.as_deref())?;
+        let image = self.catalog.image(request.image.as_ref())?;
+        let size = self.catalog.size(request.size.as_ref())?;
         let sandbox = Sandbox {
             id: SandboxId::generate(),
             owner: owner.id,
@@ -114,8 +117,7 @@ impl Sandboxes {
         Ok(self.view(sandbox, owner.handle.clone(), is_default).await)
     }
 
-    pub async fn list_all(&self, actor: &User) -> Result<Vec<SandboxView>> {
-        require_admin(actor)?;
+    pub async fn list_all(&self, _: &Admin) -> Result<Vec<SandboxView>> {
         let handles: HashMap<UserId, Handle> = self
             .users
             .list()
@@ -243,11 +245,11 @@ mod tests {
 
     use super::SandboxView;
     use crate::Error;
-    use crate::domain::{Sandbox, SandboxStatus};
+    use crate::domain::{Sandbox, SandboxStatus, SizeKey};
     use crate::fakes::EngineCall;
     use crate::fakes::{
-        MAX_SANDBOXES, WAKE_DEADLINE, World, catalog, credential, default_names, exposed, request,
-        sandbox_name,
+        MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, catalog, credential, default_names,
+        exposed, request, sandbox_name,
     };
     use crate::ports::{Readiness, SandboxEngine, SshTarget};
 
@@ -301,7 +303,10 @@ mod tests {
         assert_eq!(spec.image, "ghcr.io/adamaq01/corral-tools:2");
         assert_eq!(
             spec.resources,
-            catalog().size(Some("large")).unwrap().resources
+            catalog()
+                .size(Some(&SizeKey::parse("large").unwrap()))
+                .unwrap()
+                .resources
         );
         assert_eq!(exposed(env), ["GH_TOKEN=adams"]);
         assert_eq!(*deadline, Duration::ZERO);
@@ -531,7 +536,7 @@ mod tests {
         let views = [
             vec![w.sandboxes.get(&adam, &main.name).await.unwrap()],
             w.sandboxes.list(&adam).await.unwrap(),
-            w.sandboxes.list_all(&root).await.unwrap(),
+            w.sandboxes.list_all(&admin_proof(&root)).await.unwrap(),
         ];
         for view in views
             .iter()
@@ -544,7 +549,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_all_requires_admin_and_names_each_owner() {
+    async fn list_all_names_each_owner() {
         let w = World::new();
         let adam = w.member("adam").await;
         let root = w.admin("root").await;
@@ -552,13 +557,9 @@ mod tests {
         let spare = w.sandbox(&adam, "spare").await;
         let roots = w.sandbox(&root, "main").await;
         w.sandboxes.set_default(&adam, &spare.name).await.unwrap();
-        assert!(matches!(
-            w.sandboxes.list_all(&adam).await,
-            Err(Error::Forbidden)
-        ));
         let all: Vec<(Sandbox, String, bool)> = w
             .sandboxes
-            .list_all(&root)
+            .list_all(&admin_proof(&root))
             .await
             .unwrap()
             .into_iter()

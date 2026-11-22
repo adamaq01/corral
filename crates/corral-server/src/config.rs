@@ -261,7 +261,7 @@ mod tests {
             config.catalog.image(None).unwrap().reference,
             "ghcr.io/adamaq01/corral-sandbox"
         );
-        assert_eq!(config.catalog.size(None).unwrap().key, "small");
+        assert_eq!(config.catalog.size(None).unwrap().key.as_str(), "small");
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod tests {
             .catalog
             .sizes()
             .iter()
-            .map(|size| &size.key)
+            .map(|size| size.key.as_str())
             .collect();
         assert_eq!(sizes, ["small", "large"]);
         let small = config.catalog.size(None).unwrap().resources;
@@ -405,8 +405,8 @@ mod tests {
              reference = \"example.org/debian\""
         ))
         .unwrap();
-        assert_eq!(config.catalog.image(None).unwrap().key, "debian");
-        assert_eq!(config.catalog.size(None).unwrap().key, "small");
+        assert_eq!(config.catalog.image(None).unwrap().key.as_str(), "debian");
+        assert_eq!(config.catalog.size(None).unwrap().key.as_str(), "small");
     }
 
     #[test]

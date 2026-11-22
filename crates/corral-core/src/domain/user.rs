@@ -42,7 +42,19 @@ impl Admin {
 
 #[cfg(test)]
 mod tests {
-    use super::Role;
+    use super::{Admin, Role};
+    use crate::Error;
+    use crate::fakes::World;
+
+    #[tokio::test]
+    async fn only_admins_get_the_admin_proof() {
+        let w = World::new();
+        assert!(Admin::check(&w.admin("root").await).is_ok());
+        assert!(matches!(
+            Admin::check(&w.member("adam").await),
+            Err(Error::Forbidden)
+        ));
+    }
 
     #[test]
     fn role_serializes_lowercase() {

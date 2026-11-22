@@ -5,7 +5,7 @@ use axum::{Json, Router};
 use corral_core::domain::{Handle, UserId};
 use uuid::Uuid;
 
-use crate::auth::{CurrentAdmin, CurrentUser};
+use crate::auth::CurrentAdmin;
 use crate::dto::{LocalAccountDto, NewLocalAccount, NewPassword, OwnedSandbox, UserDto};
 use crate::error::ApiError;
 use crate::extract::{JsonBody, PathParam};
@@ -32,7 +32,7 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 async fn users(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UserDto>>, ApiError> {
     let users = state.accounts.list(&admin).await?;
@@ -40,7 +40,7 @@ async fn users(
 }
 
 async fn enable(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
     PathParam(id): PathParam<Uuid>,
 ) -> Result<Json<UserDto>, ApiError> {
@@ -49,7 +49,7 @@ async fn enable(
 }
 
 async fn disable(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
     PathParam(id): PathParam<Uuid>,
 ) -> Result<Json<UserDto>, ApiError> {
@@ -61,7 +61,7 @@ async fn disable(
 }
 
 async fn sandboxes(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<OwnedSandbox>>, ApiError> {
     let views = state.sandboxes.list_all(&admin).await?;

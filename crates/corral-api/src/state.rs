@@ -5,6 +5,7 @@ use cookie::Key;
 use corral_core::app::{Accounts, Credentials, Keys, Sandboxes};
 use corral_core::ports::{AccountAdmin, Identity, IdentityProvider};
 use secrecy::SecretString;
+use serde::Serialize;
 
 use crate::error::ApiError;
 use crate::login_limiter::LoginLimiter;
@@ -26,7 +27,7 @@ pub struct Api {
 }
 
 /// Where people point their SSH client.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SshEndpoint {
     pub host: String,
     pub port: u16,

@@ -1,14 +1,13 @@
-use corral_core::ports::Env;
+use corral_core::ports::CredentialMap;
 use secrecy::ExposeSecret;
 use ssh_key::PublicKey;
-use tracing::warn;
 
 const AUTHORIZED_KEYS: &str = "etc/ssh/corral_authorized_keys";
 const SSHD_ENV: &str = "etc/corral/sshd_env.conf";
 
 /// A tar archive, to extract at `/`, of what the sandbox's sshd reads when it starts: the key
 /// the front door logs in with, and the credentials its sessions see.
-pub(crate) fn archive(proxy_key: &PublicKey, env: &Env) -> Vec<u8> {
+pub(crate) fn archive(proxy_key: &PublicKey, env: &CredentialMap) -> Vec<u8> {
     let authorized_key = format!(
         "{}\n",
         proxy_key.to_openssh().expect("a public key always encodes")
@@ -32,20 +31,15 @@ pub(crate) fn archive(proxy_key: &PublicKey, env: &Env) -> Vec<u8> {
         .expect("an archive in memory always writes")
 }
 
-fn set_env(env: &Env) -> String {
+fn set_env(env: &CredentialMap) -> String {
     let quoted: Vec<String> = env
         .iter()
-        .filter_map(|(name, value)| {
-            let value = value.expose_secret();
-            if value.contains(['\n', '\r', '\0']) {
-                warn!(
-                    credential = name.as_str(),
-                    "a credential holds a line break or NUL, which sshd cannot pass on; SSH sessions will not see it"
-                );
-                return None;
-            }
-            let value = value.replace('\\', "\\\\").replace('"', "\\\"");
-            Some(format!("\"{}={value}\"", name.as_str()))
+        .map(|(name, value)| {
+            let value = value
+                .expose_secret()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            format!("\"{}={value}\"", name.as_str())
         })
         .collect();
     if quoted.is_empty() {
@@ -60,7 +54,7 @@ mod tests {
     use std::io::Read;
 
     use corral_core::domain::CredentialName;
-    use corral_core::ports::Env;
+    use corral_core::ports::CredentialMap;
     use secrecy::SecretString;
     use ssh_key::PublicKey;
 
@@ -69,7 +63,7 @@ mod tests {
     const PROXY_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqeCTDFpVlRmE6nzi3s6Ui2G8N7lHGk06q4B8yZ3sAi";
 
-    fn env(pairs: &[(&str, &str)]) -> Env {
+    fn env(pairs: &[(&str, &str)]) -> CredentialMap {
         pairs
             .iter()
             .map(|(name, value)| {
@@ -81,7 +75,7 @@ mod tests {
             .collect()
     }
 
-    fn entries(env: &Env) -> Vec<(String, u32, (u64, u64), String)> {
+    fn entries(env: &CredentialMap) -> Vec<(String, u32, (u64, u64), String)> {
         let bytes = archive(&PublicKey::from_openssh(PROXY_KEY).unwrap(), env);
         let mut archive = tar::Archive::new(bytes.as_slice());
         archive
@@ -126,16 +120,13 @@ mod tests {
     }
 
     #[test]
-    fn values_are_quoted_and_unpassable_ones_left_out() {
-        let odd = entries(&env(&[
-            ("ODD_TOKEN", r#"p#ss "word" it's $HOME \x\"#),
-            ("MULTI_LINE", "one\ntwo"),
-        ]));
+    fn values_are_quoted() {
+        let odd = entries(&env(&[("ODD_TOKEN", r#"p#ss "word" it's $HOME \x\"#)]));
 
         assert_eq!(
             odd[1].3,
             "SetEnv \"ODD_TOKEN=p#ss \\\"word\\\" it's $HOME \\\\x\\\\\"\n"
         );
-        assert_eq!(entries(&Env::new())[1].3, "");
+        assert_eq!(entries(&CredentialMap::new())[1].3, "");
     }
 }

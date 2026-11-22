@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -57,7 +57,7 @@ impl AgentSandboxEngine {
         Ok(status::map(&sandbox, pod.as_ref()))
     }
 
-    async fn write_env(&self, id: &SandboxId, env: &Env) -> Result<()> {
+    async fn write_env(&self, id: &SandboxId, env: &CredentialMap) -> Result<()> {
         let secret = manifest::env_secret(id, env, &self.config.namespace);
         self.secrets
             .patch(
@@ -83,7 +83,7 @@ impl AgentSandboxEngine {
             .count())
     }
 
-    async fn resume(&self, id: &SandboxId, env: &Env) -> Result<()> {
+    async fn resume(&self, id: &SandboxId, env: &CredentialMap) -> Result<()> {
         let _waking = self.activity.wake(id).await;
         if self.sandbox(id).await?.spec.operating_mode == OperatingMode::Running {
             return Ok(());
@@ -125,7 +125,12 @@ impl SandboxEngine for AgentSandboxEngine {
         }
     }
 
-    async fn start(&self, id: &SandboxId, env: Env, deadline: Duration) -> Result<Readiness> {
+    async fn start(
+        &self,
+        id: &SandboxId,
+        env: CredentialMap,
+        deadline: Duration,
+    ) -> Result<Readiness> {
         let started = Instant::now();
         self.resume(id, &env).await?;
         loop {

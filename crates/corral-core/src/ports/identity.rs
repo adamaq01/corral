@@ -10,10 +10,16 @@ use crate::domain::{Admin, Handle, LocalAccount, Role};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
+    /// The provider's own stable id for the person.
     pub subject: String,
     pub username: String,
     pub email: Option<String>,
     pub role: Option<Role>,
+}
+
+#[must_use]
+pub fn user_subject(provider: &str, subject: &str) -> String {
+    format!("{provider}:{subject}")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

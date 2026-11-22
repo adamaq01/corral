@@ -9,7 +9,7 @@ use corral_core::domain::{
     Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
 };
 use corral_core::ports::labels::SANDBOX_ID;
-use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
@@ -258,7 +258,9 @@ async fn concurrent_starts_never_exceed_max_running(cluster: &Cluster) {
         starts.spawn(async move {
             engine.status(&id).await.unwrap();
             barrier.wait().await;
-            engine.start(&id, Env::new(), Duration::ZERO).await
+            engine
+                .start(&id, CredentialMap::new(), Duration::ZERO)
+                .await
         });
     }
     let mut outcomes = Vec::new();
@@ -405,7 +407,7 @@ fn spec(name: &str) -> SandboxSpec {
     }
 }
 
-fn env(pairs: &[(&str, &str)]) -> Env {
+fn env(pairs: &[(&str, &str)]) -> CredentialMap {
     pairs
         .iter()
         .map(|(name, value)| {

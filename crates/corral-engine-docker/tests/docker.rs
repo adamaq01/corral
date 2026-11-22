@@ -7,7 +7,7 @@ use corral_core::Error;
 use corral_core::domain::{
     Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
 };
-use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_engine_docker::{DockerConfig, DockerEngine};
 use secrecy::SecretString;
 use ssh_key::PublicKey;
@@ -42,7 +42,7 @@ fn docker_ok(args: &[&str]) -> String {
         .to_owned()
 }
 
-fn env(pairs: &[(&str, &str)]) -> Env {
+fn env(pairs: &[(&str, &str)]) -> CredentialMap {
     pairs
         .iter()
         .map(|(name, value)| {
@@ -54,7 +54,7 @@ fn env(pairs: &[(&str, &str)]) -> Env {
         .collect()
 }
 
-fn token(token: &str) -> Env {
+fn token(token: &str) -> CredentialMap {
     env(&[("FOO_TOKEN", token)])
 }
 
@@ -252,7 +252,7 @@ async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxStatus {
     engine.status(id).await.unwrap()
 }
 
-async fn wake(engine: &DockerEngine, id: &SandboxId, env: Env) -> SshTarget {
+async fn wake(engine: &DockerEngine, id: &SandboxId, env: CredentialMap) -> SshTarget {
     match engine.start(id, env, WAKE).await.unwrap() {
         Readiness::Ready(target) => target,
         Readiness::Waking => panic!("sandbox {} was not ready within {WAKE:?}", id.0),
@@ -285,7 +285,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
         "a sandbox joins only the sandbox network"
     );
 
-    let target = wake(&engine, &id, Env::new()).await;
+    let target = wake(&engine, &id, CredentialMap::new()).await;
     assert_eq!(state(&engine, &id).await, SandboxStatus::Running);
     let SshTarget::SshServer {
         host,
@@ -312,7 +312,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.stop(&id).await.unwrap();
     assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
     engine.stop(&id).await.unwrap();
-    assert_eq!(wake(&engine, &id, Env::new()).await, target);
+    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
     assert_eq!(lab.ssh(host, "cat ~/persist-check"), "kept");
 
     engine.delete(&id).await.unwrap();
@@ -321,7 +321,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.delete(&id).await.unwrap();
     assert!(matches!(engine.status(&id).await, Err(Error::NotFound(_))));
     assert!(matches!(
-        engine.start(&id, Env::new(), WAKE).await,
+        engine.start(&id, CredentialMap::new(), WAKE).await,
         Err(Error::NotFound(_))
     ));
     assert!(matches!(engine.stop(&id).await, Err(Error::NotFound(_))));
@@ -359,17 +359,12 @@ async fn credentials_apply_at_each_start_and_stay_out_of_the_container_config() 
 
     let odd = r#"p#ss "word" it's $HOME \x\"#;
     engine.stop(&id).await.unwrap();
-    wake(
-        &engine,
-        &id,
-        env(&[("ODD_TOKEN", odd), ("MULTI_LINE", "one\ntwo")]),
-    )
-    .await;
+    wake(&engine, &id, env(&[("ODD_TOKEN", odd)])).await;
     assert_eq!(lab.ssh(&name, "printenv ODD_TOKEN"), odd);
     assert_eq!(
-        lab.ssh(&name, "printenv FOO_TOKEN MULTI_LINE; true"),
+        lab.ssh(&name, "printenv FOO_TOKEN; true"),
         "",
-        "a removed credential is gone and an unpassable one is left out"
+        "a removed credential is gone"
     );
 
     let inspected = docker_ok(&["inspect", &name]);
@@ -397,7 +392,11 @@ async fn concurrent_starts_never_exceed_max_running() {
     let mut starts = JoinSet::new();
     for id in ids.clone() {
         let engine = engine.clone();
-        starts.spawn(async move { engine.start(&id, Env::new(), Duration::ZERO).await });
+        starts.spawn(async move {
+            engine
+                .start(&id, CredentialMap::new(), Duration::ZERO)
+                .await
+        });
     }
     let (mut started, mut refused) = (0, 0);
     while let Some(outcome) = starts.join_next().await {
@@ -418,12 +417,14 @@ async fn concurrent_starts_never_exceed_max_running() {
 
     let asleep = ids.iter().find(|id| !running.contains(id)).unwrap();
     assert!(matches!(
-        engine.start(asleep, Env::new(), Duration::ZERO).await,
+        engine
+            .start(asleep, CredentialMap::new(), Duration::ZERO)
+            .await,
         Err(Error::LimitReached(_))
     ));
     engine.stop(&running[0]).await.unwrap();
     engine
-        .start(asleep, Env::new(), Duration::ZERO)
+        .start(asleep, CredentialMap::new(), Duration::ZERO)
         .await
         .unwrap();
     assert_eq!(state(&engine, asleep).await, SandboxStatus::Running);
@@ -441,7 +442,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     let herdr = lab.create(&engine, "herdr").await;
     let mut targets = Vec::new();
     for id in [&idle, &ssh, &herdr] {
-        targets.push(wake(&engine, id, Env::new()).await);
+        targets.push(wake(&engine, id, CredentialMap::new()).await);
     }
 
     lab.pin_host_key(&targets[1]);

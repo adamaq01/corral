@@ -14,8 +14,8 @@ use corral_core::app::Credentials;
 use corral_core::domain::{CredentialName, Handle, Role, UserId};
 use corral_core::fakes::{ADAM_KEY, FakeEngine, MAX_SANDBOXES, MemoryLocalAccountRepo, World};
 use corral_core::ports::{
-    AccountAdmin, Answer, Challenge, Env, Identity, IdentityProvider, Method, PendingLogin,
-    SecretStore,
+    AccountAdmin, Answer, Challenge, CredentialMap, Identity, IdentityProvider, Method,
+    PendingLogin, SecretStore,
 };
 use corral_core::{Error, Result};
 use corral_identity_local::LocalProvider;
@@ -57,7 +57,7 @@ impl IdentityProvider for StubOidc {
             return Err(Error::Forbidden);
         }
         Ok(Identity {
-            subject: "oidc:sub-1".to_owned(),
+            subject: "sub-1".to_owned(),
             username: "Adam".to_owned(),
             email: Some("adam@example.com".to_owned()),
             role: self.role,
@@ -113,8 +113,8 @@ impl SecretStore for BrokenVault {
         Ok(Vec::new())
     }
 
-    async fn load(&self, _: UserId) -> Result<Env> {
-        Ok(Env::new())
+    async fn load(&self, _: UserId) -> Result<CredentialMap> {
+        Ok(CredentialMap::new())
     }
 }
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use corral_core::domain::{CredentialName, UserId};
-use corral_core::ports::{Env, SecretStore};
+use corral_core::ports::{CredentialMap, SecretStore};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -90,7 +90,7 @@ impl SecretStore for DatabaseSecretStore {
             .collect()
     }
 
-    async fn load(&self, user: UserId) -> Result<Env> {
+    async fn load(&self, user: UserId) -> Result<CredentialMap> {
         let rows: Vec<(String, Vec<u8>)> = on_pool!(self.store, |pool| {
             sqlx::query_as("select name, sealed from credentials where user_id = $1")
                 .bind(user.0)

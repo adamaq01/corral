@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use super::lock;
 use crate::domain::{SandboxId, SandboxStatus};
-use crate::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use crate::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
@@ -17,7 +17,7 @@ pub enum EngineCall {
     },
     Start {
         id: SandboxId,
-        env: Env,
+        env: CredentialMap,
         deadline: Duration,
     },
     Stop(SandboxId),
@@ -40,7 +40,7 @@ struct State {
 
 struct FakeSandbox {
     status: SandboxStatus,
-    env: Env,
+    env: CredentialMap,
 }
 
 impl State {
@@ -79,7 +79,7 @@ impl FakeEngine {
     }
 
     #[must_use]
-    pub fn env_of(&self, id: &SandboxId) -> Option<Env> {
+    pub fn env_of(&self, id: &SandboxId) -> Option<CredentialMap> {
         lock(&self.state)
             .sandboxes
             .get(id)
@@ -105,12 +105,17 @@ impl SandboxEngine for FakeEngine {
         }
         state.sandboxes.entry(id.clone()).or_insert(FakeSandbox {
             status: SandboxStatus::Sleeping,
-            env: Env::new(),
+            env: CredentialMap::new(),
         });
         Ok(())
     }
 
-    async fn start(&self, id: &SandboxId, env: Env, deadline: Duration) -> Result<Readiness> {
+    async fn start(
+        &self,
+        id: &SandboxId,
+        env: CredentialMap,
+        deadline: Duration,
+    ) -> Result<Readiness> {
         let mut state = lock(&self.state);
         state.calls.push(EngineCall::Start {
             id: id.clone(),

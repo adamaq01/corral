@@ -9,10 +9,14 @@ use crate::app::{
     Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, SandboxView,
     Sandboxes, SizePreset, SshAccess,
 };
-use crate::domain::{Allocation, CredentialName, Resources, Role, Sandbox, SandboxName, User};
-use crate::ports::{Env, Identity};
+use crate::domain::{
+    Admin, Allocation, CredentialName, ImageKey, Resources, Role, Sandbox, SandboxName, SizeKey,
+    User,
+};
+use crate::ports::{CredentialMap, Identity};
 
 pub const MAX_SANDBOXES: usize = 3;
+pub const PROVIDER: &str = "test";
 pub const WAKE_DEADLINE: Duration = Duration::from_secs(7);
 
 pub const ADAM_KEY: &str = include_str!("../../tests/fixtures/adam_ed25519.pub");
@@ -52,23 +56,29 @@ pub fn sandbox_name(name: &str) -> SandboxName {
     SandboxName::parse(name).unwrap()
 }
 
+#[must_use]
 pub fn request(name: &str, image: Option<&str>, size: Option<&str>) -> CreateSandbox {
     CreateSandbox {
         name: sandbox_name(name),
-        image: image.map(str::to_owned),
-        size: size.map(str::to_owned),
+        image: image.map(|key| ImageKey::parse(key).unwrap()),
+        size: size.map(|key| SizeKey::parse(key).unwrap()),
     }
+}
+
+#[must_use]
+pub fn admin_proof(user: &User) -> Admin {
+    Admin::check(user).unwrap()
 }
 
 #[must_use]
 pub fn catalog() -> Catalog {
     let image = |key: &str, reference: &str| ImageOption {
-        key: key.to_owned(),
+        key: ImageKey::parse(key).unwrap(),
         label: key.to_uppercase(),
         reference: reference.to_owned(),
     };
     let size = |key: &str, cpu_millis: u64, memory_gib: u64| SizePreset {
-        key: key.to_owned(),
+        key: SizeKey::parse(key).unwrap(),
         label: key.to_uppercase(),
         resources: Resources {
             cpu_millis: Allocation::new(cpu_millis / 2, cpu_millis).unwrap(),
@@ -96,7 +106,7 @@ pub fn default_names(views: &[SandboxView]) -> Vec<&str> {
 }
 
 #[must_use]
-pub fn exposed(env: &Env) -> Vec<String> {
+pub fn exposed(env: &CredentialMap) -> Vec<String> {
     env.iter()
         .map(|(name, value)| format!("{name}={}", value.expose_secret()))
         .collect()
@@ -166,7 +176,7 @@ impl World {
     async fn login(&self, handle: &str, role: Role) -> User {
         let user = self
             .accounts
-            .login(identity(handle, handle, Some(role)))
+            .login(PROVIDER, identity(handle, handle, Some(role)))
             .await
             .unwrap();
         assert_eq!(user.handle.as_str(), handle);

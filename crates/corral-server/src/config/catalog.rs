@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 
 use anyhow::{Context, Result};
 use corral_core::app::{Catalog, ImageOption, SizePreset};
-use corral_core::domain::{Allocation, Resources};
+use corral_core::domain::{Allocation, ImageKey, Resources, SizeKey};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
@@ -18,7 +18,7 @@ struct Entries {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SizeEntry {
-    key: String,
+    key: SizeKey,
     label: String,
     #[serde(deserialize_with = "quantity::cpu_millis")]
     cpu_request: NonZeroU64,
@@ -36,12 +36,12 @@ impl Default for Entries {
     fn default() -> Self {
         Self {
             images: vec![ImageOption {
-                key: "ubuntu".to_owned(),
+                key: ImageKey::parse("ubuntu").expect("a valid key"),
                 label: "Ubuntu 24.04".to_owned(),
                 reference: "ghcr.io/adamaq01/corral-sandbox".to_owned(),
             }],
             sizes: vec![SizeEntry {
-                key: "small".to_owned(),
+                key: SizeKey::parse("small").expect("a valid key"),
                 label: "Small: 2 CPUs, 4 GiB".to_owned(),
                 cpu_request: const { NonZeroU64::new(500).unwrap() },
                 cpu_limit: const { NonZeroU64::new(2000).unwrap() },

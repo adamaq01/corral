@@ -7,11 +7,11 @@ use secrecy::SecretString;
 use super::lock;
 use crate::Result;
 use crate::domain::{CredentialName, UserId};
-use crate::ports::{Env, SecretStore};
+use crate::ports::{CredentialMap, SecretStore};
 
 #[derive(Default)]
 pub struct MemorySecretStore {
-    values: Mutex<BTreeMap<UserId, Env>>,
+    values: Mutex<BTreeMap<UserId, CredentialMap>>,
 }
 
 #[async_trait]
@@ -34,7 +34,7 @@ impl SecretStore for MemorySecretStore {
         Ok(self.load(user).await?.into_keys().collect())
     }
 
-    async fn load(&self, user: UserId) -> Result<Env> {
+    async fn load(&self, user: UserId) -> Result<CredentialMap> {
         Ok(lock(&self.values).get(&user).cloned().unwrap_or_default())
     }
 }

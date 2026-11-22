@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use super::{credential, seed_user};
 use crate::domain::UserId;
-use crate::ports::{Env, SecretStore, UserRepo};
+use crate::ports::{CredentialMap, SecretStore, UserRepo};
 
 pub async fn secret_store(users: &dyn UserRepo, store: &dyn SecretStore) {
     values_round_trip(users, store).await;
@@ -95,7 +95,7 @@ async fn users_are_isolated(users: &dyn UserRepo, store: &dyn SecretStore) {
     assert!(store.load(stranger).await.unwrap().is_empty());
 }
 
-fn exposed(env: &Env) -> Vec<String> {
+fn exposed(env: &CredentialMap) -> Vec<String> {
     env.iter()
         .map(|(name, value)| format!("{name}={}", value.expose_secret()))
         .collect()
