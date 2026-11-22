@@ -7,6 +7,7 @@
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import { goto } from '$app/navigation';
+	import { opksshLogin } from '#lib/api/auth.js';
 	import { failureMessage } from '#lib/api/client.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
@@ -21,7 +22,13 @@
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
-	import { connectSnippets, hostAlias } from '#lib/connect.js';
+	import {
+		OPKSSH_ALIAS,
+		OPKSSH_LOGIN_TIMEOUT_SECS,
+		connectSnippets,
+		hostAlias,
+		opksshSnippets
+	} from '#lib/connect.js';
 	import { choiceLabel } from '#lib/catalog.js';
 	import { Remote, pollWhile } from '#lib/remote.svelte.js';
 	import { states, type Power } from '#lib/sandbox-status.js';
@@ -30,6 +37,7 @@
 
 	const sandbox = new Remote(() => sandboxes.get(name));
 	const catalog = new Remote(sandboxes.catalog);
+	const opkssh = new Remote(opksshLogin);
 
 	type Action = Power | 'default';
 
@@ -212,6 +220,34 @@
 				</p>
 			</Card.Content>
 		</Card.Root>
+
+		{#if opkssh.value}
+			{@const login = opkssh.value}
+			<Card.Root>
+				<Card.Header>
+					<Card.Title>Connect with opkssh</Card.Title>
+					<Card.Description>
+						Instead of registering a key, install
+						<a class="underline underline-offset-4" href="https://github.com/openpubkey/opkssh">
+							opkssh
+						</a>
+						and add these to your computer. Your single sign-on login then stands in for a key for {login.lifetimeHours}
+						hours at a time.
+					</Card.Description>
+				</Card.Header>
+				<Card.Content class="grid grid-cols-1 gap-4">
+					{#each opksshSnippets(login, current.ssh.host) as snippet (snippet.label)}
+						<CopySnippet label={snippet.label} text={snippet.text} />
+					{/each}
+					<p class="text-sm text-muted-foreground">
+						Before connecting, ssh renews the certificate when it is missing or about to expire.
+						While you are signed in to single sign-on in your browser, that takes a moment and no
+						clicks. Otherwise sign in within {OPKSSH_LOGIN_TIMEOUT_SECS} seconds, or run
+						<code class="font-mono text-xs">opkssh login {OPKSSH_ALIAS}</code> first.
+					</p>
+				</Card.Content>
+			</Card.Root>
+		{/if}
 
 		{#if presentation.manageable}
 			<Card.Root class="ring-destructive/30">

@@ -93,6 +93,7 @@ async fn the_account_decides_the_role(pool: Pool) {
             "kind": "password",
             "login": "/auth/local/login",
             "accounts": "/auth/local/accounts",
+            "opkssh": null,
         }])
     );
 }

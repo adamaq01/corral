@@ -228,6 +228,7 @@ async fn a_login_round_trip_starts_a_session() {
             "kind": "redirect",
             "login": "/auth/oidc/start",
             "accounts": null,
+            "opkssh": null,
         }])
     );
     let start = browser.get("/auth/oidc/start").await;

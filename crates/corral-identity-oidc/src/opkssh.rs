@@ -108,7 +108,12 @@ impl Opkssh {
         Ok(opkssh)
     }
 
-    fn new(binary: PathBuf, timeout: Duration, issuer: &str, config: OpksshConfig) -> Result<Self> {
+    pub(crate) fn new(
+        binary: PathBuf,
+        timeout: Duration,
+        issuer: &str,
+        config: OpksshConfig,
+    ) -> Result<Self> {
         let field = |name: &str, value: &str, forbidden: &[char]| {
             if value.is_empty()
                 || value

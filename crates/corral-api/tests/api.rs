@@ -36,6 +36,7 @@ fn stub() -> ProviderRoutes {
             kind: LoginKind::Redirect,
             login: "/auth/test/start".to_owned(),
             accounts: None,
+            opkssh: None,
         },
         routes: trusting
             .routes
@@ -250,6 +251,7 @@ async fn providers_are_listed_as_they_describe_themselves() {
             kind: LoginKind::Password,
             login: "/auth/other/login".to_owned(),
             accounts: Some("/auth/other/accounts".to_owned()),
+            opkssh: None,
         },
         routes: Router::new(),
     };
@@ -264,6 +266,7 @@ async fn providers_are_listed_as_they_describe_themselves() {
                 "kind": "redirect",
                 "login": "/auth/test/start",
                 "accounts": null,
+                "opkssh": null,
             },
             {
                 "id": "other",
@@ -271,6 +274,7 @@ async fn providers_are_listed_as_they_describe_themselves() {
                 "kind": "password",
                 "login": "/auth/other/login",
                 "accounts": "/auth/other/accounts",
+                "opkssh": null,
             },
         ])
     );

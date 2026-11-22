@@ -62,6 +62,7 @@ pub fn trusting_provider(id: &str) -> ProviderRoutes {
             kind: LoginKind::Password,
             login: format!("{}/login", provider_path(id)),
             accounts: None,
+            opkssh: None,
         },
         routes: Router::new().route("/login", post(trusted_login)),
     }

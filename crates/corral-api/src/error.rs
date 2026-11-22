@@ -38,7 +38,8 @@ impl ApiError {
         &self.message
     }
 
-    pub(crate) fn not_found() -> Self {
+    #[must_use]
+    pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not found")
     }
 

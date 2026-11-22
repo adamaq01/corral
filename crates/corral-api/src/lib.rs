@@ -19,7 +19,7 @@ use std::sync::Arc;
 use axum::middleware::from_fn;
 use axum::{Extension, Router};
 
-pub use auth::CurrentAdmin;
+pub use auth::{CurrentAdmin, CurrentUser};
 pub use client_address::ClientAddress;
 pub use cookie::Key;
 pub use error::ApiError;

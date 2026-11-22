@@ -46,6 +46,15 @@ export type NewKey = { label: string, publicKey: string, };
 
 export type NewPassword = { password: string, };
 
+/**
+ * What a user's laptop needs to log in with opkssh, for the connect page.
+ */
+export type OpksshLogin = { issuer: string, clientId: string,
+/**
+ * How long a certificate lasts.
+ */
+lifetimeHours: number, };
+
 export type OwnedSandbox = { owner: Owner, name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
@@ -62,7 +71,12 @@ login: string,
 /**
  * Where admins manage the provider's accounts, for a provider that keeps them.
  */
-accounts: string | null, };
+accounts: string | null,
+/**
+ * Where the provider's signed-in users learn how to log in with `opkssh login`, for a
+ * provider that vouches for opkssh certificates.
+ */
+opkssh: string | null, };
 
 export type Role = "member" | "admin";
 

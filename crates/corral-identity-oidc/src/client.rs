@@ -134,6 +134,14 @@ impl OidcProvider {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_opkssh(self, opkssh: Opkssh) -> Self {
+        Self {
+            opkssh: Some(opkssh),
+            ..self
+        }
+    }
+
     /// How users log in with opkssh, when it is on.
     #[must_use]
     pub fn opkssh_login(&self) -> Option<&OpksshLogin> {

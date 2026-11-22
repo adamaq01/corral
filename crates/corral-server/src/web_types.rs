@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use corral_api::TypeScript;
 use corral_identity_local::LocalProvider;
+use corral_identity_oidc::OidcProvider;
 
 const GENERATED: &str = "web/src/lib/api/generated/index.ts";
 
@@ -9,6 +10,7 @@ const GENERATED: &str = "web/src/lib/api/generated/index.ts";
 fn render() -> String {
     let mut types = TypeScript::api();
     LocalProvider::typescript(&mut types);
+    OidcProvider::typescript(&mut types);
     types.render()
 }
 

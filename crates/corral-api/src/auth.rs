@@ -8,7 +8,7 @@ use crate::session::Session;
 use crate::state::shared;
 
 /// The signed-in user, who must be active.
-pub(crate) struct CurrentUser(pub User);
+pub struct CurrentUser(pub User);
 
 impl<S: Send + Sync> FromRequestParts<S> for CurrentUser {
     type Rejection = ApiError;

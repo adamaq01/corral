@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import { signInPath } from '#lib/sign-in.js';
 import { ApiError, api } from './client.js';
-import type { Me, PasswordLogin, Provider } from './generated/index.js';
+import type { Me, OpksshLogin, PasswordLogin, Provider } from './generated/index.js';
 
 export function providers(): Promise<Provider[]> {
 	return api.get<Provider[]>('/auth/providers');
@@ -21,6 +21,22 @@ export async function signedInUser(): Promise<Me | null> {
 		if (error instanceof ApiError && error.status === 403) {
 			await signOut();
 			redirect(307, signInPath('/', error.message));
+		}
+		throw error;
+	}
+}
+
+/** How the signed-in user logs in with `opkssh login`, or `null` when their provider does not offer it. */
+export async function opksshLogin(): Promise<OpksshLogin | null> {
+	const url = (await providers()).find((provider) => provider.opkssh)?.opkssh;
+	if (!url) {
+		return null;
+	}
+	try {
+		return await api.get<OpksshLogin>(url);
+	} catch (error) {
+		if (error instanceof ApiError && error.status === 404) {
+			return null;
 		}
 		throw error;
 	}

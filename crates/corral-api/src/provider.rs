@@ -71,6 +71,9 @@ pub struct ProviderDescription {
     pub login: String,
     /// Where admins manage the provider's accounts, for a provider that keeps them.
     pub accounts: Option<String>,
+    /// Where the provider's signed-in users learn how to log in with `opkssh login`, for a
+    /// provider that vouches for opkssh certificates.
+    pub opkssh: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]

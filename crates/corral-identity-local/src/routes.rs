@@ -83,6 +83,7 @@ impl LocalProvider {
                 kind: LoginKind::Password,
                 login: format!("{path}/login"),
                 accounts: Some(format!("{path}/accounts")),
+                opkssh: None,
             },
             routes: Router::new()
                 .route("/login", post(login_route))
