@@ -32,7 +32,8 @@ built one), then runs the server on SQLite in a temporary directory with local a
 Docker engine on a network of its own, which it removes afterwards. Sandboxes use
 `corral-sandbox:dev` unless `CORRAL_SANDBOX_IMAGE` names another image. A failed test keeps its
 trace in `test-results/`, next to `corral-server.log`. With `CORRAL_SCREENSHOTS=<dir>`, the suite
-also takes screenshots of the sign-in page and the shell in both themes at desktop and phone width.
+also takes screenshots of the sign-in page, the shell and the admin pages in both themes at desktop
+and phone width. The admin pages show fixed data, full and empty, in place of the API's.
 
 ## API types
 
