@@ -77,7 +77,7 @@ async fn pubkey(
         {
             Ok(accepted) => {
                 if accepted {
-                    attempt.release();
+                    attempt.succeed();
                 }
                 accepted
             }

@@ -316,12 +316,9 @@ expect "browser logins" 2 "$(approvals)"
 ok "with no certificate and no VoidAuth session, the hook gives up and ssh is refused in ${took}s"
 mv "$work/kept" "$key"
 mv "$work/kept-cert.pub" "$cert"
-# Offers the certificate alone, not its plain key too: each refused connection counts towards
-# Corral's lockout of the address after 10.
 plain_ssh() {
   local user=$1 identity=$2
   HOME=$work/home ssh -F /dev/null -p "$ssh_port" -i "$identity" -o IdentitiesOnly=yes \
-    -o PubkeyAcceptedAlgorithms=ecdsa-sha2-nistp256-cert-v01@openssh.com \
     -o IdentityAgent=none -o BatchMode=yes -o PreferredAuthentications=publickey \
     -o "UserKnownHostsFile=$work/known_hosts" -o StrictHostKeyChecking=yes -o LogLevel=ERROR \
     "$user@127.0.0.1" "id -un"$'\n''status=$?; sleep 0.2; exit $status' <&3 2>&1

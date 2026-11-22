@@ -17,7 +17,7 @@ use tokio::time::timeout;
 
 use corral_core::fakes::FakeEngine;
 
-use crate::common::{Fixture, Member, generate_key, private_pem, public_line};
+use crate::common::{Fixture, generate_key, private_pem, public_line};
 
 const GATEWAY: &str = "host.docker.internal";
 const PROXY_KEY_PATH: &str = "/etc/containerssh/proxy_key";
@@ -120,16 +120,19 @@ async fn containerssh(
     (container, port)
 }
 
-fn key_file(member: &Member) -> NamedTempFile {
+fn key_file(key: &PrivateKey) -> NamedTempFile {
     let mut file = NamedTempFile::new().unwrap();
-    file.write_all(private_pem(&member.key).as_bytes()).unwrap();
+    file.write_all(private_pem(key).as_bytes()).unwrap();
     file
 }
 
-fn ssh(port: u16, key: &NamedTempFile, username: &str) -> Child {
-    Command::new("ssh")
-        .args(["-F", "/dev/null", "-p", &port.to_string(), "-i"])
-        .arg(key.path())
+fn ssh(port: u16, keys: &[&NamedTempFile], username: &str) -> Child {
+    let mut command = Command::new("ssh");
+    command.args(["-F", "/dev/null", "-p", &port.to_string()]);
+    for key in keys {
+        command.arg("-i").arg(key.path());
+    }
+    command
         .args([
             "-o",
             "IdentitiesOnly=yes",
@@ -182,10 +185,10 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
         "kubernetes": {"connection": {"host": format!("http://{GATEWAY}:{kube_port}")}},
     });
     let (_containerssh, port) = containerssh("targets", webhook_port, kubernetes, None).await;
-    let adam_key = key_file(&w.adam);
-    let eve_key = key_file(&w.eve);
+    let adam_key = key_file(&w.adam.key);
+    let eve_key = key_file(&w.eve.key);
 
-    let denied = ssh(port, &eve_key, "adam+main")
+    let denied = ssh(port, &[&eve_key], "adam+main")
         .wait_with_output()
         .await
         .unwrap();
@@ -200,7 +203,7 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
         .unwrap();
     w.world.engine.set_waking(true);
     let starts = w.starts(&eve_main.id);
-    let _eve = ssh(port, &eve_key, "eve+main");
+    let _eve = ssh(port, &[&eve_key], "eve+main");
     let first_wake = async {
         while w.starts(&eve_main.id) == starts {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -212,7 +215,7 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
     assert_eq!(banner.unwrap().unwrap(), "SSH-2.0-ContainerSSH");
     assert_eq!(w.starts(&eve_main.id), starts + 2);
 
-    let _adam = ssh(port, &adam_key, "adam+main");
+    let _adam = ssh(port, &[&adam_key], "adam+main");
     let request = timeout(Duration::from_secs(60), kube_requests.recv()).await;
     let request = request.unwrap().unwrap();
     let (method, target) = request.split_once(' ').unwrap();
@@ -288,9 +291,9 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
     let (_keyless, keyless_port) = containerssh("keyless", webhook_port, json!({}), None).await;
     let (_keyed, keyed_port) =
         containerssh("keyed", webhook_port, json!({}), Some(&proxy_key)).await;
-    let eve_key = key_file(&w.eve);
+    let eve_key = key_file(&w.eve.key);
 
-    let refused = ssh(keyless_port, &eve_key, "eve+main")
+    let refused = ssh(keyless_port, &[&eve_key], "eve+main")
         .wait_with_output()
         .await
         .unwrap();
@@ -301,7 +304,7 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
         "{seen:#?}"
     );
 
-    let proxied = ssh(keyed_port, &eve_key, "eve+main")
+    let proxied = ssh(keyed_port, &[&eve_key], "eve+main")
         .wait_with_output()
         .await
         .unwrap();
@@ -318,4 +321,63 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
         "{}",
         String::from_utf8_lossy(&proxied.stderr)
     );
+}
+
+async fn logs_in(
+    port: u16,
+    keys: &[&NamedTempFile],
+    backend: &mut mpsc::UnboundedReceiver<String>,
+) -> bool {
+    let output = ssh(port, keys, "adam+main")
+        .wait_with_output()
+        .await
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("Permission denied") {
+        return false;
+    }
+    let banner = timeout(Duration::from_secs(60), backend.recv()).await;
+    assert_eq!(banner.unwrap().unwrap(), "SSH-2.0-ContainerSSH", "{stderr}");
+    true
+}
+
+#[tokio::test]
+async fn containerssh_counts_a_failed_connection_once_however_many_keys_it_offers() {
+    let w = Fixture::new().await;
+    let (backend, backend_port) = listen().await;
+    let mut backend = first_lines(backend);
+    w.world.engine.set_target(
+        &w.adam.main.id,
+        SshTarget::SshServer {
+            host: GATEWAY.to_owned(),
+            port: backend_port,
+            username: "sandbox".to_owned(),
+            host_key_fingerprint: generate_key()
+                .public_key()
+                .fingerprint(HashAlg::Sha256)
+                .to_string(),
+        },
+    );
+    let webhook_port = serve_webhooks(&w).await;
+    let (_containerssh, port) = containerssh("lockout", webhook_port, json!({}), None).await;
+    let adam = key_file(&w.adam.key);
+    let strangers: Vec<NamedTempFile> = (0..3).map(|_| key_file(&generate_key())).collect();
+    let strangers: Vec<&NamedTempFile> = strangers.iter().collect();
+
+    // An agent holding several keys, or opkssh's plain key before its certificate.
+    for login in 1..=12 {
+        assert!(
+            logs_in(port, &[strangers[0], &adam], &mut backend).await,
+            "login {login}"
+        );
+    }
+    for connection in 1..=9 {
+        assert!(
+            !logs_in(port, &strangers, &mut backend).await,
+            "connection {connection}"
+        );
+    }
+    assert!(logs_in(port, &[&adam], &mut backend).await);
+    assert!(!logs_in(port, &strangers, &mut backend).await);
+    assert!(!logs_in(port, &[&adam], &mut backend).await);
 }

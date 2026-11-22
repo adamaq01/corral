@@ -36,7 +36,9 @@ struct Failure {
 #[must_use = "dropping an attempt keeps it counted as a failure"]
 pub struct Attempt<'a, K: Eq + Hash> {
     window: &'a FailureWindow<K>,
-    recorded: Vec<(K, Failure)>,
+    keys: Vec<K>,
+    recorded: Vec<K>,
+    failure: Failure,
 }
 
 impl<K: Clone + Eq + Hash> FailureWindow<K> {
@@ -65,26 +67,24 @@ impl<K: Clone + Eq + Hash> FailureWindow<K> {
         }) {
             return None;
         }
+        let failure = Failure {
+            at: now,
+            source: source.map(str::to_owned),
+        };
         let mut recorded = Vec::new();
         for key in keys {
             let log = failures.entry(key.clone()).or_default();
-            if source.is_some()
-                && log
-                    .iter()
-                    .any(|failure| failure.source.as_deref() == source)
-            {
+            if source.is_some() && log.iter().any(|logged| logged.source == failure.source) {
                 continue;
             }
-            let failure = Failure {
-                at: now,
-                source: source.map(str::to_owned),
-            };
             log.push_back(failure.clone());
-            recorded.push((key.clone(), failure));
+            recorded.push(key.clone());
         }
         Some(Attempt {
             window: self,
+            keys: keys.to_vec(),
             recorded,
+            failure,
         })
     }
 }
@@ -96,17 +96,32 @@ impl<K: Eq + Hash> FailureWindow<K> {
 }
 
 impl<K: Eq + Hash> Attempt<'_, K> {
+    /// Uncounts this attempt alone. A failure its source recorded earlier stays counted.
     pub fn release(self) {
+        self.forget(&self.recorded);
+    }
+
+    /// Uncounts the source on every key, including a failure it recorded earlier.
+    pub fn succeed(self) {
+        self.forget(&self.keys);
+    }
+
+    // A key's log holds at most one failure per source.
+    fn forget(&self, keys: &[K]) {
+        let matches = |logged: &Failure| match self.failure.source {
+            Some(_) => logged.source == self.failure.source,
+            None => *logged == self.failure,
+        };
         let mut failures = self.window.failures();
-        for (key, failure) in self.recorded {
-            let Some(log) = failures.get_mut(&key) else {
+        for key in keys {
+            let Some(log) = failures.get_mut(key) else {
                 continue;
             };
-            if let Some(index) = log.iter().position(|logged| *logged == failure) {
+            if let Some(index) = log.iter().position(matches) {
                 log.remove(index);
             }
             if log.is_empty() {
-                failures.remove(&key);
+                failures.remove(key);
             }
         }
     }
@@ -185,6 +200,22 @@ mod tests {
         assert!(window.admit(&["10.0.0.1"], Some("conn-3"), now).is_some());
         assert!(window.admit(&["10.0.0.1"], Some("conn-1"), now).is_none());
         assert!(window.admit(&["10.0.0.1"], Some("conn-4"), now).is_none());
+    }
+
+    #[test]
+    fn a_source_that_succeeds_is_forgotten_and_one_that_errors_is_not() {
+        let (window, now) = (window(), Instant::now());
+        let key = ["10.0.0.1"];
+        for source in ["conn-1", "conn-2", "conn-3", "conn-4"] {
+            assert!(window.admit(&key, Some(source), now).is_some());
+            window.admit(&key, Some(source), now).unwrap().succeed();
+        }
+        for source in ["conn-5", "conn-6"] {
+            assert!(window.admit(&key, Some(source), now).is_some());
+            window.admit(&key, Some(source), now).unwrap().release();
+        }
+        assert!(window.admit(&key, Some("conn-7"), now).is_some());
+        assert!(window.admit(&key, Some("conn-8"), now).is_none());
     }
 
     #[test]
