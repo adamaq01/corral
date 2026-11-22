@@ -169,7 +169,7 @@ impl OidcProvider {
     }
 
     /// Where to send the person, and what the callback needs to check the answer.
-    pub(crate) fn begin(&self) -> (String, LoginSecrets) {
+    pub(crate) fn begin(&self, return_to: String) -> (String, LoginSecrets) {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (url, csrf, nonce) = self
             .client(self.metadata.clone())
@@ -185,6 +185,7 @@ impl OidcProvider {
             csrf,
             nonce,
             pkce_verifier,
+            return_to,
         };
         (url.into(), secrets)
     }

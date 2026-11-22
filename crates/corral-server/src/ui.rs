@@ -307,8 +307,8 @@ mod tests {
         assert_eq!(me.status, StatusCode::UNAUTHORIZED);
         assert_eq!(me.json(), json!({ "error": "not signed in" }));
         assert_eq!(
-            browser.get("/auth/providers").await.json(),
-            json!([{ "id": PROVIDER }])
+            browser.get("/auth/providers").await.json()[0]["id"],
+            PROVIDER
         );
     }
 

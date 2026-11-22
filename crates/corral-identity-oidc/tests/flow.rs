@@ -204,6 +204,12 @@ async fn callback(browser: &mut Browser, state: &str) -> Reply {
         .await
 }
 
+/// Where a failed login sent the browser.
+fn sent_back_to(reply: &Reply) -> &str {
+    assert_eq!(reply.status, StatusCode::FOUND, "{}", reply.text());
+    reply.headers[header::LOCATION].to_str().unwrap()
+}
+
 async fn me(browser: &mut Browser) -> Value {
     browser.get("/api/me").await.json()
 }
@@ -220,6 +226,7 @@ async fn a_login_round_trip_starts_a_session() {
             "label": "Single sign-on",
             "kind": "redirect",
             "login": "/auth/oidc/start",
+            "accounts": null,
         }])
     );
     let start = browser.get("/auth/oidc/start").await;
@@ -263,7 +270,10 @@ async fn a_login_round_trip_starts_a_session() {
     );
 
     let replay = callback(&mut browser, &param(&auth, "state")).await;
-    assert_eq!(replay.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        sent_back_to(&replay),
+        "/sign-in?error=no+login+in+progress%2C+start+again"
+    );
     assert_eq!(issuer.token_requests().await.len(), 1);
 }
 
@@ -285,7 +295,7 @@ async fn a_different_or_missing_returned_state_is_forbidden_before_the_code_is_r
         .await;
 
     for reply in [forged, missing] {
-        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text());
+        assert_eq!(sent_back_to(&reply), "/sign-in?error=forbidden");
     }
     assert_eq!(issuer.token_requests().await.len(), 0);
     assert_eq!(
@@ -311,7 +321,10 @@ async fn a_callback_without_our_login_cookie_is_refused() {
         .insert("corral_oidc_login".to_owned(), cookie);
     for browser in [&mut stranger, &mut tamperer] {
         let reply = callback(browser, &state).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
+        assert_eq!(
+            sent_back_to(&reply),
+            "/sign-in?error=no+login+in+progress%2C+start+again"
+        );
     }
     assert_eq!(issuer.token_requests().await.len(), 0);
 }
@@ -328,7 +341,10 @@ async fn a_callback_without_a_code_is_invalid() {
             param(&auth, "state")
         ))
         .await;
-    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
+    assert_eq!(
+        sent_back_to(&reply),
+        "/sign-in?error=invalid%3A+the+identity+provider+returned+no+code"
+    );
     assert_eq!(issuer.token_requests().await.len(), 0);
 }
 
@@ -344,7 +360,7 @@ async fn an_id_token_for_another_nonce_is_forbidden() {
 
     let reply = callback(&mut browser, &param(&auth, "state")).await;
 
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(sent_back_to(&reply), "/sign-in?error=forbidden");
 }
 
 #[tokio::test]
@@ -373,8 +389,11 @@ async fn groups_decide_the_role() {
             assert_eq!(reply.status, StatusCode::FOUND, "{groups:?}");
             assert_eq!(me(&mut browser).await["role"], role, "{groups:?}");
         } else {
-            assert_eq!(reply.status, StatusCode::FORBIDDEN, "{groups:?}");
-            assert_eq!(reply.json(), json!({ "error": "forbidden" }));
+            assert_eq!(
+                sent_back_to(&reply),
+                "/sign-in?error=forbidden",
+                "{groups:?}"
+            );
             assert_eq!(
                 browser.get("/api/me").await.status,
                 StatusCode::UNAUTHORIZED
@@ -397,7 +416,7 @@ async fn a_code_the_issuer_rejects_is_forbidden() {
 
     let reply = callback(&mut browser, &param(&auth, "state")).await;
 
-    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(sent_back_to(&reply), "/sign-in?error=forbidden");
 }
 
 #[tokio::test]
@@ -453,5 +472,35 @@ async fn each_login_takes_the_picture_claim_when_it_is_an_https_url() {
             reply.text()
         );
         assert_eq!(me(&mut browser).await["picture"], picture, "{claim:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_login_returns_to_the_page_it_was_asked_to_when_that_is_on_this_origin() {
+    let issuer = Issuer::start().await;
+    let app = issuer.corral().await;
+    for (next, back_to) in [
+        ("%2Fsandboxes%2Fmain%3Ftab%3Dssh", "/sandboxes/main?tab=ssh"),
+        ("%2Fadmin%2Fusers", "/admin/users"),
+        ("%2F%2Fevil.example%2Fx", "/"),
+        ("%2F%5Cevil.example", "/"),
+        ("https%3A%2F%2Fevil.example%2F", "/"),
+        ("sandboxes", "/"),
+        ("", "/"),
+    ] {
+        issuer.server.reset().await;
+        issuer.serve_discovery().await;
+        let mut browser = browser(&app);
+        let start = browser.get(&format!("/auth/oidc/start?next={next}")).await;
+        let auth = Url::parse(start.headers[header::LOCATION].to_str().unwrap()).unwrap();
+        issuer
+            .issue(issuer.id_token(&param(&auth, "nonce"), Some(&[MEMBERS])))
+            .await;
+
+        let done = callback(&mut browser, &param(&auth, "state")).await;
+
+        assert_eq!(done.status, StatusCode::FOUND, "{next}: {}", done.text());
+        assert_eq!(done.headers[header::LOCATION], back_to, "{next}");
+        assert_eq!(me(&mut browser).await["handle"], "adam", "{next}");
     }
 }

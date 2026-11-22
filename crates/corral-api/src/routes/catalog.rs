@@ -11,5 +11,9 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 async fn catalog(_: CurrentUser, State(state): State<AppState>) -> Json<CatalogDto> {
-    Json(CatalogDto::new(state.sandboxes.catalog(), &state.ssh))
+    Json(CatalogDto::new(
+        state.sandboxes.catalog(),
+        state.sandboxes.max_per_user(),
+        &state.ssh,
+    ))
 }

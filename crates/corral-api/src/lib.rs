@@ -23,7 +23,10 @@ pub use client_address::ClientAddress;
 pub use cookie::Key;
 pub use error::ApiError;
 pub use extract::{JsonBody, PathParam, QueryParams};
-pub use provider::{Identities, ProviderCookies, ProviderRoutes, SignedIn, provider_path};
+pub use provider::{
+    Identities, LoginKind, ProviderCookies, ProviderDescription, ProviderRoutes, SIGN_IN_PAGE,
+    SignedIn, provider_path, return_path, sign_in_failed,
+};
 pub use state::{Api, SshEndpoint};
 
 /// The API with each provider's routes under `provider_path` of its id.

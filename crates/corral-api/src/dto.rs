@@ -54,11 +54,12 @@ pub(crate) struct CatalogDto {
     sizes: Vec<Choice>,
     default_image: String,
     default_size: String,
+    max_sandboxes: usize,
     ssh: SshEndpoint,
 }
 
 impl CatalogDto {
-    pub(crate) fn new(catalog: &Catalog, ssh: &SshEndpoint) -> Self {
+    pub(crate) fn new(catalog: &Catalog, max_sandboxes: usize, ssh: &SshEndpoint) -> Self {
         let choice = |key: &str, label: &str| Choice {
             key: key.to_owned(),
             label: label.to_owned(),
@@ -78,6 +79,7 @@ impl CatalogDto {
             default_size: sizes[0].key.clone(),
             images,
             sizes,
+            max_sandboxes,
             ssh: ssh.clone(),
         }
     }
@@ -100,6 +102,7 @@ pub(crate) struct SandboxDto {
     #[serde(flatten)]
     status: SandboxStatus,
     ssh: SandboxSsh,
+    created_at: DateTime<Utc>,
 }
 
 impl SandboxDto {
@@ -113,7 +116,7 @@ impl SandboxDto {
         Self {
             ssh: SandboxSsh {
                 username: SshUsername {
-                    handle: owner,
+                    handle: owner.handle,
                     sandbox: Some(sandbox.name.clone()),
                 },
                 endpoint: ssh.clone(),
@@ -123,13 +126,20 @@ impl SandboxDto {
             size: sandbox.size,
             is_default,
             status,
+            created_at: sandbox.created_at,
         }
     }
 }
 
 #[derive(Serialize)]
+pub(crate) struct Owner {
+    handle: Handle,
+    picture: Option<PictureUrl>,
+}
+
+#[derive(Serialize)]
 pub(crate) struct OwnedSandbox {
-    owner: Handle,
+    owner: Owner,
     #[serde(flatten)]
     sandbox: SandboxDto,
 }
@@ -137,7 +147,10 @@ pub(crate) struct OwnedSandbox {
 impl OwnedSandbox {
     pub(crate) fn new(view: SandboxView, ssh: &SshEndpoint) -> Self {
         Self {
-            owner: view.owner.clone(),
+            owner: Owner {
+                handle: view.owner.handle.clone(),
+                picture: view.owner.picture.clone(),
+            },
             sandbox: SandboxDto::new(view, ssh),
         }
     }

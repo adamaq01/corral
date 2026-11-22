@@ -14,12 +14,14 @@ use corral_core::domain::{PictureUrl, Role};
 use corral_core::fakes::World;
 use corral_core::ports::Identity;
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use tower::ServiceExt;
 
 use crate::error::ApiError;
 use crate::extract::JsonBody;
-use crate::provider::{Identities, ProviderRoutes, SignedIn};
+use crate::provider::{
+    Identities, LoginKind, ProviderDescription, ProviderRoutes, SignedIn, provider_path,
+};
 use crate::state::{Api, SshEndpoint};
 
 /// An API over the world's services, with plain-HTTP cookies and no trusted proxy.
@@ -55,7 +57,12 @@ struct Trusted {
 pub fn trusting_provider(id: &str) -> ProviderRoutes {
     ProviderRoutes {
         id: id.to_owned(),
-        description: Map::new(),
+        description: ProviderDescription {
+            label: "Trusting".to_owned(),
+            kind: LoginKind::Password,
+            login: format!("{}/login", provider_path(id)),
+            accounts: None,
+        },
         routes: Router::new().route("/login", post(trusted_login)),
     }
 }

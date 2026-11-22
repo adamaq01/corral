@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use super::{Catalog, Credentials};
 use crate::domain::{
-    Admin, Handle, ImageKey, Sandbox, SandboxId, SandboxName, SandboxStatus, SizeKey, User, UserId,
+    Admin, ImageKey, Sandbox, SandboxId, SandboxName, SandboxStatus, SizeKey, User, UserId,
 };
 use crate::ports::{Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
 use crate::{Error, Result};
@@ -29,7 +29,7 @@ pub struct CreateSandbox {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxView {
     pub sandbox: Sandbox,
-    pub owner: Handle,
+    pub owner: User,
     pub is_default: bool,
     pub status: SandboxStatus,
 }
@@ -69,6 +69,11 @@ impl Sandboxes {
         &self.catalog
     }
 
+    #[must_use]
+    pub fn max_per_user(&self) -> usize {
+        self.limits.max_sandboxes_per_user
+    }
+
     pub async fn create(&self, owner: &User, request: CreateSandbox) -> Result<SandboxView> {
         let image = self.catalog.image(request.image.as_ref())?;
         let size = self.catalog.size(request.size.as_ref())?;
@@ -97,7 +102,7 @@ impl Sandboxes {
         // The sandbox exists whether or not it starts; its view reports where the start got.
         let _ = self.start_within(&sandbox, Duration::ZERO).await;
         let is_default = self.is_default(&sandbox).await?;
-        Ok(self.view(sandbox, owner.handle.clone(), is_default).await)
+        Ok(self.view(sandbox, owner.clone(), is_default).await)
     }
 
     pub async fn list(&self, owner: &User) -> Result<Vec<SandboxView>> {
@@ -106,7 +111,7 @@ impl Sandboxes {
         let mut views = Vec::with_capacity(sandboxes.len());
         for sandbox in sandboxes {
             let is_default = Some(&sandbox.id) == default.as_ref();
-            views.push(self.view(sandbox, owner.handle.clone(), is_default).await);
+            views.push(self.view(sandbox, owner.clone(), is_default).await);
         }
         Ok(views)
     }
@@ -114,16 +119,16 @@ impl Sandboxes {
     pub async fn get(&self, owner: &User, name: &SandboxName) -> Result<SandboxView> {
         let sandbox = self.find(owner, name).await?;
         let is_default = self.is_default(&sandbox).await?;
-        Ok(self.view(sandbox, owner.handle.clone(), is_default).await)
+        Ok(self.view(sandbox, owner.clone(), is_default).await)
     }
 
     pub async fn list_all(&self, _: &Admin) -> Result<Vec<SandboxView>> {
-        let handles: HashMap<UserId, Handle> = self
+        let owners: HashMap<UserId, User> = self
             .users
             .list()
             .await?
             .into_iter()
-            .map(|user| (user.id, user.handle))
+            .map(|user| (user.id, user))
             .collect();
         let sandboxes = self.repo.list_all().await?;
         let mut defaults = HashMap::new();
@@ -134,7 +139,7 @@ impl Sandboxes {
         }
         let mut views = Vec::with_capacity(sandboxes.len());
         for sandbox in sandboxes {
-            let owner = handles.get(&sandbox.owner).cloned().ok_or_else(|| {
+            let owner = owners.get(&sandbox.owner).cloned().ok_or_else(|| {
                 Error::internal("store", format!("sandbox {} has no owner", sandbox.id.0))
             })?;
             let is_default = defaults[&sandbox.owner].as_ref() == Some(&sandbox.id);
@@ -230,7 +235,7 @@ impl Sandboxes {
         }))
     }
 
-    async fn view(&self, sandbox: Sandbox, owner: Handle, is_default: bool) -> SandboxView {
+    async fn view(&self, sandbox: Sandbox, owner: User, is_default: bool) -> SandboxView {
         let status = self
             .engine
             .status(&sandbox.id)
@@ -291,7 +296,7 @@ mod tests {
         );
         assert_eq!(
             (&created.owner, created.is_default, &created.status),
-            (&adam.handle, true, &SandboxStatus::Starting)
+            (&adam, true, &SandboxStatus::Starting)
         );
 
         let calls = w.engine.calls();
@@ -511,13 +516,13 @@ mod tests {
             [
                 SandboxView {
                     sandbox: main,
-                    owner: adam.handle.clone(),
+                    owner: adam.clone(),
                     is_default: true,
                     status: SandboxStatus::Running,
                 },
                 SandboxView {
                     sandbox: dev.clone(),
-                    owner: adam.handle.clone(),
+                    owner: adam.clone(),
                     is_default: false,
                     status: SandboxStatus::Sleeping,
                 },
@@ -571,7 +576,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|view| (view.sandbox, view.owner.to_string(), view.is_default))
+            .map(|view| (view.sandbox, view.owner.handle.to_string(), view.is_default))
             .collect();
         assert_eq!(
             all,

@@ -92,6 +92,7 @@ async fn the_account_decides_the_role(pool: Pool) {
             "label": "Local account",
             "kind": "password",
             "login": "/auth/local/login",
+            "accounts": "/auth/local/accounts",
         }])
     );
 }

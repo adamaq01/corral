@@ -7,14 +7,13 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use corral_api::{
-    ApiError, ClientAddress, CurrentAdmin, Identities, JsonBody, PathParam, ProviderRoutes,
-    SignedIn, provider_path,
+    ApiError, ClientAddress, CurrentAdmin, Identities, JsonBody, LoginKind, PathParam,
+    ProviderDescription, ProviderRoutes, SignedIn, provider_path,
 };
 use corral_core::Error;
 use corral_core::domain::{Handle, Role};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 use crate::LocalProvider;
 
@@ -51,14 +50,15 @@ impl LocalProvider {
     /// `/accounts`.
     #[must_use]
     pub fn routes(self: &Arc<Self>) -> ProviderRoutes {
-        let login = format!("{}/login", provider_path(Self::ID));
+        let path = provider_path(Self::ID);
         ProviderRoutes {
             id: Self::ID.to_owned(),
-            description: Map::from_iter([
-                ("label".to_owned(), Value::from("Local account")),
-                ("kind".to_owned(), Value::from("password")),
-                ("login".to_owned(), Value::from(login)),
-            ]),
+            description: ProviderDescription {
+                label: "Local account".to_owned(),
+                kind: LoginKind::Password,
+                login: format!("{path}/login"),
+                accounts: Some(format!("{path}/accounts")),
+            },
             routes: Router::new()
                 .route("/login", post(login_route))
                 .route("/accounts", get(list).post(create))

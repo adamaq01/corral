@@ -11,7 +11,6 @@ use corral_core::domain::{Admin, User};
 use corral_core::ports::Identity;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
 
 use crate::cookies::Jar;
 use crate::dto::Me;
@@ -25,22 +24,80 @@ pub fn provider_path(id: &str) -> String {
     format!("/auth/{id}")
 }
 
+/// The web UI's page that a failed redirect login comes back to.
+pub const SIGN_IN_PAGE: &str = "/sign-in";
+
+const MAX_RETURN_PATH: usize = 2048;
+
+/// Where a redirect login that failed sends the browser: the sign-in page with the error.
+#[must_use]
+pub fn sign_in_failed(error: &ApiError) -> String {
+    let message: String = form_urlencoded::byte_serialize(error.message().as_bytes()).collect();
+    format!("{SIGN_IN_PAGE}?error={message}")
+}
+
+/// Where a redirect login comes back to: the `next` path asked for when it is a path on this
+/// origin, else `/`.
+#[must_use]
+pub fn return_path(next: Option<&str>) -> String {
+    match next {
+        Some(path)
+            if path.len() <= MAX_RETURN_PATH
+                && path.starts_with('/')
+                && !path.starts_with("//")
+                && path.bytes().all(|b| b.is_ascii_graphic() && b != b'\\') =>
+        {
+            path.to_owned()
+        }
+        _ => "/".to_owned(),
+    }
+}
+
 /// A provider's own routes, served under `provider_path(id)`, and what `GET /auth/providers`
-/// shows about it, next to its id, as given.
+/// shows about it next to its id.
 pub struct ProviderRoutes {
     pub id: String,
-    pub description: Map<String, Value>,
+    pub description: ProviderDescription,
     pub routes: Router,
+}
+
+/// What the sign-in page draws a provider from.
+#[derive(Clone, Debug, Serialize)]
+pub struct ProviderDescription {
+    pub label: String,
+    pub kind: LoginKind,
+    /// Where the login starts, as `kind` says.
+    pub login: String,
+    /// Where admins manage the provider's accounts, for a provider that keeps them.
+    pub accounts: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoginKind {
+    /// The browser opens `login`, optionally with `?next=<path>`, and comes back to that path
+    /// (else `/`) signed in, or to `SIGN_IN_PAGE` with `?error=<message>`.
+    Redirect,
+    /// `login` takes a JSON `{"username", "password"}` and answers with the user.
+    Password,
+}
+
+#[derive(Clone, Serialize)]
+pub(crate) struct ProviderListing {
+    id: String,
+    #[serde(flatten)]
+    description: ProviderDescription,
 }
 
 #[derive(Clone)]
 struct Mounted(Arc<str>);
 
 impl ProviderRoutes {
-    pub(crate) fn listing(&self) -> Value {
-        let mut listed = self.description.clone();
-        listed.insert("id".to_owned(), Value::from(self.id.as_str()));
-        Value::Object(listed)
+    pub(crate) fn listing(&self) -> ProviderListing {
+        ProviderListing {
+            id: self.id.clone(),
+            description: self.description.clone(),
+        }
     }
 
     pub(crate) fn mounted(self) -> Router {
@@ -200,5 +257,39 @@ impl IntoResponseParts for ProviderCookies {
 
     fn into_response_parts(self, parts: ResponseParts) -> Result<ResponseParts, Infallible> {
         self.jar.into_response_parts(parts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+
+    use super::{return_path, sign_in_failed};
+    use crate::error::ApiError;
+
+    #[test]
+    fn only_paths_on_this_origin_are_returned_to() {
+        for path in ["/", "/sandboxes/main", "/admin/users?page=2#top", "/a%20b"] {
+            assert_eq!(return_path(Some(path)), path);
+        }
+        for elsewhere in [
+            None,
+            Some(""),
+            Some("sandboxes"),
+            Some("//evil.example"),
+            Some("/\\evil.example"),
+            Some("https://evil.example/"),
+            Some("/a b"),
+            Some("/a\nb"),
+            Some(&format!("/{}", "a".repeat(2048))),
+        ] {
+            assert_eq!(return_path(elsewhere), "/", "{elsewhere:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_sign_in_shows_its_error_on_the_sign_in_page() {
+        let error = ApiError::new(StatusCode::FORBIDDEN, "no & such: user");
+        assert_eq!(sign_in_failed(&error), "/sign-in?error=no+%26+such%3A+user");
     }
 }

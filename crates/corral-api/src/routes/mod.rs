@@ -8,15 +8,15 @@ mod sandboxes;
 
 use axum::Router;
 use axum::routing::any;
-use serde_json::Value;
 
 use crate::error::ApiError;
+use crate::provider::ProviderListing;
 use crate::state::AppState;
 
 /// Every path under these is the API's, unknown ones included.
 const PREFIXES: [&str; 2] = ["/api", "/auth"];
 
-pub(crate) fn all(providers: Vec<Value>) -> Router<AppState> {
+pub(crate) fn all(providers: Vec<ProviderListing>) -> Router<AppState> {
     let mut router = Router::new();
     for prefix in PREFIXES {
         for path in [

@@ -765,6 +765,7 @@ dependencies = [
  "corral-core",
  "corral-sql",
  "corral-store-sql",
+ "form_urlencoded",
  "secrecy",
  "serde",
  "serde_json",

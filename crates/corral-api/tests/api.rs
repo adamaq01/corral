@@ -7,11 +7,12 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get};
+use chrono::{DateTime, Utc};
 use cookie::SameSite;
 use corral_api::testing::{Browser, Reply, api, trusting_provider};
 use corral_api::{
-    ApiError, ClientAddress, CurrentAdmin, Identities, PathParam, ProviderCookies, ProviderRoutes,
-    router,
+    ApiError, ClientAddress, CurrentAdmin, Identities, LoginKind, PathParam, ProviderCookies,
+    ProviderDescription, ProviderRoutes, router,
 };
 use corral_core::app::Credentials;
 use corral_core::domain::{CredentialName, Role, UserId};
@@ -19,22 +20,23 @@ use corral_core::fakes::{ADAM_KEY, EngineCall, MAX_SANDBOXES, PROVIDER, World};
 use corral_core::ports::{CredentialMap, Identity, SecretStore};
 use corral_core::{Error, Result};
 use secrecy::SecretString;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const STEP: &str = "step";
 const STEP_SECRET: &str = "the-private-step-secret";
-
-fn description(value: &Value) -> Map<String, Value> {
-    value.as_object().unwrap().clone()
-}
 
 /// The trusting provider as the world's provider, with a two-step login and the toolkit's other
 /// extractors on show.
 fn stub() -> ProviderRoutes {
     let trusting = trusting_provider(PROVIDER);
     ProviderRoutes {
-        description: description(&json!({ "label": "Stub", "kind": "trusting" })),
+        description: ProviderDescription {
+            label: "Stub".to_owned(),
+            kind: LoginKind::Redirect,
+            login: "/auth/test/start".to_owned(),
+            accounts: None,
+        },
         routes: trusting
             .routes
             .route("/start", get(stub_start))
@@ -243,7 +245,12 @@ async fn providers_are_listed_as_they_describe_themselves() {
     let world = World::new();
     let other = ProviderRoutes {
         id: "other".to_owned(),
-        description: description(&json!({ "label": "Other", "anything": [1, 2] })),
+        description: ProviderDescription {
+            label: "Other".to_owned(),
+            kind: LoginKind::Password,
+            login: "/auth/other/login".to_owned(),
+            accounts: Some("/auth/other/accounts".to_owned()),
+        },
         routes: Router::new(),
     };
     let app = router(api(&world), vec![stub(), other]);
@@ -251,8 +258,20 @@ async fn providers_are_listed_as_they_describe_themselves() {
     assert_eq!(
         browser.get("/auth/providers").await.json(),
         json!([
-            { "id": "test", "label": "Stub", "kind": "trusting" },
-            { "id": "other", "label": "Other", "anything": [1, 2] },
+            {
+                "id": "test",
+                "label": "Stub",
+                "kind": "redirect",
+                "login": "/auth/test/start",
+                "accounts": null,
+            },
+            {
+                "id": "other",
+                "label": "Other",
+                "kind": "password",
+                "login": "/auth/other/login",
+                "accounts": "/auth/other/accounts",
+            },
         ])
     );
     for uri in ["/auth/other/login", "/auth/nope/start", "/auth/test/nope"] {
@@ -545,8 +564,12 @@ async fn a_disabled_users_session_is_403() {
 async fn create_then_list_shows_the_ssh_username() {
     let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
+    let before = Utc::now();
     let created = adam.post("/api/sandboxes", json!({ "name": "main" })).await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+    let created = created.json();
+    let created_at: DateTime<Utc> = created["createdAt"].as_str().unwrap().parse().unwrap();
+    assert!((before..=Utc::now()).contains(&created_at), "{created_at}");
     let expected = json!({
         "name": "main",
         "image": "base",
@@ -554,8 +577,9 @@ async fn create_then_list_shows_the_ssh_username() {
         "isDefault": true,
         "state": "running",
         "ssh": { "username": "adam+main", "host": "corral.example.com", "port": 48291 },
+        "createdAt": created["createdAt"],
     });
-    assert_eq!(created.json(), expected);
+    assert_eq!(created, expected);
     assert_eq!(adam.get("/api/sandboxes").await.json(), json!([expected]));
     assert_eq!(adam.get("/api/sandboxes/main").await.json(), expected);
 
@@ -566,6 +590,7 @@ async fn create_then_list_shows_the_ssh_username() {
             "sizes": [{ "key": "small", "label": "SMALL" }, { "key": "large", "label": "LARGE" }],
             "defaultImage": "base",
             "defaultSize": "small",
+            "maxSandboxes": MAX_SANDBOXES,
             "ssh": { "host": "corral.example.com", "port": 48291 },
         })
     );
@@ -682,10 +707,33 @@ async fn admins_list_users_and_all_sandboxes() {
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    root.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let picture = "https://idp.example.com/adam.png";
+    let login = json!({
+        "subject": "adam", "username": "adam", "role": "member", "picture": picture,
+    });
+    adam.post("/auth/test/login", login).await;
 
     let sandboxes = root.get("/api/admin/sandboxes").await.json();
-    assert_eq!(sandboxes[0]["owner"], "adam");
-    assert_eq!(sandboxes[0]["ssh"]["username"], "adam+main");
+    let owners: Vec<_> = sandboxes
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|sandbox| (sandbox["owner"].clone(), sandbox["ssh"]["username"].clone()))
+        .collect();
+    assert_eq!(
+        owners,
+        [
+            (
+                json!({ "handle": "adam", "picture": picture }),
+                json!("adam+main")
+            ),
+            (
+                json!({ "handle": "root", "picture": null }),
+                json!("root+main")
+            ),
+        ]
+    );
     let users = root.get("/api/admin/users").await.json();
     let handles: Vec<&Value> = users
         .as_array()
@@ -834,7 +882,7 @@ async fn a_disabled_user_cannot_delete_themselves() {
     let refused = adam.call("DELETE", "/api/me", None).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     assert_eq!(
-        root.get("/api/admin/sandboxes").await.json()[0]["owner"],
+        root.get("/api/admin/sandboxes").await.json()[0]["owner"]["handle"],
         "adam"
     );
     assert_eq!(
