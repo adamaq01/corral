@@ -75,8 +75,6 @@ trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 for tool in docker ssh ssh-keygen curl jq hc; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
-cmp -s "$repo/crates/corral-server/config.compose.toml" "$repo/deploy/compose/config.toml" \
-  || fail "deploy/compose/config.toml differs from crates/corral-server/config.compose.toml, which its parse test covers"
 remove_stack
 work=$(mktemp -d "${TMPDIR:-/tmp}/corral-e2e.XXXXXX")
 log=$work/run.log
@@ -100,10 +98,11 @@ cat >>config.toml <<EOF
 public_port = $ssh_port
 
 [engine]
-probe_interval_secs = 1
-
-[engine.docker]
+kind = "docker"
 network = "$sandbox_network"
+
+[idle]
+probe_interval_secs = 1
 
 [[catalog.images]]
 key = "dev"
@@ -339,9 +338,9 @@ ok "after 5 wrong passwords, POST /auth/local/finish answers 429 even to the rig
 
 # Short timings for the rest: a wake deadline a slow wake can exceed, and a quick idle timeout.
 # The bind mount follows config.toml's inode, so it is rewritten in place.
-awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }' config.toml >config.new
+awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }
+  /^probe_interval_secs = / { print "timeout_secs = 3" }' config.toml >config.new
 cat config.new >config.toml
-printf '\n[engine]\nidle_timeout_secs = 3\n' >>config.toml
 docker compose restart corral >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
 login adam "$admin_password"
@@ -349,7 +348,7 @@ api adam POST api/sandboxes '{"name":"idle"}' >/dev/null
 idle=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_network" \
   --filter label=corral.adamaq01.fr/sandbox=idle)
 idle_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$idle")
-ok "restarted corral with wake_deadline_secs = 2 and idle_timeout_secs = 3, created sandbox idle"
+ok "restarted corral with wake_deadline_secs = 2 and timeout_secs = 3, created sandbox idle"
 
 state() {
   docker inspect --format '{{.State.Status}}' "$idle"

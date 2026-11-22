@@ -5,7 +5,6 @@ mod healthcheck;
 mod keys;
 mod local_account;
 mod serve;
-mod store;
 mod wiring;
 
 use std::io::IsTerminal;

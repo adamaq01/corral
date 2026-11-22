@@ -1,86 +1,260 @@
-mod file;
+mod catalog;
 mod quantity;
 
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU64;
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corral_api::SshEndpoint;
-use corral_core::app::{Catalog, ImageOption, Limits, SizePreset};
-use corral_core::domain::{Allocation, Resources};
+use corral_core::app::Catalog;
+use corral_identity_oidc::OidcConfig;
+use serde::Deserialize;
 
-pub use file::AgentSandbox;
-use file::{
-    CatalogSection, EngineKind, EngineSection, File, FrontDoorKind, IdentitySection,
-    OpenBaoAuthKind, SecretsKind, SecretsSection, SizeEntry,
-};
-
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub http: Http,
+    #[serde(default)]
     pub identity: Identity,
+    #[serde(default)]
     pub secrets: Secrets,
+    #[serde(default)]
     pub engine: Engine,
+    #[serde(default)]
+    pub idle: Idle,
+    #[serde(default)]
     pub frontdoor: FrontDoor,
-    pub catalog: Catalog,
+    pub ssh: Ssh,
+    #[serde(default)]
     pub limits: Limits,
-    pub ssh: SshEndpoint,
+    #[serde(
+        default = "catalog::default",
+        deserialize_with = "catalog::deserialize"
+    )]
+    pub catalog: Catalog,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Http {
+    #[serde(default = "public_addr")]
     pub public_addr: SocketAddr,
+    #[serde(default = "internal_addr")]
     pub internal_addr: SocketAddr,
-    pub base_url: String,
+    pub base_url: BaseUrl,
+    #[serde(default)]
     pub trust_forwarded_for: bool,
 }
 
-/// At least one login method is on.
-pub struct Identity {
-    pub oidc: Option<Oidc>,
-    pub local: bool,
+fn public_addr() -> SocketAddr {
+    (Ipv4Addr::UNSPECIFIED, 8080).into()
 }
 
+fn internal_addr() -> SocketAddr {
+    (Ipv4Addr::UNSPECIFIED, 8081).into()
+}
+
+/// An `http://` or `https://` URL with no trailing slash.
+#[derive(Deserialize)]
+#[serde(try_from = "String")]
+pub struct BaseUrl(String);
+
+impl BaseUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_https(&self) -> bool {
+        self.0.starts_with("https://")
+    }
+}
+
+impl TryFrom<String> for BaseUrl {
+    type Error = String;
+
+    fn try_from(url: String) -> Result<Self, String> {
+        let url = url.trim_end_matches('/');
+        if url.starts_with("https://") || url.starts_with("http://") {
+            Ok(Self(url.to_owned()))
+        } else {
+            Err(format!(
+                "base_url {url:?} must start with https:// or http://"
+            ))
+        }
+    }
+}
+
+/// The login methods that are on: a section turns its method on.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Identity {
+    pub local: Option<Local>,
+    pub oidc: Option<Oidc>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Local {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Oidc {
     pub issuer: String,
     pub client_id: String,
+    #[serde(default = "OidcConfig::default_scopes")]
     pub scopes: Vec<String>,
+    #[serde(default = "member_group")]
     pub member_group: String,
+    #[serde(default = "admin_group")]
     pub admin_group: String,
 }
 
+fn member_group() -> String {
+    "corral-users".to_owned()
+}
+
+fn admin_group() -> String {
+    "corral-admins".to_owned()
+}
+
+// Variants without fields are written `{}`: a unit variant of a tagged enum accepts unknown keys.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Secrets {
-    Database,
+    Database {},
+    #[serde(rename = "openbao")]
     OpenBao(OpenBao),
 }
 
+impl Default for Secrets {
+    fn default() -> Self {
+        Self::Database {}
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpenBao {
     pub address: String,
+    #[serde(default = "openbao_mount")]
     pub mount: String,
+    #[serde(default = "corral")]
     pub path_prefix: String,
-    pub login: OpenBaoLogin,
+    pub auth: OpenBaoAuth,
 }
 
-pub enum OpenBaoLogin {
+fn openbao_mount() -> String {
+    "secret".to_owned()
+}
+
+fn corral() -> String {
+    "corral".to_owned()
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum OpenBaoAuth {
     Kubernetes { role: String },
-    Token,
+    Token {},
 }
 
-pub struct Engine {
-    pub backend: EngineBackend,
-    pub max_running: usize,
-    pub probe_interval: Duration,
-    pub idle_timeout: Duration,
-}
-
-pub enum EngineBackend {
-    Docker { network: String },
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Engine {
+    Docker(Docker),
     AgentSandbox(AgentSandbox),
 }
 
-#[derive(Clone, Copy)]
+impl Default for Engine {
+    fn default() -> Self {
+        Self::Docker(Docker {
+            network: sandbox_network(),
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Docker {
+    #[serde(default = "sandbox_network")]
+    pub network: String,
+}
+
+fn sandbox_network() -> String {
+    "corral-sandboxes".to_owned()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentSandbox {
+    pub namespace: String,
+    pub service_account: String,
+    pub storage_class: String,
+    pub agent_image: String,
+}
+
+/// When a sandbox with no activity is put to sleep, for every engine.
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Idle {
+    pub timeout_secs: u64,
+    pub probe_interval_secs: NonZeroU64,
+}
+
+impl Default for Idle {
+    fn default() -> Self {
+        Self {
+            timeout_secs: 1800,
+            probe_interval_secs: const { NonZeroU64::new(60).unwrap() },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
 pub enum FrontDoor {
-    ContainerSsh,
+    #[serde(rename = "containerssh")]
+    ContainerSsh {},
+}
+
+impl Default for FrontDoor {
+    fn default() -> Self {
+        Self::ContainerSsh {}
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Ssh {
+    pub public_host: String,
+    #[serde(default = "public_port")]
+    pub public_port: u16,
+    #[serde(default = "wake_deadline_secs")]
+    pub wake_deadline_secs: u64,
+}
+
+fn public_port() -> u16 {
+    48291
+}
+
+fn wake_deadline_secs() -> u64 {
+    20
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Limits {
+    pub max_sandboxes_per_user: usize,
+    pub max_running: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_sandboxes_per_user: 5,
+            max_running: 6,
+        }
+    }
 }
 
 impl Config {
@@ -91,168 +265,21 @@ impl Config {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let document = toml::Deserializer::parse(text)?;
-        let file: File = serde_path_to_error::deserialize(document).map_err(|err| {
-            let field = err.path().to_string();
-            let error = anyhow::Error::new(err.into_inner());
-            if field == "." {
-                error
-            } else {
-                error.context(format!("{field} is invalid"))
-            }
-        })?;
-        Self::try_from(file)
-    }
-}
-
-impl TryFrom<File> for Config {
-    type Error = anyhow::Error;
-
-    fn try_from(file: File) -> Result<Self> {
-        let base_url = file.http.base_url.trim_end_matches('/').to_owned();
+        let config: Self = toml::from_str(text)?;
         ensure!(
-            base_url.starts_with("https://") || base_url.starts_with("http://"),
-            "http.base_url must start with https:// or http://"
+            config.identity.local.is_some() || config.identity.oidc.is_some(),
+            "no login method: add [identity.local], [identity.oidc] or both"
         );
-        Ok(Self {
-            http: Http {
-                public_addr: file.http.public_addr,
-                internal_addr: file.http.internal_addr,
-                base_url,
-                trust_forwarded_for: file.http.trust_forwarded_for,
-            },
-            identity: identity(file.identity)?,
-            secrets: secrets(file.secrets)?,
-            engine: engine(file.engine)?,
-            frontdoor: match file.frontdoor.kind {
-                FrontDoorKind::ContainerSsh => FrontDoor::ContainerSsh,
-            },
-            catalog: catalog(file.catalog).context("catalog is invalid")?,
-            limits: Limits {
-                max_sandboxes_per_user: file.limits.max_sandboxes_per_user,
-                wake_deadline: Duration::from_secs(file.ssh.wake_deadline_secs),
-            },
-            ssh: SshEndpoint {
-                host: file.ssh.public_host,
-                port: file.ssh.public_port,
-            },
-        })
+        Ok(config)
     }
-}
-
-fn identity(section: IdentitySection) -> Result<Identity> {
-    let identity = Identity {
-        oidc: section.oidc.map(|oidc| Oidc {
-            issuer: oidc.issuer,
-            client_id: oidc.client_id,
-            scopes: oidc.scopes,
-            member_group: oidc.member_group,
-            admin_group: oidc.admin_group,
-        }),
-        local: section.local.is_some_and(|local| local.enabled),
-    };
-    ensure!(
-        identity.oidc.is_some() || identity.local,
-        "no login method: configure [identity.oidc], [identity.local] or both"
-    );
-    Ok(identity)
-}
-
-fn secrets(section: SecretsSection) -> Result<Secrets> {
-    match section.kind {
-        SecretsKind::Database => Ok(Secrets::Database),
-        SecretsKind::OpenBao => {
-            let bao = section
-                .openbao
-                .context(r#"secrets.kind = "openbao" needs a [secrets.openbao] section"#)?;
-            let login = match bao.auth {
-                OpenBaoAuthKind::Kubernetes => OpenBaoLogin::Kubernetes {
-                    role: bao.auth_role.context(
-                        r#"secrets.openbao.auth_role is required with auth = "kubernetes""#,
-                    )?,
-                },
-                OpenBaoAuthKind::Token => OpenBaoLogin::Token,
-            };
-            Ok(Secrets::OpenBao(OpenBao {
-                address: bao.address,
-                mount: bao.mount,
-                path_prefix: bao.path_prefix,
-                login,
-            }))
-        }
-    }
-}
-
-fn engine(section: EngineSection) -> Result<Engine> {
-    let backend = match section.kind {
-        EngineKind::Docker => EngineBackend::Docker {
-            network: section.docker.network,
-        },
-        EngineKind::AgentSandbox => {
-            EngineBackend::AgentSandbox(section.agent_sandbox.context(
-                r#"engine.kind = "agent-sandbox" needs an [engine.agent-sandbox] section"#,
-            )?)
-        }
-    };
-    Ok(Engine {
-        backend,
-        max_running: section.max_running,
-        probe_interval: Duration::from_secs(section.probe_interval_secs.get()),
-        idle_timeout: Duration::from_secs(section.idle_timeout_secs),
-    })
-}
-
-fn catalog(section: CatalogSection) -> Result<Catalog> {
-    let images = section
-        .images
-        .into_iter()
-        .map(|image| ImageOption {
-            key: image.key,
-            label: image.label,
-            reference: image.reference,
-        })
-        .collect();
-    let sizes = section
-        .sizes
-        .into_iter()
-        .map(|size| {
-            let key = size.key.clone();
-            size_preset(size).with_context(|| format!("size {key:?} is invalid"))
-        })
-        .collect::<Result<_>>()?;
-    Ok(Catalog::new(images, sizes)?)
-}
-
-fn size_preset(size: SizeEntry) -> Result<SizePreset> {
-    let cpu_millis = Allocation::new(
-        quantity::cpu_millis(&size.cpu_request)?,
-        quantity::cpu_millis(&size.cpu_limit)?,
-    )?;
-    let memory_bytes = Allocation::new(
-        quantity::bytes(&size.memory_request)?,
-        quantity::bytes(&size.memory_limit)?,
-    )?;
-    let home_bytes =
-        NonZeroU64::new(quantity::bytes(&size.home_size)?).context("home_size must be positive")?;
-    Ok(SizePreset {
-        key: size.key,
-        label: size.label,
-        resources: Resources {
-            cpu_millis,
-            memory_bytes,
-            home_bytes,
-        },
-    })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use super::{Config, EngineBackend, OpenBaoLogin, Secrets};
+    use super::{Config, Engine, OpenBaoAuth, Secrets};
 
     const EXAMPLE: &str = include_str!("../config.example.toml");
-    const COMPOSE: &str = include_str!("../config.compose.toml");
+    const COMPOSE: &str = include_str!("../../../deploy/compose/config.toml");
     const MINIMAL: &str = r#"
         [http]
         base_url = "http://corral.lan:8080"
@@ -281,19 +308,19 @@ mod tests {
         assert_eq!(config.http.public_addr.to_string(), "0.0.0.0:8080");
         assert_eq!(config.http.internal_addr.to_string(), "0.0.0.0:8081");
         assert!(!config.http.trust_forwarded_for);
-        assert!(config.identity.local);
+        assert!(config.identity.local.is_some());
         assert!(config.identity.oidc.is_none());
-        assert!(matches!(config.secrets, Secrets::Database));
+        assert!(matches!(config.secrets, Secrets::Database {}));
         assert!(matches!(
-            &config.engine.backend,
-            EngineBackend::Docker { network } if network == "corral-sandboxes"
+            &config.engine,
+            Engine::Docker(docker) if docker.network == "corral-sandboxes"
         ));
-        assert_eq!(config.engine.max_running, 6);
-        assert_eq!(config.engine.probe_interval, Duration::from_mins(1));
-        assert_eq!(config.engine.idle_timeout, Duration::from_mins(30));
-        assert_eq!(config.ssh.port, 48291);
+        assert_eq!(config.limits.max_running, 6);
+        assert_eq!(config.idle.probe_interval_secs.get(), 60);
+        assert_eq!(config.idle.timeout_secs, 1800);
+        assert_eq!(config.ssh.public_port, 48291);
         assert_eq!(config.limits.max_sandboxes_per_user, 5);
-        assert_eq!(config.limits.wake_deadline, Duration::from_secs(20));
+        assert_eq!(config.ssh.wake_deadline_secs, 20);
         assert_eq!(
             config.catalog.image(None).unwrap().reference,
             "ghcr.io/adamaq01/corral-sandbox"
@@ -304,7 +331,7 @@ mod tests {
     #[test]
     fn example_config_parses() {
         let config = Config::parse(EXAMPLE).unwrap();
-        assert!(config.http.base_url.starts_with("https://"));
+        assert!(config.http.base_url.is_https());
         assert!(config.http.trust_forwarded_for);
         let oidc = config.identity.oidc.unwrap();
         assert_eq!(oidc.scopes, ["openid", "profile", "email", "groups"]);
@@ -312,13 +339,13 @@ mod tests {
             (oidc.member_group.as_str(), oidc.admin_group.as_str()),
             ("corral-users", "corral-admins")
         );
-        assert!(!config.identity.local);
-        let EngineBackend::AgentSandbox(agent) = config.engine.backend else {
+        assert!(config.identity.local.is_none());
+        let Engine::AgentSandbox(agent) = config.engine else {
             panic!("the example runs on agent-sandbox");
         };
         assert_eq!(agent.namespace, "corral-sandboxes");
         assert_eq!(agent.storage_class, "tns-csi-nvmeof");
-        assert!(matches!(config.secrets, Secrets::Database));
+        assert!(matches!(config.secrets, Secrets::Database {}));
         let sizes: Vec<_> = config
             .catalog
             .sizes()
@@ -339,33 +366,45 @@ mod tests {
     }
 
     #[test]
-    fn unknown_engine_kind_is_rejected() {
+    fn engine_kinds_select_their_fields() {
         let message = rejection(&format!("{MINIMAL}\n[engine]\nkind = \"podman\""));
-        assert!(message.contains("engine.kind"), "{message}");
-        assert!(message.contains("podman"), "{message}");
-    }
-
-    #[test]
-    fn a_kind_without_its_section_is_rejected() {
+        assert!(message.contains("unknown variant `podman`"), "{message}");
+        let message = rejection(&format!("{MINIMAL}\n[engine]\nnetwork = \"x\""));
+        assert!(message.contains("missing field `kind`"), "{message}");
         let message = rejection(&format!("{MINIMAL}\n[engine]\nkind = \"agent-sandbox\""));
-        assert!(message.contains("[engine.agent-sandbox]"), "{message}");
-        let message = rejection(&format!("{MINIMAL}\n[secrets]\nkind = \"openbao\""));
-        assert!(message.contains("[secrets.openbao]"), "{message}");
+        assert!(message.contains("missing field `namespace`"), "{message}");
+        let message = rejection(&format!(
+            "{MINIMAL}\n[engine]\nkind = \"docker\"\nnamespace = \"x\""
+        ));
+        assert!(message.contains("unknown field `namespace`"), "{message}");
+
+        let config = Config::parse(&format!(
+            "{MINIMAL}\n[engine]\nkind = \"docker\"\nnetwork = \"lan\""
+        ))
+        .unwrap();
+        assert!(matches!(config.engine, Engine::Docker(docker) if docker.network == "lan"));
     }
 
     #[test]
-    fn openbao_logins_follow_auth() {
+    fn secret_stores_select_their_fields() {
         let openbao = |auth: &str| {
             format!(
-                "{MINIMAL}\n[secrets]\nkind = \"openbao\"\n[secrets.openbao]\n\
-                 address = \"http://bao:8200\"\n{auth}"
+                "{MINIMAL}\n[secrets]\nkind = \"openbao\"\naddress = \"http://bao:8200\"\n\
+                 [secrets.auth]\n{auth}"
             )
         };
-        let message = rejection(&openbao("auth = \"kubernetes\""));
-        assert!(message.contains("auth_role"), "{message}");
+        let message = rejection(&openbao("kind = \"kubernetes\""));
+        assert!(message.contains("missing field `role`"), "{message}");
+        let message = rejection(&openbao("kind = \"token\"\nrole = \"corral\""));
+        assert!(message.contains("unknown field `role`"), "{message}");
+        let message = rejection(&format!("{MINIMAL}\n[secrets]\nkind = \"openbao\""));
+        assert!(message.contains("missing field `address`"), "{message}");
+        let message = rejection(&format!(
+            "{MINIMAL}\n[secrets]\nkind = \"database\"\naddress = \"x\""
+        ));
+        assert!(message.contains("unknown field `address`"), "{message}");
 
-        let config =
-            Config::parse(&openbao("auth = \"kubernetes\"\nauth_role = \"corral\"")).unwrap();
+        let config = Config::parse(&openbao("kind = \"kubernetes\"\nrole = \"corral\"")).unwrap();
         let Secrets::OpenBao(bao) = config.secrets else {
             panic!("openbao was configured");
         };
@@ -373,23 +412,24 @@ mod tests {
             (bao.mount.as_str(), bao.path_prefix.as_str()),
             ("secret", "corral")
         );
-        assert!(matches!(bao.login, OpenBaoLogin::Kubernetes { role } if role == "corral"));
+        assert!(matches!(bao.auth, OpenBaoAuth::Kubernetes { role } if role == "corral"));
 
-        let config = Config::parse(&openbao("auth = \"token\"")).unwrap();
+        let config = Config::parse(&openbao("kind = \"token\"")).unwrap();
         assert!(matches!(
             config.secrets,
-            Secrets::OpenBao(bao) if matches!(bao.login, OpenBaoLogin::Token)
+            Secrets::OpenBao(bao) if matches!(bao.auth, OpenBaoAuth::Token {})
         ));
     }
 
     #[test]
     fn no_login_method_is_rejected() {
-        for identity in ["", "[identity.local]\nenabled = false"] {
-            let message = rejection(&format!(
-                "[http]\nbase_url = \"http://corral.lan\"\n{identity}\n[ssh]\npublic_host = \"corral.lan\""
-            ));
-            assert!(message.contains("no login method"), "{message}");
-        }
+        let message = rejection(
+            "[http]\nbase_url = \"http://corral.lan\"\n[ssh]\npublic_host = \"corral.lan\"",
+        );
+        assert!(message.contains("no login method"), "{message}");
+        let message =
+            rejection(&MINIMAL.replace("[identity.local]", "[identity.local]\nenabled = false"));
+        assert!(message.contains("unknown field `enabled`"), "{message}");
     }
 
     #[test]
@@ -423,18 +463,19 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(config.catalog.image(None).unwrap().key, "debian");
+        assert_eq!(config.catalog.size(None).unwrap().key, "small");
     }
 
     #[test]
     fn zero_probe_interval_is_rejected() {
-        let message = rejection(&format!("{MINIMAL}\n[engine]\nprobe_interval_secs = 0"));
-        assert!(message.contains("engine.probe_interval_secs"), "{message}");
+        let message = rejection(&format!("{MINIMAL}\n[idle]\nprobe_interval_secs = 0"));
+        assert!(message.contains("probe_interval_secs"), "{message}");
     }
 
     #[test]
     fn misspelled_fields_are_rejected() {
-        let message = rejection(&format!("{MINIMAL}\n[engine.docker]\nnetwrok = \"x\""));
-        assert!(message.contains("netwrok"), "{message}");
+        let message = rejection(&format!("{MINIMAL}\n[idle]\ntimeout = 3"));
+        assert!(message.contains("timeout"), "{message}");
         let message = rejection(&format!("{MINIMAL}\n[access]\nmember_group = \"x\""));
         assert!(message.contains("access"), "{message}");
     }
@@ -442,9 +483,9 @@ mod tests {
     #[test]
     fn base_url_needs_an_http_scheme_and_loses_its_trailing_slash() {
         let message = rejection(&MINIMAL.replace("http://corral.lan:8080", "corral.lan"));
-        assert!(message.contains("http.base_url"), "{message}");
+        assert!(message.contains("base_url"), "{message}");
         let config =
             Config::parse(&MINIMAL.replace("corral.lan:8080\"", "corral.lan:8080/\"")).unwrap();
-        assert_eq!(config.http.base_url, "http://corral.lan:8080");
+        assert_eq!(config.http.base_url.as_str(), "http://corral.lan:8080");
     }
 }

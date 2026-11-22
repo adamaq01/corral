@@ -4,8 +4,8 @@
 # The address people open in a browser.
 base_url = "http://corral.example.lan:8080"
 
+# Local accounts, created with `corral-server local-account create`.
 [identity.local]
-enabled = true
 
 [ssh]
 # The host name people pass to ssh; port 48291 unless [ssh] public_port says otherwise.

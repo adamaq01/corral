@@ -23,15 +23,15 @@ kind = "database"
 
 [engine]
 kind = "agent-sandbox"
-max_running = 6
-probe_interval_secs = 60
-idle_timeout_secs = 1800
-
-[engine.agent-sandbox]
 namespace = "corral-sandboxes"
 service_account = "corral-sandbox"
 storage_class = "tns-csi-nvmeof"
 agent_image = "containerssh/agent:v0.11.0"
+
+# A sandbox with no SSH session and no Herdr terminal at work sleeps after timeout_secs.
+[idle]
+timeout_secs = 1800
+probe_interval_secs = 60
 
 [frontdoor]
 kind = "containerssh"
@@ -43,6 +43,8 @@ wake_deadline_secs = 20
 
 [limits]
 max_sandboxes_per_user = 5
+# Sandboxes awake at once, across all users.
+max_running = 6
 
 # The first image and the first size are the defaults.
 [[catalog.images]]

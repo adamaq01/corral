@@ -907,7 +907,6 @@ dependencies = [
  "rpassword",
  "secrecy",
  "serde",
- "serde_path_to_error",
  "ssh-key",
  "tokio",
  "tokio-util",

@@ -1,9 +1,12 @@
 use std::collections::BTreeSet;
 
+use serde::Deserialize;
+
 use crate::domain::Resources;
 use crate::{Error, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ImageOption {
     pub key: String,
     pub label: String,
