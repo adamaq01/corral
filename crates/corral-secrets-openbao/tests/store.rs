@@ -9,10 +9,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use corral_core::Error;
 use corral_core::contract::secrets;
 use corral_core::domain::{CredentialName, UserId};
-use corral_core::fakes::MemoryUserRepo;
-use corral_core::ports::{CredentialMap, SecretStore};
+use corral_core::fakes::{MemoryUserRepo, exposed};
+use corral_core::ports::SecretStore;
 use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig, OpenBaoStore};
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use serde_json::{Value, json};
 use support::{MOUNT, OpenBao, PREFIX};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -35,12 +35,6 @@ fn name(value: &str) -> CredentialName {
 
 fn secret(value: &str) -> SecretString {
     SecretString::from(value)
-}
-
-fn exposed(env: &CredentialMap) -> Vec<String> {
-    env.iter()
-        .map(|(name, value)| format!("{name}={}", value.expose_secret()))
-        .collect()
 }
 
 fn path(user: UserId) -> String {

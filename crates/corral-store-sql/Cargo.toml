@@ -19,7 +19,6 @@ zeroize = "1.9.2"
 [dev-dependencies]
 corral-core = { path = "../corral-core", features = ["contract"] }
 sqlx = { workspace = true, features = ["any"] }
-ssh-key.workspace = true
 tempfile.workspace = true
 testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
 tokio = { workspace = true, features = ["macros", "rt"] }

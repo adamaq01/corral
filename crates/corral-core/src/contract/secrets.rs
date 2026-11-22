@@ -1,9 +1,10 @@
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::SecretString;
 use uuid::Uuid;
 
-use super::{credential, seed_user};
+use super::seed_user;
 use crate::domain::UserId;
-use crate::ports::{CredentialMap, SecretStore, UserRepo};
+use crate::fakes::{credential, exposed};
+use crate::ports::{SecretStore, UserRepo};
 
 pub async fn secret_store(users: &dyn UserRepo, store: &dyn SecretStore) {
     values_round_trip(users, store).await;
@@ -93,10 +94,4 @@ async fn users_are_isolated(users: &dyn UserRepo, store: &dyn SecretStore) {
     let stranger = UserId(Uuid::new_v4());
     assert_eq!(store.names(stranger).await.unwrap(), []);
     assert!(store.load(stranger).await.unwrap().is_empty());
-}
-
-fn exposed(env: &CredentialMap) -> Vec<String> {
-    env.iter()
-        .map(|(name, value)| format!("{name}={}", value.expose_secret()))
-        .collect()
 }

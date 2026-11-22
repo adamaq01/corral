@@ -3,14 +3,12 @@ use std::sync::Arc;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use corral_core::Error;
-use corral_core::contract::secrets;
+use corral_core::contract::{secrets, seed_user};
 use corral_core::domain::{CredentialName, User, UserId};
 use corral_core::ports::SecretStore;
 use corral_store_sql::{DatabaseSecretStore, Keyring, Store};
 use secrecy::{ExposeSecret, SecretString};
 use sqlx::{AnyConnection, Connection};
-
-use crate::contract::seed_user;
 
 pub async fn database_secret_store(store: &Arc<Store>, url: &str) {
     secrets::secret_store(store.as_ref(), &sealed(store, &[(1, 1)])).await;

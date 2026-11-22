@@ -1,18 +1,30 @@
-use std::sync::Arc;
+use futures_util::future::join_all;
+use ssh_key::PublicKey;
+use ssh_key::public::{Ed25519PublicKey, KeyData};
+use uuid::Uuid;
 
-use chrono::{DateTime, Utc};
-use corral_core::Error;
-use corral_core::domain::{
+use super::{at, new_user, seed_user, unique};
+use crate::Error;
+use crate::domain::{
     Handle, ImageKey, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey,
     SshPublicKey, User, UserId,
 };
-use corral_core::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
-use ssh_key::PublicKey;
-use ssh_key::public::{Ed25519PublicKey, KeyData};
-use tokio::task::JoinSet;
-use uuid::Uuid;
+use crate::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
 
-pub async fn user_repo(repo: &dyn UserRepo) {
+pub async fn every_repo(
+    users: &dyn UserRepo,
+    keys: &dyn KeyRepo,
+    sandboxes: &dyn SandboxRepo,
+    local_accounts: &dyn LocalAccountRepo,
+) {
+    user_repo(users).await;
+    key_repo(users, keys).await;
+    sandbox_repo(users, sandboxes).await;
+    sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
+    local_account_repo(local_accounts).await;
+}
+
+async fn user_repo(repo: &dyn UserRepo) {
     let older = new_user("adam", at(1));
     let newer = User {
         email: None,
@@ -106,7 +118,7 @@ pub async fn user_repo(repo: &dyn UserRepo) {
     assert_eq!(repo.get(absent.id).await.unwrap(), None);
 }
 
-pub async fn key_repo(users: &dyn UserRepo, keys: &dyn KeyRepo) {
+async fn key_repo(users: &dyn UserRepo, keys: &dyn KeyRepo) {
     let adam = seed_user(users, "adam").await;
     let eve = seed_user(users, "eve").await;
     let older = new_key(adam.id, 1);
@@ -167,7 +179,7 @@ pub async fn key_repo(users: &dyn UserRepo, keys: &dyn KeyRepo) {
     assert_eq!(keys.by_public_key(&older.public_key).await.unwrap(), None);
 }
 
-pub async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     let adam = seed_user(users, "adam").await;
     let eve = seed_user(users, "eve").await;
     let main = new_sandbox(adam.id, "main", 1);
@@ -248,23 +260,24 @@ pub async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
 }
 
-pub async fn sandbox_limit_holds_under_concurrent_inserts<R>(
+async fn sandbox_limit_holds_under_concurrent_inserts(
     users: &dyn UserRepo,
-    sandboxes: Arc<R>,
-) where
-    R: SandboxRepo + 'static,
-{
+    sandboxes: &dyn SandboxRepo,
+) {
     const MAX: usize = 3;
     let adam = seed_user(users, "adam").await;
-    let mut inserts = JoinSet::new();
-    for n in 0..4 * MAX {
-        let sandboxes = sandboxes.clone();
-        let sandbox = new_sandbox(adam.id, &format!("box-{n}"), 1);
-        inserts.spawn(async move { sandboxes.insert(&sandbox, MAX).await });
-    }
+    let candidates: Vec<Sandbox> = (0..4 * MAX)
+        .map(|n| new_sandbox(adam.id, &format!("box-{n}"), 1))
+        .collect();
+    let outcomes = join_all(
+        candidates
+            .iter()
+            .map(|sandbox| sandboxes.insert(sandbox, MAX)),
+    )
+    .await;
     let (mut admitted, mut refused) = (0, 0);
-    while let Some(outcome) = inserts.join_next().await {
-        match outcome.unwrap() {
+    for outcome in outcomes {
+        match outcome {
             Ok(()) => admitted += 1,
             Err(Error::LimitReached(_)) => refused += 1,
             Err(other) => panic!("{other:?}"),
@@ -274,7 +287,7 @@ pub async fn sandbox_limit_holds_under_concurrent_inserts<R>(
     assert_eq!(sandboxes.list(adam.id).await.unwrap().len(), MAX);
 }
 
-pub async fn local_account_repo(repo: &dyn LocalAccountRepo) {
+async fn local_account_repo(repo: &dyn LocalAccountRepo) {
     let prefix = unique("acct");
     let account = |suffix: &str, role: Role, created: i64| LocalAccount {
         username: handle(&format!("{prefix}{suffix}")),
@@ -385,31 +398,4 @@ fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
     }
-}
-
-fn at(seconds: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(1_800_000_000 + seconds, 0).expect("timestamp in range")
-}
-
-fn unique(label: &str) -> String {
-    format!("{label}-{}", &Uuid::new_v4().simple().to_string()[..12])
-}
-
-fn new_user(label: &str, created_at: DateTime<Utc>) -> User {
-    let handle = unique(label);
-    User {
-        id: UserId(Uuid::new_v4()),
-        subject: format!("subject-{handle}"),
-        email: Some(format!("{handle}@example.com")),
-        handle: Handle::parse(&handle).expect("valid handle"),
-        role: Role::Member,
-        enabled: true,
-        created_at,
-    }
-}
-
-pub async fn seed_user(users: &dyn UserRepo, label: &str) -> User {
-    let user = new_user(label, at(0));
-    users.insert(&user).await.expect("seed user");
-    user
 }

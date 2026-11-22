@@ -1,10 +1,10 @@
-mod contract;
 mod secrets;
 
 use std::sync::Arc;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::Error;
+use corral_core::contract::repos;
 use corral_core::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey, SshPublicKey, User,
     UserId,
@@ -25,11 +25,7 @@ async fn meets_every_repo_contract(url: &str) {
             .await
             .expect("reconnect to a migrated database"),
     );
-    contract::user_repo(&*store).await;
-    contract::key_repo(&*store, &*store).await;
-    contract::sandbox_repo(&*store, &*store).await;
-    contract::sandbox_limit_holds_under_concurrent_inserts(&*store, store.clone()).await;
-    contract::local_account_repo(&*store).await;
+    repos::every_repo(&*store, &*store, &*store, &*store).await;
     secrets::database_secret_store(&store, url).await;
 }
 

@@ -16,7 +16,7 @@ vaultrs = "0.8.0"
 
 [dev-dependencies]
 base64.workspace = true
-corral-core = { path = "../corral-core", features = ["contract", "fakes"] }
+corral-core = { path = "../corral-core", features = ["contract"] }
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
 tracing-subscriber.workspace = true

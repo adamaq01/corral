@@ -1,5 +1,5 @@
 pub mod app;
-#[cfg(feature = "contract")]
+#[cfg(any(test, feature = "contract"))]
 #[allow(clippy::missing_panics_doc)]
 pub mod contract;
 pub mod domain;
