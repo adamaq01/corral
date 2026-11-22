@@ -17,7 +17,7 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 
-use crate::cli::{Cli, Command, KeysCommand, LocalAccountCommand};
+use crate::cli::{Cli, Command, ConfigCommand, KeysCommand, LocalAccountCommand};
 use crate::config::Config;
 
 #[tokio::main]
@@ -38,6 +38,11 @@ async fn main() -> Result<()> {
             local_account::create(&Config::load(&cli.config)?, &username, admin).await
         }
         Command::Healthcheck => healthcheck::run(&Config::load(&cli.config)?).await,
+        Command::Config(ConfigCommand::Check) => {
+            Config::load(&cli.config)?;
+            println!("{} is valid", cli.config.display());
+            Ok(())
+        }
         Command::Keys(KeysCommand::Generate) => {
             print!("{}", keys::generate());
             Ok(())

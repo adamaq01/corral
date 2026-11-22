@@ -27,6 +27,9 @@ pub enum Command {
     /// Generate keys.
     #[command(subcommand)]
     Keys(KeysCommand),
+    /// Check the config file.
+    #[command(subcommand)]
+    Config(ConfigCommand),
     /// Exit 0 when both listeners answer `/healthz`, for container healthchecks.
     Healthcheck,
 }
@@ -46,4 +49,10 @@ pub enum LocalAccountCommand {
 pub enum KeysCommand {
     /// Print fresh `CORRAL_SESSION_KEY` and `CORRAL_SECRETS_KEY` lines for a .env file.
     Generate,
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCommand {
+    /// Exit 0 when the config file is valid; otherwise print why it is not and exit 1.
+    Check,
 }
