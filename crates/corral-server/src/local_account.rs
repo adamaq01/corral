@@ -2,7 +2,6 @@ use std::io::{BufRead, IsTerminal};
 
 use anyhow::{Context, Result, ensure};
 use corral_core::domain::{Handle, Role};
-use corral_core::ports::ManagedAccounts;
 use secrecy::SecretString;
 
 use crate::config::Config;

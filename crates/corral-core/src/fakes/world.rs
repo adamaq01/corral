@@ -116,6 +116,7 @@ pub fn exposed(env: &CredentialMap) -> Vec<String> {
 
 pub struct World {
     pub users: Arc<MemoryUserRepo>,
+    pub provider: Arc<FakeProvider>,
     pub accounts: Accounts,
     pub keys: Keys,
     pub credentials: Credentials,
@@ -125,14 +126,18 @@ pub struct World {
 }
 
 impl World {
-    /// With one identity provider, a `FakeProvider`.
+    /// With one identity provider, `provider`.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_providers(vec![Arc::new(FakeProvider::default())])
+        Self::with_providers(Vec::new())
     }
 
+    /// With `provider` and `others`.
     #[must_use]
-    pub fn with_providers(providers: Vec<Arc<dyn IdentityProvider>>) -> Self {
+    pub fn with_providers(others: Vec<Arc<dyn IdentityProvider>>) -> Self {
+        let provider = Arc::new(FakeProvider::default());
+        let mut providers: Vec<Arc<dyn IdentityProvider>> = vec![provider.clone()];
+        providers.extend(others);
         let users = Arc::new(MemoryUserRepo::default());
         let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
         let engine = Arc::new(FakeEngine::default());
@@ -167,6 +172,7 @@ impl World {
             credentials,
             engine,
             users,
+            provider,
             access,
         }
     }

@@ -1,24 +1,41 @@
 mod auth;
 mod client_address;
+mod cookies;
 mod dto;
 mod error;
 mod extract;
 mod json_only;
-mod login_limiter;
+mod provider;
 mod routes;
 mod session;
 mod state;
+#[cfg(feature = "testing")]
+#[allow(clippy::missing_panics_doc)]
+pub mod testing;
 
 use std::sync::Arc;
 
-use axum::Router;
 use axum::middleware::from_fn;
+use axum::{Extension, Router};
 
+pub use auth::CurrentAdmin;
+pub use client_address::ClientAddress;
 pub use cookie::Key;
-pub use state::{Api, Providers, SshEndpoint};
+pub use error::ApiError;
+pub use extract::{JsonBody, PathParam, QueryParams};
+pub use provider::{Identities, ProviderCookies, ProviderRoutes, SignedIn, provider_path};
+pub use state::{Api, SshEndpoint};
 
-pub fn router(api: Api) -> Router {
-    routes::all()
+/// The API with each provider's routes under `provider_path` of its id.
+pub fn router(api: Api, providers: Vec<ProviderRoutes>) -> Router {
+    let api = Arc::new(api);
+    let listed = providers.iter().map(ProviderRoutes::listing).collect();
+    let mut router = routes::all(listed).with_state(api.clone());
+    for provider in providers {
+        let path = provider_path(&provider.id);
+        router = router.nest(&path, provider.mounted());
+    }
+    router
         .layer(from_fn(json_only::require_json))
-        .with_state(Arc::new(api))
+        .layer(Extension(api))
 }

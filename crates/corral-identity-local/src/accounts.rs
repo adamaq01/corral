@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use corral_core::domain::{Handle, Role};
 use corral_core::{Error, Result};
-use corral_sql::{Migrations, Pool, db_error, on_pool, parsed, variant, variant_name};
+use corral_sql::{Migrations, Pool, db_error, on_pool, parsed, unique_as, variant, variant_name};
 
 pub(crate) struct Account {
     pub username: Handle,
@@ -74,7 +74,10 @@ impl AccountTable {
             .await
             .map(|_| ())
         })
-        .map_err(db_error)
+        .map_err(unique_as(format!(
+            "account {} already exists",
+            account.username
+        )))
     }
 
     pub async fn set_password_hash(&self, username: &Handle, hash: &str) -> Result<bool> {

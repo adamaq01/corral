@@ -4,14 +4,16 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use corral_core::Error;
 
+/// A `{"error": message}` response with its status. Core errors keep their message; internal
+/// ones are logged and answered with a generic 500.
 #[derive(Debug)]
-pub(crate) struct ApiError {
+pub struct ApiError {
     status: StatusCode,
     message: String,
 }
 
 impl ApiError {
-    pub(crate) fn new(status: StatusCode, message: impl Into<String>) -> Self {
+    pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
@@ -25,10 +27,6 @@ impl ApiError {
 
     pub(crate) fn unauthenticated() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "not signed in")
-    }
-
-    pub(crate) fn not_found() -> Self {
-        Self::new(StatusCode::NOT_FOUND, "not found")
     }
 
     fn rejected(status: StatusCode, body_text: String) -> Self {

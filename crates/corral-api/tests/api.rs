@@ -1,98 +1,90 @@
-use std::collections::BTreeMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, Request, StatusCode, header};
-use cookie::{Cookie, SameSite};
-use corral_api::{Api, Key, Providers, SshEndpoint, router};
-use corral_core::app::Credentials;
-use corral_core::domain::{CredentialName, Handle, Role, UserId};
-use corral_core::fakes::{ADAM_KEY, EngineCall, FakeEngine, MAX_SANDBOXES, World};
-use corral_core::ports::{
-    Answer, Challenge, CredentialMap, Identity, IdentityProvider, ManagedAccounts, Method,
-    PendingLogin, SecretStore,
+use axum::http::{Request, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{delete, get};
+use cookie::SameSite;
+use corral_api::testing::{Browser, Reply, api, trusting_provider};
+use corral_api::{
+    ApiError, ClientAddress, CurrentAdmin, Identities, PathParam, ProviderCookies, ProviderRoutes,
+    router,
 };
+use corral_core::app::Credentials;
+use corral_core::domain::{CredentialName, Role, UserId};
+use corral_core::fakes::{ADAM_KEY, EngineCall, MAX_SANDBOXES, PROVIDER, World};
+use corral_core::ports::{CredentialMap, Identity, SecretStore};
 use corral_core::{Error, Result};
-use corral_identity_local::LocalProvider;
-use corral_sql::testing::Databases;
 use secrecy::SecretString;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tower::ServiceExt;
 
-const PASSWORD: &str = "correct horse battery";
-const IDP_URL: &str = "https://idp.example.com/authorize?state=public-state";
+const STEP: &str = "step";
+const STEP_SECRET: &str = "the-private-step-secret";
 
-struct StubOidc {
-    role: Option<Role>,
+fn description(value: &Value) -> Map<String, Value> {
+    value.as_object().unwrap().clone()
 }
 
-#[async_trait]
-impl IdentityProvider for StubOidc {
-    fn id(&self) -> &'static str {
-        "oidc"
-    }
-
-    fn method(&self) -> Method {
-        Method::Redirect
-    }
-
-    async fn challenge(&self) -> Result<Challenge> {
-        Ok(Challenge::Redirect {
-            url: IDP_URL.to_owned(),
-            pending: PendingLogin("private-verifier".to_owned()),
-        })
-    }
-
-    async fn verify(&self, answer: Answer) -> Result<Identity> {
-        let Answer::Redirect { pending, params } = answer else {
-            return Err(Error::Invalid("redirect only".to_owned()));
-        };
-        let expected = [("code", "code-1"), ("state", "public-state")]
-            .map(|(name, value)| (name.to_owned(), value.to_owned()));
-        if pending.0 != "private-verifier" || params != BTreeMap::from(expected) {
-            return Err(Error::Forbidden);
-        }
-        Ok(Identity {
-            subject: "sub-1".to_owned(),
-            username: "Adam".to_owned(),
-            email: Some("adam@example.com".to_owned()),
-            role: self.role,
-        })
+/// The trusting provider as the world's provider, with a two-step login and the toolkit's other
+/// extractors on show.
+fn stub() -> ProviderRoutes {
+    let trusting = trusting_provider(PROVIDER);
+    ProviderRoutes {
+        description: description(&json!({ "label": "Stub", "kind": "trusting" })),
+        routes: trusting
+            .routes
+            .route("/start", get(stub_start))
+            .route("/finish", get(stub_finish))
+            .route("/address", get(stub_address))
+            .route("/identities/{subject}", delete(stub_delete)),
+        ..trusting
     }
 }
 
-struct CountingLocal {
-    local: LocalProvider,
-    verifications: AtomicUsize,
+async fn stub_start(cookies: ProviderCookies) -> impl IntoResponse {
+    let cookies = cookies.set(STEP, &STEP_SECRET, Duration::from_secs(600));
+    (cookies, StatusCode::NO_CONTENT)
 }
 
-#[async_trait]
-impl IdentityProvider for CountingLocal {
-    fn id(&self) -> &str {
-        self.local.id()
+async fn stub_finish(cookies: ProviderCookies, identities: Identities) -> Response {
+    let Some(secret) = cookies.get::<String>(STEP) else {
+        return ApiError::new(StatusCode::BAD_REQUEST, "no login in progress").into_response();
+    };
+    assert_eq!(secret, STEP_SECRET);
+    let identity = Identity {
+        subject: "sub-1".to_owned(),
+        username: "Adam".to_owned(),
+        email: Some("adam@example.com".to_owned()),
+        role: Some(Role::Member),
+    };
+    let cookies = cookies.remove(STEP);
+    match identities.sign_in(identity).await {
+        Ok(signed_in) => (
+            StatusCode::FOUND,
+            cookies,
+            signed_in,
+            [(header::LOCATION, "/")],
+        )
+            .into_response(),
+        Err(error) => (cookies, error).into_response(),
     }
+}
 
-    fn method(&self) -> Method {
-        self.local.method()
-    }
+async fn stub_address(ClientAddress(address): ClientAddress) -> String {
+    address.to_string()
+}
 
-    async fn challenge(&self) -> Result<Challenge> {
-        self.local.challenge().await
-    }
-
-    async fn verify(&self, answer: Answer) -> Result<Identity> {
-        self.verifications.fetch_add(1, Ordering::SeqCst);
-        self.local.verify(answer).await
-    }
-
-    fn accounts(&self) -> Option<&dyn ManagedAccounts> {
-        self.local.accounts()
-    }
+async fn stub_delete(
+    CurrentAdmin(admin): CurrentAdmin,
+    identities: Identities,
+    PathParam(subject): PathParam<String>,
+) -> Result<axum::Json<Value>, ApiError> {
+    let had_user = identities.delete(&admin, &subject).await?;
+    Ok(axum::Json(json!({ "hadUser": had_user })))
 }
 
 struct BrokenVault;
@@ -123,92 +115,37 @@ impl SecretStore for BrokenVault {
     }
 }
 
+#[derive(Default)]
 struct Setup {
-    oidc: Option<StubOidc>,
-    local: bool,
     secure: bool,
     trust_forwarded_for: bool,
     secrets: Option<Arc<dyn SecretStore>>,
 }
 
-impl Default for Setup {
-    fn default() -> Self {
-        Self {
-            oidc: None,
-            local: true,
-            secure: false,
-            trust_forwarded_for: false,
-            secrets: None,
-        }
-    }
-}
-
 struct Corral {
     app: Router,
-    local: Arc<CountingLocal>,
-    engine: Arc<FakeEngine>,
-    _databases: Databases,
+    world: World,
 }
 
 impl Setup {
-    async fn build(self) -> Corral {
-        let databases = Databases::sqlite();
-        let local = Arc::new(CountingLocal {
-            local: LocalProvider::open(databases.pool().await).await.unwrap(),
-            verifications: AtomicUsize::new(0),
-        });
-        let mut providers: Vec<Arc<dyn IdentityProvider>> = Vec::new();
-        if self.local {
-            providers.push(local.clone());
+    fn build(self) -> Corral {
+        let world = World::new();
+        let mut api = api(&world);
+        api.secure_cookies = self.secure;
+        api.trust_forwarded_for = self.trust_forwarded_for;
+        if let Some(secrets) = self.secrets {
+            api.credentials = Credentials::new(secrets);
         }
-        if let Some(oidc) = self.oidc {
-            providers.push(Arc::new(oidc));
-        }
-        let world = World::with_providers(providers.clone());
-        let api = Api {
-            accounts: world.accounts.clone(),
-            keys: world.keys.clone(),
-            credentials: self
-                .secrets
-                .map_or_else(|| world.credentials.clone(), Credentials::new),
-            sandboxes: world.sandboxes.clone(),
-            providers: Providers::new(providers),
-            ssh: SshEndpoint {
-                host: "corral.example.com".to_owned(),
-                port: 48291,
-            },
-            session_key: Key::generate(),
-            secure_cookies: self.secure,
-            trust_forwarded_for: self.trust_forwarded_for,
-        };
         Corral {
-            app: router(api),
-            local,
-            engine: world.engine,
-            _databases: databases,
+            app: router(api, vec![stub()]),
+            world,
         }
     }
 }
 
 impl Corral {
-    async fn new() -> Self {
-        Setup::default().build().await
-    }
-
-    async fn account(&self, username: &str, role: Role) {
-        self.local
-            .local
-            .create(
-                &Handle::parse(username).unwrap(),
-                SecretString::from(PASSWORD),
-                role,
-            )
-            .await
-            .unwrap();
-    }
-
-    fn verifications(&self) -> usize {
-        self.local.verifications.load(Ordering::SeqCst)
+    fn new() -> Self {
+        Setup::default().build()
     }
 
     fn browser(&self) -> Browser {
@@ -216,136 +153,32 @@ impl Corral {
     }
 
     fn browser_at(&self, peer: &str) -> Browser {
-        Browser {
-            app: self.app.clone(),
-            peer: peer.parse().unwrap(),
-            cookies: BTreeMap::new(),
-        }
+        Browser::new(&self.app, peer)
     }
 
-    async fn signed_in(&self, username: &str, role: Role) -> Browser {
-        self.account(username, role).await;
+    async fn signed_in(&self, handle: &str, role: Role) -> Browser {
         let mut browser = self.browser();
-        let reply = browser.sign_in(username, PASSWORD).await;
+        let reply = sign_in(&mut browser, handle, Some(role)).await;
         assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
         browser
     }
 }
 
-struct Reply {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: Vec<u8>,
-}
-
-impl Reply {
-    fn json(&self) -> Value {
-        serde_json::from_slice(&self.body).unwrap_or_else(|_| panic!("not JSON: {}", self.text()))
-    }
-
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.body).into_owned()
-    }
-
-    fn set_cookie(&self, name: &str) -> Cookie<'static> {
-        self.headers
-            .get_all(header::SET_COOKIE)
-            .iter()
-            .map(|value| Cookie::parse(value.to_str().unwrap().to_owned()).unwrap())
-            .find(|cookie| cookie.name() == name)
-            .unwrap_or_else(|| panic!("no {name} cookie in {:?}", self.headers))
-    }
-}
-
-struct Browser {
-    app: Router,
-    peer: SocketAddr,
-    cookies: BTreeMap<String, String>,
-}
-
-impl Browser {
-    async fn send(&mut self, mut request: Request<Body>) -> Reply {
-        if !self.cookies.is_empty() {
-            let line = self
-                .cookies
-                .iter()
-                .map(|(name, value)| format!("{name}={value}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            request
-                .headers_mut()
-                .insert(header::COOKIE, line.parse().unwrap());
-        }
-        request.extensions_mut().insert(ConnectInfo(self.peer));
-        let response = self.app.clone().oneshot(request).await.unwrap();
-        let (parts, body) = response.into_parts();
-        for value in parts.headers.get_all(header::SET_COOKIE) {
-            let cookie = Cookie::parse(value.to_str().unwrap().to_owned()).unwrap();
-            if cookie.value().is_empty() {
-                self.cookies.remove(cookie.name());
-            } else {
-                self.cookies
-                    .insert(cookie.name().to_owned(), cookie.value().to_owned());
-            }
-        }
-        Reply {
-            status: parts.status,
-            headers: parts.headers,
-            body: axum::body::to_bytes(body, usize::MAX)
-                .await
-                .unwrap()
-                .to_vec(),
-        }
-    }
-
-    async fn call(&mut self, method: &str, uri: &str, body: Option<Value>) -> Reply {
-        let mut request = Request::builder().method(method).uri(uri);
-        if matches!(method, "POST" | "PUT") {
-            request = request.header(header::CONTENT_TYPE, "application/json");
-        }
-        let body = body.map_or_else(Body::empty, |body| Body::from(body.to_string()));
-        self.send(request.body(body).unwrap()).await
-    }
-
-    async fn get(&mut self, uri: &str) -> Reply {
-        self.call("GET", uri, None).await
-    }
-
-    async fn post(&mut self, uri: &str, body: Value) -> Reply {
-        self.call("POST", uri, Some(body)).await
-    }
-
-    async fn sign_in(&mut self, username: &str, password: &str) -> Reply {
-        self.sign_in_via(username, password, None).await
-    }
-
-    async fn sign_in_via(
-        &mut self,
-        username: &str,
-        password: &str,
-        forwarded_for: Option<&str>,
-    ) -> Reply {
-        let mut request =
-            Request::post("/auth/local/finish").header(header::CONTENT_TYPE, "application/json");
-        if let Some(forwarded_for) = forwarded_for {
-            request = request.header("x-forwarded-for", forwarded_for);
-        }
-        let body = json!({ "username": username, "password": password }).to_string();
-        self.send(request.body(Body::from(body)).unwrap()).await
-    }
+async fn sign_in(browser: &mut Browser, handle: &str, role: Option<Role>) -> Reply {
+    let login = json!({ "subject": handle, "username": handle, "role": role });
+    browser.post("/auth/test/login", login).await
 }
 
 #[tokio::test]
-async fn local_login_sets_a_session_and_me_returns_the_handle() {
-    let corral = Corral::new().await;
-    corral.account("adam", Role::Member).await;
+async fn a_provider_sign_in_starts_a_session_and_me_returns_the_handle() {
+    let corral = Corral::new();
     let mut browser = corral.browser();
     assert_eq!(
         browser.get("/api/me").await.status,
         StatusCode::UNAUTHORIZED
     );
 
-    let reply = browser.sign_in("adam", PASSWORD).await;
+    let reply = sign_in(&mut browser, "adam", Some(Role::Member)).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(
         reply.json(),
@@ -364,115 +197,94 @@ async fn local_login_sets_a_session_and_me_returns_the_handle() {
 }
 
 #[tokio::test]
-async fn sixth_failed_local_login_within_the_window_is_429() {
-    let corral = Corral::new().await;
-    corral.account("adam", Role::Member).await;
-    corral.account("eve", Role::Member).await;
-    let mut attacker = corral.browser_at("198.51.100.66:4000");
-    for attempt in 1..=5 {
-        let reply = attacker
-            .sign_in("adam", &format!("guess number {attempt}"))
-            .await;
-        assert_eq!(reply.status, StatusCode::FORBIDDEN, "attempt {attempt}");
-    }
-    let verified = corral.verifications();
-    for password in ["guess number 6", PASSWORD] {
-        let reply = attacker.sign_in("adam", password).await;
-        assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS, "{password}");
-        assert!(reply.json()["error"].is_string());
-    }
+async fn a_person_without_a_role_gets_no_session() {
+    let corral = Corral::new();
+    let mut browser = corral.browser();
+    let refused = sign_in(&mut browser, "adam", None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.json(), json!({ "error": "forbidden" }));
+    assert!(!refused.headers.contains_key(header::SET_COOKIE));
     assert_eq!(
-        attacker.get("/api/me").await.status,
+        browser.get("/api/me").await.status,
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(corral.verifications(), verified);
-
-    let mut adam = corral.browser_at("192.0.2.1:5000");
-    assert_eq!(
-        adam.sign_in("adam", PASSWORD).await.status,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-    let mut eve = corral.browser_at("192.0.2.2:5000");
-    assert_eq!(eve.sign_in("eve", PASSWORD).await.status, StatusCode::OK);
 }
 
 #[tokio::test]
-async fn successful_local_logins_are_never_limited() {
-    let corral = Corral::new().await;
-    corral.account("adam", Role::Member).await;
+async fn providers_are_listed_as_they_describe_themselves() {
+    let world = World::new();
+    let other = ProviderRoutes {
+        id: "other".to_owned(),
+        description: description(&json!({ "label": "Other", "anything": [1, 2] })),
+        routes: Router::new(),
+    };
+    let app = router(api(&world), vec![stub(), other]);
+    let mut browser = Browser::new(&app, "192.0.2.10:50000");
+    assert_eq!(
+        browser.get("/auth/providers").await.json(),
+        json!([
+            { "id": "test", "label": "Stub", "kind": "trusting" },
+            { "id": "other", "label": "Other", "anything": [1, 2] },
+        ])
+    );
+    for uri in ["/auth/other/login", "/auth/nope/start", "/auth/test/nope"] {
+        assert_eq!(
+            browser.get(uri).await.status,
+            StatusCode::NOT_FOUND,
+            "{uri}"
+        );
+    }
+
+    let none = router(api(&world), Vec::new());
+    let mut browser = Browser::new(&none, "192.0.2.10:50000");
+    assert_eq!(browser.get("/auth/providers").await.json(), json!([]));
+    assert_eq!(
+        browser.get("/auth/test/start").await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn provider_cookies_carry_a_login_between_steps_unreadable() {
+    let corral = Corral::new();
     let mut browser = corral.browser();
-    for attempt in 1..=10 {
-        let reply = browser.sign_in("adam", PASSWORD).await;
-        assert_eq!(reply.status, StatusCode::OK, "attempt {attempt}");
-    }
+    let start = browser.get("/auth/test/start").await;
+    assert_eq!(start.status, StatusCode::NO_CONTENT);
+    let step = start.set_cookie("corral_test_step");
+    assert!(!step.value().contains("private"), "{step}");
+    assert_eq!(step.max_age(), Some(cookie::time::Duration::minutes(10)));
+    assert_eq!(step.path(), Some("/auth/test"));
+
+    let done = browser.get("/auth/test/finish").await;
+    assert_eq!(done.status, StatusCode::FOUND, "{}", done.text());
+    assert_eq!(done.headers[header::LOCATION], "/");
+    assert!(!browser.cookies.contains_key("corral_test_step"));
+    assert_eq!(
+        browser.get("/api/me").await.json(),
+        json!({ "handle": "adam", "email": "adam@example.com", "role": "member" })
+    );
+
+    let replay = browser.get("/auth/test/finish").await;
+    assert_eq!(replay.status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
-async fn a_successful_login_does_not_reset_the_failures() {
-    let corral = Corral::new().await;
-    corral.account("adam", Role::Member).await;
-    corral.account("eve", Role::Member).await;
-    let mut attacker = corral.browser_at("198.51.100.66:4000");
-    for attempt in 1..=4 {
-        let reply = attacker.sign_in("adam", &format!("guess {attempt}")).await;
-        assert_eq!(reply.status, StatusCode::FORBIDDEN, "attempt {attempt}");
-    }
-    assert_eq!(
-        attacker.sign_in("eve", PASSWORD).await.status,
-        StatusCode::OK
-    );
-    assert_eq!(
-        attacker.sign_in("adam", "guess 5").await.status,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        attacker.sign_in("eve", PASSWORD).await.status,
-        StatusCode::TOO_MANY_REQUESTS
-    );
-}
+async fn a_provider_cookie_and_a_session_cannot_stand_in_for_each_other() {
+    let corral = Corral::new();
+    let mut browser = corral.browser();
+    browser.get("/auth/test/start").await;
+    let step = browser.cookies["corral_test_step"].clone();
+    let mut forger = corral.browser();
+    forger.cookies.insert("corral_session".to_owned(), step);
+    assert_eq!(forger.get("/api/me").await.status, StatusCode::UNAUTHORIZED);
 
-#[tokio::test]
-async fn trusted_forwarded_for_addresses_are_counted_separately() {
-    let corral = Setup {
-        trust_forwarded_for: true,
-        ..Setup::default()
-    }
-    .build()
-    .await;
-    corral.account("adam", Role::Member).await;
-    let mut proxy = corral.browser_at("10.0.0.2:40000");
-    for i in 1..=5 {
-        let reply = proxy
-            .sign_in_via(&format!("user-{i}"), PASSWORD, Some("203.0.113.7"))
-            .await;
-        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{i}");
-    }
-    for spoofed in ["203.0.113.7", "198.51.100.9, 203.0.113.7"] {
-        let reply = proxy.sign_in_via("adam", PASSWORD, Some(spoofed)).await;
-        assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS, "{spoofed}");
-    }
-    let reply = proxy
-        .sign_in_via("adam", PASSWORD, Some("203.0.113.7, 198.51.100.9"))
-        .await;
-    assert_eq!(reply.status, StatusCode::OK);
-}
-
-#[tokio::test]
-async fn untrusted_forwarded_for_is_ignored() {
-    let corral = Corral::new().await;
-    corral.account("adam", Role::Member).await;
-    let mut client = corral.browser_at("10.0.0.2:40000");
-    for i in 1..=5 {
-        let forwarded = format!("203.0.113.{i}");
-        let reply = client
-            .sign_in_via(&format!("user-{i}"), PASSWORD, Some(&forwarded))
-            .await;
-        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{i}");
-    }
-    let reply = client
-        .sign_in_via("adam", PASSWORD, Some("198.51.100.9"))
-        .await;
-    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    let session = adam.cookies["corral_session"].clone();
+    adam.cookies.insert("corral_test_step".to_owned(), session);
+    assert_eq!(
+        adam.get("/auth/test/finish").await.status,
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[tokio::test]
@@ -480,183 +292,95 @@ async fn cookies_lack_secure_when_base_url_is_http() {
     for secure in [false, true] {
         let corral = Setup {
             secure,
-            oidc: Some(StubOidc {
-                role: Some(Role::Member),
-            }),
             ..Setup::default()
         }
-        .build()
-        .await;
-        corral.account("adam", Role::Member).await;
+        .build();
         let mut browser = corral.browser();
-        let session = browser
-            .sign_in("adam", PASSWORD)
+        let session = sign_in(&mut browser, "adam", Some(Role::Member))
             .await
             .set_cookie("corral_session");
-        let login = browser
-            .get("/auth/oidc/start")
+        let step = browser
+            .get("/auth/test/start")
             .await
-            .set_cookie("corral_login");
-        for cookie in [session, login] {
+            .set_cookie("corral_test_step");
+        assert_eq!(session.path(), Some("/"));
+        for cookie in [session, step] {
             assert_eq!(cookie.secure(), secure.then_some(true), "{cookie}");
             assert_eq!(cookie.http_only(), Some(true), "{cookie}");
             assert_eq!(cookie.same_site(), Some(SameSite::Lax), "{cookie}");
-            assert_eq!(cookie.path(), Some("/"), "{cookie}");
         }
     }
 }
 
 #[tokio::test]
-async fn providers_follow_the_configuration() {
-    let both = Setup {
-        oidc: Some(StubOidc {
-            role: Some(Role::Member),
-        }),
-        ..Setup::default()
-    }
-    .build()
-    .await;
-    assert_eq!(
-        both.browser().get("/auth/providers").await.json(),
-        json!([
-            { "id": "local", "method": "password" },
-            { "id": "oidc", "method": "redirect" },
-        ])
-    );
-
-    let oidc_only = Setup {
-        oidc: Some(StubOidc {
-            role: Some(Role::Admin),
-        }),
-        local: false,
-        ..Setup::default()
-    }
-    .build()
-    .await;
-    let mut browser = oidc_only.browser();
-    assert_eq!(
-        browser.get("/auth/providers").await.json(),
-        json!([{ "id": "oidc", "method": "redirect" }])
-    );
-    assert_eq!(
-        browser.sign_in("adam", PASSWORD).await.status,
-        StatusCode::NOT_FOUND
-    );
-    let password_to_oidc = browser
-        .post(
-            "/auth/oidc/finish",
-            json!({ "username": "adam", "password": PASSWORD }),
-        )
-        .await;
-    assert_eq!(password_to_oidc.status, StatusCode::BAD_REQUEST);
-    browser.get("/auth/oidc/start").await;
-    browser
-        .get("/auth/oidc/finish?code=code-1&state=public-state")
-        .await;
-    assert_eq!(browser.get("/api/me").await.json()["role"], "admin");
-    for (method, uri, body) in ADMIN_ROUTES
-        .iter()
-        .filter(|(_, uri, _)| uri.contains("local"))
-    {
-        let body = body.map(|body| serde_json::from_str(body).unwrap());
-        let reply = browser.call(method, uri, body).await;
-        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {uri}");
+async fn the_client_address_is_the_peer_unless_a_trusted_proxy_says_otherwise() {
+    async fn address(corral: &Corral, forwarded_for: Option<&str>) -> String {
+        let mut request = Request::get("/auth/test/address");
+        if let Some(forwarded_for) = forwarded_for {
+            request = request.header("x-forwarded-for", forwarded_for);
+        }
+        let mut browser = corral.browser_at("10.0.0.2:40000");
+        browser
+            .send(request.body(Body::empty()).unwrap())
+            .await
+            .text()
     }
 
-    let local_only = Corral::new().await;
-    let mut browser = local_only.browser();
-    assert_eq!(
-        browser.get("/auth/providers").await.json(),
-        json!([{ "id": "local", "method": "password" }])
-    );
-    let start = browser.get("/auth/local/start").await;
-    assert_eq!(start.status, StatusCode::OK);
-    assert_eq!(start.json(), json!({ "id": "local", "method": "password" }));
-    assert!(!start.headers.contains_key(header::SET_COOKIE));
-    assert_eq!(
-        browser
-            .get("/auth/local/finish?code=code-1&state=public-state")
-            .await
-            .status,
-        StatusCode::BAD_REQUEST
-    );
-    assert_eq!(
-        browser.get("/auth/oidc/start").await.status,
-        StatusCode::NOT_FOUND
-    );
-    assert_eq!(
-        browser
-            .get("/auth/oidc/finish?code=code-1&state=public-state")
-            .await
-            .status,
-        StatusCode::NOT_FOUND
-    );
+    let untrusting = Corral::new();
+    for forwarded_for in [None, Some("203.0.113.7"), Some("198.51.100.9, 203.0.113.7")] {
+        assert_eq!(address(&untrusting, forwarded_for).await, "10.0.0.2");
+    }
+    let trusting = Setup {
+        trust_forwarded_for: true,
+        ..Setup::default()
+    }
+    .build();
+    for (forwarded_for, client) in [
+        (None, "10.0.0.2"),
+        (Some("203.0.113.7"), "203.0.113.7"),
+        (Some("198.51.100.9, 203.0.113.7"), "203.0.113.7"),
+        (Some("not an address"), "10.0.0.2"),
+    ] {
+        assert_eq!(
+            address(&trusting, forwarded_for).await,
+            client,
+            "{forwarded_for:?}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn oidc_login_round_trip_starts_a_session() {
-    let corral = Setup {
-        oidc: Some(StubOidc {
-            role: Some(Role::Member),
-        }),
-        ..Setup::default()
-    }
-    .build()
-    .await;
-    let mut browser = corral.browser();
-    let start = browser.get("/auth/oidc/start").await;
-    assert_eq!(start.status, StatusCode::FOUND);
-    assert_eq!(start.headers[header::LOCATION], IDP_URL);
-    let login_cookie = start.set_cookie("corral_login");
-    assert!(!login_cookie.value().contains("private-verifier"));
-    assert_eq!(
-        login_cookie.max_age(),
-        Some(cookie::time::Duration::minutes(10))
-    );
-
-    let done = browser
-        .get("/auth/oidc/finish?code=code-1&state=public-state")
-        .await;
-    assert_eq!(done.status, StatusCode::FOUND, "{}", done.text());
-    assert_eq!(done.headers[header::LOCATION], "/");
-    assert!(!browser.cookies.contains_key("corral_login"));
-    assert_eq!(
-        browser.get("/api/me").await.json(),
-        json!({ "handle": "adam", "email": "adam@example.com", "role": "member" })
-    );
-
-    let replay = browser
-        .get("/auth/oidc/finish?code=code-1&state=public-state")
-        .await;
-    assert_eq!(replay.status, StatusCode::BAD_REQUEST);
+async fn a_missing_peer_address_fails_closed() {
+    let corral = Corral::new();
+    let request = Request::get("/auth/test/address")
+        .body(Body::empty())
+        .unwrap();
+    let response = corral.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
-async fn oidc_callback_refusals_are_403_and_end_the_login() {
-    let corral = Setup {
-        oidc: Some(StubOidc { role: None }),
-        ..Setup::default()
-    }
-    .build()
-    .await;
-    let mut browser = corral.browser();
-    browser.get("/auth/oidc/start").await;
-    let wrong_state = browser
-        .get("/auth/oidc/finish?code=code-1&state=forged")
+async fn admins_delete_identities_through_their_provider() {
+    let corral = Corral::new();
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut adam = owning_everything(&corral, "adam").await;
+    let deleted = root
+        .call("DELETE", "/auth/test/identities/adam", None)
         .await;
-    assert_eq!(wrong_state.status, StatusCode::FORBIDDEN);
-    assert!(!browser.cookies.contains_key("corral_login"));
+    assert_eq!(deleted.json(), json!({ "hadUser": true }));
+    assert_eq!(adam.get("/api/me").await.status, StatusCode::FORBIDDEN);
+    assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
+    let never = root
+        .call("DELETE", "/auth/test/identities/never", None)
+        .await;
+    assert_eq!(never.json(), json!({ "hadUser": false }));
+    assert_eq!(corral.world.provider.forgotten(), ["adam", "never"]);
 
-    browser.get("/auth/oidc/start").await;
-    let not_a_member = browser
-        .get("/auth/oidc/finish?code=code-1&state=public-state")
-        .await;
-    assert_eq!(not_a_member.status, StatusCode::FORBIDDEN);
-    assert_eq!(not_a_member.json(), json!({ "error": "forbidden" }));
-    assert_eq!(
-        browser.get("/api/me").await.status,
-        StatusCode::UNAUTHORIZED
-    );
+    let mut eve = corral.signed_in("eve", Role::Member).await;
+    let refused = eve.call("DELETE", "/auth/test/identities/root", None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(root.get("/api/me").await.status, StatusCode::OK);
+    owns_nothing_after_signing_up_again(&corral, "adam").await;
 }
 
 const API_ROUTES: &[(&str, &str)] = &[
@@ -697,27 +421,16 @@ const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
         None,
     ),
     ("GET", "/api/admin/sandboxes", None),
-    ("GET", "/api/admin/providers/local/accounts", None),
-    (
-        "POST",
-        "/api/admin/providers/local/accounts",
-        Some(r#"{"username":"mallory","password":"a long enough password","role":"admin"}"#),
-    ),
-    (
-        "PUT",
-        "/api/admin/providers/local/accounts/adam/password",
-        Some(r#"{"password":"a long enough password"}"#),
-    ),
-    ("DELETE", "/api/admin/providers/local/accounts/adam", None),
 ];
 
 #[tokio::test]
 async fn unauthenticated_api_calls_are_401() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let routes = API_ROUTES
         .iter()
         .copied()
-        .chain(ADMIN_ROUTES.iter().map(|&(method, uri, _)| (method, uri)));
+        .chain(ADMIN_ROUTES.iter().map(|&(method, uri, _)| (method, uri)))
+        .chain([("DELETE", "/auth/test/identities/adam")]);
     let mut anonymous = corral.browser();
     let mut forger = corral.browser();
     forger
@@ -734,7 +447,7 @@ async fn unauthenticated_api_calls_are_401() {
 
 #[tokio::test]
 async fn a_disabled_users_session_is_403() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let users = root.get("/api/admin/users").await.json();
@@ -764,7 +477,7 @@ async fn a_disabled_users_session_is_403() {
 
 #[tokio::test]
 async fn create_then_list_shows_the_ssh_username() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let created = adam.post("/api/sandboxes", json!({ "name": "main" })).await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
@@ -794,7 +507,7 @@ async fn create_then_list_shows_the_ssh_username() {
 
 #[tokio::test]
 async fn sandbox_actions_reach_the_engine() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     for name in ["main", "spare"] {
         adam.post("/api/sandboxes", json!({ "name": name })).await;
@@ -806,10 +519,10 @@ async fn sandbox_actions_reach_the_engine() {
         "sleeping"
     );
 
-    corral.engine.set_waking(true);
+    corral.world.engine.set_waking(true);
     let waking = adam.call("POST", "/api/sandboxes/main/wake", None).await;
     assert_eq!(waking.json(), json!({ "ready": false }));
-    corral.engine.set_waking(false);
+    corral.world.engine.set_waking(false);
     let ready = adam.call("POST", "/api/sandboxes/main/wake", None).await;
     assert_eq!(ready.json(), json!({ "ready": true }));
     let restart = adam.call("POST", "/api/sandboxes/main/restart", None).await;
@@ -844,7 +557,7 @@ async fn sandbox_actions_reach_the_engine() {
 
 #[tokio::test]
 async fn credential_values_never_come_back() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let mut replies = vec![
         adam.call(
@@ -887,27 +600,19 @@ async fn credential_values_never_come_back() {
 
 #[tokio::test]
 async fn member_calling_admin_routes_is_403() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     for (method, uri, body) in ADMIN_ROUTES {
         let body = body.map(|body| serde_json::from_str(body).unwrap());
         let reply = adam.call(method, uri, body).await;
         assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {uri}");
     }
-    let mut mallory = corral.browser();
-    assert_eq!(
-        mallory
-            .sign_in("mallory", "a long enough password")
-            .await
-            .status,
-        StatusCode::FORBIDDEN
-    );
     assert_eq!(adam.get("/api/me").await.status, StatusCode::OK);
 }
 
 #[tokio::test]
-async fn admins_manage_users_provider_accounts_and_all_sandboxes() {
-    let corral = Corral::new().await;
+async fn admins_list_users_and_all_sandboxes() {
+    let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     adam.post("/api/sandboxes", json!({ "name": "main" })).await;
@@ -925,66 +630,6 @@ async fn admins_manage_users_provider_accounts_and_all_sandboxes() {
     assert_eq!(handles, ["root", "adam"]);
     assert_eq!(users[1]["role"], "member");
     assert_eq!(users[1]["status"], "active");
-
-    let created = root
-        .post(
-            "/api/admin/providers/local/accounts",
-            json!({ "username": "eve", "password": "eve's first password", "role": "member" }),
-        )
-        .await;
-    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
-    let reset = root
-        .call(
-            "PUT",
-            "/api/admin/providers/local/accounts/eve/password",
-            Some(json!({ "password": "eve's second password" })),
-        )
-        .await;
-    assert_eq!(reset.status, StatusCode::NO_CONTENT);
-    let mut eve = corral.browser_at("192.0.2.77:1000");
-    assert_eq!(
-        eve.sign_in("eve", "eve's second password").await.status,
-        StatusCode::OK
-    );
-    let accounts = root.get("/api/admin/providers/local/accounts").await;
-    assert!(!accounts.text().contains("argon2"), "{}", accounts.text());
-    let listed: Vec<Value> = accounts
-        .json()
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|account| json!([account["username"], account["role"]]))
-        .collect();
-    assert_eq!(
-        listed,
-        [
-            json!(["adam", "member"]),
-            json!(["eve", "member"]),
-            json!(["root", "admin"])
-        ]
-    );
-
-    let deleted = root
-        .call("DELETE", "/api/admin/providers/local/accounts/eve", None)
-        .await;
-    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
-    assert_eq!(eve.get("/api/me").await.status, StatusCode::FORBIDDEN);
-    let reused = root
-        .post(
-            "/api/admin/providers/local/accounts",
-            json!({ "username": "eve", "password": "a newcomer's password", "role": "member" }),
-        )
-        .await;
-    assert_eq!(reused.status, StatusCode::CREATED);
-    let mut newcomer = corral.browser_at("192.0.2.78:1000");
-    assert_eq!(
-        newcomer
-            .sign_in("eve", "a newcomer's password")
-            .await
-            .status,
-        StatusCode::OK
-    );
-    assert_eq!(newcomer.get("/api/me").await.json()["handle"], "eve");
 }
 
 fn user_id(users: &Value, handle: &str) -> String {
@@ -1023,16 +668,15 @@ async fn owning_everything(corral: &Corral, handle: &str) -> Browser {
     browser
 }
 
-async fn owns_nothing_after_signing_up_again(corral: &Corral, root: &mut Browser, handle: &str) {
-    let reused = root
-        .post(
-            "/api/admin/providers/local/accounts",
-            json!({ "username": handle, "password": PASSWORD, "role": "member" }),
-        )
-        .await;
-    assert_eq!(reused.status, StatusCode::CREATED, "{}", reused.text());
-    let mut again = corral.browser_at("192.0.2.99:1000");
-    assert_eq!(again.sign_in(handle, PASSWORD).await.status, StatusCode::OK);
+async fn owns_nothing_after_signing_up_again(corral: &Corral, handle: &str) {
+    assert!(
+        corral
+            .world
+            .provider
+            .forgotten()
+            .contains(&handle.to_owned())
+    );
+    let mut again = corral.signed_in(handle, Role::Member).await;
     for listing in ["/api/sandboxes", "/api/keys", "/api/credentials"] {
         assert_eq!(again.get(listing).await.json(), json!([]), "{listing}");
     }
@@ -1040,7 +684,7 @@ async fn owns_nothing_after_signing_up_again(corral: &Corral, root: &mut Browser
 
 #[tokio::test]
 async fn admins_delete_users_with_everything_they_own() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = owning_everything(&corral, "adam").await;
     let adam_id = user_id(&root.get("/api/admin/users").await.json(), "adam");
@@ -1053,9 +697,8 @@ async fn admins_delete_users_with_everything_they_own() {
     let users = root.get("/api/admin/users").await.json();
     assert!(!users.to_string().contains("adam"), "{users}");
     assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
-    let accounts = root.get("/api/admin/providers/local/accounts").await.json();
-    assert!(!accounts.to_string().contains("adam"), "{accounts}");
     let engine_deletes = corral
+        .world
         .engine
         .calls()
         .into_iter()
@@ -1069,42 +712,38 @@ async fn admins_delete_users_with_everything_they_own() {
         StatusCode::NOT_FOUND
     );
 
-    owns_nothing_after_signing_up_again(&corral, &mut root, "adam").await;
+    owns_nothing_after_signing_up_again(&corral, "adam").await;
 }
 
 #[tokio::test]
 async fn users_delete_themselves() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = owning_everything(&corral, "adam").await;
 
     let deleted = adam.call("DELETE", "/api/me", None).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
     assert_eq!(adam.get("/api/me").await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(
-        adam.sign_in("adam", PASSWORD).await.status,
-        StatusCode::FORBIDDEN
-    );
     let users = root.get("/api/admin/users").await.json();
     assert!(!users.to_string().contains("adam"), "{users}");
     assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
 
-    owns_nothing_after_signing_up_again(&corral, &mut root, "adam").await;
+    owns_nothing_after_signing_up_again(&corral, "adam").await;
 }
 
 #[tokio::test]
 async fn a_failed_self_deletion_is_finished_by_the_same_user() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = owning_everything(&corral, "adam").await;
-    corral.engine.fail_deletes_after(Some(0));
+    corral.world.engine.fail_deletes_after(Some(0));
     let failed = adam.call("DELETE", "/api/me", None).await;
     assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(adam.get("/api/me").await.status, StatusCode::FORBIDDEN);
     let users = root.get("/api/admin/users").await.json();
     assert_eq!(users[1]["status"], "deleting");
 
-    corral.engine.fail_deletes_after(None);
+    corral.world.engine.fail_deletes_after(None);
     let finished = adam.call("DELETE", "/api/me", None).await;
     assert_eq!(
         finished.status,
@@ -1114,12 +753,12 @@ async fn a_failed_self_deletion_is_finished_by_the_same_user() {
     );
     let users = root.get("/api/admin/users").await.json();
     assert!(!users.to_string().contains("adam"), "{users}");
-    owns_nothing_after_signing_up_again(&corral, &mut root, "adam").await;
+    owns_nothing_after_signing_up_again(&corral, "adam").await;
 }
 
 #[tokio::test]
 async fn a_disabled_user_cannot_delete_themselves() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = owning_everything(&corral, "adam").await;
     let adam_id = user_id(&root.get("/api/admin/users").await.json(), "adam");
@@ -1134,6 +773,7 @@ async fn a_disabled_user_cannot_delete_themselves() {
     );
     assert_eq!(
         corral
+            .world
             .engine
             .calls()
             .iter()
@@ -1154,7 +794,7 @@ async fn a_disabled_user_cannot_delete_themselves() {
 
 #[tokio::test]
 async fn core_errors_map_to_their_status() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let main = json!({ "name": "main" });
     adam.post("/api/sandboxes", main.clone()).await;
@@ -1208,7 +848,7 @@ async fn core_errors_map_to_their_status() {
 
 #[tokio::test]
 async fn keys_are_added_listed_and_removed() {
-    let corral = Corral::new().await;
+    let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let added = adam
         .post(
@@ -1246,20 +886,20 @@ async fn keys_are_added_listed_and_removed() {
 
 #[tokio::test]
 async fn post_and_put_accept_only_json() {
-    let corral = Corral::new().await;
-    corral.account("adam", Role::Member).await;
+    let corral = Corral::new();
     let mut adam = corral.browser();
     let form = adam
         .send(
-            Request::post("/auth/local/finish")
+            Request::post("/auth/test/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(Body::from(format!("username=adam&password={PASSWORD}")))
+                .body(Body::from("subject=adam&username=adam&role=admin"))
                 .unwrap(),
         )
         .await;
     assert_eq!(form.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    assert_eq!(corral.verifications(), 0);
-    adam.sign_in("adam", PASSWORD).await;
+    assert!(!form.headers.contains_key(header::SET_COOKIE));
+    assert_eq!(adam.get("/api/me").await.status, StatusCode::UNAUTHORIZED);
+    sign_in(&mut adam, "adam", Some(Role::Member)).await;
     adam.post("/api/sandboxes", json!({ "name": "main" })).await;
 
     for (method, uri, content_type) in [
@@ -1307,8 +947,7 @@ async fn internal_errors_have_a_generic_body() {
         secrets: Some(Arc::new(BrokenVault)),
         ..Setup::default()
     }
-    .build()
-    .await;
+    .build();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let reply = adam
         .call(
@@ -1319,19 +958,4 @@ async fn internal_errors_have_a_generic_body() {
         .await;
     assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(reply.json(), json!({ "error": "internal error" }));
-}
-
-#[tokio::test]
-async fn a_missing_peer_address_fails_closed() {
-    let corral = Corral::new().await;
-    corral.account("adam", Role::Member).await;
-    let request = Request::post("/auth/local/finish")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "username": "adam", "password": PASSWORD }).to_string(),
-        ))
-        .unwrap();
-    let response = corral.app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert!(response.headers().get(header::SET_COOKIE).is_none());
 }

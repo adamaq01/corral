@@ -5,18 +5,15 @@ use axum::http::HeaderMap;
 use axum::http::request::Parts;
 
 use crate::error::ApiError;
-use crate::state::AppState;
+use crate::state::shared;
 
-pub(crate) struct ClientAddress(pub IpAddr);
+/// The client's address: the peer's, or with `trust_forwarded_for` the one the proxy appended
+/// to `X-Forwarded-For`. A 500 when the server was not given peer addresses.
+pub struct ClientAddress(pub IpAddr);
 
-impl FromRequestParts<AppState> for ClientAddress {
-    type Rejection = ApiError;
-
-    fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> impl Future<Output = Result<Self, ApiError>> + Send {
-        let forwarded = state
+impl ClientAddress {
+    fn extract(parts: &Parts) -> Result<Self, ApiError> {
+        let forwarded = shared(parts)?
             .trust_forwarded_for
             .then(|| rightmost_forwarded_for(&parts.headers))
             .flatten();
@@ -24,9 +21,20 @@ impl FromRequestParts<AppState> for ClientAddress {
             .extensions
             .get::<ConnectInfo<SocketAddr>>()
             .map(|ConnectInfo(peer)| peer.ip());
-        std::future::ready(forwarded.or(peer).map(Self).ok_or_else(|| {
+        forwarded.or(peer).map(Self).ok_or_else(|| {
             ApiError::internal(&"no peer address: serve with into_make_service_with_connect_info")
-        }))
+        })
+    }
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientAddress {
+    type Rejection = ApiError;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _: &S,
+    ) -> impl Future<Output = Result<Self, ApiError>> + Send {
+        std::future::ready(Self::extract(parts))
     }
 }
 

@@ -1,248 +1,375 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use corral_core::Error;
+use axum::Router;
+use axum::http::StatusCode;
+use corral_api::router;
+use corral_api::testing::{Browser, Reply, api};
 use corral_core::domain::{Handle, Role};
-use corral_core::ports::{
-    Answer, Challenge, Identity, IdentityProvider, ManagedAccounts, Method, PendingLogin,
-};
+use corral_core::fakes::World;
 use corral_identity_local::LocalProvider;
 use corral_sql::Pool;
 use corral_sql::testing::Databases;
 use secrecy::SecretString;
+use serde_json::{Value, json};
 
 const PASSWORD: &str = "correct horse battery";
 
-async fn with(pool: Pool, accounts: &[(&str, Role)]) -> LocalProvider {
-    let provider = LocalProvider::open(pool).await.unwrap();
-    for &(username, role) in accounts {
-        provider
-            .create(&handle(username), password(PASSWORD), role)
-            .await
-            .unwrap();
+struct Corral {
+    app: Router,
+    local: Arc<LocalProvider>,
+    peers: std::cell::Cell<u8>,
+}
+
+impl Corral {
+    async fn open(pool: Pool, accounts: &[(&str, Role)]) -> Self {
+        let local = Arc::new(LocalProvider::open(pool).await.unwrap());
+        for &(username, role) in accounts {
+            local
+                .create(&handle(username), SecretString::from(PASSWORD), role)
+                .await
+                .unwrap();
+        }
+        let world = World::with_providers(vec![local.clone()]);
+        Self {
+            app: router(api(&world), vec![local.routes()]),
+            local,
+            peers: std::cell::Cell::new(0),
+        }
     }
-    provider
+
+    /// A browser at an address of its own, so failures from one test step never limit another.
+    fn browser(&self) -> Browser {
+        self.peers.set(self.peers.get() + 1);
+        self.browser_at(&format!("192.0.2.{}:5000", self.peers.get()))
+    }
+
+    fn browser_at(&self, peer: &str) -> Browser {
+        Browser::new(&self.app, peer)
+    }
+
+    async fn signed_in(&self, username: &str) -> Browser {
+        let mut browser = self.browser();
+        let reply = log_in(&mut browser, username, PASSWORD).await;
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+        browser
+    }
 }
 
 fn handle(value: &str) -> Handle {
     Handle::parse(value).unwrap()
 }
 
-fn password(value: &str) -> SecretString {
-    SecretString::from(value)
+async fn log_in(browser: &mut Browser, username: &str, password: &str) -> Reply {
+    let form = json!({ "username": username, "password": password });
+    browser.post("/auth/local/login", form).await
 }
 
-async fn verify(
-    provider: &LocalProvider,
-    username: &str,
-    attempt: &str,
-) -> Result<Identity, Error> {
-    provider
-        .verify(Answer::Password {
-            username: username.to_owned(),
-            password: password(attempt),
-        })
-        .await
-}
-
-async fn a_password_provider_named_local(pool: Pool) {
-    let provider = with(pool, &[]).await;
-    assert_eq!(provider.id(), "local");
-    assert_eq!(provider.method(), Method::Password);
-    assert_eq!(provider.challenge().await.unwrap(), Challenge::Password);
-    let redirect = Answer::Redirect {
-        pending: PendingLogin("x".to_owned()),
-        params: [("code".to_owned(), "x".to_owned())].into(),
-    };
-    assert!(matches!(
-        provider.verify(redirect).await,
-        Err(Error::Invalid(_))
-    ));
+fn usernames(accounts: &Value) -> Vec<&str> {
+    accounts
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|account| account["username"].as_str().unwrap())
+        .collect()
 }
 
 async fn the_account_decides_the_role(pool: Pool) {
-    let provider = with(pool, &[("adam", Role::Member), ("root", Role::Admin)]).await;
+    let corral = Corral::open(pool, &[("adam", Role::Member), ("root", Role::Admin)]).await;
+    let mut adam = corral.browser();
+    let reply = log_in(&mut adam, "adam", PASSWORD).await;
     assert_eq!(
-        verify(&provider, "adam", PASSWORD).await.unwrap(),
-        Identity {
-            subject: "adam".to_owned(),
-            username: "adam".to_owned(),
-            email: None,
-            role: Some(Role::Member),
-        }
+        reply.json(),
+        json!({ "handle": "adam", "email": null, "role": "member" })
     );
+    assert_eq!(adam.get("/api/me").await.json()["role"], "member");
+    let mut root = corral.signed_in("root").await;
+    assert_eq!(root.get("/api/me").await.json()["role"], "admin");
     assert_eq!(
-        verify(&provider, "root", PASSWORD).await.unwrap().role,
-        Some(Role::Admin)
+        root.get("/auth/providers").await.json(),
+        json!([{
+            "id": "local",
+            "label": "Local account",
+            "kind": "password",
+            "login": "/auth/local/login",
+        }])
     );
 }
 
 async fn wrong_password_and_unknown_user_are_both_forbidden(pool: Pool) {
-    let provider = with(pool, &[("adam", Role::Member)]).await;
+    let corral = Corral::open(pool, &[("adam", Role::Member)]).await;
     for (username, attempt) in [
         ("adam", "wrong horse battery"),
         ("nobody", PASSWORD),
         ("Not A Handle", PASSWORD),
         ("Adam", PASSWORD),
     ] {
-        let result = verify(&provider, username, attempt).await;
-        assert!(
-            matches!(result, Err(Error::Forbidden)),
-            "{username}: {result:?}"
+        let mut browser = corral.browser();
+        let reply = log_in(&mut browser, username, attempt).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{username}");
+        assert_eq!(reply.json(), json!({ "error": "forbidden" }));
+        assert_eq!(
+            browser.get("/api/me").await.status,
+            StatusCode::UNAUTHORIZED
         );
     }
 }
 
+async fn fastest_refusal(corral: &Corral, username: &str) -> Duration {
+    let mut best = Duration::MAX;
+    for _ in 0..3 {
+        let mut browser = corral.browser();
+        let started = Instant::now();
+        let reply = log_in(&mut browser, username, "wrong horse battery").await;
+        best = best.min(started.elapsed());
+        assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    }
+    best
+}
+
 async fn unknown_usernames_cost_a_full_password_check(pool: Pool) {
-    let provider = with(pool, &[("adam", Role::Member)]).await;
-    let fastest = |username: &'static str| {
-        let provider = &provider;
-        async move {
-            let mut best = Duration::MAX;
-            for _ in 0..3 {
-                let started = Instant::now();
-                let _ = verify(provider, username, "wrong horse battery").await;
-                best = best.min(started.elapsed());
-            }
-            best
-        }
-    };
-    let known = fastest("adam").await;
+    let corral = Corral::open(pool, &[("adam", Role::Member)]).await;
+    let known = fastest_refusal(&corral, "adam").await;
     for unknown in ["nobody", "Not A Handle"] {
-        let elapsed = fastest(unknown).await;
+        let elapsed = fastest_refusal(&corral, unknown).await;
         assert!(elapsed * 4 > known, "{unknown}: {elapsed:?} vs {known:?}");
     }
 }
 
-async fn an_existing_username_conflicts(pool: Pool) {
-    let provider = with(pool, &[("adam", Role::Member)]).await;
-    assert!(matches!(
-        provider
-            .create(&handle("adam"), password("another password"), Role::Admin)
-            .await,
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(
-        verify(&provider, "adam", PASSWORD).await.unwrap().role,
-        Some(Role::Member)
-    );
-}
-
-async fn short_passwords_are_refused(pool: Pool) {
-    let provider = with(pool, &[("adam", Role::Member)]).await;
-    let short = password("elevenchars");
-    assert!(matches!(
-        provider
-            .create(&handle("eve"), short.clone(), Role::Member)
-            .await,
-        Err(Error::Invalid(_))
-    ));
-    assert!(matches!(
-        provider.set_password("adam", short).await,
-        Err(Error::Invalid(_))
-    ));
-    assert!(matches!(
-        verify(&provider, "eve", "elevenchars").await,
-        Err(Error::Forbidden)
-    ));
-    assert!(verify(&provider, "adam", PASSWORD).await.is_ok());
-}
-
-async fn accounts_are_listed_created_and_reset(pool: Pool) {
+async fn admins_create_list_and_reset_accounts(pool: Pool) {
     // Byte order puts '-' before digits, unlike most locale collations.
-    let provider = with(pool, &[("adam1", Role::Member), ("adam-b", Role::Admin)]).await;
-    provider
-        .create(&handle("eve"), password(PASSWORD), Role::Admin)
-        .await
-        .unwrap();
-    provider
-        .set_password("adam1", password("a brand new password"))
-        .await
-        .unwrap();
-    assert!(matches!(
-        verify(&provider, "adam1", PASSWORD).await,
-        Err(Error::Forbidden)
-    ));
-    assert!(
-        verify(&provider, "adam1", "a brand new password")
-            .await
-            .is_ok()
+    let corral = Corral::open(
+        pool,
+        &[
+            ("root", Role::Admin),
+            ("adam1", Role::Member),
+            ("adam-b", Role::Admin),
+        ],
+    )
+    .await;
+    let mut root = corral.signed_in("root").await;
+    let created = root
+        .post(
+            "/auth/local/accounts",
+            json!({ "username": "eve", "password": "eve's first password", "role": "member" }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+    let duplicate = root
+        .post(
+            "/auth/local/accounts",
+            json!({ "username": "eve", "password": "another password", "role": "admin" }),
+        )
+        .await;
+    assert_eq!(duplicate.status, StatusCode::CONFLICT);
+    assert_eq!(
+        duplicate.json(),
+        json!({ "error": "conflict: account eve already exists" })
     );
-    assert!(verify(&provider, "adam-b", PASSWORD).await.is_ok());
-    for absent in ["ghost", "Not A Handle"] {
-        assert!(matches!(
-            provider.set_password(absent, password(PASSWORD)).await,
-            Err(Error::NotFound(_))
-        ));
+    assert!(matches!(
+        corral
+            .local
+            .create(&handle("eve"), SecretString::from(PASSWORD), Role::Admin)
+            .await,
+        Err(corral_core::Error::Conflict(message)) if message == "account eve already exists"
+    ));
+
+    let reset = root
+        .call(
+            "PUT",
+            "/auth/local/accounts/eve/password",
+            Some(json!({ "password": "eve's second password" })),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::NO_CONTENT);
+    let mut eve = corral.browser();
+    assert_eq!(
+        log_in(&mut eve, "eve", "eve's first password").await.status,
+        StatusCode::FORBIDDEN
+    );
+    let mut eve = corral.browser();
+    let signed_in = log_in(&mut eve, "eve", "eve's second password").await;
+    assert_eq!(signed_in.json()["role"], "member");
+    for absent in ["ghost", "Not_A_Handle"] {
+        let reply = root
+            .call(
+                "PUT",
+                &format!("/auth/local/accounts/{absent}/password"),
+                Some(json!({ "password": "a long enough password" })),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{absent}");
     }
 
-    let listed: Vec<(String, String, Role)> = provider
-        .list()
-        .await
+    let accounts = root.get("/auth/local/accounts").await;
+    assert!(!accounts.text().contains("argon2"), "{}", accounts.text());
+    let listed: Vec<Value> = accounts
+        .json()
+        .as_array()
         .unwrap()
-        .into_iter()
-        .map(|account| (account.subject, account.username.to_string(), account.role))
+        .iter()
+        .map(|account| json!([account["username"], account["role"]]))
         .collect();
-    let row = |name: &str, role| (name.to_owned(), name.to_owned(), role);
     assert_eq!(
         listed,
         [
-            row("adam-b", Role::Admin),
-            row("adam1", Role::Member),
-            row("eve", Role::Admin),
+            json!(["adam-b", "admin"]),
+            json!(["adam1", "member"]),
+            json!(["eve", "member"]),
+            json!(["root", "admin"]),
         ]
+    );
+    assert!(accounts.json()[0]["createdAt"].is_string());
+}
+
+async fn short_passwords_are_refused(pool: Pool) {
+    let corral = Corral::open(pool, &[("root", Role::Admin)]).await;
+    let mut root = corral.signed_in("root").await;
+    let created = root
+        .post(
+            "/auth/local/accounts",
+            json!({ "username": "eve", "password": "elevenchars", "role": "member" }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::BAD_REQUEST);
+    assert!(!created.text().contains("elevenchars"));
+    let reset = root
+        .call(
+            "PUT",
+            "/auth/local/accounts/root/password",
+            Some(json!({ "password": "elevenchars" })),
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::BAD_REQUEST);
+    let mut eve = corral.browser();
+    assert_eq!(
+        log_in(&mut eve, "eve", "elevenchars").await.status,
+        StatusCode::FORBIDDEN
+    );
+    corral.signed_in("root").await;
+}
+
+async fn deleting_an_account_deletes_its_user_and_frees_the_username(pool: Pool) {
+    let corral = Corral::open(pool, &[("root", Role::Admin), ("adam", Role::Member)]).await;
+    let mut root = corral.signed_in("root").await;
+    let mut adam = corral.signed_in("adam").await;
+    let created = adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+
+    let deleted = root.call("DELETE", "/auth/local/accounts/adam", None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
+    assert_eq!(adam.get("/api/me").await.status, StatusCode::FORBIDDEN);
+    assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
+    let users = root.get("/api/admin/users").await.json();
+    assert!(!users.to_string().contains("adam"), "{users}");
+    assert_eq!(
+        usernames(&root.get("/auth/local/accounts").await.json()),
+        ["root"]
+    );
+    let mut again = corral.browser();
+    assert_eq!(
+        log_in(&mut again, "adam", PASSWORD).await.status,
+        StatusCode::FORBIDDEN
+    );
+    for absent in ["adam", "Not_A_Handle"] {
+        let reply = root
+            .call("DELETE", &format!("/auth/local/accounts/{absent}"), None)
+            .await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND, "{absent}");
+    }
+
+    let reused = root
+        .post(
+            "/auth/local/accounts",
+            json!({ "username": "adam", "password": "a newcomer's password", "role": "member" }),
+        )
+        .await;
+    assert_eq!(reused.status, StatusCode::CREATED);
+    let mut newcomer = corral.browser();
+    let reply = log_in(&mut newcomer, "adam", "a newcomer's password").await;
+    assert_eq!(reply.json()["handle"], "adam");
+    assert_eq!(newcomer.get("/api/sandboxes").await.json(), json!([]));
+}
+
+async fn an_account_that_never_logged_in_is_only_forgotten(pool: Pool) {
+    let corral = Corral::open(pool, &[("root", Role::Admin), ("never", Role::Member)]).await;
+    let mut root = corral.signed_in("root").await;
+    let before = root.get("/api/admin/users").await.json();
+    let deleted = root
+        .call("DELETE", "/auth/local/accounts/never", None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(root.get("/api/admin/users").await.json(), before);
+    assert_eq!(
+        usernames(&root.get("/auth/local/accounts").await.json()),
+        ["root"]
     );
 }
 
-async fn a_deleted_account_is_gone_and_its_username_free(pool: Pool) {
-    let provider = with(pool, &[("adam", Role::Member), ("eve", Role::Member)]).await;
-    assert!(provider.delete("adam").await.unwrap());
-    assert!(!provider.delete("adam").await.unwrap());
-    assert!(!provider.delete("Not A Handle").await.unwrap());
-    assert!(matches!(
-        verify(&provider, "adam", PASSWORD).await,
-        Err(Error::Forbidden)
-    ));
-    let left: Vec<String> = provider
-        .list()
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|account| account.subject)
-        .collect();
-    assert_eq!(left, ["eve"]);
-
-    provider
-        .create(
-            &handle("adam"),
-            password("a newcomer's password"),
-            Role::Admin,
-        )
-        .await
-        .unwrap();
+async fn a_user_deleting_themselves_loses_their_account(pool: Pool) {
+    let corral = Corral::open(pool, &[("root", Role::Admin), ("adam", Role::Member)]).await;
+    let mut adam = corral.signed_in("adam").await;
+    let deleted = adam.call("DELETE", "/api/me", None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let mut root = corral.signed_in("root").await;
     assert_eq!(
-        verify(&provider, "adam", "a newcomer's password")
-            .await
-            .unwrap()
-            .role,
-        Some(Role::Admin)
+        usernames(&root.get("/auth/local/accounts").await.json()),
+        ["root"]
     );
+}
+
+async fn only_admins_manage_accounts(pool: Pool) {
+    let corral = Corral::open(pool, &[("adam", Role::Member)]).await;
+    let routes = [
+        ("GET", "/auth/local/accounts", None),
+        (
+            "POST",
+            "/auth/local/accounts",
+            Some(
+                json!({ "username": "mallory", "password": "a long enough password", "role": "admin" }),
+            ),
+        ),
+        (
+            "PUT",
+            "/auth/local/accounts/adam/password",
+            Some(json!({ "password": "a long enough password" })),
+        ),
+        ("DELETE", "/auth/local/accounts/adam", None),
+    ];
+    let mut adam = corral.signed_in("adam").await;
+    let mut anonymous = corral.browser();
+    for (method, uri, body) in routes {
+        let reply = anonymous.call(method, uri, body.clone()).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {uri}");
+        let reply = adam.call(method, uri, body).await;
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+    let mut mallory = corral.browser();
+    assert_eq!(
+        log_in(&mut mallory, "mallory", "a long enough password")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    corral.signed_in("adam").await;
 }
 
 async fn reopening_keeps_the_accounts(pool: Pool) {
-    with(pool.clone(), &[("adam", Role::Member)]).await;
-    let reopened = LocalProvider::open(pool).await.unwrap();
-    assert!(verify(&reopened, "adam", PASSWORD).await.is_ok());
+    Corral::open(pool.clone(), &[("adam", Role::Member)]).await;
+    let reopened = Corral::open(pool, &[]).await;
+    reopened.signed_in("adam").await;
 }
 
 async fn every_scenario(databases: &Databases) {
-    a_password_provider_named_local(databases.pool().await).await;
     the_account_decides_the_role(databases.pool().await).await;
     wrong_password_and_unknown_user_are_both_forbidden(databases.pool().await).await;
     unknown_usernames_cost_a_full_password_check(databases.pool().await).await;
-    an_existing_username_conflicts(databases.pool().await).await;
+    admins_create_list_and_reset_accounts(databases.pool().await).await;
     short_passwords_are_refused(databases.pool().await).await;
-    accounts_are_listed_created_and_reset(databases.pool().await).await;
-    a_deleted_account_is_gone_and_its_username_free(databases.pool().await).await;
+    deleting_an_account_deletes_its_user_and_frees_the_username(databases.pool().await).await;
+    an_account_that_never_logged_in_is_only_forgotten(databases.pool().await).await;
+    a_user_deleting_themselves_loses_their_account(databases.pool().await).await;
+    only_admins_manage_accounts(databases.pool().await).await;
     reopening_keeps_the_accounts(databases.pool().await).await;
 }
 

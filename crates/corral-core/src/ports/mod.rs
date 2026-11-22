@@ -5,9 +5,6 @@ mod repos;
 mod secrets;
 
 pub use engine::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
-pub use identity::{
-    Answer, Challenge, Identity, IdentityProvider, ManagedAccount, ManagedAccounts, Method,
-    PendingLogin, split_user_subject, user_subject,
-};
+pub use identity::{Identity, IdentityProvider};
 pub use repos::{KeyRepo, SandboxRepo, UserRepo};
 pub use secrets::SecretStore;

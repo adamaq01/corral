@@ -3,6 +3,9 @@ name = "corral-api"
 version.workspace = true
 edition.workspace = true
 
+[features]
+testing = ["corral-core/fakes", "dep:tower"]
+
 [dependencies]
 axum = { workspace = true, features = ["macros"] }
 axum-extra = { version = "0.12.6", features = ["cookie-private"] }
@@ -12,17 +15,16 @@ corral-core = { path = "../corral-core" }
 secrecy = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
+tower = { workspace = true, features = ["util"], optional = true }
 tracing.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 async-trait.workspace = true
-corral-core = { path = "../corral-core", features = ["fakes"] }
-corral-identity-local = { path = "../corral-identity-local" }
+corral-api = { path = ".", features = ["testing"] }
 corral-sql = { path = "../corral-sql", features = ["testing"] }
 corral-store-sql = { path = "../corral-store-sql" }
 tokio = { workspace = true, features = ["macros", "rt"] }
-tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true

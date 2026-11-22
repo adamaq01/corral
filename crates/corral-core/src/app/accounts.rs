@@ -1,15 +1,11 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use secrecy::SecretString;
 use uuid::Uuid;
 
 use super::{Credentials, Sandboxes};
 use crate::domain::{Admin, Handle, Role, User, UserId, UserStatus};
-use crate::ports::{
-    Identity, IdentityProvider, KeyRepo, ManagedAccount, ManagedAccounts, UserRepo,
-    split_user_subject, user_subject,
-};
+use crate::ports::{Identity, IdentityProvider, KeyRepo, UserRepo};
 use crate::{Error, Result};
 
 #[derive(Clone)]
@@ -99,47 +95,18 @@ impl Accounts {
         self.users.list().await
     }
 
-    pub async fn managed_accounts(&self, _: &Admin, provider: &str) -> Result<Vec<ManagedAccount>> {
-        self.managed(provider)?.list().await
-    }
-
-    pub async fn create_account(
-        &self,
-        _: &Admin,
-        provider: &str,
-        username: &Handle,
-        password: SecretString,
-        role: Role,
-    ) -> Result<()> {
-        self.managed(provider)?
-            .create(username, password, role)
-            .await
-    }
-
-    pub async fn set_password(
-        &self,
-        _: &Admin,
-        provider: &str,
-        subject: &str,
-        password: SecretString,
-    ) -> Result<()> {
-        self.managed(provider)?
-            .set_password(subject, password)
-            .await
-    }
-
-    /// Deletes the account with the user it logged in as, if it ever did.
-    pub async fn delete_account(&self, _: &Admin, provider: &str, subject: &str) -> Result<()> {
-        let managed = self.managed(provider)?;
-        match self
-            .users
-            .by_subject(&user_subject(provider, subject))
-            .await?
-        {
-            Some(user) => self.erase(user).await,
-            None if managed.delete(subject).await? => Ok(()),
-            None => Err(Error::NotFound(format!("account {subject}"))),
+    /// Deletes the user the provider's subject logged in as, if any, else only has the provider
+    /// forget the subject. Whether there was such a user.
+    pub async fn delete_identity(&self, _: &Admin, provider: &str, subject: &str) -> Result<bool> {
+        let subject_of_user = user_subject(provider, subject);
+        if let Some(user) = self.users.by_subject(&subject_of_user).await? {
+            self.erase(user).await?;
+            return Ok(true);
         }
+        if let Some(provider) = self.provider(provider) {
+            provider.forget(subject).await?;
+        }
+        Ok(false)
     }
 
     pub async fn delete_user(&self, _: &Admin, id: UserId) -> Result<()> {
@@ -173,10 +140,10 @@ impl Accounts {
             self.keys.delete(user.id, key.id).await?;
         }
         self.credentials.remove_all(user.id).await?;
-        if let Some((provider, subject)) = split_user_subject(&user.subject)
-            && let Ok(managed) = self.managed(provider)
+        if let Some((provider, subject)) = user.subject.split_once(':')
+            && let Some(provider) = self.provider(provider)
         {
-            managed.delete(subject).await?;
+            provider.forget(subject).await?;
         }
         self.users.delete(user.id).await?;
         Ok(())
@@ -189,12 +156,11 @@ impl Accounts {
             .ok_or_else(|| Error::NotFound(format!("user {}", id.0)))
     }
 
-    fn managed(&self, provider: &str) -> Result<&dyn ManagedAccounts> {
+    fn provider(&self, id: &str) -> Option<&dyn IdentityProvider> {
         self.providers
             .iter()
-            .find(|candidate| candidate.id() == provider)
-            .and_then(|provider| provider.accounts())
-            .ok_or_else(|| Error::NotFound(format!("accounts of provider {provider}")))
+            .find(|provider| provider.id() == id)
+            .map(AsRef::as_ref)
     }
 
     async fn register(&self, subject: String, identity: Identity, role: Role) -> Result<User> {
@@ -219,17 +185,21 @@ impl Accounts {
     }
 }
 
+fn user_subject(provider: &str, subject: &str) -> String {
+    format!("{provider}:{subject}")
+}
+
 #[cfg(test)]
 mod tests {
     use secrecy::SecretString;
     use uuid::Uuid;
 
     use crate::Error;
-    use crate::domain::{Admin, Handle, Role, User, UserId, UserStatus};
+    use crate::domain::{Role, User, UserId, UserStatus};
     use crate::fakes::{ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, credential, identity};
     use crate::ports::{SandboxEngine, UserRepo};
 
-    fn password(value: &str) -> SecretString {
+    fn secret(value: &str) -> SecretString {
         SecretString::from(value)
     }
 
@@ -395,67 +365,13 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn admins_manage_the_accounts_a_provider_keeps() {
-        let w = World::new();
-        let by = admin_proof(&w.admin("root").await);
-        let eve = Handle::parse("eve").unwrap();
-        w.accounts
-            .create_account(&by, PROVIDER, &eve, password("first"), Role::Member)
-            .await
-            .unwrap();
-        assert!(matches!(
-            w.accounts
-                .create_account(&by, PROVIDER, &eve, password("again"), Role::Admin)
-                .await,
-            Err(Error::Conflict(_))
-        ));
-        w.accounts
-            .set_password(&by, PROVIDER, "eve", password("second"))
-            .await
-            .unwrap();
-        assert!(matches!(
-            w.accounts
-                .set_password(&by, PROVIDER, "ghost", password("x"))
-                .await,
-            Err(Error::NotFound(_))
-        ));
-        let listed: Vec<(String, Role)> = w
-            .accounts
-            .managed_accounts(&by, PROVIDER)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|account| (account.subject, account.role))
-            .collect();
-        assert_eq!(listed, [("eve".to_owned(), Role::Member)]);
-
-        for absent in ["oidc", "nope"] {
-            assert!(matches!(
-                w.accounts.managed_accounts(&by, absent).await,
-                Err(Error::NotFound(_))
-            ));
-        }
-    }
-
     async fn owning_everything(w: &World, handle: &str, key: &str) -> User {
-        let by = admin_proof(&w.admin(&format!("{handle}-admin")).await);
-        w.accounts
-            .create_account(
-                &by,
-                PROVIDER,
-                &Handle::parse(handle).unwrap(),
-                password("p"),
-                Role::Member,
-            )
-            .await
-            .unwrap();
         let user = w.member(handle).await;
         w.sandbox(&user, "main").await;
         w.sandbox(&user, "dev").await;
         w.keys.add(&user, "laptop", key).await.unwrap();
         w.credentials
-            .set(user.id, &credential("A_KEY"), password("secret"))
+            .set(user.id, &credential("A_KEY"), secret("value"))
             .await
             .unwrap();
         user
@@ -468,16 +384,6 @@ mod tests {
         assert_eq!(w.keys.list(user).await.unwrap(), []);
         assert_eq!(w.credentials.names(user.id).await.unwrap(), []);
         assert!(w.credentials.load(user.id).await.unwrap().is_empty());
-    }
-
-    async fn accounts(w: &World, by: &Admin) -> Vec<String> {
-        w.accounts
-            .managed_accounts(by, PROVIDER)
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|account| account.subject)
-            .collect()
     }
 
     #[tokio::test]
@@ -509,7 +415,7 @@ mod tests {
                 Err(Error::NotFound(_))
             ));
         }
-        assert!(!accounts(&w, &by).await.contains(&"eve".to_owned()));
+        assert_eq!(w.provider.forgotten(), ["eve"]);
         assert!(matches!(
             w.accounts.delete_user(&by, eve.id).await,
             Err(Error::NotFound(_))
@@ -522,21 +428,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deleting_an_account_deletes_its_user_and_frees_the_username() {
+    async fn deleting_an_identity_deletes_its_user_and_frees_the_username() {
         let w = World::new();
         let by = admin_proof(&w.admin("root").await);
         let eve = owning_everything(&w, "eve", EVE_KEY).await;
 
-        w.accounts
-            .delete_account(&by, PROVIDER, "eve")
-            .await
-            .unwrap();
+        assert!(
+            w.accounts
+                .delete_identity(&by, PROVIDER, "eve")
+                .await
+                .unwrap()
+        );
         owns_nothing(&w, &eve).await;
-        assert!(!accounts(&w, &by).await.contains(&"eve".to_owned()));
-        assert!(matches!(
-            w.accounts.delete_account(&by, PROVIDER, "eve").await,
-            Err(Error::NotFound(_))
-        ));
+        assert_eq!(w.provider.forgotten(), ["eve"]);
 
         let again = owning_everything(&w, "eve", EVE_KEY).await;
         assert_ne!(again.id, eve.id);
@@ -545,36 +449,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_account_that_never_logged_in_is_only_removed_from_its_provider() {
+    async fn an_identity_that_never_logged_in_is_only_forgotten() {
         let w = World::new();
         let by = admin_proof(&w.admin("root").await);
-        w.accounts
-            .create_account(
-                &by,
-                PROVIDER,
-                &Handle::parse("never").unwrap(),
-                password("p"),
-                Role::Member,
-            )
-            .await
-            .unwrap();
         let before = w.users.list().await.unwrap();
-        w.accounts
-            .delete_account(&by, PROVIDER, "never")
-            .await
-            .unwrap();
-        assert!(!accounts(&w, &by).await.contains(&"never".to_owned()));
+        assert!(
+            !w.accounts
+                .delete_identity(&by, PROVIDER, "never")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !w.accounts
+                .delete_identity(&by, "gone", "never")
+                .await
+                .unwrap()
+        );
+        assert_eq!(w.provider.forgotten(), ["never"]);
         assert_eq!(w.users.list().await.unwrap(), before);
     }
 
     #[tokio::test]
     async fn users_delete_themselves() {
         let w = World::new();
-        let by = admin_proof(&w.admin("root").await);
         let eve = owning_everything(&w, "eve", EVE_KEY).await;
         w.accounts.delete_self(eve.id).await.unwrap();
         owns_nothing(&w, &eve).await;
-        assert!(!accounts(&w, &by).await.contains(&"eve".to_owned()));
+        assert_eq!(w.provider.forgotten(), ["eve"]);
     }
 
     #[tokio::test]
@@ -594,6 +495,7 @@ mod tests {
         w.engine.fail_deletes_after(None);
         w.accounts.delete_self(eve.id).await.unwrap();
         owns_nothing(&w, &eve).await;
+        assert_eq!(w.provider.forgotten(), ["eve"]);
     }
 
     #[tokio::test]

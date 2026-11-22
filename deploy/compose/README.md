@@ -59,7 +59,7 @@ The JSON API lives at `base_url`. Log in, register a public key, and create a sa
 
 ```sh
 curl -c jar -H 'Content-Type: application/json' \
-  -d '{"username": "<name>", "password": "<password>"}' <base_url>/auth/local/finish
+  -d '{"username": "<name>", "password": "<password>"}' <base_url>/auth/local/login
 curl -b jar -H 'Content-Type: application/json' \
   -d "{\"label\": \"laptop\", \"publicKey\": \"$(cat ~/.ssh/id_ed25519.pub)\"}" <base_url>/api/keys
 curl -b jar -H 'Content-Type: application/json' -d '{"name": "main"}' <base_url>/api/sandboxes
@@ -78,9 +78,13 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
 - `PUT /api/credentials/<NAME>` with `{"value": "..."}` stores a credential, encrypted with
   `CORRAL_SECRETS_KEY`. It reaches SSH sessions as an environment variable from the sandbox's
   next wake or `POST /api/sandboxes/<sandbox>/restart` on. Values are never returned.
-- Admins add users with `POST /api/admin/providers/local/accounts` and
-  `{"username": "...", "password": "...", "role": "member"}`, and disable one with
-  `POST /api/admin/users/<id>/disable`.
+- Admins add local accounts with `POST /auth/local/accounts` and
+  `{"username": "...", "password": "...", "role": "member"}`, list them with
+  `GET /auth/local/accounts`, reset a password with `PUT /auth/local/accounts/<name>/password`
+  and `{"password": "..."}`, and delete one, with the user it logged in as, with
+  `DELETE /auth/local/accounts/<name>`. `GET /api/admin/users` lists users with their status
+  (`active`, `disabled` or `deleting`), and `POST /api/admin/users/<id>/disable` and `/enable`
+  switch it.
 - `DELETE /api/admin/users/<id>` (admins) or `DELETE /api/me` (anyone, for themselves) deletes a
   user with their sandboxes and homes, keys, credentials and local account. The username is free
   again afterwards, and a new account with it starts empty. A deletion that fails part way leaves
@@ -140,7 +144,7 @@ configuration; `crates/corral-server/config.example.toml` shows a Kubernetes ins
 
 - Postgres: set `DATABASE_URL=postgres://user:password@host:5432/corral` in `.env`.
 - OIDC: add an `[identity.oidc]` section with `issuer` and `client_id`, set
-  `CORRAL_OIDC_CLIENT_SECRET` in `.env`, and register `<base_url>/auth/oidc/finish` as the redirect
+  `CORRAL_OIDC_CLIENT_SECRET` in `.env`, and register `<base_url>/auth/oidc/callback` as the redirect
   URI. Members of `member_group` (default `corral-users`) log in as members and members of
   `admin_group` (default `corral-admins`) as admins; anyone else is refused, and a user who
   leaves both groups is disabled at their next login. Local accounts keep working alongside

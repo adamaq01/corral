@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use corral_api::provider_path;
 use corral_core::domain::Role;
-use corral_core::ports::{Answer, Challenge, Identity, IdentityProvider, Method};
+use corral_core::ports::{Identity, IdentityProvider};
 use corral_core::{Error, Result};
 use openidconnect::core::{
     CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
@@ -85,15 +86,22 @@ pub struct OidcProvider {
 impl OidcProvider {
     pub const ID: &str = "oidc";
 
+    /// `base_url` is where the API is served; the issuer sends people back to its callback
+    /// route there.
     pub async fn discover(
         config: OidcConfig,
         client_secret: &SecretString,
-        redirect_url: String,
+        base_url: &str,
     ) -> Result<Self> {
         let issuer =
             IssuerUrl::new(config.issuer).map_err(|err| Error::internal("issuer url", err))?;
+        let callback = format!(
+            "{}{}/callback",
+            base_url.trim_end_matches('/'),
+            provider_path(Self::ID)
+        );
         let redirect_url =
-            RedirectUrl::new(redirect_url).map_err(|err| Error::internal("redirect url", err))?;
+            RedirectUrl::new(callback).map_err(|err| Error::internal("redirect url", err))?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(HTTP_TIMEOUT)
@@ -155,19 +163,9 @@ impl OidcProvider {
             role,
         })
     }
-}
 
-#[async_trait]
-impl IdentityProvider for OidcProvider {
-    fn id(&self) -> &str {
-        Self::ID
-    }
-
-    fn method(&self) -> Method {
-        Method::Redirect
-    }
-
-    async fn challenge(&self) -> Result<Challenge> {
+    /// Where to send the person, and what the callback needs to check the answer.
+    pub(crate) fn begin(&self) -> (String, LoginSecrets) {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (url, csrf, nonce) = self
             .client(self.metadata.clone())
@@ -179,33 +177,29 @@ impl IdentityProvider for OidcProvider {
             .add_scopes(self.scopes.iter().cloned())
             .set_pkce_challenge(pkce_challenge)
             .url();
-        let pending = LoginSecrets {
+        let secrets = LoginSecrets {
             csrf,
             nonce,
             pkce_verifier,
-        }
-        .encode()?;
-        Ok(Challenge::Redirect {
-            url: url.into(),
-            pending,
-        })
+        };
+        (url.into(), secrets)
     }
 
-    async fn verify(&self, answer: Answer) -> Result<Identity> {
-        let Answer::Redirect { pending, params } = answer else {
-            return Err(Error::Invalid("OIDC logs in through a redirect".to_owned()));
-        };
-        let secrets = LoginSecrets::decode(&pending)?;
-        let returned_state = params.get("state").map_or("", String::as_str);
-        if secrets.csrf != CsrfToken::new(returned_state.to_owned()) {
+    /// `Forbidden` when the returned state is not the login's, before the code is redeemed.
+    pub(crate) async fn finish(
+        &self,
+        secrets: LoginSecrets,
+        state: Option<&str>,
+        code: Option<&str>,
+    ) -> Result<Identity> {
+        if secrets.csrf != CsrfToken::new(state.unwrap_or_default().to_owned()) {
             return Err(Error::Forbidden);
         }
-        let code = params
-            .get("code")
+        let code = code
             .ok_or_else(|| Error::Invalid("the identity provider returned no code".to_owned()))?;
         let client = self.client(self.metadata.clone().set_jwks(self.current_keys().await?));
         let tokens = client
-            .exchange_code(AuthorizationCode::new(code.clone()))
+            .exchange_code(AuthorizationCode::new(code.to_owned()))
             .set_pkce_verifier(secrets.pkce_verifier)
             .request_async(&self.http)
             .await
@@ -217,6 +211,13 @@ impl IdentityProvider for OidcProvider {
             .claims(&client.id_token_verifier(), &secrets.nonce)
             .map_err(claims_error)?;
         self.identity(claims)
+    }
+}
+
+#[async_trait]
+impl IdentityProvider for OidcProvider {
+    fn id(&self) -> &str {
+        Self::ID
     }
 }
 

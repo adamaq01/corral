@@ -1,14 +1,11 @@
-use std::net::IpAddr;
 use std::sync::Arc;
 
+use axum::http::request::Parts;
 use cookie::Key;
 use corral_core::app::{Accounts, Credentials, Keys, Sandboxes};
-use corral_core::ports::{Identity, IdentityProvider};
-use secrecy::SecretString;
 use serde::Serialize;
 
 use crate::error::ApiError;
-use crate::login_limiter::LoginLimiter;
 
 pub(crate) type AppState = Arc<Api>;
 
@@ -18,8 +15,8 @@ pub struct Api {
     pub keys: Keys,
     pub credentials: Credentials,
     pub sandboxes: Sandboxes,
-    pub providers: Providers,
     pub ssh: SshEndpoint,
+    /// Encrypts the session cookie and providers' cookies.
     pub session_key: Key,
     /// Marks the cookies `Secure`, for an `https://` base URL.
     pub secure_cookies: bool,
@@ -33,41 +30,9 @@ pub struct SshEndpoint {
     pub port: u16,
 }
 
-/// The login methods that are on, with one failed-login limit across every password provider.
-pub struct Providers {
-    providers: Vec<Arc<dyn IdentityProvider>>,
-    limiter: LoginLimiter,
-}
-
-impl Providers {
-    #[must_use]
-    pub fn new(providers: Vec<Arc<dyn IdentityProvider>>) -> Self {
-        Self {
-            providers,
-            limiter: LoginLimiter::default(),
-        }
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &dyn IdentityProvider> {
-        self.providers.iter().map(AsRef::as_ref)
-    }
-
-    pub(crate) fn get(&self, id: &str) -> Result<&dyn IdentityProvider, ApiError> {
-        self.iter()
-            .find(|provider| provider.id() == id)
-            .ok_or_else(ApiError::not_found)
-    }
-
-    pub(crate) async fn verify_password(
-        &self,
-        id: &str,
-        username: String,
-        password: SecretString,
-        address: IpAddr,
-    ) -> Result<Identity, ApiError> {
-        let provider = self.get(id)?;
-        self.limiter
-            .verify(provider, username, password, address)
-            .await
-    }
+/// The API, for extractors that also serve providers' routes, whose state is their own.
+pub(crate) fn shared(parts: &Parts) -> Result<AppState, ApiError> {
+    parts.extensions.get::<AppState>().cloned().ok_or_else(|| {
+        ApiError::internal(&"no API state: serve the routes through corral_api::router")
+    })
 }

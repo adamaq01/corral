@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::get;
-use corral_api::{Api, Providers, SshEndpoint};
+use corral_api::{Api, ProviderRoutes, SshEndpoint};
 use corral_core::app::{Accounts, Credentials, Keys, Limits, Sandboxes, SshAccess};
 use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::AgentSandboxEngine;
@@ -40,7 +40,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
     let credentials = Credentials::new(secret_store(secrets, &pool).await?);
-    let providers = providers(config, oidc, &pool).await?;
+    let (providers, provider_routes) = providers(config, oidc, &pool).await?;
     let (engine, lifecycle) = start_engine(config, engine, shutdown).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
@@ -60,12 +60,11 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
             store.clone(),
             sandboxes.clone(),
             credentials.clone(),
-            providers.clone(),
+            providers,
         ),
         keys: Keys::new(store.clone()),
         credentials,
         sandboxes,
-        providers: Providers::new(providers),
         ssh: SshEndpoint {
             host: config.ssh.public_host.clone(),
             port: config.ssh.public_port,
@@ -74,7 +73,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         secure_cookies: config.http.base_url.is_https(),
         trust_forwarded_for: config.http.trust_forwarded_for,
     };
-    let mut public = corral_api::router(api).route("/healthz", get(healthz));
+    let mut public = corral_api::router(api, provider_routes).route("/healthz", get(healthz));
     if let Some(dir) = static_dir {
         public = public.fallback_service(ServeDir::new(dir));
     }
@@ -110,31 +109,32 @@ async fn secret_store(choice: SecretsChoice, pool: &Pool) -> Result<Arc<dyn Secr
     })
 }
 
+/// Each login provider that is on, for core and as its routes.
 async fn providers(
     config: &Config,
     oidc: Option<Oidc>,
     pool: &Pool,
-) -> Result<Vec<Arc<dyn IdentityProvider>>> {
+) -> Result<(Vec<Arc<dyn IdentityProvider>>, Vec<ProviderRoutes>)> {
     let mut providers: Vec<Arc<dyn IdentityProvider>> = Vec::new();
+    let mut routes = Vec::new();
     if let Some(local) = local_provider(config, pool).await? {
-        providers.push(Arc::new(local));
+        let local = Arc::new(local);
+        routes.push(local.routes());
+        providers.push(local);
     }
     if let Some(Oidc {
         config: oidc,
         client_secret,
     }) = oidc
     {
-        let redirect_url = format!(
-            "{}/auth/{}/finish",
-            config.http.base_url.as_str(),
-            OidcProvider::ID
-        );
-        let provider = OidcProvider::discover(oidc, &client_secret, redirect_url)
+        let provider = OidcProvider::discover(oidc, &client_secret, config.http.base_url.as_str())
             .await
             .context("OIDC discovery failed")?;
-        providers.push(Arc::new(provider));
+        let provider = Arc::new(provider);
+        routes.push(provider.routes());
+        providers.push(provider);
     }
-    Ok(providers)
+    Ok((providers, routes))
 }
 
 async fn start_engine(

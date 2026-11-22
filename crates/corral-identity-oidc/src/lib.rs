@@ -1,5 +1,6 @@
 mod client;
 mod login_secrets;
+mod routes;
 
 pub use client::OidcProvider;
 use serde::Deserialize;

@@ -6,14 +6,20 @@ edition.workspace = true
 [dependencies]
 argon2 = "0.6.0"
 async-trait.workspace = true
-chrono.workspace = true
+axum.workspace = true
+chrono = { workspace = true, features = ["serde"] }
+corral-api = { path = "../corral-api" }
 corral-core = { path = "../corral-core" }
 corral-sql = { path = "../corral-sql" }
-secrecy.workspace = true
+secrecy = { workspace = true, features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
 sqlx = { workspace = true, features = ["chrono", "macros", "migrate", "postgres", "sqlite"] }
 uuid.workspace = true
 
 [dev-dependencies]
+corral-api = { path = "../corral-api", features = ["testing"] }
+corral-core = { path = "../corral-core", features = ["fakes"] }
 corral-sql = { path = "../corral-sql", features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 

@@ -1,9 +1,12 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use axum::Router;
+use axum::http::{StatusCode, header};
 use chrono::{Duration, Utc};
-use corral_core::Error;
-use corral_core::domain::Role;
-use corral_core::ports::{Answer, Challenge, Identity, IdentityProvider, Method, PendingLogin};
+use corral_api::router;
+use corral_api::testing::{Browser, Reply, api};
+use corral_core::fakes::World;
 use corral_identity_oidc::{OidcConfig, OidcProvider};
 use openidconnect::core::{
     CoreGenderClaim, CoreJsonWebKeySet, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
@@ -18,13 +21,14 @@ use openidconnect::{
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use wiremock::matchers::{basic_auth, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const CLIENT_ID: &str = "corral";
 const CLIENT_SECRET: &str = "corral-secret";
-const REDIRECT_URL: &str = "https://corral.example/auth/oidc/finish";
+const BASE_URL: &str = "https://corral.example";
+const REDIRECT_URL: &str = "https://corral.example/auth/oidc/callback";
 const MEMBERS: &str = "corral-users";
 const ADMINS: &str = "corral-admins";
 const CODE: &str = "the-code";
@@ -85,6 +89,12 @@ impl Issuer {
             .await;
     }
 
+    async fn corral(&self) -> Router {
+        let provider = Arc::new(self.provider().await);
+        let world = World::with_providers(vec![provider.clone()]);
+        router(api(&world), vec![provider.routes()])
+    }
+
     async fn provider(&self) -> OidcProvider {
         OidcProvider::discover(
             OidcConfig {
@@ -97,7 +107,7 @@ impl Issuer {
                 admin_group: ADMINS.to_owned(),
             },
             &SecretString::from(CLIENT_SECRET),
-            REDIRECT_URL.to_owned(),
+            BASE_URL,
         )
         .await
         .unwrap()
@@ -171,53 +181,61 @@ fn param(url: &Url, name: &str) -> String {
         .into_owned()
 }
 
-async fn begin(provider: &OidcProvider) -> (PendingLogin, Url) {
-    let Challenge::Redirect { url, pending } = provider.challenge().await.unwrap() else {
-        panic!("OIDC logs in through a redirect");
-    };
-    (pending, Url::parse(&url).unwrap())
+fn browser(app: &Router) -> Browser {
+    Browser::new(app, "192.0.2.10:50000")
 }
 
-async fn finish(
-    provider: &OidcProvider,
-    pending: PendingLogin,
-    state: &str,
-) -> Result<Identity, Error> {
-    let params =
-        [("code", CODE), ("state", state)].map(|(name, value)| (name.to_owned(), value.to_owned()));
-    provider
-        .verify(Answer::Redirect {
-            pending,
-            params: params.into(),
-        })
+/// Starts a login, answering where the issuer was asked to send the browser.
+async fn start(browser: &mut Browser) -> Url {
+    let start = browser.get("/auth/oidc/start").await;
+    assert_eq!(start.status, StatusCode::FOUND, "{}", start.text());
+    Url::parse(start.headers[header::LOCATION].to_str().unwrap()).unwrap()
+}
+
+async fn callback(browser: &mut Browser, state: &str) -> Reply {
+    browser
+        .get(&format!("/auth/oidc/callback?code={CODE}&state={state}"))
         .await
 }
 
+async fn me(browser: &mut Browser) -> Value {
+    browser.get("/api/me").await.json()
+}
+
 #[tokio::test]
-async fn login_yields_the_identity_from_the_id_token() {
+async fn a_login_round_trip_starts_a_session() {
     let issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
+    let app = issuer.corral().await;
+    let mut browser = browser(&app);
     assert_eq!(
-        (provider.id(), provider.method()),
-        ("oidc", Method::Redirect)
+        browser.get("/auth/providers").await.json(),
+        json!([{
+            "id": "oidc",
+            "label": "Single sign-on",
+            "kind": "redirect",
+            "login": "/auth/oidc/start",
+        }])
     );
-    let (pending, auth) = begin(&provider).await;
+    let start = browser.get("/auth/oidc/start").await;
+    let login = start.set_cookie("corral_oidc_login");
+    assert_eq!(login.path(), Some("/auth/oidc"));
+    assert_eq!(login.max_age().unwrap().whole_seconds(), 600);
+    let auth = Url::parse(start.headers[header::LOCATION].to_str().unwrap()).unwrap();
+    for secret in [param(&auth, "state"), param(&auth, "nonce")] {
+        assert!(!login.value().contains(&secret), "{login}");
+    }
     issuer
         .issue(issuer.id_token(&param(&auth, "nonce"), Some(&[MEMBERS])))
         .await;
 
-    let identity = finish(&provider, pending, &param(&auth, "state"))
-        .await
-        .unwrap();
+    let done = callback(&mut browser, &param(&auth, "state")).await;
 
+    assert_eq!(done.status, StatusCode::FOUND, "{}", done.text());
+    assert_eq!(done.headers[header::LOCATION], "/");
+    assert!(!browser.cookies.contains_key("corral_oidc_login"));
     assert_eq!(
-        identity,
-        Identity {
-            subject: "sub-123".to_owned(),
-            username: "Adam".to_owned(),
-            email: Some("adam@example.com".to_owned()),
-            role: Some(Role::Member),
-        }
+        me(&mut browser).await,
+        json!({ "handle": "adam", "email": "adam@example.com", "role": "member" })
     );
     assert_eq!(auth.path(), "/authorize");
     assert_eq!(param(&auth, "response_type"), "code");
@@ -237,134 +255,158 @@ async fn login_yields_the_identity_from_the_id_token() {
         PkceCodeChallenge::from_code_verifier_sha256(&verifier).as_str(),
         param(&auth, "code_challenge")
     );
+
+    let replay = callback(&mut browser, &param(&auth, "state")).await;
+    assert_eq!(replay.status, StatusCode::BAD_REQUEST);
+    assert_eq!(issuer.token_requests().await.len(), 1);
 }
 
 #[tokio::test]
 async fn a_different_or_missing_returned_state_is_forbidden_before_the_code_is_redeemed() {
     let issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
+    let app = issuer.corral().await;
     issuer
         .issue(issuer.id_token("any-nonce", Some(&[MEMBERS])))
         .await;
+    let mut browser = browser(&app);
 
-    let (pending, _) = begin(&provider).await;
-    let forged = finish(&provider, pending, "forged-state").await;
-    let (pending, _) = begin(&provider).await;
-    let missing = provider
-        .verify(Answer::Redirect {
-            pending,
-            params: [("code".to_owned(), CODE.to_owned())].into(),
-        })
+    start(&mut browser).await;
+    let forged = callback(&mut browser, "forged-state").await;
+    assert!(!browser.cookies.contains_key("corral_oidc_login"));
+    start(&mut browser).await;
+    let missing = browser
+        .get(&format!("/auth/oidc/callback?code={CODE}"))
         .await;
 
-    for result in [forged, missing] {
-        assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+    for reply in [forged, missing] {
+        assert_eq!(reply.status, StatusCode::FORBIDDEN, "{}", reply.text());
+    }
+    assert_eq!(issuer.token_requests().await.len(), 0);
+    assert_eq!(
+        browser.get("/api/me").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn a_callback_without_our_login_cookie_is_refused() {
+    let issuer = Issuer::start().await;
+    let app = issuer.corral().await;
+    let mut started = browser(&app);
+    let auth = start(&mut started).await;
+    let state = param(&auth, "state");
+
+    let mut stranger = browser(&app);
+    let mut tamperer = browser(&app);
+    let mut cookie = started.cookies["corral_oidc_login"].clone();
+    cookie.replace_range(..1, if cookie.starts_with('A') { "B" } else { "A" });
+    tamperer
+        .cookies
+        .insert("corral_oidc_login".to_owned(), cookie);
+    for browser in [&mut stranger, &mut tamperer] {
+        let reply = callback(browser, &state).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
     }
     assert_eq!(issuer.token_requests().await.len(), 0);
 }
 
 #[tokio::test]
-async fn a_pending_login_that_is_not_ours_is_forbidden() {
+async fn a_callback_without_a_code_is_invalid() {
     let issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
-    let (_, auth) = begin(&provider).await;
-
-    let result = finish(
-        &provider,
-        PendingLogin("not a login".to_owned()),
-        &param(&auth, "state"),
-    )
-    .await;
-
-    assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+    let app = issuer.corral().await;
+    let mut browser = browser(&app);
+    let auth = start(&mut browser).await;
+    let reply = browser
+        .get(&format!(
+            "/auth/oidc/callback?state={}",
+            param(&auth, "state")
+        ))
+        .await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.text());
     assert_eq!(issuer.token_requests().await.len(), 0);
 }
 
 #[tokio::test]
 async fn an_id_token_for_another_nonce_is_forbidden() {
     let issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
-    let (pending, auth) = begin(&provider).await;
+    let app = issuer.corral().await;
+    let mut browser = browser(&app);
+    let auth = start(&mut browser).await;
     issuer
         .issue(issuer.id_token("another-nonce", Some(&[MEMBERS])))
         .await;
 
-    let result = finish(&provider, pending, &param(&auth, "state")).await;
+    let reply = callback(&mut browser, &param(&auth, "state")).await;
 
-    assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
 async fn groups_decide_the_role() {
     let issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
+    let app = issuer.corral().await;
     for (groups, role) in [
-        (Some(&[MEMBERS, ADMINS][..]), Some(Role::Admin)),
-        (Some(&[ADMINS][..]), Some(Role::Admin)),
-        (Some(&["other", MEMBERS][..]), Some(Role::Member)),
+        (Some(&[MEMBERS, ADMINS][..]), Some("admin")),
+        (Some(&[ADMINS][..]), Some("admin")),
+        (Some(&["other", MEMBERS][..]), Some("member")),
         (Some(&["other"][..]), None),
         (Some(&[][..]), None),
         (None, None),
     ] {
         issuer.server.reset().await;
         issuer.serve_discovery().await;
-        let (pending, auth) = begin(&provider).await;
+        let mut browser = browser(&app);
+        let auth = start(&mut browser).await;
         issuer
             .issue(issuer.id_token(&param(&auth, "nonce"), groups))
             .await;
 
-        let identity = finish(&provider, pending, &param(&auth, "state"))
-            .await
-            .unwrap();
+        let reply = callback(&mut browser, &param(&auth, "state")).await;
 
-        assert_eq!(identity.role, role, "{groups:?}");
+        if let Some(role) = role {
+            assert_eq!(reply.status, StatusCode::FOUND, "{groups:?}");
+            assert_eq!(me(&mut browser).await["role"], role, "{groups:?}");
+        } else {
+            assert_eq!(reply.status, StatusCode::FORBIDDEN, "{groups:?}");
+            assert_eq!(reply.json(), json!({ "error": "forbidden" }));
+            assert_eq!(
+                browser.get("/api/me").await.status,
+                StatusCode::UNAUTHORIZED
+            );
+        }
     }
 }
 
 #[tokio::test]
 async fn a_code_the_issuer_rejects_is_forbidden() {
     let issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
-    let (pending, auth) = begin(&provider).await;
+    let app = issuer.corral().await;
+    let mut browser = browser(&app);
+    let auth = start(&mut browser).await;
     issuer
         .answer_token_request(
             ResponseTemplate::new(400).set_body_json(json!({ "error": "invalid_grant" })),
         )
         .await;
 
-    let result = finish(&provider, pending, &param(&auth, "state")).await;
+    let reply = callback(&mut browser, &param(&auth, "state")).await;
 
-    assert!(matches!(result, Err(Error::Forbidden)), "{result:?}");
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
 async fn login_still_works_after_the_issuer_rotates_its_signing_key() {
     let mut issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
+    let app = issuer.corral().await;
     issuer.rotate_key().await;
-    let (pending, auth) = begin(&provider).await;
+    let mut browser = browser(&app);
+    let auth = start(&mut browser).await;
     issuer
         .issue(issuer.id_token(&param(&auth, "nonce"), Some(&[MEMBERS])))
         .await;
 
-    let identity = finish(&provider, pending, &param(&auth, "state"))
-        .await
-        .unwrap();
+    let reply = callback(&mut browser, &param(&auth, "state")).await;
 
-    assert_eq!(identity.subject, "sub-123");
-}
-
-#[tokio::test]
-async fn a_password_answer_is_invalid() {
-    let issuer = Issuer::start().await;
-    let provider = issuer.provider().await;
-
-    let result = provider
-        .verify(Answer::Password {
-            username: "adam".to_owned(),
-            password: SecretString::from("correct horse battery"),
-        })
-        .await;
-
-    assert!(matches!(result, Err(Error::Invalid(_))), "{result:?}");
+    assert_eq!(reply.status, StatusCode::FOUND, "{}", reply.text());
+    assert_eq!(me(&mut browser).await["handle"], "adam");
 }

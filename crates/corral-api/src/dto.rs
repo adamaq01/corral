@@ -4,18 +4,11 @@ use corral_core::domain::{
     CredentialName, Handle, ImageKey, Role, SandboxName, SandboxStatus, SizeKey, SshKey,
     SshUsername, User, UserStatus,
 };
-use corral_core::ports::{IdentityProvider, ManagedAccount, Method};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::state::SshEndpoint;
-
-#[derive(Deserialize)]
-pub(crate) struct PasswordLogin {
-    pub username: String,
-    pub password: SecretString,
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,33 +20,6 @@ pub(crate) struct NewKey {
 #[derive(Deserialize)]
 pub(crate) struct CredentialValue {
     pub value: SecretString,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct NewAccount {
-    pub username: Handle,
-    pub password: SecretString,
-    pub role: Role,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct NewPassword {
-    pub password: SecretString,
-}
-
-#[derive(Serialize)]
-pub(crate) struct Provider {
-    id: String,
-    method: Method,
-}
-
-impl From<&dyn IdentityProvider> for Provider {
-    fn from(provider: &dyn IdentityProvider) -> Self {
-        Self {
-            id: provider.id().to_owned(),
-            method: provider.method(),
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -233,26 +199,6 @@ impl From<User> for UserDto {
             email: user.email,
             status: user.status,
             created_at: user.created_at,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ManagedAccountDto {
-    subject: String,
-    username: Handle,
-    role: Role,
-    created_at: DateTime<Utc>,
-}
-
-impl From<ManagedAccount> for ManagedAccountDto {
-    fn from(account: ManagedAccount) -> Self {
-        Self {
-            subject: account.subject,
-            username: account.username,
-            role: account.role,
-            created_at: account.created_at,
         }
     }
 }

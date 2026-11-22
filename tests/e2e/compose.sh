@@ -145,7 +145,7 @@ ok "docker compose exec corral corral-server local-account create adam --admin"
 login() {
   jq -cn --arg u "$1" --arg p "$2" '{username: $u, password: $p}' \
     | curl -sS --fail-with-body -c "$work/$1.jar" -H 'Content-Type: application/json' \
-      --data @- "$base/auth/local/finish" >/dev/null
+      --data @- "$base/auth/local/login" >/dev/null
 }
 
 api() {
@@ -164,9 +164,10 @@ add_key() {
   api "$1" POST api/keys "$(jq -cn --arg k "$(cat "keys/$1.pub")" '{label: "e2e", publicKey: $k}')" >/dev/null
 }
 
+expect "GET /auth/providers" local "$(curl -sS --fail-with-body "$base/auth/providers" | jq -r '.[].id')"
 login adam "$admin_password"
 expect "GET /api/me" "adam admin" "$(api adam GET api/me | jq -r '"\(.handle) \(.role)"')"
-ok "adam logs in with POST /auth/local/finish"
+ok "adam logs in with POST /auth/local/login"
 
 mkdir -m 700 keys
 for name in adam bob stranger; do
@@ -236,7 +237,7 @@ refused adam adam+missing
 ok "a nonexistent sandbox is refused"
 
 bob_password=$(head -c 18 /dev/urandom | base64)
-api adam POST api/admin/providers/local/accounts \
+api adam POST auth/local/accounts \
   "$(jq -cn --arg p "$bob_password" '{username: "bob", password: $p, role: "member"}')" >/dev/null
 login bob "$bob_password"
 add_key bob
@@ -306,7 +307,8 @@ fi
 ok "the credential value is in neither service's logs"
 
 bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
-api adam POST "api/admin/users/$bob_id/disable" >/dev/null
+expect "bob's status once disabled" disabled \
+  "$(api adam POST "api/admin/users/$bob_id/disable" | jq -r .status)"
 refused bob bob+main
 expect "disabled bob's GET /api/me" 403 "$(http_status bob GET api/me)"
 ok "a disabled user is refused over SSH and by the API"
@@ -329,12 +331,12 @@ ok "after docker compose restart containerssh, the pinned host key still matches
 
 for _ in 1 2 3 4 5; do
   expect "a wrong password" 403 "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-    --data '{"username":"adam","password":"not the password"}' "$base/auth/local/finish")"
+    --data '{"username":"adam","password":"not the password"}' "$base/auth/local/login")"
 done
 expect "the right password after 5 wrong ones" 429 "$(jq -cn --arg p "$admin_password" \
   '{username: "adam", password: $p}' | curl -sS -o /dev/null -w '%{http_code}' \
-  -H 'Content-Type: application/json' --data @- "$base/auth/local/finish")"
-ok "after 5 wrong passwords, POST /auth/local/finish answers 429 even to the right one"
+  -H 'Content-Type: application/json' --data @- "$base/auth/local/login")"
+ok "after 5 wrong passwords, POST /auth/local/login answers 429 even to the right one"
 
 # Short timings for the rest: a wake deadline a slow wake can exceed, and a quick idle timeout.
 # The bind mount follows config.toml's inode, so it is rewritten in place.
@@ -427,7 +429,7 @@ expect "deleted bob's GET /api/me" 403 "$(http_status bob GET api/me)"
 expect "bob in the user list" "" "$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')"
 ok "deleting bob removed his container and home, and his key is refused over SSH"
 
-api adam POST api/admin/providers/local/accounts \
+api adam POST auth/local/accounts \
   "$(jq -cn --arg p "$bob_password" '{username: "bob", password: $p, role: "member"}')" >/dev/null
 login bob "$bob_password"
 expect "the new bob's sandboxes, keys and credentials" "0 0 0" "$(for listing in sandboxes keys credentials; do

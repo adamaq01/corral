@@ -6,35 +6,17 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
-use corral_api::{Api, Key, Providers, SshEndpoint, router};
+use corral_api::testing::trusting_provider;
+use corral_api::{Api, Key, SshEndpoint, router};
 use corral_core::app::{Accounts, Credentials, Keys, Limits, Sandboxes};
-use corral_core::domain::{Handle, Role};
 use corral_core::fakes::{ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, MemorySecretStore, catalog};
-use corral_core::ports::{IdentityProvider, ManagedAccounts};
-use corral_identity_local::LocalProvider;
 use corral_sql::testing::Databases;
 use corral_store_sql::Store;
-use secrecy::SecretString;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-const PASSWORD: &str = "correct horse battery";
-
 async fn app(databases: &Databases) -> Router {
-    let pool = databases.pool().await;
-    let store = Arc::new(Store::open(pool.clone()).await.unwrap());
-    let local = LocalProvider::open(pool).await.unwrap();
-    for name in ["adam", "eve"] {
-        local
-            .create(
-                &Handle::parse(name).unwrap(),
-                SecretString::from(PASSWORD),
-                Role::Member,
-            )
-            .await
-            .unwrap();
-    }
-    let providers: Vec<Arc<dyn IdentityProvider>> = vec![Arc::new(local)];
+    let store = Arc::new(Store::open(databases.pool().await).await.unwrap());
     let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
     let sandboxes = Sandboxes::new(
         store.clone(),
@@ -47,18 +29,17 @@ async fn app(databases: &Databases) -> Router {
             wake_deadline: Duration::from_secs(1),
         },
     );
-    router(Api {
+    let api = Api {
         accounts: Accounts::new(
             store.clone(),
             store.clone(),
             sandboxes.clone(),
             credentials.clone(),
-            providers.clone(),
+            Vec::new(),
         ),
         keys: Keys::new(store),
         credentials,
         sandboxes,
-        providers: Providers::new(providers),
         ssh: SshEndpoint {
             host: "corral.example.com".to_owned(),
             port: 22,
@@ -66,7 +47,8 @@ async fn app(databases: &Databases) -> Router {
         session_key: Key::generate(),
         secure_cookies: false,
         trust_forwarded_for: false,
-    })
+    };
+    router(api, vec![trusting_provider("test")])
 }
 
 struct Reply {
@@ -106,9 +88,9 @@ async fn post(app: &Router, uri: &str, cookies: &str, body: Value) -> Reply {
 async fn sign_in(app: &Router, username: &str) -> String {
     let reply = post(
         app,
-        "/auth/local/finish",
+        "/auth/test/login",
         "",
-        json!({ "username": username, "password": PASSWORD }),
+        json!({ "subject": username, "username": username, "role": "member" }),
     )
     .await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
