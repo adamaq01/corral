@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import type { Page } from '@playwright/test';
 import type {
 	Catalog,
@@ -9,12 +8,7 @@ import type {
 	SshKey
 } from '../src/lib/api/generated/index.js';
 import { test } from './fixtures';
-
-const directory = process.env.CORRAL_SCREENSHOTS;
-
-test.skip(!directory, 'CORRAL_SCREENSHOTS names the directory to take screenshots into');
-
-const widths = { desktop: 1280, phone: 390 };
+import { inEveryView } from './views';
 
 const catalog: Catalog = {
 	images: [
@@ -100,136 +94,121 @@ async function serve(page: Page, routes: Record<string, unknown>) {
 	);
 }
 
-for (const scheme of ['light', 'dark'] as const) {
-	for (const [device, width] of Object.entries(widths)) {
-		test.describe(`${scheme}, ${device}`, () => {
-			test.use({
-				role: 'member',
-				colorScheme: scheme,
-				viewport: { width, height: device === 'phone' ? 844 : 800 }
-			});
+inEveryView((look) => {
+	test.use({ role: 'member' });
 
-			const shot = (page: Page, name: string, fullPage = true) =>
-				page.screenshot({
-					path: join(directory!, `${name}-${scheme}-${width}.png`),
-					animations: 'disabled',
-					fullPage
-				});
+	test('sandboxes', async ({ page }) => {
+		await serve(page, { '/api/sandboxes': sandboxes, '/api/catalog': catalog });
+		await page.goto('/sandboxes');
+		await page.getByText('the container exited with code 137').waitFor();
+		await look(page, 'sandboxes');
 
-			test('sandboxes', async ({ page }) => {
-				await serve(page, { '/api/sandboxes': sandboxes, '/api/catalog': catalog });
-				await page.goto('/sandboxes');
-				await page.getByText('the container exited with code 137').waitFor();
-				await shot(page, 'sandboxes');
+		await page.getByRole('button', { name: 'New sandbox' }).click();
+		await page.getByRole('dialog').waitFor();
+		await look(page, 'sandboxes-new', { fullPage: false });
+	});
 
-				await page.getByRole('button', { name: 'New sandbox' }).click();
-				await page.getByRole('dialog').waitFor();
-				await shot(page, 'sandboxes-new', false);
-			});
+	test('sandboxes, empty, loading and failed', async ({ page }) => {
+		await serve(page, { '/api/sandboxes': [], '/api/catalog': catalog });
+		await page.goto('/sandboxes');
+		await page.getByText('No sandboxes yet').waitFor();
+		await look(page, 'sandboxes-empty');
 
-			test('sandboxes, empty, loading and failed', async ({ page }) => {
-				await serve(page, { '/api/sandboxes': [], '/api/catalog': catalog });
-				await page.goto('/sandboxes');
-				await page.getByText('No sandboxes yet').waitFor();
-				await shot(page, 'sandboxes-empty');
+		await page.unrouteAll();
+		await page.route('**/api/sandboxes', () => {});
+		await page.reload();
+		await page.getByRole('status', { name: 'Loading sandboxes' }).waitFor();
+		await look(page, 'sandboxes-loading');
 
-				await page.unrouteAll();
-				await page.route('**/api/sandboxes', () => {});
-				await page.reload();
-				await page.getByRole('status', { name: 'Loading sandboxes' }).waitFor();
-				await shot(page, 'sandboxes-loading');
+		await page.unrouteAll();
+		await page.route('**/api/sandboxes', (route) =>
+			route.fulfill({ status: 500, json: { error: 'internal error' } })
+		);
+		await page.reload();
+		await page.getByText('Loading your sandboxes failed').waitFor();
+		await look(page, 'sandboxes-failed');
+	});
 
-				await page.unrouteAll();
-				await page.route('**/api/sandboxes', (route) =>
-					route.fulfill({ status: 500, json: { error: 'internal error' } })
-				);
-				await page.reload();
-				await page.getByText('Loading your sandboxes failed').waitFor();
-				await shot(page, 'sandboxes-failed');
-			});
+	test('a sandbox', async ({ page }) => {
+		await serve(page, { '/api/sandboxes/main': sandboxes[0], '/api/catalog': catalog });
+		await page.goto('/sandboxes/main');
+		await page.getByText('Connect', { exact: true }).waitFor();
+		await look(page, 'sandbox');
 
-			test('a sandbox', async ({ page }) => {
-				await serve(page, { '/api/sandboxes/main': sandboxes[0], '/api/catalog': catalog });
-				await page.goto('/sandboxes/main');
-				await page.getByText('Connect', { exact: true }).waitFor();
-				await shot(page, 'sandbox');
+		await page.getByRole('button', { name: 'Delete sandbox' }).click();
+		await page.getByRole('alertdialog').waitFor();
+		await look(page, 'sandbox-delete', { fullPage: false });
+	});
 
-				await page.getByRole('button', { name: 'Delete sandbox' }).click();
-				await page.getByRole('alertdialog').waitFor();
-				await shot(page, 'sandbox-delete', false);
-			});
+	test('a failed sandbox, and a missing one', async ({ page }) => {
+		await serve(page, { '/api/sandboxes/broken': sandboxes[3], '/api/catalog': catalog });
+		await page.goto('/sandboxes/broken');
+		await page.getByText('The sandbox failed').waitFor();
+		await look(page, 'sandbox-failed');
 
-			test('a failed sandbox, and a missing one', async ({ page }) => {
-				await serve(page, { '/api/sandboxes/broken': sandboxes[3], '/api/catalog': catalog });
-				await page.goto('/sandboxes/broken');
-				await page.getByText('The sandbox failed').waitFor();
-				await shot(page, 'sandbox-failed');
+		await page.goto('/sandboxes/missing');
+		await page.getByText('No sandbox named missing').waitFor();
+		await look(page, 'sandbox-missing');
+	});
 
-				await page.goto('/sandboxes/missing');
-				await page.getByText('No sandbox named missing').waitFor();
-				await shot(page, 'sandbox-missing');
-			});
+	test('SSH keys', async ({ page }) => {
+		await serve(page, { '/api/keys': keys });
+		await page.goto('/keys');
+		await page.getByText('bob@laptop').waitFor();
+		await look(page, 'keys');
 
-			test('SSH keys', async ({ page }) => {
-				await serve(page, { '/api/keys': keys });
-				await page.goto('/keys');
-				await page.getByText('bob@laptop').waitFor();
-				await shot(page, 'keys');
+		await page.unrouteAll();
+		await page.getByRole('button', { name: 'Add key' }).click();
+		const dialog = page.getByRole('dialog');
+		await dialog.getByLabel('Public key').fill('ssh-ed25519 not-a-key bob@phone');
+		await dialog.getByRole('button', { name: 'Add key' }).click();
+		await dialog.getByRole('alert').waitFor();
+		await look(page, 'keys-add', { fullPage: false });
+	});
 
-				await page.unrouteAll();
-				await page.getByRole('button', { name: 'Add key' }).click();
-				const dialog = page.getByRole('dialog');
-				await dialog.getByLabel('Public key').fill('ssh-ed25519 not-a-key bob@phone');
-				await dialog.getByRole('button', { name: 'Add key' }).click();
-				await dialog.getByRole('alert').waitFor();
-				await shot(page, 'keys-add', false);
-			});
+	test('SSH keys, empty', async ({ page }) => {
+		await serve(page, { '/api/keys': [] });
+		await page.goto('/keys');
+		await page.getByText('No SSH keys yet').waitFor();
+		await look(page, 'keys-empty');
+	});
 
-			test('SSH keys, empty', async ({ page }) => {
-				await serve(page, { '/api/keys': [] });
-				await page.goto('/keys');
-				await page.getByText('No SSH keys yet').waitFor();
-				await shot(page, 'keys-empty');
-			});
+	test('credentials', async ({ page }) => {
+		await serve(page, { '/api/credentials': credentials });
+		await page.goto('/credentials');
+		await page.getByText('GITHUB_TOKEN').waitFor();
+		await look(page, 'credentials');
 
-			test('credentials', async ({ page }) => {
-				await serve(page, { '/api/credentials': credentials });
-				await page.goto('/credentials');
-				await page.getByText('GITHUB_TOKEN').waitFor();
-				await shot(page, 'credentials');
+		await page.getByRole('button', { name: 'Add credential' }).click();
+		await page.getByRole('dialog').getByLabel('Name').fill('github_token');
+		await look(page, 'credentials-add', { fullPage: false });
+	});
 
-				await page.getByRole('button', { name: 'Add credential' }).click();
-				await page.getByRole('dialog').getByLabel('Name').fill('github_token');
-				await shot(page, 'credentials-add', false);
-			});
+	test('credentials, empty', async ({ page }) => {
+		await serve(page, { '/api/credentials': [] });
+		await page.goto('/credentials');
+		await page.getByText('No credentials yet').waitFor();
+		await look(page, 'credentials-empty');
+	});
 
-			test('credentials, empty', async ({ page }) => {
-				await serve(page, { '/api/credentials': [] });
-				await page.goto('/credentials');
-				await page.getByText('No credentials yet').waitFor();
-				await shot(page, 'credentials-empty');
-			});
+	test('profile', async ({ page }) => {
+		await serve(page, { '/api/me': me({ picture }) });
+		await page.goto('/profile');
+		await page.getByRole('heading', { name: 'bob' }).waitFor();
+		await page.waitForFunction(() =>
+			[...document.images].every((image) => image.complete && image.naturalWidth > 0)
+		);
+		await look(page, 'profile');
 
-			test('profile', async ({ page }) => {
-				await serve(page, { '/api/me': me({ picture }) });
-				await page.goto('/profile');
-				await page.getByRole('heading', { name: 'bob' }).waitFor();
-				await page.waitForFunction(() =>
-					[...document.images].every((image) => image.complete && image.naturalWidth > 0)
-				);
-				await shot(page, 'profile');
+		await page.getByRole('button', { name: 'Delete account' }).click();
+		await page.getByRole('alertdialog').getByLabel('Type bob to confirm').fill('bo');
+		await look(page, 'profile-delete', { fullPage: false });
+	});
 
-				await page.getByRole('button', { name: 'Delete account' }).click();
-				await page.getByRole('alertdialog').getByLabel('Type bob to confirm').fill('bo');
-				await shot(page, 'profile-delete', false);
-			});
-
-			test('profile, with initials', async ({ page }) => {
-				await serve(page, { '/api/me': me({ email: null }) });
-				await page.goto('/profile');
-				await page.getByRole('heading', { name: 'bob' }).waitFor();
-				await shot(page, 'profile-initials');
-			});
-		});
-	}
-}
+	test('profile, with initials', async ({ page }) => {
+		await serve(page, { '/api/me': me({ email: null }) });
+		await page.goto('/profile');
+		await page.getByRole('heading', { name: 'bob' }).waitFor();
+		await look(page, 'profile-initials');
+	});
+});

@@ -28,7 +28,7 @@
 
 	{#if listing.current.state === 'failed'}
 		<LoadFailed
-			title="Sandboxes could not be loaded"
+			title="Loading the sandboxes failed"
 			error={listing.current.error}
 			onretry={() => listing.reload()}
 		/>
@@ -76,13 +76,15 @@
 								</Table.Cell>
 								<Table.Cell>
 									<div class="grid gap-0.5">
-										<span class="flex items-center gap-2">
+										<span class="flex items-center gap-2 font-medium sm:font-normal">
 											{sandbox.name}
 											{#if sandbox.isDefault}
 												<Badge variant="secondary">Default</Badge>
 											{/if}
 										</span>
-										<span class="text-xs font-medium sm:hidden">{sandbox.owner.handle}</span>
+										<span class="text-xs text-muted-foreground sm:hidden">
+											{sandbox.owner.handle}
+										</span>
 										<span class="text-xs text-muted-foreground sm:hidden">{image} · {size}</span>
 									</div>
 								</Table.Cell>

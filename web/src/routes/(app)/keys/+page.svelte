@@ -42,12 +42,13 @@
 {/snippet}
 
 <div class="grid grid-cols-1 gap-6">
-	<div class="flex flex-wrap items-end justify-between gap-4">
-		<PageHeader title="SSH keys" description="The public keys that may open your sandboxes." />
-		{#if list.value?.length}
-			{@render addKey()}
-		{/if}
-	</div>
+	<PageHeader title="SSH keys" description="The public keys that may open your sandboxes.">
+		{#snippet actions()}
+			{#if list.value?.length}
+				{@render addKey()}
+			{/if}
+		{/snippet}
+	</PageHeader>
 
 	{#if list.current.state === 'loading'}
 		<ListSkeleton what="SSH keys" />
@@ -77,7 +78,7 @@
 					<Item.Root variant="outline">
 						<Item.Media variant="icon"><KeyRoundIcon class="text-muted-foreground" /></Item.Media>
 						<Item.Content class="min-w-0">
-							<Item.Title class="max-w-full truncate">{key.label}</Item.Title>
+							<Item.Title class="line-clamp-none wrap-anywhere">{key.label}</Item.Title>
 							<Item.Description class="font-mono text-xs break-all">
 								{key.fingerprint}
 							</Item.Description>

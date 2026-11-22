@@ -49,15 +49,16 @@
 {/snippet}
 
 <div class="grid grid-cols-1 gap-6">
-	<div class="flex flex-wrap items-end justify-between gap-4">
-		<PageHeader
-			title="Credentials"
-			description="Secrets your sandboxes receive, such as LLM API keys. Values are never shown again."
-		/>
-		{#if list.value?.length}
-			{@render addCredential()}
-		{/if}
-	</div>
+	<PageHeader
+		title="Credentials"
+		description="Secrets your sandboxes receive, such as LLM API keys. Values are never shown again."
+	>
+		{#snippet actions()}
+			{#if list.value?.length}
+				{@render addCredential()}
+			{/if}
+		{/snippet}
+	</PageHeader>
 
 	<Alert.Root>
 		<InfoIcon />

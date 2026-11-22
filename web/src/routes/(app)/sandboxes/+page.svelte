@@ -37,12 +37,13 @@
 {/snippet}
 
 <div class="grid grid-cols-1 gap-6">
-	<div class="flex flex-wrap items-end justify-between gap-4">
-		<PageHeader title="Sandboxes" description="Your persistent machines, reachable over SSH." />
-		{#if list.value?.length}
-			{@render newSandbox()}
-		{/if}
-	</div>
+	<PageHeader title="Sandboxes" description="Your persistent machines, reachable over SSH.">
+		{#snippet actions()}
+			{#if list.value?.length}
+				{@render newSandbox()}
+			{/if}
+		{/snippet}
+	</PageHeader>
 
 	{#if catalog.current.state === 'failed'}
 		<LoadFailed

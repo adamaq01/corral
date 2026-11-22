@@ -70,7 +70,7 @@
 
 	{#if users.current.state === 'failed'}
 		<LoadFailed
-			title="Users could not be loaded"
+			title="Loading the users failed"
 			error={users.current.error}
 			onretry={() => users.reload()}
 		/>
@@ -113,9 +113,15 @@
 													<Badge variant="outline">You</Badge>
 												{/if}
 											</span>
-											<span class="max-w-48 truncate text-xs text-muted-foreground">
-												<span class="sm:hidden">{role}{user.email ? ' · ' : ''}</span>{user.email}
-											</span>
+											<span class="text-xs text-muted-foreground sm:hidden">{role}</span>
+											{#if user.email}
+												<span
+													class="max-w-40 truncate text-xs text-muted-foreground sm:max-w-none"
+													title={user.email}
+												>
+													{user.email}
+												</span>
+											{/if}
 										</div>
 									</div>
 								</Table.Cell>

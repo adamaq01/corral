@@ -33,7 +33,8 @@
 		</span>
 	</figcaption>
 	<div class="flex items-start gap-2 rounded-lg border bg-muted/50 py-1 pr-1 pl-3">
-		<pre class="min-w-0 flex-1 overflow-x-auto py-1.5 font-mono text-xs leading-5"><code
+		<pre
+			class="min-w-0 flex-1 py-1.5 font-mono text-xs leading-5 break-all whitespace-pre-wrap"><code
 				>{text}</code
 			></pre>
 		<Button variant="ghost" size="icon-sm" aria-label="Copy {label}" title="Copy" onclick={copy}>

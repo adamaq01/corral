@@ -27,7 +27,7 @@
 	</div>
 	<Card.Root class="w-full max-w-sm">
 		<Card.Header>
-			<Card.Title class="text-xl">Sign in</Card.Title>
+			<Card.Title class="text-xl"><h1>Sign in</h1></Card.Title>
 			<Card.Description>Reach your sandboxes, keys and credentials.</Card.Description>
 		</Card.Header>
 		<Card.Content class="grid gap-6">

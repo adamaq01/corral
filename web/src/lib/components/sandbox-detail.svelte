@@ -112,10 +112,29 @@
 		Sandboxes
 	</a>
 
+	<header class="grid gap-1">
+		<div class="flex flex-wrap items-center gap-2">
+			<h1 class="text-2xl font-semibold tracking-tight break-all">{name}</h1>
+			{#if sandbox.value}
+				<SandboxStateBadge status={sandbox.value} />
+				{#if sandbox.value.isDefault}
+					<Badge variant="secondary">Default</Badge>
+				{/if}
+			{/if}
+		</div>
+		{#if sandbox.value}
+			<p class="text-sm text-muted-foreground">
+				{choiceLabel(catalog.value?.images, sandbox.value.image)} · {choiceLabel(
+					catalog.value?.sizes,
+					sandbox.value.size
+				)} · Created <Timestamp value={sandbox.value.createdAt} />
+			</p>
+		{/if}
+	</header>
+
 	{#if sandbox.current.state === 'loading'}
 		<div class="grid gap-4" role="status" aria-label="Loading the sandbox">
-			<Skeleton class="h-8 w-48" />
-			<Skeleton class="h-4 w-64" />
+			<Skeleton class="h-5 w-64" />
 			<Skeleton class="h-56 rounded-xl" />
 		</div>
 	{:else if sandbox.current.state === 'failed' && sandbox.current.status === 404}
@@ -138,22 +157,6 @@
 	{:else}
 		{@const current = sandbox.current.value}
 		{@const presentation = states[current.state]}
-		<header class="grid gap-1">
-			<div class="flex flex-wrap items-center gap-2">
-				<h1 class="text-2xl font-semibold tracking-tight break-all">{current.name}</h1>
-				<SandboxStateBadge status={current} />
-				{#if current.isDefault}
-					<Badge variant="secondary">Default</Badge>
-				{/if}
-			</div>
-			<p class="text-sm text-muted-foreground">
-				{choiceLabel(catalog.value?.images, current.image)} · {choiceLabel(
-					catalog.value?.sizes,
-					current.size
-				)} · Created <Timestamp value={current.createdAt} />
-			</p>
-		</header>
-
 		{#if current.state === 'failed'}
 			<Alert.Root variant="destructive">
 				<CircleAlertIcon />

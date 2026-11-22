@@ -53,22 +53,25 @@
 			<Field.Label for="credential-name">Name</Field.Label>
 			<Input
 				id="credential-name"
+				aria-describedby="credential-name-hint"
 				bind:value={() => name, (typed) => (name = typed.toUpperCase())}
 				required
 				maxlength={64}
 				autocomplete="off"
 				autocapitalize="characters"
 				spellcheck={false}
-				class="font-mono"
+				class="font-mono aria-invalid:focus-visible:ring-destructive/50 dark:aria-invalid:focus-visible:ring-destructive/70"
 				placeholder="OPENAI_API_KEY"
 				aria-invalid={taken || undefined}
 			/>
 			{#if taken}
-				<Field.Error>
+				<Field.Error id="credential-name-hint">
 					{name} exists already. Use Replace on its row to change its value.
 				</Field.Error>
 			{:else}
-				<Field.Description>Capital letters, digits and underscores.</Field.Description>
+				<Field.Description id="credential-name-hint">
+					Capital letters, digits and underscores.
+				</Field.Description>
 			{/if}
 		</Field.Field>
 	{/if}

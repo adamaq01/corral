@@ -9,4 +9,6 @@
 	const date = $derived(new Date(value));
 </script>
 
-<time datetime={value} title={moment.format(date)}>{day.format(date)}</time>
+<time class="whitespace-nowrap" datetime={value} title={moment.format(date)}>
+	{day.format(date)}
+</time>

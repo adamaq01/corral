@@ -16,8 +16,8 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
+	import * as Field from '#lib/components/ui/field/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
-	import { Label } from '#lib/components/ui/label/index.js';
 	import * as RadioGroup from '#lib/components/ui/radio-group/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
 	import { Remote } from '#lib/remote.svelte.js';
@@ -102,12 +102,13 @@
 {/snippet}
 
 <div class="space-y-6">
-	<div class="flex flex-wrap items-end justify-between gap-4">
-		<PageHeader title="Local accounts" description="The accounts that sign in with a password." />
-		{#if list.current.state === 'ready' && list.current.value.length > 0}
-			{@render newAccountButton()}
-		{/if}
-	</div>
+	<PageHeader title="Local accounts" description="The accounts that sign in with a password.">
+		{#snippet actions()}
+			{#if list.current.state === 'ready' && list.current.value.length > 0}
+				{@render newAccountButton()}
+			{/if}
+		{/snippet}
+	</PageHeader>
 
 	{#if notice}
 		<Alert.Root role="status">
@@ -118,7 +119,7 @@
 
 	{#if list.current.state === 'failed'}
 		<LoadFailed
-			title="Local accounts could not be loaded"
+			title="Loading the local accounts failed"
 			error={list.current.error}
 			onretry={() => list.reload()}
 		/>
@@ -211,8 +212,8 @@
 	submit="Create account"
 	onsubmit={create}
 >
-	<div class="grid gap-2">
-		<Label for="new-username">Username</Label>
+	<Field.Field>
+		<Field.Label for="new-username">Username</Field.Label>
 		<Input
 			id="new-username"
 			autocomplete="off"
@@ -223,12 +224,12 @@
 			aria-describedby="new-username-hint"
 			bind:value={username}
 		/>
-		<p id="new-username-hint" class="text-xs text-muted-foreground">
+		<Field.Description id="new-username-hint">
 			Up to 32 lowercase letters, digits and dashes. It becomes their handle.
-		</p>
-	</div>
-	<div class="grid gap-2">
-		<Label for="new-password">Password</Label>
+		</Field.Description>
+	</Field.Field>
+	<Field.Field>
+		<Field.Label for="new-password">Password</Field.Label>
 		<Input
 			id="new-password"
 			type="password"
@@ -238,24 +239,30 @@
 			aria-describedby="new-password-hint"
 			bind:value={password}
 		/>
-		<p id="new-password-hint" class="text-xs text-muted-foreground">
+		<Field.Description id="new-password-hint">
 			At least {MIN_PASSWORD_CHARS} characters.
-		</p>
-	</div>
-	<fieldset class="grid gap-3">
-		<legend class="mb-3 text-sm font-medium">Role</legend>
-		<RadioGroup.Root bind:value={role} class="gap-3">
+		</Field.Description>
+	</Field.Field>
+	<Field.Set>
+		<Field.Legend variant="label">Role</Field.Legend>
+		<RadioGroup.Root bind:value={role}>
 			{#each roles as choice (choice.value)}
-				<div class="flex items-start gap-3">
-					<RadioGroup.Item value={choice.value} id="role-{choice.value}" class="mt-0.5" />
-					<Label for="role-{choice.value}" class="grid gap-1 font-normal">
-						<span class="font-medium">{choice.label}</span>
-						<span class="text-xs leading-snug text-muted-foreground">{choice.description}</span>
-					</Label>
-				</div>
+				<Field.Field orientation="horizontal">
+					<RadioGroup.Item
+						value={choice.value}
+						id="role-{choice.value}"
+						aria-describedby="role-{choice.value}-hint"
+					/>
+					<Field.Content>
+						<Field.Label for="role-{choice.value}">{choice.label}</Field.Label>
+						<Field.Description id="role-{choice.value}-hint">
+							{choice.description}
+						</Field.Description>
+					</Field.Content>
+				</Field.Field>
 			{/each}
 		</RadioGroup.Root>
-	</fieldset>
+	</Field.Set>
 </FormDialog>
 
 {#if target}
@@ -267,8 +274,8 @@
 		submit={account.yours ? 'Change password' : 'Reset password'}
 		onsubmit={() => reset(account)}
 	>
-		<div class="grid gap-2">
-			<Label for="reset-password">New password</Label>
+		<Field.Field>
+			<Field.Label for="reset-password">New password</Field.Label>
 			<Input
 				id="reset-password"
 				type="password"
@@ -278,10 +285,10 @@
 				aria-describedby="reset-password-hint"
 				bind:value={newPassword}
 			/>
-			<p id="reset-password-hint" class="text-xs text-muted-foreground">
+			<Field.Description id="reset-password-hint">
 				At least {MIN_PASSWORD_CHARS} characters.
-			</p>
-		</div>
+			</Field.Description>
+		</Field.Field>
 	</FormDialog>
 	<ConfirmDialog
 		bind:open={deleting}

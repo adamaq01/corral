@@ -37,9 +37,9 @@
 					<Sidebar.MenuButton
 						size="lg"
 						class="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-						aria-label="Account"
 						{...props}
 					>
+						<span class="sr-only">Account</span>
 						{@render identity()}
 						<ChevronsUpDownIcon class="ml-auto" />
 					</Sidebar.MenuButton>

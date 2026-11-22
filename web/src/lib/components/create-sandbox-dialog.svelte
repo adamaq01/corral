@@ -55,6 +55,7 @@
 		<Field.Label for="sandbox-name">Name</Field.Label>
 		<Input
 			id="sandbox-name"
+			aria-describedby="sandbox-name-hint"
 			bind:value={name}
 			required
 			maxlength={32}
@@ -63,7 +64,7 @@
 			spellcheck={false}
 			disabled={full}
 		/>
-		<Field.Description>
+		<Field.Description id="sandbox-name-hint">
 			Lowercase letters, digits and dashes. It becomes part of the SSH user name.
 		</Field.Description>
 	</Field.Field>

@@ -33,10 +33,13 @@ Docker engine on a network of its own. ContainerSSH (`containerssh/containerssh:
 network as the SSH front door, with the Compose install's `containerssh.yaml`, so tests SSH into
 the sandboxes they create. The suite removes the containers, volumes and network afterwards.
 Sandboxes use `corral-sandbox:dev` unless `CORRAL_SANDBOX_IMAGE` names another image. A failed test
-keeps its trace in `test-results/`, next to `corral-server.log` and `containerssh.log`. With
-`CORRAL_SCREENSHOTS=<dir>`, the suite also takes screenshots of every page in both themes at
-desktop and phone width. The admin and user pages show fixed data, full and empty, in place of the
-API's.
+keeps its trace in `test-results/`, next to `corral-server.log` and `containerssh.log`.
+
+The `*screenshots.spec.ts` files open every page in both themes at desktop and phone width, full,
+empty, loading, failed and with its dialogs open, with fixed data in place of the API's. Each view
+must pass axe with no serious or critical violation, have one `h1` and headings that skip no
+level, never scroll sideways, and show focus on every element Tab reaches. With
+`CORRAL_SCREENSHOTS=<dir>`, they also save a screenshot of each view there.
 
 ## API types
 

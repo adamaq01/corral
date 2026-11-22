@@ -59,12 +59,13 @@
 		<Field.Label for="key-label">Label</Field.Label>
 		<Input
 			id="key-label"
+			aria-describedby="key-label-hint"
 			bind:value={label}
 			oninput={() => (labelEdited = true)}
 			required
 			autocomplete="off"
 		/>
-		<Field.Description>
+		<Field.Description id="key-label-hint">
 			Where the key lives, so you know which one to remove later.
 		</Field.Description>
 	</Field.Field>
