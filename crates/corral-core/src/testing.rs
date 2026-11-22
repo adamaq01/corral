@@ -10,8 +10,8 @@ use crate::app::{
 };
 use crate::domain::{CredentialName, Principal, Sandbox, SandboxName, User};
 use crate::fakes::{
-    FakeEngine, FakePasswordHasher, MemoryCredentialRepo, MemoryKeyRepo, MemoryLocalAccountRepo,
-    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
+    FakeEngine, FakePasswordHasher, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo,
+    MemorySecretStore, MemoryUserRepo,
 };
 use crate::ports::{Env, IdlePolicy, Resources, SandboxRepo};
 
@@ -112,7 +112,6 @@ pub fn exposed(env: &Env) -> Vec<String> {
 
 pub struct World {
     pub users: Arc<MemoryUserRepo>,
-    pub secrets: Arc<MemorySecretStore>,
     pub accounts: Accounts,
     pub keys: Keys,
     pub credentials: Credentials,
@@ -131,13 +130,11 @@ impl World {
 
     pub fn with_sandbox_repo(sandbox_repo: Arc<dyn SandboxRepo>) -> Self {
         let users = Arc::new(MemoryUserRepo::default());
-        let secrets = Arc::new(MemorySecretStore::default());
         let policy = AccessPolicy {
             member_group: MEMBERS.to_owned(),
             admin_group: ADMINS.to_owned(),
         };
-        let credentials =
-            Credentials::new(Arc::new(MemoryCredentialRepo::default()), secrets.clone());
+        let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
         let engine = Arc::new(FakeEngine::default());
         let limits = Limits {
             max_sandboxes_per_user: MAX_SANDBOXES,
@@ -171,7 +168,6 @@ impl World {
             credentials,
             engine,
             users,
-            secrets,
             key_repo,
             access,
             hasher,

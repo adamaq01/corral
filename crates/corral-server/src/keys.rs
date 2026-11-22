@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use corral_api::Key;
-use corral_secrets_sealed::Keyring;
+use corral_store_sql::Keyring;
 use secrecy::{ExposeSecret, SecretString};
 use ssh_key::rand_core::{OsRng, RngCore};
 use ssh_key::{Algorithm, LineEnding, PrivateKey};

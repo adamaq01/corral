@@ -8,9 +8,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use corral_core::app::{Credentials, Limits, RegisteredKeyVerifier, Sandboxes, SshAccess};
 use corral_core::domain::{Handle, User, UserId};
-use corral_core::fakes::{
-    MemoryCredentialRepo, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore,
-};
+use corral_core::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore};
 use corral_core::ports::{Readiness, SshTarget, UserRepo};
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy, router};
@@ -310,10 +308,7 @@ async fn store_errors_never_become_success() {
     let sandboxes = Sandboxes::new(
         Arc::new(MemorySandboxRepo::default()),
         w.engine.clone(),
-        Credentials::new(
-            Arc::new(MemoryCredentialRepo::default()),
-            Arc::new(MemorySecretStore::default()),
-        ),
+        Credentials::new(Arc::new(MemorySecretStore::default())),
         catalog(),
         Limits {
             max_sandboxes_per_user: 1,

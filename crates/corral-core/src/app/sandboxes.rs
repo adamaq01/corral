@@ -71,7 +71,7 @@ impl Sandboxes {
             name: request.name.clone(),
             image: image.reference.clone(),
             resources: size.resources.clone(),
-            env: self.credentials.env_for(owner.id).await?,
+            env: self.credentials.load(owner.id).await?,
             idle: self.catalog.idle,
         };
         let sandbox = Sandbox {
@@ -140,7 +140,7 @@ impl Sandboxes {
 
     pub async fn restart(&self, owner: &User, name: &SandboxName) -> Result<()> {
         let sandbox = self.find(owner, name).await?;
-        let env = self.credentials.env_for(sandbox.owner).await?;
+        let env = self.credentials.load(sandbox.owner).await?;
         self.engine.restart(&sandbox.id, env).await
     }
 
@@ -174,7 +174,7 @@ impl Sandboxes {
     }
 
     pub async fn ensure_ready(&self, sandbox: &Sandbox, deadline: Duration) -> Result<Readiness> {
-        let env = self.credentials.env_for(sandbox.owner).await?;
+        let env = self.credentials.load(sandbox.owner).await?;
         self.engine.ensure_running(&sandbox.id, env, deadline).await
     }
 
@@ -237,7 +237,7 @@ mod tests {
         let eve = w.member("eve").await;
         for (owner, value) in [(&adam, "adams"), (&eve, "eves")] {
             w.credentials
-                .set(owner, &credential("GH_TOKEN"), SecretString::from(value))
+                .set(owner.id, &credential("GH_TOKEN"), SecretString::from(value))
                 .await
                 .unwrap();
         }
@@ -424,7 +424,7 @@ mod tests {
         let token = credential("GH_TOKEN");
         let set = async |value: &str| {
             w.credentials
-                .set(&adam, &token, SecretString::from(value))
+                .set(adam.id, &token, SecretString::from(value))
                 .await
         };
         w.sandboxes.stop(&adam, &main.name).await.unwrap();

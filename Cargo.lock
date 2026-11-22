@@ -883,20 +883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "corral-secrets-sealed"
-version = "0.1.0"
-dependencies = [
- "aes-gcm 0.11.1",
- "async-trait",
- "base64 0.23.1",
- "corral-core",
- "secrecy",
- "tokio",
- "uuid",
- "zeroize",
-]
-
-[[package]]
 name = "corral-server"
 version = "0.1.0"
 dependencies = [
@@ -912,7 +898,6 @@ dependencies = [
  "corral-identity-local",
  "corral-identity-oidc",
  "corral-secrets-openbao",
- "corral-secrets-sealed",
  "corral-store-sql",
  "kube",
  "rpassword",
@@ -932,9 +917,12 @@ dependencies = [
 name = "corral-store-sql"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.11.1",
  "async-trait",
+ "base64 0.23.1",
  "chrono",
  "corral-core",
+ "secrecy",
  "serde",
  "serde_json",
  "sqlx",
@@ -943,6 +931,7 @@ dependencies = [
  "testcontainers-modules",
  "tokio",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

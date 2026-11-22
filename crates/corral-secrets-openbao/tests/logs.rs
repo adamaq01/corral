@@ -45,16 +45,16 @@ async fn credential_values_never_reach_the_logs() {
     );
     let value = "sk-canary-0123456789";
     store
-        .put(adam, &key, SecretString::from(value))
+        .set(adam, &key, SecretString::from(value))
         .await
         .unwrap();
-    store.load_all(adam).await.unwrap();
+    store.load(adam).await.unwrap();
     let stored: BTreeMap<String, String> =
         kv2::read(&bao.root, MOUNT, &format!("{PREFIX}/{}", adam.0))
             .await
             .unwrap();
     assert_eq!(stored["CANARY_KEY"], value);
-    store.delete(adam, &key).await.unwrap();
+    store.remove(adam, &key).await.unwrap();
 
     let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
     assert!(

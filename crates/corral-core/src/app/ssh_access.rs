@@ -183,7 +183,7 @@ mod tests {
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
         for (owner, value) in [(&adam, "changed-while-asleep"), (&eve, "eves")] {
             w.credentials
-                .set(owner, &credential("GH_TOKEN"), SecretString::from(value))
+                .set(owner.id, &credential("GH_TOKEN"), SecretString::from(value))
                 .await
                 .unwrap();
         }

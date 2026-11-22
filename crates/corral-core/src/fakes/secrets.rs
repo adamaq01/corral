@@ -7,68 +7,34 @@ use secrecy::SecretString;
 use super::lock;
 use crate::Result;
 use crate::domain::{CredentialName, UserId};
-use crate::ports::{Env, SecretBlobRepo, SecretStore};
+use crate::ports::{Env, SecretStore};
 
 #[derive(Default)]
 pub struct MemorySecretStore {
-    values: Mutex<BTreeMap<(UserId, CredentialName), SecretString>>,
-}
-
-#[derive(Default)]
-pub struct MemorySecretBlobRepo {
-    blobs: Mutex<BTreeMap<(UserId, CredentialName), Vec<u8>>>,
+    values: Mutex<BTreeMap<UserId, Env>>,
 }
 
 #[async_trait]
 impl SecretStore for MemorySecretStore {
-    async fn put(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()> {
-        lock(&self.values).insert((user, name.clone()), value);
+    async fn set(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()> {
+        lock(&self.values)
+            .entry(user)
+            .or_default()
+            .insert(name.clone(), value);
         Ok(())
     }
 
-    async fn delete(&self, user: UserId, name: &CredentialName) -> Result<()> {
-        lock(&self.values).remove(&(user, name.clone()));
-        Ok(())
-    }
-
-    async fn load_all(&self, user: UserId) -> Result<Env> {
+    async fn remove(&self, user: UserId, name: &CredentialName) -> Result<bool> {
         Ok(lock(&self.values)
-            .iter()
-            .filter(|((owner, _), _)| *owner == user)
-            .map(|((_, name), value)| (name.clone(), value.clone()))
-            .collect())
-    }
-}
-
-#[async_trait]
-impl SecretBlobRepo for MemorySecretBlobRepo {
-    async fn put(&self, user: UserId, name: &CredentialName, blob: Vec<u8>) -> Result<()> {
-        lock(&self.blobs).insert((user, name.clone()), blob);
-        Ok(())
+            .get_mut(&user)
+            .is_some_and(|env| env.remove(name).is_some()))
     }
 
-    async fn delete(&self, user: UserId, name: &CredentialName) -> Result<()> {
-        lock(&self.blobs).remove(&(user, name.clone()));
-        Ok(())
+    async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
+        Ok(self.load(user).await?.into_keys().collect())
     }
 
-    async fn load_all(&self, user: UserId) -> Result<Vec<(CredentialName, Vec<u8>)>> {
-        Ok(lock(&self.blobs)
-            .iter()
-            .filter(|((owner, _), _)| *owner == user)
-            .map(|((_, name), blob)| (name.clone(), blob.clone()))
-            .collect())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::MemorySecretStore;
-    use crate::contract::secrets;
-    use crate::fakes::MemoryUserRepo;
-
-    #[tokio::test]
-    async fn memory_secret_store_meets_the_contract() {
-        secrets::secret_store(&MemoryUserRepo::default(), &MemorySecretStore::default()).await;
+    async fn load(&self, user: UserId) -> Result<Env> {
+        Ok(lock(&self.values).get(&user).cloned().unwrap_or_default())
     }
 }

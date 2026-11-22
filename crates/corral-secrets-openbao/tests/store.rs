@@ -62,8 +62,8 @@ async fn each_user_owns_one_secret_holding_every_credential() {
     config.path_prefix = format!("/{PREFIX}/");
     let store = OpenBaoStore::connect(config).await.unwrap();
     let adam = user();
-    store.put(adam, &name("A_KEY"), secret("a")).await.unwrap();
-    store.put(adam, &name("B_KEY"), secret("b")).await.unwrap();
+    store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
+    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
 
     let stored: BTreeMap<String, String> = kv2::read(&bao.root, MOUNT, &path(adam)).await.unwrap();
     assert_eq!(
@@ -82,7 +82,7 @@ async fn concurrent_writes_for_one_user_lose_nothing() {
         let store = Arc::clone(&store);
         writers.spawn(async move {
             store
-                .put(adam, &name(&format!("KEY_{i}")), secret(&format!("v{i}")))
+                .set(adam, &name(&format!("KEY_{i}")), secret(&format!("v{i}")))
                 .await
         });
     }
@@ -91,7 +91,7 @@ async fn concurrent_writes_for_one_user_lose_nothing() {
     }
 
     let expected: Vec<_> = (0..8).map(|i| format!("KEY_{i}=v{i}")).collect();
-    assert_eq!(exposed(&store.load_all(adam).await.unwrap()), expected);
+    assert_eq!(exposed(&store.load(adam).await.unwrap()), expected);
 }
 
 #[tokio::test]
@@ -100,29 +100,29 @@ async fn overwritten_and_deleted_values_leave_no_readable_history() {
     let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
     let adam = user();
     store
-        .put(adam, &name("A_KEY"), secret("first"))
+        .set(adam, &name("A_KEY"), secret("first"))
         .await
         .unwrap();
     store
-        .put(adam, &name("A_KEY"), secret("second"))
+        .set(adam, &name("A_KEY"), secret("second"))
         .await
         .unwrap();
-    store.put(adam, &name("B_KEY"), secret("b")).await.unwrap();
-    store.delete(adam, &name("B_KEY")).await.unwrap();
+    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
+    store.remove(adam, &name("B_KEY")).await.unwrap();
 
     assert_eq!(
         readable_versions(&bao, adam).await,
         [BTreeMap::from([("A_KEY".into(), "second".into())])]
     );
 
-    store.delete(adam, &name("A_KEY")).await.unwrap();
+    store.remove(adam, &name("A_KEY")).await.unwrap();
     assert_eq!(readable_versions(&bao, adam).await, []);
     let metadata = kv2::read_metadata(&bao.root, MOUNT, &path(adam)).await;
     assert!(metadata.is_err(), "{metadata:?}");
-    assert!(store.load_all(adam).await.unwrap().is_empty());
+    assert!(store.load(adam).await.unwrap().is_empty());
 
-    store.put(adam, &name("C_KEY"), secret("c")).await.unwrap();
-    assert_eq!(exposed(&store.load_all(adam).await.unwrap()), ["C_KEY=c"]);
+    store.set(adam, &name("C_KEY"), secret("c")).await.unwrap();
+    assert_eq!(exposed(&store.load(adam).await.unwrap()), ["C_KEY=c"]);
 }
 
 // Probes every version number the store could have written, not only those metadata lists.
@@ -141,14 +141,14 @@ async fn a_soft_deleted_secret_reads_empty_and_takes_new_writes() {
     let bao = OpenBao::start().await;
     let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
     let adam = user();
-    store.put(adam, &name("A_KEY"), secret("a")).await.unwrap();
+    store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
     kv2::delete_latest(&bao.root, MOUNT, &path(adam))
         .await
         .unwrap();
 
-    assert!(store.load_all(adam).await.unwrap().is_empty());
-    store.put(adam, &name("B_KEY"), secret("b")).await.unwrap();
-    assert_eq!(exposed(&store.load_all(adam).await.unwrap()), ["B_KEY=b"]);
+    assert!(store.load(adam).await.unwrap().is_empty());
+    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
+    assert_eq!(exposed(&store.load(adam).await.unwrap()), ["B_KEY=b"]);
 }
 
 #[tokio::test]
@@ -166,7 +166,7 @@ async fn malformed_secrets_fail_without_quoting_values() {
         kv2::set(&bao.root, MOUNT, &path(adam), &data)
             .await
             .unwrap();
-        match store.load_all(adam).await {
+        match store.load(adam).await {
             Err(error @ Error::Internal { .. }) => {
                 let message = error.to_string();
                 assert!(
@@ -244,21 +244,21 @@ async fn kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expir
     .await
     .unwrap();
     let adam = user();
-    store.put(adam, &name("A_KEY"), secret("a")).await.unwrap();
+    store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
 
     std::fs::write(&jwt_path, &second).unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
-    store.put(adam, &name("B_KEY"), secret("b")).await.unwrap();
+    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
 
     assert_eq!(
-        exposed(&store.load_all(adam).await.unwrap()),
+        exposed(&store.load(adam).await.unwrap()),
         ["A_KEY=a", "B_KEY=b"]
     );
     assert_eq!(*reviewed.lock().unwrap(), [first, second]);
 
-    store.delete(adam, &name("A_KEY")).await.unwrap();
-    store.delete(adam, &name("B_KEY")).await.unwrap();
-    assert!(store.load_all(adam).await.unwrap().is_empty());
+    store.remove(adam, &name("A_KEY")).await.unwrap();
+    store.remove(adam, &name("B_KEY")).await.unwrap();
+    assert!(store.load(adam).await.unwrap().is_empty());
     std::fs::remove_file(jwt_path).unwrap();
 }
 

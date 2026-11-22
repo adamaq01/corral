@@ -9,9 +9,7 @@ use corral_core::app::{
     RegisteredKeyVerifier, Sandboxes, SizePreset, SshAccess, SshEndpoint,
 };
 use corral_core::domain::{Principal, Sandbox, SandboxId, SandboxName, SandboxStatus, User};
-use corral_core::fakes::{
-    MemoryCredentialRepo, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
-};
+use corral_core::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo};
 use corral_core::ports::{
     Env, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
 };
@@ -47,10 +45,7 @@ impl World {
         let users = Arc::new(MemoryUserRepo::default());
         let key_repo = Arc::new(MemoryKeyRepo::default());
         let engine = Arc::new(StubEngine::default());
-        let credentials = Credentials::new(
-            Arc::new(MemoryCredentialRepo::default()),
-            Arc::new(MemorySecretStore::default()),
-        );
+        let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
         let sandboxes = Sandboxes::new(
             Arc::new(MemorySandboxRepo::default()),
             engine.clone(),

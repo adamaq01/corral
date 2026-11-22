@@ -9,12 +9,11 @@ macro_rules! on_pool {
     };
 }
 
-mod credentials;
 mod error;
 mod keys;
 mod local_accounts;
 mod sandboxes;
-mod secret_blobs;
+mod secrets;
 mod stored;
 mod users;
 
@@ -25,6 +24,7 @@ use sqlx::postgres::PgPool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool};
 
 use crate::error::db_error;
+pub use crate::secrets::{DatabaseSecretStore, Keyring};
 
 pub struct Store {
     pool: Pool,

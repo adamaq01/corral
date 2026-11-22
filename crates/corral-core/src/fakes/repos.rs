@@ -1,5 +1,5 @@
+use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -7,9 +7,9 @@ use uuid::Uuid;
 
 use super::lock;
 use crate::domain::{
-    CredentialName, Handle, LocalAccount, Sandbox, SandboxName, SshKey, SshPublicKey, User, UserId,
+    Handle, LocalAccount, Sandbox, SandboxName, SshKey, SshPublicKey, User, UserId,
 };
-use crate::ports::{CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
+use crate::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
 use crate::{Error, Result};
 
 #[derive(Default)]
@@ -25,11 +25,6 @@ pub struct MemoryKeyRepo {
 #[derive(Default)]
 pub struct MemorySandboxRepo {
     sandboxes: Mutex<Vec<Sandbox>>,
-}
-
-#[derive(Default)]
-pub struct MemoryCredentialRepo {
-    names: Mutex<BTreeSet<(UserId, CredentialName)>>,
 }
 
 #[derive(Default)]
@@ -192,26 +187,6 @@ impl SandboxRepo for MemorySandboxRepo {
         let before = sandboxes.len();
         sandboxes.retain(|s| !(s.owner == owner && s.name == *name));
         Ok(sandboxes.len() < before)
-    }
-}
-
-#[async_trait]
-impl CredentialRepo for MemoryCredentialRepo {
-    async fn list(&self, user: UserId) -> Result<Vec<CredentialName>> {
-        Ok(lock(&self.names)
-            .iter()
-            .filter(|(owner, _)| *owner == user)
-            .map(|(_, name)| name.clone())
-            .collect())
-    }
-
-    async fn upsert(&self, user: UserId, name: &CredentialName) -> Result<()> {
-        lock(&self.names).insert((user, name.clone()));
-        Ok(())
-    }
-
-    async fn delete(&self, user: UserId, name: &CredentialName) -> Result<bool> {
-        Ok(lock(&self.names).remove(&(user, name.clone())))
     }
 }
 

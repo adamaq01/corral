@@ -11,5 +11,5 @@ pub use identity::{IdentityProvider, LoginStart, LoginState};
 pub use key_verifier::KeyVerifier;
 pub use local_accounts::LocalAccountRepo;
 pub use password_hasher::PasswordHasher;
-pub use repos::{CredentialRepo, KeyRepo, SandboxRepo, UserRepo};
-pub use secrets::{SecretBlobRepo, SecretStore};
+pub use repos::{KeyRepo, SandboxRepo, UserRepo};
+pub use secrets::SecretStore;

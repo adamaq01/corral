@@ -47,7 +47,7 @@ impl OpenBaoStore {
         &self,
         user: UserId,
         change: impl Fn(&mut Env) -> bool + Send + Sync,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let path = self.path(user);
         for _ in 0..WRITE_ATTEMPTS {
             let client = self.session.client().await?;
@@ -61,7 +61,7 @@ impl OpenBaoStore {
                     .unwrap_or_default()
             };
             if !change(&mut env) {
-                return Ok(());
+                return Ok(false);
             }
             if write(&client, &self.mount, &path, &env, version).await? {
                 // The empty write already proved no other writer raced this one.
@@ -70,7 +70,7 @@ impl OpenBaoStore {
                         .await
                         .map_err(|err| openbao_error("metadata delete", err))?;
                 }
-                return Ok(());
+                return Ok(true);
             }
         }
         Err(Error::internal(
@@ -82,19 +82,24 @@ impl OpenBaoStore {
 
 #[async_trait]
 impl SecretStore for OpenBaoStore {
-    async fn put(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()> {
+    async fn set(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()> {
         self.update(user, |env| {
             env.insert(name.clone(), value.clone());
             true
         })
         .await
+        .map(|_| ())
     }
 
-    async fn delete(&self, user: UserId, name: &CredentialName) -> Result<()> {
+    async fn remove(&self, user: UserId, name: &CredentialName) -> Result<bool> {
         self.update(user, |env| env.remove(name).is_some()).await
     }
 
-    async fn load_all(&self, user: UserId) -> Result<Env> {
+    async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
+        Ok(self.load(user).await?.into_keys().collect())
+    }
+
+    async fn load(&self, user: UserId) -> Result<Env> {
         let client = self.session.client().await?;
         let found = read(&client, &self.mount, &self.path(user), None).await?;
         Ok(found.unwrap_or_default())

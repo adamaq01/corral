@@ -32,16 +32,7 @@ create table sandboxes (
 create table credentials (
     user_id blob not null references users on delete cascade,
     name text not null,
-    created_at text not null,
-    updated_at text not null,
-    primary key (user_id, name)
-) strict;
-
-create table credential_values (
-    user_id blob not null references users on delete cascade,
-    name text not null,
-    blob blob not null,
-    updated_at text not null,
+    sealed blob not null,
     primary key (user_id, name)
 ) strict;
 

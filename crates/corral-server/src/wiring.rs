@@ -14,8 +14,7 @@ use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy};
 use corral_identity_local::Argon2Hasher;
 use corral_identity_oidc::{OidcConfig, OidcProvider};
 use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig, OpenBaoStore};
-use corral_secrets_sealed::SealedStore;
-use corral_store_sql::Store;
+use corral_store_sql::{DatabaseSecretStore, Store};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
@@ -37,7 +36,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     let session_key = keys::session_key(&env::secret(keys::SESSION_KEY)?)?;
     let proxy_key = ProxyKey::parse(&env::secret(keys::PROXY_PRIVATE_KEY)?)?;
     let store = store::connect().await?;
-    let credentials = Credentials::new(store.clone(), secret_store(&config.secrets, &store).await?);
+    let credentials = Credentials::new(secret_store(&config.secrets, &store).await?);
     let identity = identity(config).await?;
     let local = local_accounts(config, &store)?;
     let (engine, lifecycle) = engine(&config.engine, &proxy_key, shutdown).await?;
@@ -90,7 +89,7 @@ async fn secret_store(secrets: &Secrets, store: &Arc<Store>) -> Result<Arc<dyn S
     match secrets {
         Secrets::Database => {
             let keyring = keys::keyring(&env::secret(keys::SECRETS_KEY)?)?;
-            Ok(Arc::new(SealedStore::new(store.clone(), keyring)))
+            Ok(Arc::new(DatabaseSecretStore::new(store.clone(), keyring)))
         }
         Secrets::OpenBao(bao) => {
             let auth = match &bao.login {

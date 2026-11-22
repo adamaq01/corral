@@ -1,27 +1,25 @@
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};
 
-use crate::domain::{CredentialName, User, UserId};
-use crate::ports::{CredentialRepo, Env, SecretStore};
+use crate::domain::{CredentialName, UserId};
+use crate::ports::{Env, SecretStore};
 use crate::{Error, Result};
 
 #[derive(Clone)]
 pub struct Credentials {
-    names: Arc<dyn CredentialRepo>,
-    secrets: Arc<dyn SecretStore>,
+    store: Arc<dyn SecretStore>,
 }
 
 impl Credentials {
     #[must_use]
-    pub fn new(names: Arc<dyn CredentialRepo>, secrets: Arc<dyn SecretStore>) -> Self {
-        Self { names, secrets }
+    pub fn new(store: Arc<dyn SecretStore>) -> Self {
+        Self { store }
     }
 
     pub async fn set(
         &self,
-        owner: &User,
+        user: UserId,
         name: &CredentialName,
         value: SecretString,
     ) -> Result<()> {
@@ -31,98 +29,53 @@ impl Credentials {
                  base64-encode multi-line values"
             )));
         }
-        self.secrets.put(owner.id, name, value).await?;
-        self.names.upsert(owner.id, name).await
+        self.store.set(user, name, value).await
     }
 
-    pub async fn list(&self, owner: &User) -> Result<Vec<CredentialName>> {
-        self.names.list(owner.id).await
-    }
-
-    pub async fn remove(&self, owner: &User, name: &CredentialName) -> Result<()> {
-        let listed = self.names.delete(owner.id, name).await?;
-        self.secrets.delete(owner.id, name).await?;
-        if listed {
+    pub async fn remove(&self, user: UserId, name: &CredentialName) -> Result<()> {
+        if self.store.remove(user, name).await? {
             Ok(())
         } else {
             Err(Error::NotFound(format!("credential {name}")))
         }
     }
 
-    pub async fn env_for(&self, owner: UserId) -> Result<Env> {
-        let listed: BTreeSet<CredentialName> = self.names.list(owner).await?.into_iter().collect();
-        let mut env = self.secrets.load_all(owner).await?;
-        env.retain(|name, _| listed.contains(name));
-        Ok(env)
+    pub async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
+        self.store.names(user).await
+    }
+
+    pub async fn load(&self, user: UserId) -> Result<Env> {
+        self.store.load(user).await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use secrecy::{ExposeSecret, SecretString};
+    use secrecy::SecretString;
 
     use crate::Error;
-    use crate::ports::SecretStore;
     use crate::testing::{World, credential, exposed};
 
     #[tokio::test]
-    async fn credential_values_live_only_in_secret_store() {
+    async fn removing_a_missing_credential_is_not_found() {
         let w = World::new();
-        let adam = w.member("adam").await;
+        let (adam, eve) = (w.member("adam").await, w.member("eve").await);
+        let gh = credential("GH_TOKEN");
         w.credentials
-            .set(
-                &adam,
-                &credential("OPENAI_API_KEY"),
-                SecretString::from("sk-1"),
-            )
+            .set(adam.id, &gh, SecretString::from("gh-1"))
             .await
             .unwrap();
-        assert_eq!(
-            w.credentials.list(&adam).await.unwrap(),
-            vec![credential("OPENAI_API_KEY")]
-        );
-        assert_eq!(
-            exposed(&w.secrets.load_all(adam.id).await.unwrap()),
-            ["OPENAI_API_KEY=sk-1"]
-        );
-        let env = w.credentials.env_for(adam.id).await.unwrap();
-        assert_eq!(env[&credential("OPENAI_API_KEY")].expose_secret(), "sk-1");
-        assert!(!format!("{env:?}").contains("sk-1"));
-    }
-
-    #[tokio::test]
-    async fn credentials_are_overwritten_removed_and_scoped_per_user() {
-        let w = World::new();
-        let adam = w.member("adam").await;
-        let eve = w.member("eve").await;
-        let (gh, openai) = (credential("GH_TOKEN"), credential("OPENAI_API_KEY"));
-        for (name, value) in [(&gh, "gh-1"), (&gh, "gh-2"), (&openai, "sk-1")] {
-            w.credentials
-                .set(&adam, name, SecretString::from(value))
-                .await
-                .unwrap();
-        }
-        assert_eq!(
-            exposed(&w.credentials.env_for(adam.id).await.unwrap()),
-            ["GH_TOKEN=gh-2", "OPENAI_API_KEY=sk-1"]
-        );
-        assert_eq!(w.credentials.list(&eve).await.unwrap(), vec![]);
-        assert!(w.credentials.env_for(eve.id).await.unwrap().is_empty());
 
         assert!(matches!(
-            w.credentials.remove(&eve, &gh).await,
+            w.credentials.remove(eve.id, &gh).await,
             Err(Error::NotFound(_))
         ));
-        w.credentials.remove(&adam, &gh).await.unwrap();
-        assert_eq!(w.credentials.list(&adam).await.unwrap(), vec![openai]);
-        assert_eq!(
-            exposed(&w.secrets.load_all(adam.id).await.unwrap()),
-            ["OPENAI_API_KEY=sk-1"]
-        );
+        w.credentials.remove(adam.id, &gh).await.unwrap();
         assert!(matches!(
-            w.credentials.remove(&adam, &gh).await,
+            w.credentials.remove(adam.id, &gh).await,
             Err(Error::NotFound(_))
         ));
+        assert_eq!(w.credentials.names(adam.id).await.unwrap(), vec![]);
     }
 
     #[tokio::test]
@@ -137,7 +90,7 @@ mod tests {
         ] {
             let err = w
                 .credentials
-                .set(&adam, &name, SecretString::from(value))
+                .set(adam.id, &name, SecretString::from(value))
                 .await
                 .unwrap_err();
             let printed = format!("{err} {err:?}");
@@ -145,31 +98,19 @@ mod tests {
             assert!(printed.contains("SSH_PRIVATE_KEY"), "{printed}");
             assert!(!printed.contains("hunter"), "{printed}");
         }
-        assert_eq!(w.credentials.list(&adam).await.unwrap(), vec![]);
-        assert!(w.secrets.load_all(adam.id).await.unwrap().is_empty());
+        assert_eq!(w.credentials.names(adam.id).await.unwrap(), vec![]);
 
         w.credentials
-            .set(&adam, &name, SecretString::from("bGluZS1vbmUKbGluZS10d28="))
-            .await
-            .unwrap();
-        assert_eq!(
-            exposed(&w.credentials.env_for(adam.id).await.unwrap()),
-            ["SSH_PRIVATE_KEY=bGluZS1vbmUKbGluZS10d28="]
-        );
-    }
-
-    #[tokio::test]
-    async fn unlisted_values_are_never_injected() {
-        let w = World::new();
-        let adam = w.member("adam").await;
-        w.secrets
-            .put(
+            .set(
                 adam.id,
-                &credential("ORPHAN"),
-                SecretString::from("left-over"),
+                &name,
+                SecretString::from("bGluZS1vbmUKbGluZS10d28="),
             )
             .await
             .unwrap();
-        assert!(w.credentials.env_for(adam.id).await.unwrap().is_empty());
+        assert_eq!(
+            exposed(&w.credentials.load(adam.id).await.unwrap()),
+            ["SSH_PRIVATE_KEY=bGluZS1vbmUKbGluZS10d28="]
+        );
     }
 }

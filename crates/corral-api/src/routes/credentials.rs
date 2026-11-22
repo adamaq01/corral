@@ -20,7 +20,7 @@ async fn list(
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<CredentialDto>>, ApiError> {
-    let names = state.credentials.list(&user).await?;
+    let names = state.credentials.names(user.id).await?;
     Ok(Json(names.into_iter().map(CredentialDto::from).collect()))
 }
 
@@ -30,7 +30,7 @@ async fn set(
     PathParam(name): PathParam<CredentialName>,
     JsonBody(body): JsonBody<CredentialValue>,
 ) -> Result<StatusCode, ApiError> {
-    state.credentials.set(&user, &name, body.value).await?;
+    state.credentials.set(user.id, &name, body.value).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -39,6 +39,6 @@ async fn remove(
     State(state): State<AppState>,
     PathParam(name): PathParam<CredentialName>,
 ) -> Result<StatusCode, ApiError> {
-    state.credentials.remove(&user, &name).await?;
+    state.credentials.remove(user.id, &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }

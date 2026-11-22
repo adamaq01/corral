@@ -16,8 +16,8 @@ use corral_core::app::{
 };
 use corral_core::domain::{CredentialName, Principal, Role, UserId};
 use corral_core::fakes::{
-    FakeEngine, FakePasswordHasher, MemoryCredentialRepo, MemoryKeyRepo, MemoryLocalAccountRepo,
-    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
+    FakeEngine, FakePasswordHasher, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo,
+    MemorySecretStore, MemoryUserRepo,
 };
 use corral_core::ports::{
     Env, IdentityProvider, IdlePolicy, LoginStart, LoginState, Readiness, Resources, SecretStore,
@@ -68,18 +68,22 @@ struct BrokenVault;
 
 #[async_trait]
 impl SecretStore for BrokenVault {
-    async fn put(&self, _: UserId, _: &CredentialName, _: SecretString) -> Result<()> {
+    async fn set(&self, _: UserId, _: &CredentialName, _: SecretString) -> Result<()> {
         Err(Error::internal(
             "vault",
             "vault at 10.9.8.7 refused token s.internal",
         ))
     }
 
-    async fn delete(&self, _: UserId, _: &CredentialName) -> Result<()> {
-        Ok(())
+    async fn remove(&self, _: UserId, _: &CredentialName) -> Result<bool> {
+        Ok(false)
     }
 
-    async fn load_all(&self, _: UserId) -> Result<Env> {
+    async fn names(&self, _: UserId) -> Result<Vec<CredentialName>> {
+        Ok(Vec::new())
+    }
+
+    async fn load(&self, _: UserId) -> Result<Env> {
         Ok(Env::new())
     }
 }
@@ -149,7 +153,7 @@ impl Setup {
             admin_group: ADMINS.to_owned(),
         };
         let users = Arc::new(MemoryUserRepo::default());
-        let credentials = Credentials::new(Arc::new(MemoryCredentialRepo::default()), self.secrets);
+        let credentials = Credentials::new(self.secrets);
         let engine = Arc::new(FakeEngine::default());
         let hasher = Arc::new(FakePasswordHasher::default());
         let local = LocalAccounts::new(

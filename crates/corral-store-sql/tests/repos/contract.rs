@@ -1,12 +1,9 @@
 use chrono::{DateTime, Utc};
 use corral_core::Error;
 use corral_core::domain::{
-    CredentialName, Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey,
-    SshPublicKey, User, UserId,
+    Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
 };
-use corral_core::ports::{
-    CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, SecretBlobRepo, UserRepo,
-};
+use corral_core::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
 use ssh_key::PublicKey;
 use ssh_key::public::{Ed25519PublicKey, KeyData};
 use uuid::Uuid;
@@ -264,83 +261,6 @@ pub async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
 }
 
-pub async fn credential_repo(users: &dyn UserRepo, credentials: &dyn CredentialRepo) {
-    let adam = seed_user(users, "adam").await;
-    let eve = seed_user(users, "eve").await;
-    let (gh, openai) = (credential("GH_TOKEN"), credential("OPENAI_API_KEY"));
-    credentials.upsert(adam.id, &openai).await.expect("upsert");
-    credentials.upsert(adam.id, &gh).await.expect("upsert");
-    credentials
-        .upsert(adam.id, &openai)
-        .await
-        .expect("upsert again");
-    credentials.upsert(eve.id, &gh).await.expect("upsert");
-
-    assert_eq!(
-        credentials.list(adam.id).await.unwrap(),
-        vec![gh.clone(), openai.clone()]
-    );
-    assert_eq!(credentials.list(eve.id).await.unwrap(), vec![gh.clone()]);
-    assert_eq!(
-        credentials.list(UserId(Uuid::new_v4())).await.unwrap(),
-        vec![]
-    );
-
-    assert!(credentials.delete(adam.id, &gh).await.unwrap());
-    assert!(!credentials.delete(adam.id, &gh).await.unwrap());
-    assert_eq!(credentials.list(adam.id).await.unwrap(), vec![openai]);
-    assert_eq!(credentials.list(eve.id).await.unwrap(), vec![gh]);
-}
-
-pub async fn credential_names_list_in_byte_order(
-    users: &dyn UserRepo,
-    credentials: &dyn CredentialRepo,
-) {
-    let user = seed_user(users, "collation").await;
-    let mut names: Vec<CredentialName> = ["A_A", "AB", "A1", "A_"]
-        .into_iter()
-        .map(credential)
-        .collect();
-    for name in &names {
-        credentials.upsert(user.id, name).await.expect("upsert");
-    }
-    names.sort();
-    assert_eq!(credentials.list(user.id).await.unwrap(), names);
-}
-
-pub async fn secret_blob_repo(users: &dyn UserRepo, blobs: &dyn SecretBlobRepo) {
-    let adam = seed_user(users, "adam").await;
-    let eve = seed_user(users, "eve").await;
-    let (a, b) = (credential("A_KEY"), credential("B_KEY"));
-    blobs.put(adam.id, &b, vec![2]).await.expect("put");
-    blobs.put(adam.id, &a, vec![1]).await.expect("put");
-    blobs
-        .put(adam.id, &a, vec![0, 255, 0])
-        .await
-        .expect("overwrite");
-    blobs.put(eve.id, &a, vec![9]).await.expect("put");
-
-    let sorted = |mut blobs: Vec<_>| {
-        blobs.sort();
-        blobs
-    };
-    assert_eq!(
-        sorted(blobs.load_all(adam.id).await.unwrap()),
-        vec![(a.clone(), vec![0, 255, 0]), (b.clone(), vec![2])]
-    );
-    blobs.delete(adam.id, &b).await.expect("delete");
-    blobs.delete(adam.id, &b).await.expect("delete again");
-    assert_eq!(
-        blobs.load_all(adam.id).await.unwrap(),
-        vec![(a.clone(), vec![0, 255, 0])]
-    );
-    assert_eq!(blobs.load_all(eve.id).await.unwrap(), vec![(a, vec![9])]);
-    assert_eq!(
-        blobs.load_all(UserId(Uuid::new_v4())).await.unwrap(),
-        vec![]
-    );
-}
-
 pub async fn local_account_repo(repo: &dyn LocalAccountRepo) {
     let prefix = unique("acct");
     let account = |suffix: &str, role: Role, created: i64| LocalAccount {
@@ -463,10 +383,6 @@ fn unique(label: &str) -> String {
     format!("{label}-{}", &Uuid::new_v4().simple().to_string()[..12])
 }
 
-fn credential(name: &str) -> CredentialName {
-    CredentialName::parse(name).expect("valid credential name")
-}
-
 fn new_user(label: &str, created_at: DateTime<Utc>) -> User {
     let handle = unique(label);
     User {
@@ -480,7 +396,7 @@ fn new_user(label: &str, created_at: DateTime<Utc>) -> User {
     }
 }
 
-async fn seed_user(users: &dyn UserRepo, label: &str) -> User {
+pub async fn seed_user(users: &dyn UserRepo, label: &str) -> User {
     let user = new_user(label, at(0));
     users.insert(&user).await.expect("seed user");
     user

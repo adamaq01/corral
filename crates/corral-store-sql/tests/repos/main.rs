@@ -1,4 +1,7 @@
 mod contract;
+mod secrets;
+
+use std::sync::Arc;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::Error;
@@ -14,14 +17,18 @@ use testcontainers_modules::testcontainers::ImageExt;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use uuid::Uuid;
 
-async fn meets_every_repo_contract(store: &Store) {
-    contract::user_repo(store).await;
-    contract::key_repo(store, store).await;
-    contract::sandbox_repo(store, store).await;
-    contract::credential_repo(store, store).await;
-    contract::credential_names_list_in_byte_order(store, store).await;
-    contract::secret_blob_repo(store, store).await;
-    contract::local_account_repo(store).await;
+async fn meets_every_repo_contract(url: &str) {
+    Store::connect(url).await.expect("connect");
+    let store = Arc::new(
+        Store::connect(url)
+            .await
+            .expect("reconnect to a migrated database"),
+    );
+    contract::user_repo(&*store).await;
+    contract::key_repo(&*store, &*store).await;
+    contract::sandbox_repo(&*store, &*store).await;
+    contract::local_account_repo(&*store).await;
+    secrets::database_secret_store(&store, url).await;
 }
 
 fn sqlite_url(dir: &TempDir) -> String {
@@ -31,11 +38,7 @@ fn sqlite_url(dir: &TempDir) -> String {
 #[tokio::test]
 async fn sqlite_meets_every_repo_contract() {
     let dir = tempfile::tempdir().expect("temp dir");
-    Store::connect(&sqlite_url(&dir)).await.expect("connect");
-    let store = Store::connect(&sqlite_url(&dir))
-        .await
-        .expect("reconnect to a migrated database");
-    meets_every_repo_contract(&store).await;
+    meets_every_repo_contract(&sqlite_url(&dir)).await;
 }
 
 #[tokio::test]
@@ -50,11 +53,7 @@ async fn postgres_meets_every_repo_contract() {
         postgres.get_host().await.unwrap(),
         postgres.get_host_port_ipv4(5432).await.unwrap()
     );
-    Store::connect(&url).await.expect("connect");
-    let store = Store::connect(&url)
-        .await
-        .expect("reconnect to a migrated database");
-    meets_every_repo_contract(&store).await;
+    meets_every_repo_contract(&url).await;
 }
 
 #[tokio::test]

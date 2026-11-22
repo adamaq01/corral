@@ -2,7 +2,7 @@ use aes_gcm::Nonce;
 use aes_gcm::aead::{Aead, Generate, Payload};
 use corral_core::{Error, Result};
 
-use crate::Keyring;
+use super::Keyring;
 
 const NONCE_LEN: usize = 12;
 
@@ -85,61 +85,10 @@ mod tests {
     use corral_core::Error;
 
     use super::{Sealed, open, seal};
-    use crate::Keyring;
+    use crate::secrets::Keyring;
 
     fn kr() -> Keyring {
-        keyring(&[(1, 1)])
-    }
-
-    fn keyring(entries: &[(u8, u8)]) -> Keyring {
-        let value = entries
-            .iter()
-            .map(|(version, byte)| format!("{version}:{}", STANDARD.encode([*byte; 32])))
-            .collect::<Vec<_>>()
-            .join(",");
-        Keyring::from_env(&value).unwrap()
-    }
-
-    #[test]
-    fn round_trip() {
-        let s = seal(&kr(), b"u/OPENAI_API_KEY", b"sk-1");
-        assert_eq!(open(&kr(), b"u/OPENAI_API_KEY", &s).unwrap(), b"sk-1");
-    }
-
-    #[test]
-    fn swapped_owner_or_name_fails() {
-        let s = seal(&kr(), b"u1/A", b"x");
-        assert!(open(&kr(), b"u2/A", &s).is_err());
-        assert!(open(&kr(), b"u1/B", &s).is_err());
-    }
-
-    #[test]
-    fn older_key_version_still_opens() {
-        let old = seal(&keyring(&[(1, 1)]), b"u/A", b"x");
-        let rotated = keyring(&[(2, 2), (1, 1)]);
-        assert_eq!(open(&rotated, b"u/A", &old).unwrap(), b"x");
-        let new = seal(&rotated, b"u/A", b"x");
-        assert_eq!((old.key_version, new.key_version), (1, 2));
-        assert!(matches!(
-            open(&keyring(&[(1, 1)]), b"u/A", &new),
-            Err(Error::Internal { .. })
-        ));
-    }
-
-    #[test]
-    fn wrong_key_under_the_same_version_fails() {
-        let s = seal(&keyring(&[(1, 1)]), b"u/A", b"x");
-        assert!(matches!(
-            open(&keyring(&[(1, 9)]), b"u/A", &s),
-            Err(Error::Internal { .. })
-        ));
-    }
-
-    #[test]
-    fn every_seal_draws_a_fresh_nonce() {
-        let (a, b) = (seal(&kr(), b"u/A", b"x"), seal(&kr(), b"u/A", b"x"));
-        assert_ne!(a.nonce, b.nonce);
-        assert_ne!(a.ciphertext, b.ciphertext);
+        Keyring::from_env(&format!("1:{}", STANDARD.encode([1; 32]))).unwrap()
     }
 
     #[test]
