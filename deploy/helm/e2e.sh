@@ -26,6 +26,8 @@ passed=0
 work=
 web_forward=
 ssh_forward=
+tunnel=
+held=
 
 ok() {
   passed=$((passed + 1))
@@ -64,6 +66,8 @@ stop_forwards() {
 
 cleanup() {
   local status=$?
+  stop "$held"
+  stop "$tunnel"
   stop_forwards
   if ((status != 0)); then
     kubectl --namespace "$namespace" get pods >&2 2>/dev/null || true
@@ -234,7 +238,7 @@ if ssh -F "$work/ssh_config" -o BatchMode=no -o PreferredAuthentications=passwor
 fi
 ok "password and keyboard-interactive logins are refused"
 
-as adam+main 'nohup node -e "require(\"http\").createServer((q, r) => r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" >/dev/null 2>&1 &'
+as adam+main 'nohup node -e "require(\"http\").createServer((q, r) => q.url === \"/hold\" ? r.writeHead(200).write(\"held\") : r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" >/dev/null 2>&1 &'
 ssh -F "$work/ssh_config" -o ExitOnForwardFailure=yes -N \
   -L "127.0.0.1:$forward_port:127.0.0.1:8000" adam+main@corral-e2e </dev/null &
 tunnel=$!
@@ -243,9 +247,9 @@ for _ in $(seq 50); do
   body=$(curl -s "http://127.0.0.1:$forward_port/") && break
   sleep 0.2
 done
-kill "$tunnel" 2>/dev/null || true
-wait "$tunnel" 2>/dev/null || true
 expect "ssh -L" forwarded "$body"
+curl -sN "http://127.0.0.1:$forward_port/hold" >/dev/null &
+held=$!
 ok "ssh -L $forward_port:127.0.0.1:8000 reaches a server inside the sandbox"
 
 if [[ -z "${CORRAL_E2E_SKIP_NETWORK_POLICY:-}" ]]; then
@@ -259,6 +263,16 @@ fi
 state() {
   api GET api/sandboxes/main | jq -r .state
 }
+sleep 45
+expect "main's state with a forwarded connection open" running "$(state)"
+ok "an open forwarded connection keeps main awake 45s into a 30s idle timeout"
+
+stop "$held"
+stop "$tunnel"
+held=
+tunnel=
+kubectl --namespace "$sandboxes" exec "$sandbox_id" -c sandbox -- \
+  pgrep -f 'containerssh-agent forward-server' >/dev/null || fail "no port-forward agent was left behind"
 waited=0
 until [[ "$(state)" == sleeping ]]; do
   ((waited < 120)) || fail "main was still $(state) after ${waited}s"
@@ -266,7 +280,7 @@ until [[ "$(state)" == sleeping ]]; do
   waited=$((waited + 5))
 done
 kubectl --namespace "$sandboxes" wait --for=delete "pod/$sandbox_id" --timeout=60s >>"$log"
-ok "with only a finished port forward left behind, main slept within ${waited}s of idling"
+ok "with the forwarded connection closed and its agent left behind, main slept within ${waited}s"
 
 woke_at=$SECONDS
 expect "the home after a wake" kept "$(as adam+main 'cat ~/marker')"

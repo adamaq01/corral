@@ -151,8 +151,9 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
 
 - Logs: `kubectl --namespace corral logs deploy/corral`. `logLevel` sets the level.
 - A sandbox sleeps after `idle.timeoutSecs` with no SSH session and no Herdr terminal at work,
-  and wakes on the next SSH login. A connection that only forwards ports (`ssh -N -L`) does not
-  keep a sandbox awake.
+  and wakes on the next SSH login. A connection that only forwards ports (`ssh -N -L`) keeps a
+  sandbox awake while a forwarded connection through it is open, such as a page holding a dev
+  server's live-reload socket, and not while the tunnel carries nothing.
 - Behind an Ingress controller or Gateway, set `trustForwardedFor: true` so password-login limits
   count each client, not the proxy.
 - `containerssh.service.externalTrafficPolicy: Local` keeps clients' addresses, so Corral's
