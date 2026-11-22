@@ -178,7 +178,7 @@ fn home_claim(
         }),
         spec: PersistentVolumeClaimSpec {
             access_modes: Some(vec!["ReadWriteOnce".to_owned()]),
-            storage_class_name: Some(cfg.storage_class.clone()),
+            storage_class_name: cfg.storage_class.clone(),
             resources: Some(VolumeResourceRequirements {
                 requests: Some(BTreeMap::from([(
                     "storage".to_owned(),
@@ -237,7 +237,7 @@ mod tests {
         AgentSandboxConfig {
             namespace: "corral-sandboxes".to_owned(),
             service_account: "corral-sandbox".to_owned(),
-            storage_class: "tns-csi-nvmeof".to_owned(),
+            storage_class: Some("tns-csi-nvmeof".to_owned()),
             agent_image: "containerssh/agent:v0.11.0".to_owned(),
         }
     }
@@ -325,6 +325,23 @@ mod tests {
                 },
             }])
         );
+    }
+
+    #[test]
+    fn without_a_storage_class_the_home_claim_uses_the_cluster_default() {
+        let cfg = AgentSandboxConfig {
+            storage_class: None,
+            ..cfg()
+        };
+        let sandbox = serde_json::to_value(build(
+            &SandboxId("sbx-0123456789ab".to_owned()),
+            &spec(),
+            &cfg,
+        ))
+        .unwrap();
+        let claim = &sandbox["spec"]["volumeClaimTemplates"][0]["spec"];
+        assert_eq!(claim["resources"]["requests"]["storage"], "10737418240");
+        assert!(claim.get("storageClassName").is_none(), "{claim}");
     }
 
     #[test]

@@ -283,7 +283,7 @@ mod tests {
             panic!("the example runs on agent-sandbox");
         };
         assert_eq!(agent.namespace, "corral-sandboxes");
-        assert_eq!(agent.storage_class, "tns-csi-nvmeof");
+        assert_eq!(agent.storage_class.as_deref(), Some("tns-csi-nvmeof"));
         assert!(matches!(config.secrets, Secrets::Database {}));
         let sizes: Vec<_> = config
             .catalog
@@ -316,6 +316,15 @@ mod tests {
             "{MINIMAL}\n[engine]\nkind = \"docker\"\nnamespace = \"x\""
         ));
         assert!(message.contains("unknown field `namespace`"), "{message}");
+
+        let config = Config::parse(&format!(
+            "{MINIMAL}\n[engine]\nkind = \"agent-sandbox\"\nnamespace = \"n\"\n\
+             service_account = \"s\"\nagent_image = \"a\""
+        ))
+        .unwrap();
+        assert!(
+            matches!(config.engine, Engine::AgentSandbox(agent) if agent.storage_class.is_none())
+        );
 
         let config = Config::parse(&format!(
             "{MINIMAL}\n[engine]\nkind = \"docker\"\nnetwork = \"lan\""

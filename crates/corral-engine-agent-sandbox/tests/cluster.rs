@@ -56,7 +56,7 @@ impl Cluster {
         let config = AgentSandboxConfig {
             namespace: namespace.clone(),
             service_account: "corral-sandbox".to_owned(),
-            storage_class: "standard".to_owned(),
+            storage_class: None,
             agent_image: std::env::var("CORRAL_AGENT_IMAGE")
                 .unwrap_or_else(|_| "containerssh/agent:v0.11.0".to_owned()),
         };
