@@ -59,7 +59,7 @@ impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         let status = match &error {
             Error::Invalid(_) => StatusCode::BAD_REQUEST,
-            Error::Forbidden => StatusCode::FORBIDDEN,
+            Error::Forbidden | Error::Inactive(_) => StatusCode::FORBIDDEN,
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
             Error::LimitReached(_) => StatusCode::UNPROCESSABLE_ENTITY,

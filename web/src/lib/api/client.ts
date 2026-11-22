@@ -12,6 +12,11 @@ export class ApiError extends Error {
 	}
 }
 
+/** What to tell the person about a failed call. */
+export function failureMessage(error: unknown): string {
+	return error instanceof ApiError ? error.message : 'Something went wrong';
+}
+
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 
 type Options = {

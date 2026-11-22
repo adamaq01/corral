@@ -12,6 +12,9 @@ pub enum Error {
     Conflict(String),
     #[error("forbidden")]
     Forbidden,
+    /// Forbidden by the account's own state, which the message tells its person.
+    #[error("{0}")]
+    Inactive(String),
     #[error("limit reached: {0}")]
     LimitReached(String),
     // Logs and the server print errors through Display, so it carries the whole cause chain.

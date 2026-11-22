@@ -50,7 +50,7 @@ impl Accounts {
             return Err(Error::Forbidden);
         };
         match existing {
-            Some(user) if user.status != UserStatus::Active => Err(Error::Forbidden),
+            Some(user) if user.status != UserStatus::Active => Err(inactive(&user)),
             Some(user) => {
                 let user = User {
                     email: identity.email,
@@ -66,11 +66,11 @@ impl Accounts {
     }
 
     pub async fn require_active(&self, id: UserId) -> Result<User> {
-        self.users
-            .get(id)
-            .await?
-            .filter(|user| user.status == UserStatus::Active)
-            .ok_or(Error::Forbidden)
+        match self.users.get(id).await? {
+            Some(user) if user.status == UserStatus::Active => Ok(user),
+            Some(user) => Err(inactive(&user)),
+            None => Err(Error::Inactive("this account was deleted".to_owned())),
+        }
     }
 
     /// `Conflict` for a user being deleted: only finishing the deletion moves them on.
@@ -185,6 +185,15 @@ impl Accounts {
         self.users.insert(&user).await?;
         Ok(user)
     }
+}
+
+fn inactive(user: &User) -> Error {
+    let state = if user.status == UserStatus::Deleting {
+        "being deleted"
+    } else {
+        "disabled"
+    };
+    Error::Inactive(format!("this account is {state}"))
 }
 
 fn user_subject(provider: &str, subject: &str) -> String {
@@ -315,11 +324,11 @@ mod tests {
             w.accounts
                 .login(PROVIDER, identity("eve", "eve", Some(Role::Member)))
                 .await,
-            Err(Error::Forbidden)
+            Err(Error::Inactive(_))
         ));
         assert!(matches!(
             w.accounts.require_active(eve.id).await,
-            Err(Error::Forbidden)
+            Err(Error::Inactive(_))
         ));
 
         w.accounts
@@ -357,7 +366,7 @@ mod tests {
             w.accounts
                 .login(PROVIDER, identity("s1", "adam", Some(Role::Member)))
                 .await,
-            Err(Error::Forbidden)
+            Err(Error::Inactive(_))
         ));
 
         let root = w.admin("root").await;
@@ -430,7 +439,7 @@ mod tests {
         ));
         assert!(matches!(
             w.accounts.require_active(eve.id).await,
-            Err(Error::Forbidden)
+            Err(Error::Inactive(_))
         ));
         assert!(!w.access.authenticate("eve+dev", EVE_KEY).await.unwrap());
         assert_eq!(w.sandboxes.list(&eve).await.unwrap().len(), 1);
@@ -539,11 +548,11 @@ mod tests {
             w.accounts
                 .login(PROVIDER, identity("eve", "eve", Some(Role::Member)))
                 .await,
-            Err(Error::Forbidden)
+            Err(Error::Inactive(_))
         ));
         assert!(matches!(
             w.accounts.require_active(eve.id).await,
-            Err(Error::Forbidden)
+            Err(Error::Inactive(_))
         ));
         assert!(!w.access.authenticate("eve+main", EVE_KEY).await.unwrap());
         assert!(matches!(

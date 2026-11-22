@@ -310,6 +310,46 @@ async fn an_account_that_never_logged_in_is_only_forgotten(pool: Pool) {
     );
 }
 
+async fn a_disabled_user_is_told_so_with_the_right_password_only(pool: Pool) {
+    let corral = Corral::open(pool, &[("root", Role::Admin), ("adam", Role::Member)]).await;
+    let mut root = corral.signed_in("root").await;
+    let mut adam = corral.signed_in("adam").await;
+    let users = root.get("/api/admin/users").await.json();
+    let id = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|user| user["handle"] == "adam")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let disable = format!("/api/admin/users/{id}/disable");
+    assert_eq!(root.post(&disable, json!({})).await.status, StatusCode::OK);
+
+    let disabled = json!({ "error": "this account is disabled" });
+    let session = adam.get("/api/me").await;
+    assert_eq!(
+        (session.status, session.json()),
+        (StatusCode::FORBIDDEN, disabled.clone())
+    );
+    let mut again = corral.browser();
+    let reply = log_in(&mut again, "adam", PASSWORD).await;
+    assert_eq!(
+        (reply.status, reply.json()),
+        (StatusCode::FORBIDDEN, disabled)
+    );
+    let wrong = log_in(&mut again, "adam", "wrong horse battery").await;
+    assert_eq!(
+        wrong.json(),
+        json!({ "error": "wrong username or password" })
+    );
+
+    let enable = format!("/api/admin/users/{id}/enable");
+    assert_eq!(root.post(&enable, json!({})).await.status, StatusCode::OK);
+    corral.signed_in("adam").await;
+}
+
 async fn a_user_deleting_themselves_loses_their_account(pool: Pool) {
     let corral = Corral::open(pool, &[("root", Role::Admin), ("adam", Role::Member)]).await;
     let mut adam = corral.signed_in("adam").await;
@@ -372,6 +412,7 @@ async fn every_scenario(databases: &Databases) {
     short_passwords_are_refused(databases.pool().await).await;
     deleting_an_account_deletes_its_user_and_frees_the_username(databases.pool().await).await;
     an_account_that_never_logged_in_is_only_forgotten(databases.pool().await).await;
+    a_disabled_user_is_told_so_with_the_right_password_only(databases.pool().await).await;
     a_user_deleting_themselves_loses_their_account(databases.pool().await).await;
     only_admins_manage_accounts(databases.pool().await).await;
     reopening_keeps_the_accounts(databases.pool().await).await;

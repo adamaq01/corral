@@ -15,8 +15,12 @@ export function returnPath(next: string | null): string {
 	return next;
 }
 
-/** The sign-in page, which returns to `next` once signed in. */
-export function signInPath(next: string): string {
+/** The sign-in page, showing `error` if given, which returns to `next` once signed in. */
+export function signInPath(next: string, error?: string): string {
 	const back = returnPath(next);
-	return back === '/' ? SIGN_IN : `${SIGN_IN}?${new URLSearchParams({ next: back })}`;
+	const query = new URLSearchParams({
+		...(back === '/' ? {} : { next: back }),
+		...(error === undefined ? {} : { error })
+	});
+	return query.size === 0 ? SIGN_IN : `${SIGN_IN}?${query}`;
 }
