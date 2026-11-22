@@ -1,0 +1,10 @@
+package-lock.json
+/static/
+/build/
+/.svelte-kit/
+/test-results/
+/playwright-report/
+# Generated from the Rust API types.
+/src/lib/api/generated/
+# Kept as the shadcn-svelte CLI writes them, so updating one gives a clean diff.
+/src/lib/components/ui/
