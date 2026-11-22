@@ -6,7 +6,7 @@ use corral_core::{Error, Result};
 use uuid::Uuid;
 
 use crate::Store;
-use corral_sql::{db_error, on_pool, parsed};
+use corral_sql::{db_error, on_pool, parsed, unique_as};
 
 #[derive(sqlx::FromRow)]
 struct SandboxRow {
@@ -110,7 +110,10 @@ impl SandboxRepo for Store {
             Ok(true)
         }
         .await)
-        .map_err(db_error)?;
+        .map_err(unique_as(format!(
+            "sandbox {} already exists",
+            sandbox.name
+        )))?;
         if admitted {
             Ok(())
         } else {

@@ -74,7 +74,11 @@ async fn user_repo(repo: &dyn UserRepo) {
     ];
     for duplicate in duplicates {
         assert!(
-            matches!(repo.insert(&duplicate).await, Err(Error::Conflict(_))),
+            matches!(
+                repo.insert(&duplicate).await,
+                Err(Error::Conflict(message))
+                    if message == format!("user {} already exists", duplicate.handle)
+            ),
             "{duplicate:?}"
         );
         assert_ne!(repo.get(duplicate.id).await.unwrap(), Some(duplicate));
@@ -101,7 +105,7 @@ async fn user_repo(repo: &dyn UserRepo) {
     };
     assert!(matches!(
         repo.update(&taking_a_handle).await,
-        Err(Error::Conflict(_))
+        Err(Error::Conflict(message)) if message == format!("user {} already exists", newer.handle)
     ));
     assert_eq!(repo.get(older.id).await.unwrap(), Some(updated));
 
@@ -153,7 +157,13 @@ async fn key_repo(users: &dyn UserRepo, keys: &dyn KeyRepo) {
     ];
     for duplicate in duplicates {
         assert!(
-            matches!(keys.insert(&duplicate).await, Err(Error::Conflict(_))),
+            matches!(
+                keys.insert(&duplicate).await,
+                Err(Error::Conflict(message)) if message == format!(
+                    "key {} already registered",
+                    duplicate.public_key.fingerprint()
+                )
+            ),
             "{duplicate:?}"
         );
     }
@@ -223,7 +233,8 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
         assert!(
             matches!(
                 sandboxes.insert(&duplicate, 5).await,
-                Err(Error::Conflict(_))
+                Err(Error::Conflict(message))
+                    if message == format!("sandbox {} already exists", duplicate.name)
             ),
             "{duplicate:?}"
         );

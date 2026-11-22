@@ -63,7 +63,10 @@ impl UserRepo for MemoryUserRepo {
             .iter()
             .any(|u| u.id == user.id || u.subject == user.subject || u.handle == user.handle)
         {
-            return Err(Error::Conflict(format!("user {}", user.handle)));
+            return Err(Error::Conflict(format!(
+                "user {} already exists",
+                user.handle
+            )));
         }
         users.push(user.clone());
         Ok(())
@@ -75,7 +78,10 @@ impl UserRepo for MemoryUserRepo {
             .iter()
             .any(|u| u.id != user.id && (u.subject == user.subject || u.handle == user.handle))
         {
-            return Err(Error::Conflict(format!("user {}", user.handle)));
+            return Err(Error::Conflict(format!(
+                "user {} already exists",
+                user.handle
+            )));
         }
         let stored = users
             .iter_mut()
@@ -114,7 +120,7 @@ impl KeyRepo for MemoryKeyRepo {
             .any(|k| k.id == key.id || k.public_key == key.public_key)
         {
             return Err(Error::Conflict(format!(
-                "key {}",
+                "key {} already registered",
                 key.public_key.fingerprint()
             )));
         }
@@ -160,7 +166,10 @@ impl SandboxRepo for MemorySandboxRepo {
             .iter()
             .any(|s| s.id == sandbox.id || (s.owner == sandbox.owner && s.name == sandbox.name))
         {
-            return Err(Error::Conflict(format!("sandbox {}", sandbox.name)));
+            return Err(Error::Conflict(format!(
+                "sandbox {} already exists",
+                sandbox.name
+            )));
         }
         if sandboxes
             .iter()

@@ -6,7 +6,7 @@ use corral_core::{Error, Result};
 use uuid::Uuid;
 
 use crate::Store;
-use corral_sql::{db_error, on_pool, parsed};
+use corral_sql::{db_error, on_pool, parsed, unique_as};
 
 #[derive(sqlx::FromRow)]
 struct KeyRow {
@@ -62,7 +62,10 @@ impl KeyRepo for Store {
             .await
             .map(|_| ())
         })
-        .map_err(db_error)
+        .map_err(unique_as(format!(
+            "key {} already registered",
+            key.public_key.fingerprint()
+        )))
     }
 
     async fn delete(&self, user: UserId, id: Uuid) -> Result<bool> {

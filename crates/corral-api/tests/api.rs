@@ -1102,7 +1102,7 @@ async fn core_errors_map_to_their_status() {
     assert_eq!(duplicate.status, StatusCode::CONFLICT);
     assert_eq!(
         duplicate.json(),
-        json!({ "error": "conflict: sandbox main" })
+        json!({ "error": "conflict: sandbox main already exists" })
     );
 
     for spare in 1..MAX_SANDBOXES {

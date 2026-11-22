@@ -6,7 +6,7 @@ use corral_core::{Error, Result};
 use uuid::Uuid;
 
 use crate::Store;
-use corral_sql::{db_error, on_pool, parsed, variant, variant_name};
+use corral_sql::{db_error, on_pool, parsed, unique_as, variant, variant_name};
 
 #[derive(sqlx::FromRow)]
 struct UserRow {
@@ -96,7 +96,7 @@ impl UserRepo for Store {
             .await
             .map(|_| ())
         })
-        .map_err(db_error)
+        .map_err(unique_as(format!("user {} already exists", user.handle)))
     }
 
     async fn update(&self, user: &User) -> Result<()> {
@@ -116,7 +116,7 @@ impl UserRepo for Store {
             .await
             .map(|done| done.rows_affected())
         })
-        .map_err(db_error)?;
+        .map_err(unique_as(format!("user {} already exists", user.handle)))?;
         if updated == 0 {
             return Err(Error::NotFound(format!("user {}", user.handle)));
         }

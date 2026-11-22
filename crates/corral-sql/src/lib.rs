@@ -6,7 +6,7 @@ mod stored;
 #[allow(clippy::missing_panics_doc)]
 pub mod testing;
 
-pub use crate::error::db_error;
+pub use crate::error::{db_error, unique_as};
 pub use crate::migrations::Migrations;
 pub use crate::pool::Pool;
 pub use crate::stored::{parsed, variant, variant_name};
