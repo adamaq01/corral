@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxView};
 use corral_core::domain::{
     CredentialName, Handle, ImageKey, Role, SandboxName, SandboxStatus, SizeKey, SshKey,
-    SshUsername, User,
+    SshUsername, User, UserStatus,
 };
 use corral_core::ports::{IdentityProvider, ManagedAccount, Method};
 use secrecy::SecretString;
@@ -220,7 +220,7 @@ pub(crate) struct UserDto {
     handle: Handle,
     email: Option<String>,
     role: Role,
-    enabled: bool,
+    status: UserStatus,
     created_at: DateTime<Utc>,
 }
 
@@ -231,7 +231,7 @@ impl From<User> for UserDto {
             role: user.role,
             handle: user.handle,
             email: user.email,
-            enabled: user.enabled,
+            status: user.status,
             created_at: user.created_at,
         }
     }

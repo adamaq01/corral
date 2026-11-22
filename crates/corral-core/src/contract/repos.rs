@@ -7,7 +7,7 @@ use super::{at, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey, SshPublicKey, User,
-    UserId,
+    UserId, UserStatus,
 };
 use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 
@@ -88,7 +88,7 @@ async fn user_repo(repo: &dyn UserRepo) {
         handle: handle(&unique("renamed")),
         email: None,
         role: Role::Admin,
-        enabled: false,
+        status: UserStatus::Deleting,
         ..older.clone()
     };
     repo.update(&updated).await.expect("update user");

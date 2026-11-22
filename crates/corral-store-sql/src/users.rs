@@ -15,7 +15,7 @@ struct UserRow {
     handle: String,
     email: Option<String>,
     role: String,
-    enabled: bool,
+    status: String,
     created_at: DateTime<Utc>,
 }
 
@@ -29,7 +29,7 @@ impl TryFrom<UserRow> for User {
             handle: parsed("handle", Handle::parse(&row.handle))?,
             email: row.email,
             role: variant("role", row.role)?,
-            enabled: row.enabled,
+            status: variant("status", row.status)?,
             created_at: row.created_at,
         })
     }
@@ -40,7 +40,7 @@ impl UserRepo for Store {
     async fn by_subject(&self, subject: &str) -> Result<Option<User>> {
         let row: Option<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, subject, handle, email, role, enabled, created_at \
+                "select id, subject, handle, email, role, status, created_at \
                  from users where subject = $1",
             )
             .bind(subject)
@@ -54,7 +54,7 @@ impl UserRepo for Store {
     async fn by_handle(&self, handle: &Handle) -> Result<Option<User>> {
         let row: Option<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, subject, handle, email, role, enabled, created_at \
+                "select id, subject, handle, email, role, status, created_at \
                  from users where handle = $1",
             )
             .bind(handle.as_str())
@@ -68,7 +68,7 @@ impl UserRepo for Store {
     async fn get(&self, id: UserId) -> Result<Option<User>> {
         let row: Option<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, subject, handle, email, role, enabled, created_at \
+                "select id, subject, handle, email, role, status, created_at \
                  from users where id = $1",
             )
             .bind(id.0)
@@ -82,7 +82,7 @@ impl UserRepo for Store {
     async fn insert(&self, user: &User) -> Result<()> {
         on_pool!(self.pool, |pool| {
             sqlx::query(
-                "insert into users (id, subject, handle, email, role, enabled, created_at) \
+                "insert into users (id, subject, handle, email, role, status, created_at) \
                  values ($1, $2, $3, $4, $5, $6, $7)",
             )
             .bind(user.id.0)
@@ -90,7 +90,7 @@ impl UserRepo for Store {
             .bind(user.handle.as_str())
             .bind(&user.email)
             .bind(variant_name(&user.role))
-            .bind(user.enabled)
+            .bind(variant_name(&user.status))
             .bind(user.created_at)
             .execute(pool)
             .await
@@ -103,13 +103,13 @@ impl UserRepo for Store {
         let updated = on_pool!(self.pool, |pool| {
             sqlx::query(
                 "update users set subject = $1, handle = $2, email = $3, role = $4, \
-                 enabled = $5, created_at = $6 where id = $7",
+                 status = $5, created_at = $6 where id = $7",
             )
             .bind(&user.subject)
             .bind(user.handle.as_str())
             .bind(&user.email)
             .bind(variant_name(&user.role))
-            .bind(user.enabled)
+            .bind(variant_name(&user.status))
             .bind(user.created_at)
             .bind(user.id.0)
             .execute(pool)
@@ -126,7 +126,7 @@ impl UserRepo for Store {
     async fn list(&self) -> Result<Vec<User>> {
         let rows: Vec<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, subject, handle, email, role, enabled, created_at \
+                "select id, subject, handle, email, role, status, created_at \
                  from users order by created_at, id",
             )
             .fetch_all(pool)

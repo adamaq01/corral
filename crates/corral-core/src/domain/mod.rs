@@ -60,7 +60,7 @@ pub use sandbox_name::SandboxName;
 pub use ssh_key::SshKey;
 pub use ssh_public_key::SshPublicKey;
 pub use ssh_username::SshUsername;
-pub use user::{Admin, Role, User, UserId};
+pub use user::{Admin, Role, User, UserId, UserStatus};
 
 const SLUG_MAX_LEN: usize = 32;
 

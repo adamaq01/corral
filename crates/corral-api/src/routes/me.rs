@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
+use chrono::Utc;
 
 use crate::auth::CurrentUser;
 use crate::dto::Me;
@@ -15,10 +16,12 @@ pub(crate) fn routes() -> Router<AppState> {
 }
 
 async fn delete_me(
-    CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
     session: Session,
 ) -> Result<impl IntoResponse, ApiError> {
+    let user = session
+        .current(Utc::now())
+        .ok_or_else(ApiError::unauthenticated)?;
     state.accounts.delete_self(user).await?;
     Ok((session.end(), StatusCode::NO_CONTENT))
 }

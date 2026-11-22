@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::contract::repos;
 use corral_core::domain::{
-    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, User, UserId,
+    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, User, UserId, UserStatus,
 };
 use corral_core::ports::{SandboxRepo, UserRepo};
 use corral_sql::testing::Databases;
@@ -60,7 +60,7 @@ fn user() -> User {
         handle: Handle::parse("adam").unwrap(),
         email: None,
         role: Role::Member,
-        enabled: true,
+        status: UserStatus::Active,
         created_at: Utc::now(),
     }
 }

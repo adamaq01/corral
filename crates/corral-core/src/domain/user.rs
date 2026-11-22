@@ -15,6 +15,16 @@ pub enum Role {
     Admin,
 }
 
+/// Logins, sessions and SSH need `Active`. A `Deleting` user is being deleted, which only that
+/// deletion may finish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    Active,
+    Disabled,
+    Deleting,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct User {
     pub id: UserId,
@@ -22,7 +32,7 @@ pub struct User {
     pub handle: Handle,
     pub email: Option<String>,
     pub role: Role,
-    pub enabled: bool,
+    pub status: UserStatus,
     pub created_at: DateTime<Utc>,
 }
 
@@ -42,7 +52,7 @@ impl Admin {
 
 #[cfg(test)]
 mod tests {
-    use super::{Admin, Role};
+    use super::{Admin, Role, UserStatus};
     use crate::Error;
     use crate::fakes::World;
 
@@ -63,5 +73,17 @@ mod tests {
             assert_eq!(serde_json::from_str::<Role>(text).unwrap(), role);
         }
         assert!(serde_json::from_str::<Role>(r#""root""#).is_err());
+    }
+
+    #[test]
+    fn status_serializes_lowercase() {
+        for (status, text) in [
+            (UserStatus::Active, r#""active""#),
+            (UserStatus::Disabled, r#""disabled""#),
+            (UserStatus::Deleting, r#""deleting""#),
+        ] {
+            assert_eq!(serde_json::to_string(&status).unwrap(), text);
+            assert_eq!(serde_json::from_str::<UserStatus>(text).unwrap(), status);
+        }
     }
 }

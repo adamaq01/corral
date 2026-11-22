@@ -83,7 +83,8 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
   `POST /api/admin/users/<id>/disable`.
 - `DELETE /api/admin/users/<id>` (admins) or `DELETE /api/me` (anyone, for themselves) deletes a
   user with their sandboxes and homes, keys, credentials and local account. The username is free
-  again afterwards, and a new account with it starts empty.
+  again afterwards, and a new account with it starts empty. A deletion that fails part way leaves
+  the user with status `deleting`, unable to log in, and the same request again finishes it.
 - A sandbox sleeps (its container stops) after 30 minutes with no SSH session and no Herdr
   terminal at work (`timeout_secs` under `[idle]`), and wakes on the next SSH login. Sleep keeps the container, so its files
   survive until the sandbox is deleted.

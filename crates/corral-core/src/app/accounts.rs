@@ -5,7 +5,7 @@ use secrecy::SecretString;
 use uuid::Uuid;
 
 use super::{Credentials, Sandboxes};
-use crate::domain::{Admin, Handle, Role, User, UserId};
+use crate::domain::{Admin, Handle, Role, User, UserId, UserStatus};
 use crate::ports::{
     Identity, IdentityProvider, KeyRepo, ManagedAccount, ManagedAccounts, UserRepo,
     split_user_subject, user_subject,
@@ -43,10 +43,10 @@ impl Accounts {
         let subject = user_subject(provider, &identity.subject);
         let existing = self.users.by_subject(&subject).await?;
         let Some(role) = identity.role else {
-            if let Some(user) = existing.filter(|user| user.enabled) {
+            if let Some(user) = existing.filter(|user| user.status == UserStatus::Active) {
                 self.users
                     .update(&User {
-                        enabled: false,
+                        status: UserStatus::Disabled,
                         ..user
                     })
                     .await?;
@@ -54,7 +54,7 @@ impl Accounts {
             return Err(Error::Forbidden);
         };
         match existing {
-            Some(user) if !user.enabled => Err(Error::Forbidden),
+            Some(user) if user.status != UserStatus::Active => Err(Error::Forbidden),
             Some(user) => {
                 let user = User {
                     email: identity.email,
@@ -72,17 +72,25 @@ impl Accounts {
         self.users
             .get(id)
             .await?
-            .filter(|user| user.enabled)
+            .filter(|user| user.status == UserStatus::Active)
             .ok_or(Error::Forbidden)
     }
 
+    /// `Conflict` for a user being deleted: only finishing the deletion moves them on.
     pub async fn set_enabled(&self, _: &Admin, target: UserId, enabled: bool) -> Result<User> {
-        let user = self
-            .users
-            .get(target)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("user {}", target.0)))?;
-        let user = User { enabled, ..user };
+        let user = self.get(target).await?;
+        if user.status == UserStatus::Deleting {
+            return Err(Error::Conflict(format!(
+                "user {} is being deleted",
+                user.handle
+            )));
+        }
+        let status = if enabled {
+            UserStatus::Active
+        } else {
+            UserStatus::Disabled
+        };
+        let user = User { status, ..user };
         self.users.update(&user).await?;
         Ok(user)
     }
@@ -135,26 +143,27 @@ impl Accounts {
     }
 
     pub async fn delete_user(&self, _: &Admin, id: UserId) -> Result<()> {
-        let user = self
-            .users
-            .get(id)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("user {}", id.0)))?;
-        self.erase(user).await
+        self.erase(self.get(id).await?).await
     }
 
-    pub async fn delete_self(&self, user: User) -> Result<()> {
+    /// A user deletes themselves, or finishes a deletion of theirs that failed part way, but
+    /// never while disabled.
+    pub async fn delete_self(&self, id: UserId) -> Result<()> {
+        let user = self.users.get(id).await?.ok_or(Error::Forbidden)?;
+        if user.status == UserStatus::Disabled {
+            return Err(Error::Forbidden);
+        }
         self.erase(user).await
     }
 
     /// Deletes the user and everything they own, each step safe to repeat, so running it again
-    /// after a failure finishes the job. The user is disabled first, so logins, sessions and SSH
-    /// stop at once, and their row goes last, so a retry still finds them.
+    /// after a failure finishes the job. The user is marked deleting first, so logins, sessions
+    /// and SSH stop at once, and their row goes last, so a retry still finds them.
     async fn erase(&self, user: User) -> Result<()> {
-        if user.enabled {
+        if user.status != UserStatus::Deleting {
             self.users
                 .update(&User {
-                    enabled: false,
+                    status: UserStatus::Deleting,
                     ..user.clone()
                 })
                 .await?;
@@ -171,6 +180,13 @@ impl Accounts {
         }
         self.users.delete(user.id).await?;
         Ok(())
+    }
+
+    async fn get(&self, id: UserId) -> Result<User> {
+        self.users
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("user {}", id.0)))
     }
 
     fn managed(&self, provider: &str) -> Result<&dyn ManagedAccounts> {
@@ -195,7 +211,7 @@ impl Accounts {
             handle,
             email: identity.email,
             role,
-            enabled: true,
+            status: UserStatus::Active,
             created_at: Utc::now(),
         };
         self.users.insert(&user).await?;
@@ -209,7 +225,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::Error;
-    use crate::domain::{Admin, Handle, Role, User, UserId};
+    use crate::domain::{Admin, Handle, Role, User, UserId, UserStatus};
     use crate::fakes::{ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, credential, identity};
     use crate::ports::{SandboxEngine, UserRepo};
 
@@ -334,13 +350,9 @@ mod tests {
                 .await,
             Err(Error::Forbidden)
         ));
-        assert!(
-            !w.users
-                .by_subject("test:s1")
-                .await
-                .unwrap()
-                .unwrap()
-                .enabled
+        assert_eq!(
+            w.users.by_subject("test:s1").await.unwrap().unwrap().status,
+            UserStatus::Disabled
         );
         assert!(matches!(
             w.accounts
@@ -354,12 +366,13 @@ mod tests {
             .set_enabled(&admin_proof(&root), adam.id, true)
             .await
             .unwrap();
-        assert!(
+        assert_eq!(
             w.accounts
                 .login(PROVIDER, identity("s1", "adam", Some(Role::Member)))
                 .await
                 .unwrap()
-                .enabled
+                .status,
+            UserStatus::Active
         );
     }
 
@@ -559,8 +572,89 @@ mod tests {
         let w = World::new();
         let by = admin_proof(&w.admin("root").await);
         let eve = owning_everything(&w, "eve", EVE_KEY).await;
-        w.accounts.delete_self(eve.clone()).await.unwrap();
+        w.accounts.delete_self(eve.id).await.unwrap();
         owns_nothing(&w, &eve).await;
         assert!(!accounts(&w, &by).await.contains(&"eve".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn a_self_deletion_that_failed_is_finished_by_the_same_user() {
+        let w = World::new();
+        let eve = owning_everything(&w, "eve", EVE_KEY).await;
+        w.engine.fail_deletes_after(Some(1));
+        assert!(matches!(
+            w.accounts.delete_self(eve.id).await,
+            Err(Error::Internal { .. })
+        ));
+        assert_eq!(
+            w.users.get(eve.id).await.unwrap().unwrap().status,
+            UserStatus::Deleting
+        );
+
+        w.engine.fail_deletes_after(None);
+        w.accounts.delete_self(eve.id).await.unwrap();
+        owns_nothing(&w, &eve).await;
+    }
+
+    #[tokio::test]
+    async fn a_user_being_deleted_cannot_log_in_ssh_or_be_enabled() {
+        let w = World::new();
+        let by = admin_proof(&w.admin("root").await);
+        let eve = owning_everything(&w, "eve", EVE_KEY).await;
+        w.engine.fail_deletes_after(Some(0));
+        assert!(w.accounts.delete_user(&by, eve.id).await.is_err());
+
+        assert!(matches!(
+            w.accounts
+                .login(PROVIDER, identity("eve", "eve", Some(Role::Member)))
+                .await,
+            Err(Error::Forbidden)
+        ));
+        assert!(matches!(
+            w.accounts.require_active(eve.id).await,
+            Err(Error::Forbidden)
+        ));
+        assert!(!w.access.authenticate("eve+main", EVE_KEY).await.unwrap());
+        assert!(matches!(
+            w.access.route("eve+main").await,
+            Err(Error::Forbidden)
+        ));
+        for enabled in [true, false] {
+            assert!(matches!(
+                w.accounts.set_enabled(&by, eve.id, enabled).await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert!(matches!(
+            w.accounts
+                .login(PROVIDER, identity("eve", "eve", None))
+                .await,
+            Err(Error::Forbidden)
+        ));
+        assert_eq!(
+            w.users.get(eve.id).await.unwrap().unwrap().status,
+            UserStatus::Deleting
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_user_cannot_delete_themselves_but_an_admin_can() {
+        let w = World::new();
+        let by = admin_proof(&w.admin("root").await);
+        let eve = owning_everything(&w, "eve", EVE_KEY).await;
+        w.accounts.set_enabled(&by, eve.id, false).await.unwrap();
+        assert!(matches!(
+            w.accounts.delete_self(eve.id).await,
+            Err(Error::Forbidden)
+        ));
+        assert_eq!(w.sandboxes.list(&eve).await.unwrap().len(), 2);
+        assert_eq!(w.keys.list(&eve).await.unwrap().len(), 1);
+        assert_eq!(
+            w.users.get(eve.id).await.unwrap().unwrap().status,
+            UserStatus::Disabled
+        );
+
+        w.accounts.delete_user(&by, eve.id).await.unwrap();
+        owns_nothing(&w, &eve).await;
     }
 }

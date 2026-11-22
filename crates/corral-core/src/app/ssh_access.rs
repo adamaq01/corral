@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::Sandboxes;
-use crate::domain::{Sandbox, SshPublicKey, SshUsername, User};
+use crate::domain::{Sandbox, SshPublicKey, SshUsername, User, UserStatus};
 use crate::ports::{KeyRepo, Readiness, UserRepo};
 use crate::{Error, Result};
 
@@ -45,7 +45,7 @@ impl SshAccess {
             return Ok(None);
         };
         let user = self.users.by_handle(&login.handle).await?;
-        let Some(user) = user.filter(|user| user.enabled) else {
+        let Some(user) = user.filter(|user| user.status == UserStatus::Active) else {
             return Ok(None);
         };
         match self.sandboxes.resolve(&user, login.sandbox.as_ref()).await {

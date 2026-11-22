@@ -751,7 +751,7 @@ async fn a_disabled_users_session_is_403() {
     let disabled = root
         .post(&format!("/api/admin/users/{adam_id}/disable"), json!({}))
         .await;
-    assert_eq!(disabled.json()["enabled"], false);
+    assert_eq!(disabled.json()["status"], "disabled");
     for (method, uri) in API_ROUTES {
         let reply = adam.call(method, uri, Some(json!({}))).await;
         assert_eq!(reply.status, StatusCode::FORBIDDEN, "{method} {uri}");
@@ -924,7 +924,7 @@ async fn admins_manage_users_provider_accounts_and_all_sandboxes() {
         .collect();
     assert_eq!(handles, ["root", "adam"]);
     assert_eq!(users[1]["role"], "member");
-    assert_eq!(users[1]["enabled"], true);
+    assert_eq!(users[1]["status"], "active");
 
     let created = root
         .post(
@@ -1090,6 +1090,66 @@ async fn users_delete_themselves() {
     assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
 
     owns_nothing_after_signing_up_again(&corral, &mut root, "adam").await;
+}
+
+#[tokio::test]
+async fn a_failed_self_deletion_is_finished_by_the_same_user() {
+    let corral = Corral::new().await;
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut adam = owning_everything(&corral, "adam").await;
+    corral.engine.fail_deletes_after(Some(0));
+    let failed = adam.call("DELETE", "/api/me", None).await;
+    assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(adam.get("/api/me").await.status, StatusCode::FORBIDDEN);
+    let users = root.get("/api/admin/users").await.json();
+    assert_eq!(users[1]["status"], "deleting");
+
+    corral.engine.fail_deletes_after(None);
+    let finished = adam.call("DELETE", "/api/me", None).await;
+    assert_eq!(
+        finished.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        finished.text()
+    );
+    let users = root.get("/api/admin/users").await.json();
+    assert!(!users.to_string().contains("adam"), "{users}");
+    owns_nothing_after_signing_up_again(&corral, &mut root, "adam").await;
+}
+
+#[tokio::test]
+async fn a_disabled_user_cannot_delete_themselves() {
+    let corral = Corral::new().await;
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut adam = owning_everything(&corral, "adam").await;
+    let adam_id = user_id(&root.get("/api/admin/users").await.json(), "adam");
+    root.post(&format!("/api/admin/users/{adam_id}/disable"), json!({}))
+        .await;
+
+    let refused = adam.call("DELETE", "/api/me", None).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        root.get("/api/admin/sandboxes").await.json()[0]["owner"],
+        "adam"
+    );
+    assert_eq!(
+        corral
+            .engine
+            .calls()
+            .iter()
+            .filter(|call| matches!(call, EngineCall::Delete(_)))
+            .count(),
+        0
+    );
+    root.post(&format!("/api/admin/users/{adam_id}/enable"), json!({}))
+        .await;
+    for listing in ["/api/keys", "/api/credentials"] {
+        assert_eq!(
+            adam.get(listing).await.json().as_array().unwrap().len(),
+            1,
+            "{listing}"
+        );
+    }
 }
 
 #[tokio::test]

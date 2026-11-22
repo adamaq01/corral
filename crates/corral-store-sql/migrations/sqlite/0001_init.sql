@@ -4,7 +4,7 @@ create table users (
     handle text not null unique,
     email text,
     role text not null,
-    enabled integer not null,
+    status text not null,
     created_at text not null,
     default_sandbox text references sandboxes on delete set null
 ) strict;

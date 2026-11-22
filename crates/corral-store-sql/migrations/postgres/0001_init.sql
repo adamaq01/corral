@@ -4,7 +4,7 @@ create table users (
     handle text not null unique,
     email text,
     role text not null,
-    enabled boolean not null,
+    status text not null,
     created_at timestamptz not null
 );
 
