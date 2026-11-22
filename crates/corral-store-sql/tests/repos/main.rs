@@ -7,7 +7,7 @@ use corral_core::domain::{
 };
 use corral_core::ports::{SandboxRepo, UserRepo};
 use corral_sql::Pool;
-use corral_sql::testing::{PostgresServer, Sqlite};
+use corral_sql::testing::Databases;
 use corral_store_sql::Store;
 use uuid::Uuid;
 
@@ -20,18 +20,18 @@ async fn meets_every_repo_contract(url: &str) {
             .await
             .expect("reopen a migrated database"),
     );
-    repos::every_repo(&*store, &*store, &*store, &*store).await;
+    repos::every_repo(&*store, &*store, &*store).await;
 }
 
 #[tokio::test]
 async fn sqlite_meets_every_repo_contract() {
-    let sqlite = Sqlite::new();
-    meets_every_repo_contract(&sqlite.url()).await;
+    let sqlite = Databases::sqlite();
+    meets_every_repo_contract(&sqlite.url().await).await;
 }
 
 #[tokio::test]
 async fn postgres_meets_every_repo_contract() {
-    let postgres = PostgresServer::start().await;
+    let postgres = Databases::postgres().await;
     meets_every_repo_contract(&postgres.url().await).await;
 }
 
@@ -49,7 +49,7 @@ fn user() -> User {
 
 #[tokio::test]
 async fn sqlite_sub_second_timestamps_round_trip_in_order() {
-    let sqlite = Sqlite::new();
+    let sqlite = Databases::sqlite();
     let store = Store::open(sqlite.pool().await).await.expect("open");
     let owner = user();
     UserRepo::insert(&store, &owner).await.unwrap();

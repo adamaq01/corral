@@ -1,3 +1,4 @@
+mod accounts;
 mod password;
 mod provider;
 

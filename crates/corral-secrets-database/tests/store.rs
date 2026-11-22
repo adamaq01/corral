@@ -5,7 +5,7 @@ use corral_core::contract::secrets;
 use corral_core::domain::{CredentialName, UserId};
 use corral_core::ports::SecretStore;
 use corral_secrets_database::{DatabaseSecretStore, Keyring};
-use corral_sql::testing::{PostgresServer, Sqlite};
+use corral_sql::testing::Databases;
 use corral_sql::{Pool, on_pool};
 use secrecy::{ExposeSecret, SecretString};
 use uuid::Uuid;
@@ -20,13 +20,13 @@ async fn database_secret_store(pool: &Pool) {
 
 #[tokio::test]
 async fn sqlite_meets_the_secret_store_contract() {
-    let sqlite = Sqlite::new();
+    let sqlite = Databases::sqlite();
     database_secret_store(&sqlite.pool().await).await;
 }
 
 #[tokio::test]
 async fn postgres_meets_the_secret_store_contract() {
-    let postgres = PostgresServer::start().await;
+    let postgres = Databases::postgres().await;
     database_secret_store(&postgres.pool().await).await;
 }
 

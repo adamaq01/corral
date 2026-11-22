@@ -2,11 +2,11 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use corral_core::domain::{Handle, UserId};
+use corral_core::domain::UserId;
 use uuid::Uuid;
 
 use crate::auth::CurrentAdmin;
-use crate::dto::{LocalAccountDto, NewLocalAccount, NewPassword, OwnedSandbox, UserDto};
+use crate::dto::{ManagedAccountDto, NewAccount, NewPassword, OwnedSandbox, UserDto};
 use crate::error::ApiError;
 use crate::extract::{JsonBody, PathParam};
 use crate::state::AppState;
@@ -18,15 +18,15 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/admin/users/{id}/disable", post(disable))
         .route("/api/admin/sandboxes", get(sandboxes))
         .route(
-            "/api/admin/local-accounts",
-            get(local_account_list).post(create_local_account),
+            "/api/admin/providers/{provider}/accounts",
+            get(accounts).post(create_account),
         )
         .route(
-            "/api/admin/local-accounts/{username}",
-            delete(delete_local_account),
+            "/api/admin/providers/{provider}/accounts/{subject}",
+            delete(delete_account),
         )
         .route(
-            "/api/admin/local-accounts/{username}/password",
+            "/api/admin/providers/{provider}/accounts/{subject}/password",
             put(set_password),
         )
 }
@@ -73,25 +73,32 @@ async fn sandboxes(
     ))
 }
 
-async fn local_account_list(
+async fn accounts(
     CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
-) -> Result<Json<Vec<LocalAccountDto>>, ApiError> {
-    let accounts = state.providers.account_admin()?.list(&admin).await?;
+    PathParam(provider): PathParam<String>,
+) -> Result<Json<Vec<ManagedAccountDto>>, ApiError> {
+    let accounts = state.accounts.managed_accounts(&admin, &provider).await?;
     Ok(Json(
-        accounts.into_iter().map(LocalAccountDto::from).collect(),
+        accounts.into_iter().map(ManagedAccountDto::from).collect(),
     ))
 }
 
-async fn create_local_account(
+async fn create_account(
     CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
-    JsonBody(account): JsonBody<NewLocalAccount>,
+    PathParam(provider): PathParam<String>,
+    JsonBody(account): JsonBody<NewAccount>,
 ) -> Result<StatusCode, ApiError> {
     state
-        .providers
-        .account_admin()?
-        .create(&admin, &account.username, account.password, account.role)
+        .accounts
+        .create_account(
+            &admin,
+            &provider,
+            &account.username,
+            account.password,
+            account.role,
+        )
         .await?;
     Ok(StatusCode::CREATED)
 }
@@ -99,26 +106,24 @@ async fn create_local_account(
 async fn set_password(
     CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
-    PathParam(username): PathParam<Handle>,
+    PathParam((provider, subject)): PathParam<(String, String)>,
     JsonBody(body): JsonBody<NewPassword>,
 ) -> Result<StatusCode, ApiError> {
     state
-        .providers
-        .account_admin()?
-        .set_password(&admin, &username, body.password)
+        .accounts
+        .set_password(&admin, &provider, &subject, body.password)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn delete_local_account(
+async fn delete_account(
     CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
-    PathParam(username): PathParam<Handle>,
+    PathParam((provider, subject)): PathParam<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     state
-        .providers
-        .account_admin()?
-        .delete(&admin, &username)
+        .accounts
+        .delete_account(&admin, &provider, &subject)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }

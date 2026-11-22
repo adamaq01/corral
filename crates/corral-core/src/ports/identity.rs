@@ -6,7 +6,9 @@ use secrecy::SecretString;
 use serde::Serialize;
 
 use crate::Result;
-use crate::domain::{Admin, Handle, LocalAccount, Role};
+use chrono::{DateTime, Utc};
+
+use crate::domain::{Handle, Role};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Identity {
@@ -64,28 +66,30 @@ pub trait IdentityProvider: Send + Sync {
     /// `Forbidden` for a wrong answer. A verified person outside every role comes back with
     /// `role: None`, so their user can be disabled.
     async fn verify(&self, answer: Answer) -> Result<Identity>;
-    fn accounts(&self) -> Option<&dyn AccountAdmin> {
+    /// The provider's own accounts, for a provider that keeps them.
+    fn accounts(&self) -> Option<&dyn ManagedAccounts> {
         None
     }
 }
 
+/// An account a provider keeps, known by the subject it authenticates as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedAccount {
+    pub subject: String,
+    pub username: Handle,
+    pub role: Role,
+    pub created_at: DateTime<Utc>,
+}
+
 #[async_trait]
-pub trait AccountAdmin: Send + Sync {
-    async fn create(
-        &self,
-        by: &Admin,
-        username: &Handle,
-        password: SecretString,
-        role: Role,
-    ) -> Result<()>;
-    async fn set_password(
-        &self,
-        by: &Admin,
-        username: &Handle,
-        password: SecretString,
-    ) -> Result<()>;
-    async fn delete(&self, by: &Admin, username: &Handle) -> Result<()>;
-    async fn list(&self, by: &Admin) -> Result<Vec<LocalAccount>>;
+pub trait ManagedAccounts: Send + Sync {
+    /// `Conflict` when the username is taken.
+    async fn create(&self, username: &Handle, password: SecretString, role: Role) -> Result<()>;
+    /// `NotFound` when no account has the subject.
+    async fn set_password(&self, subject: &str, password: SecretString) -> Result<()>;
+    /// Whether the account existed.
+    async fn delete(&self, subject: &str) -> Result<bool>;
+    async fn list(&self) -> Result<Vec<ManagedAccount>>;
 }
 
 #[cfg(test)]

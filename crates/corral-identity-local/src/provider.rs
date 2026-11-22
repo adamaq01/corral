@@ -1,62 +1,35 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use chrono::Utc;
-use corral_core::domain::{Admin, Handle, LocalAccount, Role, User};
+use corral_core::domain::{Handle, Role};
 use corral_core::ports::{
-    AccountAdmin, Answer, Challenge, Identity, IdentityProvider, LocalAccountRepo, Method,
-    UserRepo, user_subject,
+    Answer, Challenge, Identity, IdentityProvider, ManagedAccount, ManagedAccounts, Method,
 };
 use corral_core::{Error, Result};
+use corral_sql::Pool;
 use secrecy::SecretString;
 use uuid::Uuid;
 
+use crate::accounts::{Account, AccountTable};
 use crate::password;
 
 const ID: &str = "local";
 
 pub struct LocalProvider {
-    accounts: Arc<dyn LocalAccountRepo>,
-    users: Arc<dyn UserRepo>,
+    accounts: AccountTable,
     dummy_hash: String,
 }
 
 impl LocalProvider {
-    pub fn new(accounts: Arc<dyn LocalAccountRepo>, users: Arc<dyn UserRepo>) -> Result<Self> {
+    pub async fn open(pool: Pool) -> Result<Self> {
         Ok(Self {
-            accounts,
-            users,
+            accounts: AccountTable::open(pool).await?,
             dummy_hash: password::hash(&SecretString::from(Uuid::new_v4().to_string()))?,
         })
     }
-
-    /// Adds an account with no admin acting, for the server's command line.
-    pub async fn add(&self, username: &Handle, password: SecretString, role: Role) -> Result<()> {
-        if self.users.by_subject(&subject(username)).await?.is_some() {
-            return Err(Error::Conflict(format!(
-                "local account {username} exists or was deleted, and usernames are never reused"
-            )));
-        }
-        self.accounts
-            .insert(&LocalAccount {
-                username: username.clone(),
-                password_hash: password::hash(&password)?,
-                role,
-                created_at: Utc::now(),
-            })
-            .await
-    }
-
-    async fn find(&self, username: &Handle) -> Result<LocalAccount> {
-        self.accounts
-            .get(username)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("local account {username}")))
-    }
 }
 
-fn subject(username: &Handle) -> String {
-    user_subject(ID, username.as_str())
+fn username(subject: &str) -> Result<Handle> {
+    Handle::parse(subject).map_err(|_| Error::NotFound(format!("local account {subject}")))
 }
 
 #[async_trait]
@@ -98,55 +71,50 @@ impl IdentityProvider for LocalProvider {
         }
     }
 
-    fn accounts(&self) -> Option<&dyn AccountAdmin> {
+    fn accounts(&self) -> Option<&dyn ManagedAccounts> {
         Some(self)
     }
 }
 
 #[async_trait]
-impl AccountAdmin for LocalProvider {
-    async fn create(
-        &self,
-        _: &Admin,
-        username: &Handle,
-        password: SecretString,
-        role: Role,
-    ) -> Result<()> {
-        self.add(username, password, role).await
+impl ManagedAccounts for LocalProvider {
+    async fn create(&self, username: &Handle, password: SecretString, role: Role) -> Result<()> {
+        let account = Account {
+            username: username.clone(),
+            password_hash: password::hash(&password)?,
+            role,
+            created_at: Utc::now(),
+        };
+        self.accounts.insert(&account).await
     }
 
-    async fn set_password(
-        &self,
-        _: &Admin,
-        username: &Handle,
-        password: SecretString,
-    ) -> Result<()> {
-        let account = self.find(username).await?;
-        let password_hash = password::hash(&password)?;
-        self.accounts
-            .update(&LocalAccount {
-                password_hash,
-                ..account
-            })
-            .await
-    }
-
-    async fn delete(&self, _: &Admin, username: &Handle) -> Result<()> {
-        let account = self.find(username).await?;
-        let linked = self.users.by_subject(&subject(&account.username)).await?;
-        if let Some(user) = linked.filter(|user| user.enabled) {
-            self.users
-                .update(&User {
-                    enabled: false,
-                    ..user
-                })
-                .await?;
+    async fn set_password(&self, subject: &str, password: SecretString) -> Result<()> {
+        let username = username(subject)?;
+        let hash = password::hash(&password)?;
+        if self.accounts.set_password_hash(&username, &hash).await? {
+            Ok(())
+        } else {
+            Err(Error::NotFound(format!("local account {username}")))
         }
-        self.accounts.delete(&account.username).await?;
-        Ok(())
     }
 
-    async fn list(&self, _: &Admin) -> Result<Vec<LocalAccount>> {
-        self.accounts.list().await
+    async fn delete(&self, subject: &str) -> Result<bool> {
+        match Handle::parse(subject) {
+            Ok(username) => self.accounts.delete(&username).await,
+            Err(_) => Ok(false),
+        }
+    }
+
+    async fn list(&self) -> Result<Vec<ManagedAccount>> {
+        let accounts = self.accounts.list().await?;
+        Ok(accounts
+            .into_iter()
+            .map(|account| ManagedAccount {
+                subject: account.username.to_string(),
+                username: account.username,
+                role: account.role,
+                created_at: account.created_at,
+            })
+            .collect())
     }
 }

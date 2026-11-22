@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxView};
 use corral_core::domain::{
-    CredentialName, Handle, ImageKey, LocalAccount, Role, SandboxName, SandboxStatus, SizeKey,
-    SshKey, SshUsername, User,
+    CredentialName, Handle, ImageKey, Role, SandboxName, SandboxStatus, SizeKey, SshKey,
+    SshUsername, User,
 };
-use corral_core::ports::{IdentityProvider, Method};
+use corral_core::ports::{IdentityProvider, ManagedAccount, Method};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -30,7 +30,7 @@ pub(crate) struct CredentialValue {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct NewLocalAccount {
+pub(crate) struct NewAccount {
     pub username: Handle,
     pub password: SecretString,
     pub role: Role,
@@ -239,15 +239,17 @@ impl From<User> for UserDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct LocalAccountDto {
+pub(crate) struct ManagedAccountDto {
+    subject: String,
     username: Handle,
     role: Role,
     created_at: DateTime<Utc>,
 }
 
-impl From<LocalAccount> for LocalAccountDto {
-    fn from(account: LocalAccount) -> Self {
+impl From<ManagedAccount> for ManagedAccountDto {
+    fn from(account: ManagedAccount) -> Self {
         Self {
+            subject: account.subject,
             username: account.username,
             role: account.role,
             created_at: account.created_at,

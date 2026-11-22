@@ -236,7 +236,7 @@ refused adam adam+missing
 ok "a nonexistent sandbox is refused"
 
 bob_password=$(head -c 18 /dev/urandom | base64)
-api adam POST api/admin/local-accounts \
+api adam POST api/admin/providers/local/accounts \
   "$(jq -cn --arg p "$bob_password" '{username: "bob", password: $p, role: "member"}')" >/dev/null
 login bob "$bob_password"
 add_key bob

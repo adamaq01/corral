@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::time::Duration;
 
 use corral_core::Error;
-use corral_sql::testing::{PostgresServer, Sqlite};
+use corral_sql::testing::Databases;
 use corral_sql::{Migrations, Pool, on_pool};
 use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
@@ -100,13 +100,13 @@ async fn unlocked<T>(migration: impl Future<Output = T>) -> T {
 
 #[tokio::test]
 async fn sqlite_modules_share_one_database() {
-    let sqlite = Sqlite::new();
+    let sqlite = Databases::sqlite();
     modules_share_one_database(&sqlite.pool().await).await;
 }
 
 #[tokio::test]
 async fn postgres_modules_share_one_database() {
-    let postgres = PostgresServer::start().await;
+    let postgres = Databases::postgres().await;
     modules_share_one_database(&postgres.pool().await).await;
 }
 
@@ -126,7 +126,7 @@ async fn connect_names_only_the_scheme_it_refuses() {
 
 #[tokio::test]
 async fn sqlite_connect_creates_a_wal_database_that_enforces_foreign_keys() {
-    let sqlite = Sqlite::new();
+    let sqlite = Databases::sqlite();
     let pool = sqlite.pool().await;
     let Pool::Sqlite(raw) = &pool else {
         panic!("a sqlite url opened {pool:?}");

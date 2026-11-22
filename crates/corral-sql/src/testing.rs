@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use tempfile::TempDir;
 use testcontainers_modules::postgres::Postgres;
@@ -7,43 +7,25 @@ use testcontainers_modules::testcontainers::{ContainerAsync, ImageExt};
 
 use crate::Pool;
 
-pub struct Sqlite {
-    dir: TempDir,
+/// Hands out new, empty databases of one kind, and removes them when dropped.
+#[allow(clippy::large_enum_variant)]
+pub enum Databases {
+    Sqlite(Mutex<Vec<TempDir>>),
+    Postgres {
+        _container: ContainerAsync<Postgres>,
+        base: String,
+        created: Mutex<usize>,
+    },
 }
 
-impl Sqlite {
+impl Databases {
     #[must_use]
-    pub fn new() -> Self {
-        Self {
-            dir: tempfile::tempdir().expect("temp dir"),
-        }
+    pub fn sqlite() -> Self {
+        Self::Sqlite(Mutex::default())
     }
 
-    #[must_use]
-    pub fn url(&self) -> String {
-        format!("sqlite://{}", self.dir.path().join("corral.db").display())
-    }
-
-    pub async fn pool(&self) -> Pool {
-        Pool::connect(&self.url()).await.expect("connect to sqlite")
-    }
-}
-
-impl Default for Sqlite {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct PostgresServer {
-    _container: ContainerAsync<Postgres>,
-    base: String,
-    databases: AtomicUsize,
-}
-
-impl PostgresServer {
     /// Starts `postgres:19` and prints its version, so a test log shows the server it ran on.
-    pub async fn start() -> Self {
+    pub async fn postgres() -> Self {
         let container = Postgres::default()
             .with_tag("19")
             .start()
@@ -57,43 +39,50 @@ impl PostgresServer {
                 .await
                 .expect("postgres port")
         );
-        let server = Self {
-            _container: container,
-            base,
-            databases: AtomicUsize::new(0),
-        };
-        let Pool::Postgres(admin) = Pool::connect(&server.admin_url()).await.expect("connect")
-        else {
-            unreachable!("a postgres url opens a postgres pool");
-        };
+        let admin = sqlx::PgPool::connect(&format!("{base}/postgres"))
+            .await
+            .expect("connect to postgres");
         let version: String = sqlx::query_scalar("select version()")
             .fetch_one(&admin)
             .await
             .expect("postgres version");
         println!("testing against {version}");
-        server
+        Self::Postgres {
+            _container: container,
+            base,
+            created: Mutex::new(0),
+        }
     }
 
-    fn admin_url(&self) -> String {
-        format!("{}/postgres", self.base)
-    }
-
-    /// The url of a new, empty database.
     pub async fn url(&self) -> String {
-        let name = format!("test_{}", self.databases.fetch_add(1, Ordering::SeqCst));
-        let Pool::Postgres(admin) = Pool::connect(&self.admin_url()).await.expect("connect") else {
-            unreachable!("a postgres url opens a postgres pool");
-        };
-        sqlx::query(sqlx::AssertSqlSafe(format!("create database {name}")))
-            .execute(&admin)
-            .await
-            .expect("create database");
-        format!("{}/{name}", self.base)
+        match self {
+            Self::Sqlite(dirs) => {
+                let dir = tempfile::tempdir().expect("temp dir");
+                let url = format!("sqlite://{}", dir.path().join("corral.db").display());
+                dirs.lock().expect("sqlite dirs").push(dir);
+                url
+            }
+            Self::Postgres { base, created, .. } => {
+                let name = {
+                    let mut created = created.lock().expect("database count");
+                    *created += 1;
+                    format!("test_{created}")
+                };
+                let admin = sqlx::PgPool::connect(&format!("{base}/postgres"))
+                    .await
+                    .expect("connect to postgres");
+                sqlx::query(sqlx::AssertSqlSafe(format!("create database {name}")))
+                    .execute(&admin)
+                    .await
+                    .expect("create database");
+                format!("{base}/{name}")
+            }
+        }
     }
 
     pub async fn pool(&self) -> Pool {
         Pool::connect(&self.url().await)
             .await
-            .expect("connect to postgres")
+            .expect("connect to the test database")
     }
 }

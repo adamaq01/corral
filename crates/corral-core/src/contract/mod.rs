@@ -36,9 +36,7 @@ pub async fn seed_user(users: &dyn UserRepo, label: &str) -> User {
 
 #[cfg(test)]
 mod tests {
-    use crate::fakes::{
-        MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
-    };
+    use crate::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo};
 
     #[tokio::test]
     async fn the_fakes_meet_every_contract() {
@@ -47,7 +45,6 @@ mod tests {
             &users,
             &MemoryKeyRepo::default(),
             &MemorySandboxRepo::default(),
-            &MemoryLocalAccountRepo::default(),
         )
         .await;
         super::secrets::secret_store(&MemorySecretStore::default()).await;

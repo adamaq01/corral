@@ -6,22 +6,16 @@ use uuid::Uuid;
 use super::{at, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
-    Handle, ImageKey, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey,
-    SshPublicKey, User, UserId,
+    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey, SshPublicKey, User,
+    UserId,
 };
-use crate::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
+use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 
-pub async fn every_repo(
-    users: &dyn UserRepo,
-    keys: &dyn KeyRepo,
-    sandboxes: &dyn SandboxRepo,
-    local_accounts: &dyn LocalAccountRepo,
-) {
+pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dyn SandboxRepo) {
     user_repo(users).await;
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
-    local_account_repo(local_accounts).await;
 }
 
 async fn user_repo(repo: &dyn UserRepo) {
@@ -285,82 +279,6 @@ async fn sandbox_limit_holds_under_concurrent_inserts(
     }
     assert_eq!((admitted, refused), (MAX, 3 * MAX));
     assert_eq!(sandboxes.list(adam.id).await.unwrap().len(), MAX);
-}
-
-async fn local_account_repo(repo: &dyn LocalAccountRepo) {
-    let prefix = unique("acct");
-    let account = |suffix: &str, role: Role, created: i64| LocalAccount {
-        username: handle(&format!("{prefix}{suffix}")),
-        password_hash: unique("hash"),
-        role,
-        created_at: at(created),
-    };
-    // Byte order puts '-' before digits, unlike most locale collations.
-    let hyphen = account("-b", Role::Admin, 2);
-    let digit = account("1", Role::Member, 1);
-    repo.insert(&digit).await.expect("insert account");
-    repo.insert(&hyphen).await.expect("insert account");
-
-    assert_eq!(
-        repo.get(&hyphen.username).await.unwrap(),
-        Some(hyphen.clone())
-    );
-    assert_eq!(
-        repo.get(&digit.username).await.unwrap(),
-        Some(digit.clone())
-    );
-    assert_eq!(repo.get(&handle(&unique("nobody"))).await.unwrap(), None);
-    let ours = |accounts: Vec<LocalAccount>| -> Vec<LocalAccount> {
-        accounts
-            .into_iter()
-            .filter(|a| a.username.as_str().starts_with(&prefix))
-            .collect()
-    };
-    assert_eq!(
-        ours(repo.list().await.unwrap()),
-        vec![hyphen.clone(), digit.clone()]
-    );
-
-    let duplicate = LocalAccount {
-        password_hash: unique("other"),
-        role: Role::Member,
-        ..hyphen.clone()
-    };
-    assert!(matches!(
-        repo.insert(&duplicate).await,
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(
-        repo.get(&hyphen.username).await.unwrap(),
-        Some(hyphen.clone())
-    );
-
-    let updated = LocalAccount {
-        password_hash: unique("rehashed"),
-        role: Role::Member,
-        created_at: at(3),
-        ..hyphen.clone()
-    };
-    repo.update(&updated).await.expect("update account");
-    assert_eq!(
-        repo.get(&hyphen.username).await.unwrap(),
-        Some(updated.clone())
-    );
-    assert_eq!(
-        repo.get(&digit.username).await.unwrap(),
-        Some(digit.clone())
-    );
-    let absent = account("-ghost", Role::Member, 4);
-    assert!(matches!(
-        repo.update(&absent).await,
-        Err(Error::NotFound(_))
-    ));
-    assert_eq!(repo.get(&absent.username).await.unwrap(), None);
-
-    assert!(repo.delete(&updated.username).await.unwrap());
-    assert!(!repo.delete(&updated.username).await.unwrap());
-    assert_eq!(repo.get(&updated.username).await.unwrap(), None);
-    assert_eq!(ours(repo.list().await.unwrap()), vec![digit]);
 }
 
 fn handle(value: &str) -> Handle {

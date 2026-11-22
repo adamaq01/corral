@@ -43,7 +43,6 @@ macro_rules! validated_string {
 mod catalog_key;
 mod credential_name;
 mod handle;
-mod local_account;
 mod resources;
 mod sandbox;
 mod sandbox_name;
@@ -55,7 +54,6 @@ mod user;
 pub use catalog_key::{ImageKey, SizeKey};
 pub use credential_name::CredentialName;
 pub use handle::Handle;
-pub use local_account::LocalAccount;
 pub use resources::{Allocation, Resources};
 pub use sandbox::{Sandbox, SandboxId, SandboxStatus};
 pub use sandbox_name::SandboxName;

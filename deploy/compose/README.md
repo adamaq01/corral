@@ -78,7 +78,7 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
 - `PUT /api/credentials/<NAME>` with `{"value": "..."}` stores a credential, encrypted with
   `CORRAL_SECRETS_KEY`. It reaches SSH sessions as an environment variable from the sandbox's
   next wake or `POST /api/sandboxes/<sandbox>/restart` on. Values are never returned.
-- Admins add users with `POST /api/admin/local-accounts` and
+- Admins add users with `POST /api/admin/providers/local/accounts` and
   `{"username": "...", "password": "...", "role": "member"}`, and disable one with
   `POST /api/admin/users/<id>/disable`.
 - A sandbox sleeps (its container stops) after 30 minutes with no SSH session and no Herdr

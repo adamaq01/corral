@@ -40,7 +40,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
     let credentials = Credentials::new(secret_store(secrets, &pool).await?);
-    let providers = providers(config, oidc, &store).await?;
+    let providers = providers(config, oidc, &pool).await?;
     let (engine, lifecycle) = start_engine(config, engine, shutdown).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
@@ -55,7 +55,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     );
     let access = SshAccess::new(store.clone(), store.clone(), sandboxes.clone());
     let api = Api {
-        accounts: Accounts::new(store.clone()),
+        accounts: Accounts::new(store.clone(), providers.clone()),
         keys: Keys::new(store.clone()),
         credentials,
         sandboxes,
@@ -88,15 +88,11 @@ pub async fn database(database_url: &str) -> Result<Pool> {
         .context("opening the database at DATABASE_URL")
 }
 
-pub async fn store(database_url: &str) -> Result<Arc<Store>> {
-    Ok(Arc::new(Store::open(database(database_url).await?).await?))
-}
-
-pub fn local_provider(config: &Config, store: &Arc<Store>) -> Result<Option<LocalProvider>> {
+pub async fn local_provider(config: &Config, pool: &Pool) -> Result<Option<LocalProvider>> {
     if config.identity.local.is_none() {
         return Ok(None);
     }
-    Ok(Some(LocalProvider::new(store.clone(), store.clone())?))
+    Ok(Some(LocalProvider::open(pool.clone()).await?))
 }
 
 async fn secret_store(choice: SecretsChoice, pool: &Pool) -> Result<Arc<dyn SecretStore>> {
@@ -111,10 +107,10 @@ async fn secret_store(choice: SecretsChoice, pool: &Pool) -> Result<Arc<dyn Secr
 async fn providers(
     config: &Config,
     oidc: Option<Oidc>,
-    store: &Arc<Store>,
+    pool: &Pool,
 ) -> Result<Vec<Arc<dyn IdentityProvider>>> {
     let mut providers: Vec<Arc<dyn IdentityProvider>> = Vec::new();
-    if let Some(local) = local_provider(config, store)? {
+    if let Some(local) = local_provider(config, pool).await? {
         providers.push(Arc::new(local));
     }
     if let Some(Oidc {
@@ -167,4 +163,68 @@ async fn start_engine(
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use corral_identity_local::LocalProvider;
+    use corral_secrets_database::{DatabaseSecretStore, Keyring};
+    use corral_sql::testing::Databases;
+    use corral_sql::{Pool, on_pool};
+    use corral_store_sql::Store;
+
+    async fn open_every_module(pool: &Pool) {
+        let keyring = Keyring::from_env(&format!("1:{}", STANDARD.encode([7; 32]))).unwrap();
+        Store::open(pool.clone()).await.expect("store");
+        DatabaseSecretStore::open(pool.clone(), keyring)
+            .await
+            .expect("database secret store");
+        LocalProvider::open(pool.clone())
+            .await
+            .expect("local provider");
+    }
+
+    async fn every_module_shares_one_database(databases: Databases, tables: &'static str) {
+        let pool = databases.pool().await;
+        open_every_module(&pool).await;
+        open_every_module(&pool).await;
+        let found: Vec<String> = on_pool!(pool, |pool| sqlx::query_scalar(tables)
+            .fetch_all(pool)
+            .await)
+        .unwrap();
+        assert_eq!(
+            found,
+            [
+                "_credentials_migrations",
+                "_local_accounts_migrations",
+                "_store_migrations",
+                "credentials",
+                "local_accounts",
+                "sandboxes",
+                "ssh_keys",
+                "users",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn every_module_shares_one_sqlite_database() {
+        every_module_shares_one_database(
+            Databases::sqlite(),
+            "select name from sqlite_master where type = 'table' order by name",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn every_module_shares_one_postgres_database() {
+        every_module_shares_one_database(
+            Databases::postgres().await,
+            "select table_name::text from information_schema.tables \
+             where table_schema = 'public' order by table_name",
+        )
+        .await;
+    }
 }

@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use secrecy::ExposeSecret;
 
-use super::{FakeEngine, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo};
+use super::{
+    FakeEngine, FakeProvider, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
+};
 use crate::app::{
     Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, SandboxView,
     Sandboxes, SizePreset, SshAccess,
@@ -13,7 +15,7 @@ use crate::domain::{
     Admin, Allocation, CredentialName, ImageKey, Resources, Role, Sandbox, SandboxName, SizeKey,
     User,
 };
-use crate::ports::{CredentialMap, Identity};
+use crate::ports::{CredentialMap, Identity, IdentityProvider};
 
 pub const MAX_SANDBOXES: usize = 3;
 pub const PROVIDER: &str = "test";
@@ -123,8 +125,14 @@ pub struct World {
 }
 
 impl World {
+    /// With one identity provider, a `FakeProvider`.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_providers(vec![Arc::new(FakeProvider::default())])
+    }
+
+    #[must_use]
+    pub fn with_providers(providers: Vec<Arc<dyn IdentityProvider>>) -> Self {
         let users = Arc::new(MemoryUserRepo::default());
         let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
         let engine = Arc::new(FakeEngine::default());
@@ -147,7 +155,7 @@ impl World {
             sandboxes.clone(),
         ));
         Self {
-            accounts: Accounts::new(users.clone()),
+            accounts: Accounts::new(users.clone(), providers),
             keys: Keys::new(key_repo),
             sandboxes,
             credentials,

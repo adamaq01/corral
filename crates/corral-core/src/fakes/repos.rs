@@ -1,15 +1,12 @@
 use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::lock;
-use crate::domain::{
-    Handle, LocalAccount, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
-};
-use crate::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
+use crate::domain::{Handle, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId};
+use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 use crate::{Error, Result};
 
 #[derive(Default)]
@@ -26,11 +23,6 @@ pub struct MemoryKeyRepo {
 pub struct MemorySandboxRepo {
     sandboxes: Mutex<Vec<Sandbox>>,
     defaults: Mutex<BTreeMap<UserId, SandboxId>>,
-}
-
-#[derive(Default)]
-pub struct MemoryLocalAccountRepo {
-    accounts: Mutex<BTreeMap<Handle, LocalAccount>>,
 }
 
 fn find<T: Clone>(items: &Mutex<Vec<T>>, matches: impl Fn(&T) -> bool) -> Option<T> {
@@ -197,42 +189,5 @@ impl SandboxRepo for MemorySandboxRepo {
             lock(&self.defaults).insert(owner, id.clone());
         }
         Ok(())
-    }
-}
-
-#[async_trait]
-impl LocalAccountRepo for MemoryLocalAccountRepo {
-    async fn get(&self, username: &Handle) -> Result<Option<LocalAccount>> {
-        Ok(lock(&self.accounts).get(username).cloned())
-    }
-
-    async fn insert(&self, account: &LocalAccount) -> Result<()> {
-        match lock(&self.accounts).entry(account.username.clone()) {
-            Entry::Occupied(_) => Err(Error::Conflict(format!(
-                "local account {}",
-                account.username
-            ))),
-            Entry::Vacant(slot) => {
-                slot.insert(account.clone());
-                Ok(())
-            }
-        }
-    }
-
-    async fn update(&self, account: &LocalAccount) -> Result<()> {
-        let mut accounts = lock(&self.accounts);
-        let stored = accounts
-            .get_mut(&account.username)
-            .ok_or_else(|| Error::NotFound(format!("local account {}", account.username)))?;
-        *stored = account.clone();
-        Ok(())
-    }
-
-    async fn delete(&self, username: &Handle) -> Result<bool> {
-        Ok(lock(&self.accounts).remove(username).is_some())
-    }
-
-    async fn list(&self) -> Result<Vec<LocalAccount>> {
-        Ok(lock(&self.accounts).values().cloned().collect())
     }
 }

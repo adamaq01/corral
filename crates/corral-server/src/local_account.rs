@@ -2,18 +2,20 @@ use std::io::{BufRead, IsTerminal};
 
 use anyhow::{Context, Result, ensure};
 use corral_core::domain::{Handle, Role};
+use corral_core::ports::ManagedAccounts;
 use secrecy::SecretString;
 
 use crate::config::Config;
 use crate::{adapters, wiring};
 
 pub async fn create(config: &Config, username: &str, admin: bool) -> Result<()> {
-    let store = wiring::store(&adapters::database_url()).await?;
-    let provider = wiring::local_provider(config, &store)?
+    let pool = wiring::database(&adapters::database_url()).await?;
+    let provider = wiring::local_provider(config, &pool)
+        .await?
         .context("local accounts are off: add [identity.local] to the config")?;
     let role = if admin { Role::Admin } else { Role::Member };
     provider
-        .add(&Handle::parse(username)?, read_password()?, role)
+        .create(&Handle::parse(username)?, read_password()?, role)
         .await?;
     println!("created local account {username}");
     Ok(())

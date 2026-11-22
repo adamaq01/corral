@@ -12,13 +12,14 @@ use cookie::{Cookie, SameSite};
 use corral_api::{Api, Key, Providers, SshEndpoint, router};
 use corral_core::app::Credentials;
 use corral_core::domain::{CredentialName, Handle, Role, UserId};
-use corral_core::fakes::{ADAM_KEY, FakeEngine, MAX_SANDBOXES, MemoryLocalAccountRepo, World};
+use corral_core::fakes::{ADAM_KEY, FakeEngine, MAX_SANDBOXES, World};
 use corral_core::ports::{
-    AccountAdmin, Answer, Challenge, CredentialMap, Identity, IdentityProvider, Method,
+    Answer, Challenge, CredentialMap, Identity, IdentityProvider, ManagedAccounts, Method,
     PendingLogin, SecretStore,
 };
 use corral_core::{Error, Result};
 use corral_identity_local::LocalProvider;
+use corral_sql::testing::Databases;
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -89,7 +90,7 @@ impl IdentityProvider for CountingLocal {
         self.local.verify(answer).await
     }
 
-    fn accounts(&self) -> Option<&dyn AccountAdmin> {
+    fn accounts(&self) -> Option<&dyn ManagedAccounts> {
         self.local.accounts()
     }
 }
@@ -142,17 +143,14 @@ struct Corral {
     app: Router,
     local: Arc<CountingLocal>,
     engine: Arc<FakeEngine>,
+    _databases: Databases,
 }
 
 impl Setup {
-    fn build(self) -> Corral {
-        let world = World::new();
+    async fn build(self) -> Corral {
+        let databases = Databases::sqlite();
         let local = Arc::new(CountingLocal {
-            local: LocalProvider::new(
-                Arc::new(MemoryLocalAccountRepo::default()),
-                world.users.clone(),
-            )
-            .unwrap(),
+            local: LocalProvider::open(databases.pool().await).await.unwrap(),
             verifications: AtomicUsize::new(0),
         });
         let mut providers: Vec<Arc<dyn IdentityProvider>> = Vec::new();
@@ -162,6 +160,7 @@ impl Setup {
         if let Some(oidc) = self.oidc {
             providers.push(Arc::new(oidc));
         }
+        let world = World::with_providers(providers.clone());
         let api = Api {
             accounts: world.accounts.clone(),
             keys: world.keys.clone(),
@@ -182,19 +181,20 @@ impl Setup {
             app: router(api),
             local,
             engine: world.engine,
+            _databases: databases,
         }
     }
 }
 
 impl Corral {
-    fn new() -> Self {
-        Setup::default().build()
+    async fn new() -> Self {
+        Setup::default().build().await
     }
 
     async fn account(&self, username: &str, role: Role) {
         self.local
             .local
-            .add(
+            .create(
                 &Handle::parse(username).unwrap(),
                 SecretString::from(PASSWORD),
                 role,
@@ -333,7 +333,7 @@ impl Browser {
 
 #[tokio::test]
 async fn local_login_sets_a_session_and_me_returns_the_handle() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     corral.account("adam", Role::Member).await;
     let mut browser = corral.browser();
     assert_eq!(
@@ -361,7 +361,7 @@ async fn local_login_sets_a_session_and_me_returns_the_handle() {
 
 #[tokio::test]
 async fn sixth_failed_local_login_within_the_window_is_429() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     corral.account("adam", Role::Member).await;
     corral.account("eve", Role::Member).await;
     let mut attacker = corral.browser_at("198.51.100.66:4000");
@@ -394,7 +394,7 @@ async fn sixth_failed_local_login_within_the_window_is_429() {
 
 #[tokio::test]
 async fn successful_local_logins_are_never_limited() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     corral.account("adam", Role::Member).await;
     let mut browser = corral.browser();
     for attempt in 1..=10 {
@@ -405,7 +405,7 @@ async fn successful_local_logins_are_never_limited() {
 
 #[tokio::test]
 async fn a_successful_login_does_not_reset_the_failures() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     corral.account("adam", Role::Member).await;
     corral.account("eve", Role::Member).await;
     let mut attacker = corral.browser_at("198.51.100.66:4000");
@@ -433,7 +433,8 @@ async fn trusted_forwarded_for_addresses_are_counted_separately() {
         trust_forwarded_for: true,
         ..Setup::default()
     }
-    .build();
+    .build()
+    .await;
     corral.account("adam", Role::Member).await;
     let mut proxy = corral.browser_at("10.0.0.2:40000");
     for i in 1..=5 {
@@ -454,7 +455,7 @@ async fn trusted_forwarded_for_addresses_are_counted_separately() {
 
 #[tokio::test]
 async fn untrusted_forwarded_for_is_ignored() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     corral.account("adam", Role::Member).await;
     let mut client = corral.browser_at("10.0.0.2:40000");
     for i in 1..=5 {
@@ -480,7 +481,8 @@ async fn cookies_lack_secure_when_base_url_is_http() {
             }),
             ..Setup::default()
         }
-        .build();
+        .build()
+        .await;
         corral.account("adam", Role::Member).await;
         let mut browser = corral.browser();
         let session = browser
@@ -508,7 +510,8 @@ async fn providers_follow_the_configuration() {
         }),
         ..Setup::default()
     }
-    .build();
+    .build()
+    .await;
     assert_eq!(
         both.browser().get("/auth/providers").await.json(),
         json!([
@@ -524,7 +527,8 @@ async fn providers_follow_the_configuration() {
         local: false,
         ..Setup::default()
     }
-    .build();
+    .build()
+    .await;
     let mut browser = oidc_only.browser();
     assert_eq!(
         browser.get("/auth/providers").await.json(),
@@ -555,7 +559,7 @@ async fn providers_follow_the_configuration() {
         assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {uri}");
     }
 
-    let local_only = Corral::new();
+    let local_only = Corral::new().await;
     let mut browser = local_only.browser();
     assert_eq!(
         browser.get("/auth/providers").await.json(),
@@ -593,7 +597,8 @@ async fn oidc_login_round_trip_starts_a_session() {
         }),
         ..Setup::default()
     }
-    .build();
+    .build()
+    .await;
     let mut browser = corral.browser();
     let start = browser.get("/auth/oidc/start").await;
     assert_eq!(start.status, StatusCode::FOUND);
@@ -628,7 +633,8 @@ async fn oidc_callback_refusals_are_403_and_end_the_login() {
         oidc: Some(StubOidc { role: None }),
         ..Setup::default()
     }
-    .build();
+    .build()
+    .await;
     let mut browser = corral.browser();
     browser.get("/auth/oidc/start").await;
     let wrong_state = browser
@@ -681,23 +687,23 @@ const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
         None,
     ),
     ("GET", "/api/admin/sandboxes", None),
-    ("GET", "/api/admin/local-accounts", None),
+    ("GET", "/api/admin/providers/local/accounts", None),
     (
         "POST",
-        "/api/admin/local-accounts",
+        "/api/admin/providers/local/accounts",
         Some(r#"{"username":"mallory","password":"a long enough password","role":"admin"}"#),
     ),
     (
         "PUT",
-        "/api/admin/local-accounts/adam/password",
+        "/api/admin/providers/local/accounts/adam/password",
         Some(r#"{"password":"a long enough password"}"#),
     ),
-    ("DELETE", "/api/admin/local-accounts/adam", None),
+    ("DELETE", "/api/admin/providers/local/accounts/adam", None),
 ];
 
 #[tokio::test]
 async fn unauthenticated_api_calls_are_401() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let routes = API_ROUTES
         .iter()
         .copied()
@@ -718,7 +724,7 @@ async fn unauthenticated_api_calls_are_401() {
 
 #[tokio::test]
 async fn a_disabled_users_session_is_403() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let users = root.get("/api/admin/users").await.json();
@@ -748,7 +754,7 @@ async fn a_disabled_users_session_is_403() {
 
 #[tokio::test]
 async fn create_then_list_shows_the_ssh_username() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let created = adam.post("/api/sandboxes", json!({ "name": "main" })).await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
@@ -778,7 +784,7 @@ async fn create_then_list_shows_the_ssh_username() {
 
 #[tokio::test]
 async fn sandbox_actions_reach_the_engine() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     for name in ["main", "spare"] {
         adam.post("/api/sandboxes", json!({ "name": name })).await;
@@ -828,7 +834,7 @@ async fn sandbox_actions_reach_the_engine() {
 
 #[tokio::test]
 async fn credential_values_never_come_back() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let mut replies = vec![
         adam.call(
@@ -871,7 +877,7 @@ async fn credential_values_never_come_back() {
 
 #[tokio::test]
 async fn member_calling_admin_routes_is_403() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     for (method, uri, body) in ADMIN_ROUTES {
         let body = body.map(|body| serde_json::from_str(body).unwrap());
@@ -890,8 +896,8 @@ async fn member_calling_admin_routes_is_403() {
 }
 
 #[tokio::test]
-async fn admins_manage_users_local_accounts_and_all_sandboxes() {
-    let corral = Corral::new();
+async fn admins_manage_users_provider_accounts_and_all_sandboxes() {
+    let corral = Corral::new().await;
     let mut root = corral.signed_in("root", Role::Admin).await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     adam.post("/api/sandboxes", json!({ "name": "main" })).await;
@@ -912,7 +918,7 @@ async fn admins_manage_users_local_accounts_and_all_sandboxes() {
 
     let created = root
         .post(
-            "/api/admin/local-accounts",
+            "/api/admin/providers/local/accounts",
             json!({ "username": "eve", "password": "eve's first password", "role": "member" }),
         )
         .await;
@@ -920,7 +926,7 @@ async fn admins_manage_users_local_accounts_and_all_sandboxes() {
     let reset = root
         .call(
             "PUT",
-            "/api/admin/local-accounts/eve/password",
+            "/api/admin/providers/local/accounts/eve/password",
             Some(json!({ "password": "eve's second password" })),
         )
         .await;
@@ -930,7 +936,7 @@ async fn admins_manage_users_local_accounts_and_all_sandboxes() {
         eve.sign_in("eve", "eve's second password").await.status,
         StatusCode::OK
     );
-    let accounts = root.get("/api/admin/local-accounts").await;
+    let accounts = root.get("/api/admin/providers/local/accounts").await;
     assert!(!accounts.text().contains("argon2"), "{}", accounts.text());
     let listed: Vec<Value> = accounts
         .json()
@@ -949,22 +955,30 @@ async fn admins_manage_users_local_accounts_and_all_sandboxes() {
     );
 
     let deleted = root
-        .call("DELETE", "/api/admin/local-accounts/eve", None)
+        .call("DELETE", "/api/admin/providers/local/accounts/eve", None)
         .await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT);
     assert_eq!(eve.get("/api/me").await.status, StatusCode::FORBIDDEN);
     let reused = root
         .post(
-            "/api/admin/local-accounts",
+            "/api/admin/providers/local/accounts",
             json!({ "username": "eve", "password": "a newcomer's password", "role": "member" }),
         )
         .await;
-    assert_eq!(reused.status, StatusCode::CONFLICT);
+    assert_eq!(reused.status, StatusCode::CREATED);
+    let mut newcomer = corral.browser_at("192.0.2.78:1000");
+    assert_eq!(
+        newcomer
+            .sign_in("eve", "a newcomer's password")
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
 }
 
 #[tokio::test]
 async fn core_errors_map_to_their_status() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let main = json!({ "name": "main" });
     adam.post("/api/sandboxes", main.clone()).await;
@@ -1018,7 +1032,7 @@ async fn core_errors_map_to_their_status() {
 
 #[tokio::test]
 async fn keys_are_added_listed_and_removed() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let added = adam
         .post(
@@ -1056,7 +1070,7 @@ async fn keys_are_added_listed_and_removed() {
 
 #[tokio::test]
 async fn post_and_put_accept_only_json() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     corral.account("adam", Role::Member).await;
     let mut adam = corral.browser();
     let form = adam
@@ -1117,7 +1131,8 @@ async fn internal_errors_have_a_generic_body() {
         secrets: Some(Arc::new(BrokenVault)),
         ..Setup::default()
     }
-    .build();
+    .build()
+    .await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let reply = adam
         .call(
@@ -1132,7 +1147,7 @@ async fn internal_errors_have_a_generic_body() {
 
 #[tokio::test]
 async fn a_missing_peer_address_fails_closed() {
-    let corral = Corral::new();
+    let corral = Corral::new().await;
     corral.account("adam", Role::Member).await;
     let request = Request::post("/auth/local/finish")
         .header(header::CONTENT_TYPE, "application/json")

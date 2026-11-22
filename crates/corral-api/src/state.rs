@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use cookie::Key;
 use corral_core::app::{Accounts, Credentials, Keys, Sandboxes};
-use corral_core::ports::{AccountAdmin, Identity, IdentityProvider};
+use corral_core::ports::{Identity, IdentityProvider};
 use secrecy::SecretString;
 use serde::Serialize;
 
@@ -55,12 +55,6 @@ impl Providers {
     pub(crate) fn get(&self, id: &str) -> Result<&dyn IdentityProvider, ApiError> {
         self.iter()
             .find(|provider| provider.id() == id)
-            .ok_or_else(ApiError::not_found)
-    }
-
-    pub(crate) fn account_admin(&self) -> Result<&dyn AccountAdmin, ApiError> {
-        self.iter()
-            .find_map(|provider| provider.accounts())
             .ok_or_else(ApiError::not_found)
     }
 
