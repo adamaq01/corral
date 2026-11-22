@@ -2,7 +2,8 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use corral_activity::{ActivityError, Exec, ExecOutput, Sessions, is_active};
+use corral_activity::{Exec, ExecOutput, Sessions, is_active};
+use corral_core::{Error, Result};
 
 struct Container {
     name: String,
@@ -33,18 +34,18 @@ impl Drop for Container {
 
 #[async_trait]
 impl Exec for Container {
-    async fn run(&self, argv: &[&str]) -> Result<ExecOutput, ActivityError> {
+    async fn run(&self, argv: &[&str]) -> Result<ExecOutput> {
         let output = tokio::process::Command::new("docker")
             .arg("exec")
             .arg(&self.name)
             .args(argv)
             .output()
             .await
-            .map_err(|err| ActivityError::Exec(err.to_string()))?;
+            .map_err(|err| Error::internal("docker exec", err))?;
         let code = output
             .status
             .code()
-            .ok_or_else(|| ActivityError::Exec("docker exec killed by a signal".to_owned()))?;
+            .ok_or_else(|| Error::internal("docker exec", "killed by a signal"))?;
         Ok(ExecOutput {
             code,
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

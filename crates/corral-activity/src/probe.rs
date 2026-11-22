@@ -1,4 +1,6 @@
-use crate::{ActivityError, Exec, herdr, pgrep};
+use corral_core::Result;
+
+use crate::{Exec, herdr, pgrep};
 
 const CONTAINER_INIT: &str = "1";
 
@@ -14,23 +16,21 @@ pub enum Sessions {
 }
 
 /// Whether the sandbox has an SSH session or a working Herdr terminal.
-pub async fn is_active(sessions: Sessions, exec: &dyn Exec) -> Result<bool, ActivityError> {
+pub async fn is_active(sessions: Sessions, exec: &dyn Exec) -> Result<bool> {
     Ok(sessions.any(exec).await? || herdr::is_working(exec).await?)
 }
 
 impl Sessions {
-    async fn any(self, exec: &dyn Exec) -> Result<bool, ActivityError> {
+    async fn any(self, exec: &dyn Exec) -> Result<bool> {
         match self {
             Self::Sshd => pgrep::matches(exec, &["pgrep", "-f", "sshd: sandbox"]).await,
             // pgrep leaves itself out, and it is this probe's own exec.
             Self::Exec => {
-                let output = exec.run(&["pgrep", "-P", "0"]).await?;
+                let argv = ["pgrep", "-P", "0"];
+                let output = exec.run(&argv).await?;
                 match output.code {
                     0 | 1 => Ok(output.stdout.lines().any(|pid| pid != CONTAINER_INIT)),
-                    code => Err(ActivityError::UnexpectedExit {
-                        command: "pgrep -P 0".to_owned(),
-                        code,
-                    }),
+                    code => Err(pgrep::unexpected_exit(&argv, code)),
                 }
             }
         }
@@ -90,13 +90,11 @@ mod tests {
         let failed = ScriptedExec::default().fails(SSHD);
         let missing = ScriptedExec::default().exits(EXEC_ROOTS, 127, "");
 
-        assert!(matches!(
-            is_active(Sessions::Sshd, &failed).await,
-            Err(ActivityError::Exec(_))
-        ));
-        assert!(matches!(
-            is_active(Sessions::Exec, &missing).await,
-            Err(ActivityError::UnexpectedExit { code: 127, .. })
-        ));
+        assert!(is_active(Sessions::Sshd, &failed).await.is_err());
+        let message = is_active(Sessions::Exec, &missing)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("code 127"), "{message}");
     }
 }

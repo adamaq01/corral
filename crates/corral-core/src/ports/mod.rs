@@ -1,5 +1,6 @@
 mod engine;
 mod identity;
+pub mod labels;
 mod local_accounts;
 mod repos;
 mod secrets;

@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use corral_core::{Error, Result};
 
-use crate::{ActivityError, Exec, ExecOutput};
+use crate::{Exec, ExecOutput};
 
 #[derive(Clone)]
 enum Reply {
@@ -39,12 +40,12 @@ impl ScriptedExec {
 
 #[async_trait]
 impl Exec for ScriptedExec {
-    async fn run(&self, argv: &[&str]) -> Result<ExecOutput, ActivityError> {
+    async fn run(&self, argv: &[&str]) -> Result<ExecOutput> {
         let command = argv.join(" ");
         self.calls.lock().unwrap().push(command.clone());
         match self.replies.get(&command) {
             Some(Reply::Exit(output)) => Ok(output.clone()),
-            Some(Reply::Fail) => Err(ActivityError::Exec("exec failed".to_owned())),
+            Some(Reply::Fail) => Err(Error::internal("scripted exec", "exec failed")),
             None => panic!("unscripted command: {command}"),
         }
     }

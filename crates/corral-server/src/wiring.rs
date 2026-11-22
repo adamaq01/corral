@@ -178,11 +178,11 @@ async fn engine(
                     proxy_public_key: proxy_public_key
                         .expect("Env::load reads it for the Docker engine"),
                     max_running,
-                    idle_timeout,
                 })
                 .await?,
             );
-            let lifecycle = corral_activity::spawn(docker.clone(), interval, shutdown);
+            let lifecycle =
+                corral_activity::spawn(docker.clone(), interval, idle_timeout, shutdown);
             Ok((docker, lifecycle))
         }
         Engine::AgentSandbox(agent) => {
@@ -197,10 +197,9 @@ async fn engine(
                     storage_class: agent.storage_class.clone(),
                     agent_image: agent.agent_image.clone(),
                     max_running,
-                    idle_timeout,
                 },
             ));
-            let lifecycle = corral_activity::spawn(agent.clone(), interval, shutdown);
+            let lifecycle = corral_activity::spawn(agent.clone(), interval, idle_timeout, shutdown);
             Ok((agent, lifecycle))
         }
     }

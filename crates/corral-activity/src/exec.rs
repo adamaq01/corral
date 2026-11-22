@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-
-use crate::ActivityError;
+use corral_core::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecOutput {
@@ -10,5 +9,5 @@ pub struct ExecOutput {
 
 #[async_trait]
 pub trait Exec: Send + Sync {
-    async fn run(&self, argv: &[&str]) -> Result<ExecOutput, ActivityError>;
+    async fn run(&self, argv: &[&str]) -> Result<ExecOutput>;
 }

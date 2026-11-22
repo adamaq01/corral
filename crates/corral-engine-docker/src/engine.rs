@@ -10,11 +10,12 @@ use bollard::query_parameters::{
 use bollard::{Docker, body_full};
 use corral_activity::{ActivityLock, Exec};
 use corral_core::domain::{SandboxId, SandboxStatus};
+use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
 use tracing::warn;
 
-use crate::container::{self, MANAGED_BY, MANAGER, SANDBOX_ID};
+use crate::container;
 use crate::docker_error::is_not_found;
 use crate::docker_exec::DockerExec;
 use crate::host_key::HostKey;
@@ -112,10 +113,7 @@ impl DockerEngine {
         let exec = DockerExec::new(self.docker.clone(), container::name(id));
         let accepting = async {
             loop {
-                let probe = exec.run(&SSHD_ACCEPTS).await.map_err(|err| {
-                    Error::internal(format!("check sshd in sandbox {}", id.0), err)
-                })?;
-                if probe.code == 0 {
+                if exec.run(&SSHD_ACCEPTS).await?.code == 0 {
                     return Ok(());
                 }
                 tokio::time::sleep(READY_POLL).await;

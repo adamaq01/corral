@@ -5,16 +5,11 @@ use bollard::models::{
     RestartPolicyNameEnum, VolumeCreateRequest,
 };
 use corral_core::domain::SandboxId;
-use corral_core::ports::SandboxSpec;
+use corral_core::ports::{SandboxSpec, labels};
 use corral_core::{Error, Result};
 
 use crate::host_key::HostKey;
 
-pub(crate) const MANAGED_BY: &str = "app.kubernetes.io/managed-by";
-pub(crate) const MANAGER: &str = "corral";
-pub(crate) const SANDBOX_ID: &str = "corral.adamaq01.fr/sandbox-id";
-const OWNER: &str = "corral.adamaq01.fr/owner";
-const SANDBOX: &str = "corral.adamaq01.fr/sandbox";
 const HOST_KEY_FINGERPRINT: &str = "corral.adamaq01.fr/host-key-fingerprint";
 
 const HOME: &str = "/home/sandbox";
@@ -97,12 +92,7 @@ pub(crate) fn host_key_fingerprint(
 }
 
 fn identity_labels(id: &SandboxId, spec: &SandboxSpec) -> HashMap<String, String> {
-    HashMap::from([
-        (MANAGED_BY.to_owned(), MANAGER.to_owned()),
-        (SANDBOX_ID.to_owned(), id.0.clone()),
-        (OWNER.to_owned(), spec.owner.as_str().to_owned()),
-        (SANDBOX.to_owned(), spec.name.as_str().to_owned()),
-    ])
+    labels::of(id, spec).into_iter().collect()
 }
 
 fn docker_quantity(value: Option<u64>) -> Result<i64> {

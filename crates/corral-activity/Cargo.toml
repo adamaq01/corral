@@ -9,7 +9,6 @@ chrono.workspace = true
 corral-core = { path = "../corral-core" }
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true

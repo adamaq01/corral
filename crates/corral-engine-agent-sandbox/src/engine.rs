@@ -3,6 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
+use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
@@ -15,7 +16,7 @@ use tracing::warn;
 use crate::AgentSandboxConfig;
 use crate::crd::{OperatingMode, Sandbox};
 use crate::error::kube_error;
-use crate::manifest::{self, MANAGED_BY, MANAGER, SANDBOX_ID};
+use crate::manifest;
 use crate::status;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);

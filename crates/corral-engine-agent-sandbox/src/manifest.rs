@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use corral_core::domain::{Allocation, Resources, SandboxId};
+use corral_core::ports::labels::{self, MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{Env, SandboxSpec};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
@@ -16,11 +17,6 @@ use secrecy::ExposeSecret;
 use crate::AgentSandboxConfig;
 use crate::crd::{self, FailedPodPolicy, OperatingMode, Sandbox};
 
-pub const MANAGED_BY: &str = "app.kubernetes.io/managed-by";
-pub const MANAGER: &str = "corral";
-pub const OWNER: &str = "corral.adamaq01.fr/owner";
-pub const SANDBOX: &str = "corral.adamaq01.fr/sandbox";
-pub const SANDBOX_ID: &str = "corral.adamaq01.fr/sandbox-id";
 pub const CONTAINER: &str = "sandbox";
 
 const SANDBOX_UID: i64 = 1000;
@@ -37,7 +33,7 @@ pub fn secret_name(id: &SandboxId) -> String {
 
 #[must_use]
 pub fn build(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Sandbox {
-    let labels = labels(id, spec);
+    let labels = labels::of(id, spec);
     Sandbox {
         metadata: ObjectMeta {
             name: Some(id.0.clone()),
@@ -84,15 +80,6 @@ pub fn env_secret(id: &SandboxId, env: &Env, namespace: &str) -> Secret {
         data: Some(data),
         ..Secret::default()
     }
-}
-
-fn labels(id: &SandboxId, spec: &SandboxSpec) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        (MANAGED_BY.to_owned(), MANAGER.to_owned()),
-        (OWNER.to_owned(), spec.owner.as_str().to_owned()),
-        (SANDBOX.to_owned(), spec.name.as_str().to_owned()),
-        (SANDBOX_ID.to_owned(), id.0.clone()),
-    ])
 }
 
 fn pod_spec(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> PodSpec {
@@ -207,7 +194,6 @@ fn home_claim(
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU64;
-    use std::time::Duration;
 
     use corral_core::domain::{
         Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName,
@@ -254,7 +240,6 @@ mod tests {
             storage_class: "tns-csi-nvmeof".to_owned(),
             agent_image: "containerssh/agent:v0.11.0".to_owned(),
             max_running: 6,
-            idle_timeout: Duration::from_mins(30),
         }
     }
 

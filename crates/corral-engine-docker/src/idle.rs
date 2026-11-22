@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use corral_activity::{ActivityLock, Sessions, Sweepable};
 use corral_core::Result;
@@ -18,10 +16,6 @@ impl Sweepable for DockerEngine {
 
     fn activity(&self) -> &ActivityLock {
         &self.activity
-    }
-
-    fn idle_timeout(&self) -> Duration {
-        self.config.idle_timeout
     }
 
     async fn running(&self) -> Result<Vec<(SandboxId, ())>> {

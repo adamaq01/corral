@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
-
-use crate::ActivityError;
+use corral_core::Result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdleDecision {
@@ -12,7 +11,7 @@ pub enum IdleDecision {
 
 #[must_use]
 pub fn decide(
-    any_active: Result<bool, ActivityError>,
+    any_active: Result<bool>,
     last_active: DateTime<Utc>,
     timeout: Duration,
     now: DateTime<Utc>,
@@ -44,8 +43,8 @@ mod tests {
         now() - mins(24 * 60)
     }
 
-    fn err() -> ActivityError {
-        ActivityError::Exec("pod exec failed".to_owned())
+    fn err() -> corral_core::Error {
+        corral_core::Error::internal("pod exec", "failed")
     }
 
     #[test]

@@ -1,5 +1,4 @@
 mod decide;
-mod error;
 mod exec;
 mod herdr;
 mod pgrep;
@@ -9,7 +8,6 @@ mod sweep;
 mod testing;
 
 pub use decide::{IdleDecision, decide};
-pub use error::ActivityError;
 pub use exec::{Exec, ExecOutput};
 pub use probe::{Sessions, is_active};
 pub use sweep::{ActivityLock, Sweepable, Waking, spawn};

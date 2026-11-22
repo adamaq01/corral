@@ -1,6 +1,7 @@
+use corral_core::{Error, Result};
 use serde::Deserialize;
 
-use crate::{ActivityError, Exec, pgrep};
+use crate::{Exec, pgrep};
 
 const COMMAND_NOT_FOUND: i32 = 127;
 
@@ -21,23 +22,21 @@ impl Terminal {
     }
 }
 
-pub(crate) async fn is_working(exec: &dyn Exec) -> Result<bool, ActivityError> {
+pub(crate) async fn is_working(exec: &dyn Exec) -> Result<bool> {
     // `hc ls` starts a core when none is running, so check for one first.
     if !pgrep::matches(exec, &["pgrep", "-x", "herdr-core"]).await? {
         return Ok(false);
     }
-    let output = exec.run(&["hc", "ls", "--json"]).await?;
+    let argv = ["hc", "ls", "--json"];
+    let output = exec.run(&argv).await?;
     match output.code {
         0 => {
             let listing: Listing = serde_json::from_str(&output.stdout)
-                .map_err(|err| ActivityError::Parse(err.to_string()))?;
+                .map_err(|err| Error::internal("unreadable `hc ls --json` output", err))?;
             Ok(listing.terminals.iter().any(Terminal::is_active))
         }
         COMMAND_NOT_FOUND => Ok(false),
-        code => Err(ActivityError::UnexpectedExit {
-            command: "hc ls --json".to_owned(),
-            code,
-        }),
+        code => Err(pgrep::unexpected_exit(&argv, code)),
     }
 }
 
@@ -53,7 +52,7 @@ mod tests {
         ScriptedExec::default().exits(CORE_RUNNING, 0, "35\n39\n")
     }
 
-    async fn herdr_active_result(listing: &str) -> Result<bool, ActivityError> {
+    async fn herdr_active_result(listing: &str) -> Result<bool> {
         let exec = core_running().exits(LIST, 0, listing);
         is_working(&exec).await
     }
@@ -83,7 +82,8 @@ mod tests {
     async fn unreadable_listing_is_an_error() {
         let result = herdr_active_result("hc: no systemd user manager here").await;
 
-        assert!(matches!(result, Err(ActivityError::Parse(_))));
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("unreadable"), "{message}");
     }
 
     #[tokio::test]
@@ -111,10 +111,8 @@ mod tests {
 
         let active = is_working(&exec).await;
 
-        assert!(matches!(
-            active,
-            Err(ActivityError::UnexpectedExit { code: 1, .. })
-        ));
+        let message = active.unwrap_err().to_string();
+        assert!(message.contains("code 1"), "{message}");
     }
 
     #[tokio::test]
@@ -123,10 +121,8 @@ mod tests {
 
         let active = is_working(&exec).await;
 
-        assert!(matches!(
-            active,
-            Err(ActivityError::UnexpectedExit { code: 127, .. })
-        ));
+        let message = active.unwrap_err().to_string();
+        assert!(message.contains("code 127"), "{message}");
     }
 
     #[tokio::test]
@@ -135,6 +131,6 @@ mod tests {
 
         let active = is_working(&exec).await;
 
-        assert!(matches!(active, Err(ActivityError::Exec(_))));
+        assert!(active.is_err());
     }
 }

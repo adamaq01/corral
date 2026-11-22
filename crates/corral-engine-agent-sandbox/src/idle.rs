@@ -1,9 +1,8 @@
-use std::time::Duration;
-
 use async_trait::async_trait;
 use corral_activity::{ActivityLock, Sessions, Sweepable};
 use corral_core::Result;
 use corral_core::domain::{SandboxId, SandboxStatus};
+use corral_core::ports::labels::{MANAGED_BY, MANAGER};
 use kube::ResourceExt;
 use kube::api::ListParams;
 use serde_json::json;
@@ -11,7 +10,6 @@ use serde_json::json;
 use crate::AgentSandboxEngine;
 use crate::crd::OperatingMode;
 use crate::error::kube_error;
-use crate::manifest::{MANAGED_BY, MANAGER};
 use crate::pod_exec::PodExec;
 use crate::status;
 
@@ -24,10 +22,6 @@ impl Sweepable for AgentSandboxEngine {
 
     fn activity(&self) -> &ActivityLock {
         &self.activity
-    }
-
-    fn idle_timeout(&self) -> Duration {
-        self.config.idle_timeout
     }
 
     async fn running(&self) -> Result<Vec<(SandboxId, Option<String>)>> {
@@ -48,10 +42,7 @@ impl Sweepable for AgentSandboxEngine {
     }
 
     fn exec(&self, id: &SandboxId) -> PodExec {
-        PodExec {
-            pods: self.pods.clone(),
-            pod: id.0.clone(),
-        }
+        PodExec::new(self.pods.clone(), id.0.clone())
     }
 
     // The listed resource version makes the suspend conditional, so any change since wins.

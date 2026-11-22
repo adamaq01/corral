@@ -15,7 +15,6 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 const WAKE: Duration = Duration::from_secs(60);
-const LONG_IDLE: Duration = Duration::from_hours(1);
 const KNOWN_HOSTS: &str = "/home/sandbox/.ssh/known_hosts";
 
 fn image() -> String {
@@ -136,12 +135,11 @@ impl Lab {
         Some(lab)
     }
 
-    async fn engine(&self, max_running: usize, idle_timeout: Duration) -> Arc<DockerEngine> {
+    async fn engine(&self, max_running: usize) -> Arc<DockerEngine> {
         let engine = DockerEngine::connect(DockerConfig {
             network: self.network.clone(),
             proxy_public_key: self.proxy_public_key.clone().unwrap(),
             max_running,
-            idle_timeout,
         })
         .await
         .unwrap();
@@ -264,7 +262,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     let Some(lab) = Lab::open("lifecycle") else {
         return;
     };
-    let engine = lab.engine(10, LONG_IDLE).await;
+    let engine = lab.engine(10).await;
 
     let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
@@ -332,7 +330,7 @@ async fn credentials_apply_at_each_start_and_stay_out_of_the_container_config() 
     let Some(lab) = Lab::open("credentials") else {
         return;
     };
-    let engine = lab.engine(10, LONG_IDLE).await;
+    let engine = lab.engine(10).await;
     let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
     let secret = |word: &str| format!("corral-test-{word}-{}", std::process::id());
@@ -388,7 +386,7 @@ async fn concurrent_starts_never_exceed_max_running() {
     let Some(lab) = Lab::open("capacity") else {
         return;
     };
-    let engine = lab.engine(MAX, LONG_IDLE).await;
+    let engine = lab.engine(MAX).await;
     let mut ids = Vec::new();
     for n in 0..2 * MAX {
         ids.push(lab.create(&engine, &format!("box-{n}")).await);
@@ -435,7 +433,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
         return;
     };
     let timeout = Duration::from_secs(3);
-    let engine = lab.engine(10, timeout).await;
+    let engine = lab.engine(10).await;
     let idle = lab.create(&engine, "idle").await;
     let ssh = lab.create(&engine, "ssh").await;
     let herdr = lab.create(&engine, "herdr").await;
@@ -474,8 +472,12 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     ]);
 
     let shutdown = CancellationToken::new();
-    let lifecycle =
-        corral_activity::spawn(engine.clone(), Duration::from_secs(1), shutdown.clone());
+    let lifecycle = corral_activity::spawn(
+        engine.clone(),
+        Duration::from_secs(1),
+        timeout,
+        shutdown.clone(),
+    );
     let started = Instant::now();
     while state(&engine, &idle).await != SandboxStatus::Sleeping {
         assert!(
@@ -520,7 +522,6 @@ async fn connect_refuses_a_missing_network() {
         network: missing.clone(),
         proxy_public_key: key,
         max_running: 1,
-        idle_timeout: LONG_IDLE,
     })
     .await;
     assert!(

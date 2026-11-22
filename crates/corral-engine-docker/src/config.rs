@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use ssh_key::PublicKey;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9,5 +7,4 @@ pub struct DockerConfig {
     pub network: String,
     pub proxy_public_key: PublicKey,
     pub max_running: usize,
-    pub idle_timeout: Duration,
 }
