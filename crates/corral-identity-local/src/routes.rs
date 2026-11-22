@@ -20,6 +20,9 @@ use crate::LocalProvider;
 
 type Local = State<Arc<LocalProvider>>;
 
+/// The same for an unknown username, so the answer never tells which accounts exist.
+const WRONG_PASSWORD: &str = "wrong username or password";
+
 #[derive(Deserialize, TS)]
 struct PasswordLogin {
     username: String,
@@ -102,7 +105,11 @@ async fn login_route(
     if !matches!(verified, Err(Error::Forbidden)) {
         attempt.release();
     }
-    identities.sign_in(verified?).await
+    let identity = verified.map_err(|error| match error {
+        Error::Forbidden => ApiError::new(StatusCode::FORBIDDEN, WRONG_PASSWORD),
+        other => other.into(),
+    })?;
+    identities.sign_in(identity).await
 }
 
 async fn list(_: CurrentAdmin, State(local): Local) -> Result<Json<Vec<AccountDto>>, ApiError> {

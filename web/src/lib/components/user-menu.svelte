@@ -1,6 +1,9 @@
 <script lang="ts">
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
 	import CircleUserRoundIcon from '@lucide/svelte/icons/circle-user-round';
+	import LogOutIcon from '@lucide/svelte/icons/log-out';
+	import { goto } from '$app/navigation';
+	import { signOut } from '#lib/api/auth.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import UserAvatar from '#lib/components/user-avatar.svelte';
@@ -9,6 +12,11 @@
 	let { user }: { user: Me } = $props();
 
 	const sidebar = Sidebar.useSidebar();
+
+	async function leave() {
+		await signOut();
+		await goto('/sign-in', { replace: true });
+	}
 </script>
 
 {#snippet identity()}
@@ -56,6 +64,11 @@
 							Profile
 						</a>
 					{/snippet}
+				</DropdownMenu.Item>
+				<DropdownMenu.Separator />
+				<DropdownMenu.Item onSelect={leave}>
+					<LogOutIcon />
+					Sign out
 				</DropdownMenu.Item>
 			</DropdownMenu.Content>
 		</DropdownMenu.Root>

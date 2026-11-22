@@ -108,7 +108,10 @@ async fn wrong_password_and_unknown_user_are_both_forbidden(pool: Pool) {
         let mut browser = corral.browser();
         let reply = log_in(&mut browser, username, attempt).await;
         assert_eq!(reply.status, StatusCode::FORBIDDEN, "{username}");
-        assert_eq!(reply.json(), json!({ "error": "forbidden" }));
+        assert_eq!(
+            reply.json(),
+            json!({ "error": "wrong username or password" })
+        );
         assert_eq!(
             browser.get("/api/me").await.status,
             StatusCode::UNAUTHORIZED
