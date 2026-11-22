@@ -7,9 +7,7 @@ mod me;
 mod sandboxes;
 
 use axum::Router;
-use corral_core::app::LocalAccounts;
 
-use crate::error::ApiError;
 use crate::state::AppState;
 
 pub(crate) fn all() -> Router<AppState> {
@@ -21,8 +19,4 @@ pub(crate) fn all() -> Router<AppState> {
         .merge(keys::routes())
         .merge(credentials::routes())
         .merge(admin::routes())
-}
-
-fn local_accounts(state: &AppState) -> Result<&LocalAccounts, ApiError> {
-    state.local.as_ref().ok_or_else(ApiError::not_found)
 }

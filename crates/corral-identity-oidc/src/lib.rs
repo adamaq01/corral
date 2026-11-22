@@ -1,5 +1,5 @@
 mod client;
-mod pending_login;
+mod login_secrets;
 
 pub use client::OidcProvider;
 use secrecy::SecretString;
@@ -11,6 +11,8 @@ pub struct OidcConfig {
     pub client_secret: SecretString,
     pub redirect_url: String,
     pub scopes: Vec<String>,
+    pub member_group: String,
+    pub admin_group: String,
 }
 
 impl OidcConfig {

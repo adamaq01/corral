@@ -55,7 +55,7 @@ The JSON API lives at `base_url`. Log in, register a public key, and create a sa
 
 ```sh
 curl -c jar -H 'Content-Type: application/json' \
-  -d '{"username": "<name>", "password": "<password>"}' <base_url>/auth/local
+  -d '{"username": "<name>", "password": "<password>"}' <base_url>/auth/local/finish
 curl -b jar -H 'Content-Type: application/json' \
   -d "{\"label\": \"laptop\", \"publicKey\": \"$(cat ~/.ssh/id_ed25519.pub)\"}" <base_url>/api/keys
 curl -b jar -H 'Content-Type: application/json' -d '{"name": "main"}' <base_url>/api/sandboxes
@@ -130,8 +130,11 @@ configuration; `crates/corral-server/config.example.toml` shows every setting.
 
 - Postgres: set `DATABASE_URL=postgres://user:password@host:5432/corral` in `.env`.
 - OIDC: add an `[identity.oidc]` section with `issuer` and `client_id`, set
-  `CORRAL_OIDC_CLIENT_SECRET` in `.env`, and register `<base_url>/auth/callback` as the redirect
-  URI. Local accounts keep working alongside it.
+  `CORRAL_OIDC_CLIENT_SECRET` in `.env`, and register `<base_url>/auth/oidc/finish` as the redirect
+  URI. Members of `member_group` (default `corral-users`) log in as members and members of
+  `admin_group` (default `corral-admins`) as admins; anyone else is refused, and a user who
+  leaves both groups is disabled at their next login. Local accounts keep working alongside
+  it, and `GET /auth/providers` lists the login methods that are on.
 - OpenBao: set `kind = "openbao"` under `[secrets]` and add a `[secrets.openbao]` section with
   `address` and `auth = "token"`, with `CORRAL_OPENBAO_TOKEN` in `.env`, to keep credentials
   there instead of in the database.

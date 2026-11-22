@@ -4,50 +4,24 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::require_admin;
-use crate::domain::{Handle, Principal, Role, User, UserId};
-use crate::ports::UserRepo;
+use crate::domain::{Handle, Role, User, UserId};
+use crate::ports::{Identity, UserRepo};
 use crate::{Error, Result};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AccessPolicy {
-    pub member_group: String,
-    pub admin_group: String,
-}
-
-impl AccessPolicy {
-    fn role(&self, groups: &[String]) -> Option<Role> {
-        if groups.contains(&self.admin_group) {
-            Some(Role::Admin)
-        } else if groups.contains(&self.member_group) {
-            Some(Role::Member)
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn groups(&self, role: Role) -> Vec<String> {
-        match role {
-            Role::Member => vec![self.member_group.clone()],
-            Role::Admin => vec![self.member_group.clone(), self.admin_group.clone()],
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct Accounts {
     users: Arc<dyn UserRepo>,
-    policy: AccessPolicy,
 }
 
 impl Accounts {
     #[must_use]
-    pub fn new(users: Arc<dyn UserRepo>, policy: AccessPolicy) -> Self {
-        Self { users, policy }
+    pub fn new(users: Arc<dyn UserRepo>) -> Self {
+        Self { users }
     }
 
-    pub async fn login(&self, principal: Principal) -> Result<User> {
-        let existing = self.users.by_subject(&principal.subject).await?;
-        let Some(role) = self.policy.role(&principal.groups) else {
+    pub async fn login(&self, identity: Identity) -> Result<User> {
+        let existing = self.users.by_subject(&identity.subject).await?;
+        let Some(role) = identity.role else {
             if let Some(user) = existing.filter(|user| user.enabled) {
                 self.users
                     .update(&User {
@@ -62,14 +36,14 @@ impl Accounts {
             Some(user) if !user.enabled => Err(Error::Forbidden),
             Some(user) => {
                 let user = User {
-                    email: principal.email,
+                    email: identity.email,
                     role,
                     ..user
                 };
                 self.users.update(&user).await?;
                 Ok(user)
             }
-            None => self.register(principal, role).await,
+            None => self.register(identity, role).await,
         }
     }
 
@@ -98,8 +72,8 @@ impl Accounts {
         self.users.list().await
     }
 
-    async fn register(&self, principal: Principal, role: Role) -> Result<User> {
-        let base = Handle::from_preferred_username(&principal.preferred_username);
+    async fn register(&self, identity: Identity, role: Role) -> Result<User> {
+        let base = Handle::from_preferred_username(&identity.username);
         let mut handle = base.clone();
         let mut suffix = 1;
         while self.users.by_handle(&handle).await?.is_some() {
@@ -108,9 +82,9 @@ impl Accounts {
         }
         let user = User {
             id: UserId(Uuid::new_v4()),
-            subject: principal.subject,
+            subject: identity.subject,
             handle,
-            email: principal.email,
+            email: identity.email,
             role,
             enabled: true,
             created_at: Utc::now(),
@@ -127,19 +101,19 @@ mod tests {
     use crate::Error;
     use crate::domain::{Role, UserId};
     use crate::ports::UserRepo;
-    use crate::testing::{ADMINS, MEMBERS, World, principal};
+    use crate::testing::{World, identity};
 
     #[tokio::test]
-    async fn login_requires_member_group() {
+    async fn login_requires_a_role() {
         let w = World::new();
         assert!(matches!(
-            w.accounts.login(principal("s1", "adam", &["other"])).await,
+            w.accounts.login(identity("s1", "adam", None)).await,
             Err(Error::Forbidden)
         ));
         assert_eq!(w.users.by_subject("s1").await.unwrap(), None);
         let admin = w
             .accounts
-            .login(principal("s2", "root", &[ADMINS]))
+            .login(identity("s2", "root", Some(Role::Admin)))
             .await
             .unwrap();
         assert_eq!(admin.role, Role::Admin);
@@ -150,17 +124,17 @@ mod tests {
         let w = World::new();
         let first = w
             .accounts
-            .login(principal("s1", "adam", &[MEMBERS]))
+            .login(identity("s1", "adam", Some(Role::Member)))
             .await
             .unwrap();
         let second = w
             .accounts
-            .login(principal("s2", "Adam", &[MEMBERS]))
+            .login(identity("s2", "Adam", Some(Role::Member)))
             .await
             .unwrap();
         let third = w
             .accounts
-            .login(principal("s3", "ADAM", &[MEMBERS]))
+            .login(identity("s3", "ADAM", Some(Role::Member)))
             .await
             .unwrap();
         assert_eq!(
@@ -175,7 +149,7 @@ mod tests {
 
         let again = w
             .accounts
-            .login(principal("s1", "renamed", &[ADMINS]))
+            .login(identity("s1", "renamed", Some(Role::Admin)))
             .await
             .unwrap();
         assert_eq!((again.handle.as_str(), again.role), ("adam", Role::Admin));
@@ -191,7 +165,9 @@ mod tests {
         let eve = w.member("eve").await;
         w.accounts.set_enabled(&root, eve.id, false).await.unwrap();
         assert!(matches!(
-            w.accounts.login(principal("eve", "eve", &[MEMBERS])).await,
+            w.accounts
+                .login(identity("eve", "eve", Some(Role::Member)))
+                .await,
             Err(Error::Forbidden)
         ));
         assert!(matches!(
@@ -202,7 +178,7 @@ mod tests {
         w.accounts.set_enabled(&root, eve.id, true).await.unwrap();
         let back = w
             .accounts
-            .login(principal("eve", "eve", &[MEMBERS]))
+            .login(identity("eve", "eve", Some(Role::Member)))
             .await
             .unwrap();
         assert_eq!(back.id, eve.id);
@@ -210,20 +186,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn leaving_the_group_disables_the_user() {
+    async fn losing_every_role_disables_the_user() {
         let w = World::new();
         let adam = w
             .accounts
-            .login(principal("s1", "adam", &[MEMBERS]))
+            .login(identity("s1", "adam", Some(Role::Member)))
             .await
             .unwrap();
         assert!(matches!(
-            w.accounts.login(principal("s1", "adam", &[])).await,
+            w.accounts.login(identity("s1", "adam", None)).await,
             Err(Error::Forbidden)
         ));
         assert!(!w.users.by_subject("s1").await.unwrap().unwrap().enabled);
         assert!(matches!(
-            w.accounts.login(principal("s1", "adam", &[MEMBERS])).await,
+            w.accounts
+                .login(identity("s1", "adam", Some(Role::Member)))
+                .await,
             Err(Error::Forbidden)
         ));
 
@@ -231,7 +209,7 @@ mod tests {
         w.accounts.set_enabled(&root, adam.id, true).await.unwrap();
         assert!(
             w.accounts
-                .login(principal("s1", "adam", &[MEMBERS]))
+                .login(identity("s1", "adam", Some(Role::Member)))
                 .await
                 .unwrap()
                 .enabled

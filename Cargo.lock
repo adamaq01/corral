@@ -760,6 +760,7 @@ dependencies = [
  "chrono",
  "cookie",
  "corral-core",
+ "corral-identity-local",
  "secrecy",
  "serde",
  "serde_json",
@@ -845,8 +846,12 @@ name = "corral-identity-local"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "async-trait",
+ "chrono",
  "corral-core",
  "secrecy",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

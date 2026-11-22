@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corral_core::app::{AccessPolicy, Catalog, ImageOption, Limits, SizePreset, SshEndpoint};
+use corral_core::app::{Catalog, ImageOption, Limits, SizePreset, SshEndpoint};
 use corral_core::ports::{IdlePolicy, Resources};
 
 pub use file::AgentSandbox;
@@ -16,7 +16,6 @@ use file::{
 
 pub struct Config {
     pub http: Http,
-    pub access: AccessPolicy,
     pub identity: Identity,
     pub secrets: Secrets,
     pub engine: Engine,
@@ -43,6 +42,8 @@ pub struct Oidc {
     pub issuer: String,
     pub client_id: String,
     pub scopes: Vec<String>,
+    pub member_group: String,
+    pub admin_group: String,
 }
 
 pub enum Secrets {
@@ -126,10 +127,6 @@ impl TryFrom<File> for Config {
                 base_url,
                 trust_forwarded_for: file.http.trust_forwarded_for,
             },
-            access: AccessPolicy {
-                member_group: file.access.member_group,
-                admin_group: file.access.admin_group,
-            },
             identity: identity(file.identity)?,
             secrets: secrets(file.secrets)?,
             engine: engine(file.engine)?,
@@ -151,6 +148,8 @@ fn identity(section: IdentitySection) -> Result<Identity> {
             issuer: oidc.issuer,
             client_id: oidc.client_id,
             scopes: oidc.scopes,
+            member_group: oidc.member_group,
+            admin_group: oidc.admin_group,
         }),
         local: section.local.is_some_and(|local| local.enabled),
     };
@@ -292,8 +291,6 @@ mod tests {
         ));
         assert_eq!(config.engine.max_running, 6);
         assert_eq!(config.engine.probe_interval, Duration::from_mins(1));
-        assert_eq!(config.access.member_group, "corral-users");
-        assert_eq!(config.access.admin_group, "corral-admins");
         assert_eq!(config.catalog.ssh.port, 48291);
         assert_eq!(config.catalog.idle.timeout, Duration::from_mins(30));
         assert_eq!(config.limits.max_sandboxes_per_user, 5);
@@ -312,6 +309,10 @@ mod tests {
         assert!(config.http.trust_forwarded_for);
         let oidc = config.identity.oidc.unwrap();
         assert_eq!(oidc.scopes, ["openid", "profile", "email", "groups"]);
+        assert_eq!(
+            (oidc.member_group.as_str(), oidc.admin_group.as_str()),
+            ("corral-users", "corral-admins")
+        );
         assert!(!config.identity.local);
         let EngineBackend::AgentSandbox(agent) = config.engine.backend else {
             panic!("the example runs on agent-sandbox");
@@ -412,6 +413,8 @@ mod tests {
     fn misspelled_fields_are_rejected() {
         let message = rejection(&format!("{MINIMAL}\n[engine.docker]\nnetwrok = \"x\""));
         assert!(message.contains("netwrok"), "{message}");
+        let message = rejection(&format!("{MINIMAL}\n[access]\nmember_group = \"x\""));
+        assert!(message.contains("access"), "{message}");
     }
 
     #[test]

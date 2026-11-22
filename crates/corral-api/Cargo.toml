@@ -18,6 +18,7 @@ uuid = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 async-trait.workspace = true
 corral-core = { path = "../corral-core", features = ["fakes"] }
+corral-identity-local = { path = "../corral-identity-local" }
 tokio = { workspace = true, features = ["macros", "rt"] }
 tower = { workspace = true, features = ["util"] }
 

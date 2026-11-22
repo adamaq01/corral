@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -11,56 +12,92 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use cookie::{Cookie, SameSite};
 use corral_api::{ApiState, Key, SessionCodec, router};
 use corral_core::app::{
-    AccessPolicy, Accounts, Catalog, Credentials, ImageOption, Keys, Limits, LocalAccounts,
-    Sandboxes, SizePreset, SshEndpoint,
+    Accounts, Catalog, Credentials, ImageOption, Keys, Limits, Sandboxes, SizePreset, SshEndpoint,
 };
-use corral_core::domain::{CredentialName, Principal, Role, UserId};
+use corral_core::domain::{CredentialName, Handle, Role, UserId};
 use corral_core::fakes::{
-    FakeEngine, FakePasswordHasher, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo,
-    MemorySecretStore, MemoryUserRepo,
+    FakeEngine, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo, MemorySecretStore,
+    MemoryUserRepo,
 };
 use corral_core::ports::{
-    Env, IdentityProvider, IdlePolicy, LoginStart, LoginState, Readiness, Resources, SecretStore,
+    AccountAdmin, Answer, Challenge, Env, Identity, IdentityProvider, IdlePolicy, Method,
+    PendingLogin, Readiness, Resources, SecretStore,
 };
 use corral_core::{Error, Result};
+use corral_identity_local::LocalProvider;
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-const MEMBERS: &str = "corral-users";
-const ADMINS: &str = "corral-admins";
 const PASSWORD: &str = "correct horse battery";
 const ADAM_KEY: &str = include_str!("../../corral-core/tests/fixtures/adam_ed25519.pub");
 const IDP_URL: &str = "https://idp.example.com/authorize?state=public-state";
 
-struct StubIdentity {
-    groups: Vec<String>,
+struct StubOidc {
+    role: Option<Role>,
 }
 
 #[async_trait]
-impl IdentityProvider for StubIdentity {
-    async fn begin(&self) -> Result<LoginStart> {
-        Ok(LoginStart {
+impl IdentityProvider for StubOidc {
+    fn id(&self) -> &'static str {
+        "oidc"
+    }
+
+    fn method(&self) -> Method {
+        Method::Redirect
+    }
+
+    async fn challenge(&self) -> Result<Challenge> {
+        Ok(Challenge::Redirect {
             url: IDP_URL.to_owned(),
-            state: LoginState("private-verifier".to_owned()),
+            pending: PendingLogin("private-verifier".to_owned()),
         })
     }
 
-    async fn complete(
-        &self,
-        state: LoginState,
-        code: &str,
-        returned_state: &str,
-    ) -> Result<Principal> {
-        if state.0 != "private-verifier" || returned_state != "public-state" || code != "code-1" {
+    async fn verify(&self, answer: Answer) -> Result<Identity> {
+        let Answer::Redirect { pending, params } = answer else {
+            return Err(Error::Invalid("redirect only".to_owned()));
+        };
+        let expected = [("code", "code-1"), ("state", "public-state")]
+            .map(|(name, value)| (name.to_owned(), value.to_owned()));
+        if pending.0 != "private-verifier" || params != BTreeMap::from(expected) {
             return Err(Error::Forbidden);
         }
-        Ok(Principal {
-            subject: "oidc-sub-1".to_owned(),
-            preferred_username: "Adam".to_owned(),
+        Ok(Identity {
+            subject: "oidc:sub-1".to_owned(),
+            username: "Adam".to_owned(),
             email: Some("adam@example.com".to_owned()),
-            groups: self.groups.clone(),
+            role: self.role,
         })
+    }
+}
+
+struct CountingLocal {
+    local: LocalProvider,
+    verifications: AtomicUsize,
+}
+
+#[async_trait]
+impl IdentityProvider for CountingLocal {
+    fn id(&self) -> &str {
+        self.local.id()
+    }
+
+    fn method(&self) -> Method {
+        self.local.method()
+    }
+
+    async fn challenge(&self) -> Result<Challenge> {
+        self.local.challenge().await
+    }
+
+    async fn verify(&self, answer: Answer) -> Result<Identity> {
+        self.verifications.fetch_add(1, Ordering::SeqCst);
+        self.local.verify(answer).await
+    }
+
+    fn accounts(&self) -> Option<&dyn AccountAdmin> {
+        self.local.accounts()
     }
 }
 
@@ -89,7 +126,7 @@ impl SecretStore for BrokenVault {
 }
 
 struct Setup {
-    oidc_groups: Option<&'static [&'static str]>,
+    oidc: Option<StubOidc>,
     local: bool,
     secure: bool,
     trust_forwarded_for: bool,
@@ -99,7 +136,7 @@ struct Setup {
 impl Default for Setup {
     fn default() -> Self {
         Self {
-            oidc_groups: None,
+            oidc: None,
             local: true,
             secure: false,
             trust_forwarded_for: false,
@@ -110,9 +147,8 @@ impl Default for Setup {
 
 struct Corral {
     app: Router,
-    local: LocalAccounts,
+    local: Arc<CountingLocal>,
     engine: Arc<FakeEngine>,
-    hasher: Arc<FakePasswordHasher>,
 }
 
 fn catalog() -> Catalog {
@@ -148,28 +184,23 @@ fn catalog() -> Catalog {
 
 impl Setup {
     fn build(self) -> Corral {
-        let policy = AccessPolicy {
-            member_group: MEMBERS.to_owned(),
-            admin_group: ADMINS.to_owned(),
-        };
         let users = Arc::new(MemoryUserRepo::default());
         let credentials = Credentials::new(self.secrets);
         let engine = Arc::new(FakeEngine::default());
-        let hasher = Arc::new(FakePasswordHasher::default());
-        let local = LocalAccounts::new(
-            Arc::new(MemoryLocalAccountRepo::default()),
-            users.clone(),
-            hasher.clone(),
-            policy.clone(),
-        )
-        .unwrap();
-        let identity = self.oidc_groups.map(|groups| -> Arc<dyn IdentityProvider> {
-            Arc::new(StubIdentity {
-                groups: groups.iter().map(|&group| group.to_owned()).collect(),
-            })
+        let local = Arc::new(CountingLocal {
+            local: LocalProvider::new(Arc::new(MemoryLocalAccountRepo::default()), users.clone())
+                .unwrap(),
+            verifications: AtomicUsize::new(0),
         });
+        let mut providers: Vec<Arc<dyn IdentityProvider>> = Vec::new();
+        if self.local {
+            providers.push(local.clone());
+        }
+        if let Some(oidc) = self.oidc {
+            providers.push(Arc::new(oidc));
+        }
         let state = ApiState {
-            accounts: Accounts::new(users, policy),
+            accounts: Accounts::new(users),
             keys: Keys::new(Arc::new(MemoryKeyRepo::default())),
             sandboxes: Sandboxes::new(
                 Arc::new(MemorySandboxRepo::default()),
@@ -182,8 +213,7 @@ impl Setup {
             ),
             credentials,
             catalog: catalog(),
-            identity,
-            local: self.local.then(|| local.clone()),
+            providers,
             sessions: SessionCodec::new(Key::generate(), self.secure),
             wake_deadline: Duration::from_secs(5),
             trust_forwarded_for: self.trust_forwarded_for,
@@ -192,7 +222,6 @@ impl Setup {
             app: router(state),
             local,
             engine,
-            hasher,
         }
     }
 }
@@ -204,9 +233,18 @@ impl Corral {
 
     async fn account(&self, username: &str, role: Role) {
         self.local
-            .create(None, username, SecretString::from(PASSWORD), role)
+            .local
+            .add(
+                &Handle::parse(username).unwrap(),
+                SecretString::from(PASSWORD),
+                role,
+            )
             .await
             .unwrap();
+    }
+
+    fn verifications(&self) -> usize {
+        self.local.verifications.load(Ordering::SeqCst)
     }
 
     fn browser(&self) -> Browser {
@@ -324,7 +362,7 @@ impl Browser {
         forwarded_for: Option<&str>,
     ) -> Reply {
         let mut request =
-            Request::post("/auth/local").header(header::CONTENT_TYPE, "application/json");
+            Request::post("/auth/local/finish").header(header::CONTENT_TYPE, "application/json");
         if let Some(forwarded_for) = forwarded_for {
             request = request.header("x-forwarded-for", forwarded_for);
         }
@@ -373,7 +411,7 @@ async fn sixth_failed_local_login_within_the_window_is_429() {
             .await;
         assert_eq!(reply.status, StatusCode::FORBIDDEN, "attempt {attempt}");
     }
-    let verified = corral.hasher.verifications();
+    let verified = corral.verifications();
     for password in ["guess number 6", PASSWORD] {
         let reply = attacker.sign_in("adam", password).await;
         assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS, "{password}");
@@ -383,7 +421,7 @@ async fn sixth_failed_local_login_within_the_window_is_429() {
         attacker.get("/api/me").await.status,
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(corral.hasher.verifications(), verified);
+    assert_eq!(corral.verifications(), verified);
 
     let mut adam = corral.browser_at("192.0.2.1:5000");
     assert_eq!(
@@ -477,7 +515,9 @@ async fn cookies_lack_secure_when_base_url_is_http() {
     for secure in [false, true] {
         let corral = Setup {
             secure,
-            oidc_groups: Some(&[MEMBERS]),
+            oidc: Some(StubOidc {
+                role: Some(Role::Member),
+            }),
             ..Setup::default()
         }
         .build();
@@ -487,7 +527,10 @@ async fn cookies_lack_secure_when_base_url_is_http() {
             .sign_in("adam", PASSWORD)
             .await
             .set_cookie("corral_session");
-        let login = browser.get("/auth/login").await.set_cookie("corral_login");
+        let login = browser
+            .get("/auth/oidc/start")
+            .await
+            .set_cookie("corral_login");
         for cookie in [session, login] {
             assert_eq!(cookie.secure(), secure.then_some(true), "{cookie}");
             assert_eq!(cookie.http_only(), Some(true), "{cookie}");
@@ -498,25 +541,49 @@ async fn cookies_lack_secure_when_base_url_is_http() {
 }
 
 #[tokio::test]
-async fn login_methods_follow_the_configuration() {
+async fn providers_follow_the_configuration() {
+    let both = Setup {
+        oidc: Some(StubOidc {
+            role: Some(Role::Member),
+        }),
+        ..Setup::default()
+    }
+    .build();
+    assert_eq!(
+        both.browser().get("/auth/providers").await.json(),
+        json!([
+            { "id": "local", "method": "password" },
+            { "id": "oidc", "method": "redirect" },
+        ])
+    );
+
     let oidc_only = Setup {
-        oidc_groups: Some(&[MEMBERS, ADMINS]),
+        oidc: Some(StubOidc {
+            role: Some(Role::Admin),
+        }),
         local: false,
         ..Setup::default()
     }
     .build();
     let mut browser = oidc_only.browser();
     assert_eq!(
-        browser.get("/auth/methods").await.json(),
-        json!({ "oidc": true, "local": false })
+        browser.get("/auth/providers").await.json(),
+        json!([{ "id": "oidc", "method": "redirect" }])
     );
     assert_eq!(
         browser.sign_in("adam", PASSWORD).await.status,
         StatusCode::NOT_FOUND
     );
-    browser.get("/auth/login").await;
+    let password_to_oidc = browser
+        .post(
+            "/auth/oidc/finish",
+            json!({ "username": "adam", "password": PASSWORD }),
+        )
+        .await;
+    assert_eq!(password_to_oidc.status, StatusCode::BAD_REQUEST);
+    browser.get("/auth/oidc/start").await;
     browser
-        .get("/auth/callback?code=code-1&state=public-state")
+        .get("/auth/oidc/finish?code=code-1&state=public-state")
         .await;
     assert_eq!(browser.get("/api/me").await.json()["role"], "admin");
     for (method, uri, body) in ADMIN_ROUTES
@@ -531,16 +598,27 @@ async fn login_methods_follow_the_configuration() {
     let local_only = Corral::new();
     let mut browser = local_only.browser();
     assert_eq!(
-        browser.get("/auth/methods").await.json(),
-        json!({ "oidc": false, "local": true })
+        browser.get("/auth/providers").await.json(),
+        json!([{ "id": "local", "method": "password" }])
+    );
+    let start = browser.get("/auth/local/start").await;
+    assert_eq!(start.status, StatusCode::OK);
+    assert_eq!(start.json(), json!({ "id": "local", "method": "password" }));
+    assert!(!start.headers.contains_key(header::SET_COOKIE));
+    assert_eq!(
+        browser
+            .get("/auth/local/finish?code=code-1&state=public-state")
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        browser.get("/auth/login").await.status,
+        browser.get("/auth/oidc/start").await.status,
         StatusCode::NOT_FOUND
     );
     assert_eq!(
         browser
-            .get("/auth/callback?code=code-1&state=public-state")
+            .get("/auth/oidc/finish?code=code-1&state=public-state")
             .await
             .status,
         StatusCode::NOT_FOUND
@@ -550,12 +628,14 @@ async fn login_methods_follow_the_configuration() {
 #[tokio::test]
 async fn oidc_login_round_trip_starts_a_session() {
     let corral = Setup {
-        oidc_groups: Some(&[MEMBERS]),
+        oidc: Some(StubOidc {
+            role: Some(Role::Member),
+        }),
         ..Setup::default()
     }
     .build();
     let mut browser = corral.browser();
-    let start = browser.get("/auth/login").await;
+    let start = browser.get("/auth/oidc/start").await;
     assert_eq!(start.status, StatusCode::FOUND);
     assert_eq!(start.headers[header::LOCATION], IDP_URL);
     let login_cookie = start.set_cookie("corral_login");
@@ -566,7 +646,7 @@ async fn oidc_login_round_trip_starts_a_session() {
     );
 
     let done = browser
-        .get("/auth/callback?code=code-1&state=public-state")
+        .get("/auth/oidc/finish?code=code-1&state=public-state")
         .await;
     assert_eq!(done.status, StatusCode::FOUND, "{}", done.text());
     assert_eq!(done.headers[header::LOCATION], "/");
@@ -577,7 +657,7 @@ async fn oidc_login_round_trip_starts_a_session() {
     );
 
     let replay = browser
-        .get("/auth/callback?code=code-1&state=public-state")
+        .get("/auth/oidc/finish?code=code-1&state=public-state")
         .await;
     assert_eq!(replay.status, StatusCode::BAD_REQUEST);
 }
@@ -585,19 +665,21 @@ async fn oidc_login_round_trip_starts_a_session() {
 #[tokio::test]
 async fn oidc_callback_refusals_are_403_and_end_the_login() {
     let corral = Setup {
-        oidc_groups: Some(&["someone-else"]),
+        oidc: Some(StubOidc { role: None }),
         ..Setup::default()
     }
     .build();
     let mut browser = corral.browser();
-    browser.get("/auth/login").await;
-    let wrong_state = browser.get("/auth/callback?code=code-1&state=forged").await;
+    browser.get("/auth/oidc/start").await;
+    let wrong_state = browser
+        .get("/auth/oidc/finish?code=code-1&state=forged")
+        .await;
     assert_eq!(wrong_state.status, StatusCode::FORBIDDEN);
     assert!(!browser.cookies.contains_key("corral_login"));
 
-    browser.get("/auth/login").await;
+    browser.get("/auth/oidc/start").await;
     let not_a_member = browser
-        .get("/auth/callback?code=code-1&state=public-state")
+        .get("/auth/oidc/finish?code=code-1&state=public-state")
         .await;
     assert_eq!(not_a_member.status, StatusCode::FORBIDDEN);
     assert_eq!(not_a_member.json(), json!({ "error": "forbidden" }));
@@ -889,7 +971,7 @@ async fn admins_manage_users_local_accounts_and_all_sandboxes() {
         StatusCode::OK
     );
     let accounts = root.get("/api/admin/local-accounts").await;
-    assert!(!accounts.text().contains("fake$"), "{}", accounts.text());
+    assert!(!accounts.text().contains("argon2"), "{}", accounts.text());
     let listed: Vec<Value> = accounts
         .json()
         .as_array()
@@ -1019,14 +1101,14 @@ async fn post_and_put_accept_only_json() {
     let mut adam = corral.browser();
     let form = adam
         .send(
-            Request::post("/auth/local")
+            Request::post("/auth/local/finish")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(format!("username=adam&password={PASSWORD}")))
                 .unwrap(),
         )
         .await;
     assert_eq!(form.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    assert_eq!(corral.hasher.verifications(), 0);
+    assert_eq!(corral.verifications(), 0);
     adam.sign_in("adam", PASSWORD).await;
     adam.post("/api/sandboxes", json!({ "name": "main" })).await;
 
@@ -1092,7 +1174,7 @@ async fn internal_errors_have_a_generic_body() {
 async fn a_missing_peer_address_fails_closed() {
     let corral = Corral::new();
     corral.account("adam", Role::Member).await;
-    let request = Request::post("/auth/local")
+    let request = Request::post("/auth/local/finish")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(
             json!({ "username": "adam", "password": PASSWORD }).to_string(),

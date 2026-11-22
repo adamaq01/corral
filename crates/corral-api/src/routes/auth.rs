@@ -1,58 +1,66 @@
-use std::time::Instant;
+use std::collections::BTreeMap;
 
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::header::LOCATION;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use axum_extra::extract::cookie::PrivateCookieJar;
 use chrono::Utc;
-use corral_core::Error;
 use corral_core::domain::User;
-use corral_core::ports::{IdentityProvider, LoginState};
+use corral_core::ports::{Answer, Challenge};
 
-use super::local_accounts;
 use crate::client_address::ClientAddress;
-use crate::dto::{Callback, LocalLogin, Me, Methods};
+use crate::dto::{Me, PasswordLogin, Provider};
 use crate::error::ApiError;
-use crate::extract::{JsonBody, QueryParams};
+use crate::extract::{JsonBody, PathParam, QueryParams};
 use crate::session::{Session, SessionCodec};
 use crate::state::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
-        .route("/auth/methods", get(methods))
-        .route("/auth/login", get(login))
-        .route("/auth/callback", get(callback))
-        .route("/auth/local", post(local))
+        .route("/auth/providers", get(providers))
+        .route("/auth/{provider}/start", get(start))
+        .route(
+            "/auth/{provider}/finish",
+            get(finish_redirect).post(finish_password),
+        )
         .route("/auth/logout", post(logout))
 }
 
-async fn methods(State(state): State<AppState>) -> Json<Methods> {
-    Json(Methods {
-        oidc: state.identity.is_some(),
-        local: state.local.is_some(),
+async fn providers(State(state): State<AppState>) -> Json<Vec<Provider>> {
+    let listed = state
+        .providers
+        .iter()
+        .map(|provider| Provider::from(provider.as_ref()))
+        .collect();
+    Json(listed)
+}
+
+async fn start(
+    State(state): State<AppState>,
+    PathParam(id): PathParam<String>,
+    jar: PrivateCookieJar,
+) -> Result<Response, ApiError> {
+    let provider = state.provider(&id)?;
+    Ok(match provider.challenge().await? {
+        Challenge::Password => Json(Provider::from(provider)).into_response(),
+        Challenge::Redirect { url, pending } => (
+            jar.add(state.sessions.encode_login(provider.id(), &pending)),
+            found(url),
+        )
+            .into_response(),
     })
 }
 
-async fn login(
+async fn finish_redirect(
     State(state): State<AppState>,
+    PathParam(id): PathParam<String>,
     jar: PrivateCookieJar,
-) -> Result<impl IntoResponse, ApiError> {
-    let start = oidc(&state)?.begin().await?;
-    Ok((
-        jar.add(state.sessions.encode_login(&start.state)),
-        found(start.url),
-    ))
-}
-
-async fn callback(
-    State(state): State<AppState>,
-    jar: PrivateCookieJar,
-    QueryParams(callback): QueryParams<Callback>,
-) -> impl IntoResponse {
-    let outcome = finish_oidc_login(&state, SessionCodec::decode_login(&jar), &callback).await;
+    QueryParams(params): QueryParams<BTreeMap<String, String>>,
+) -> Response {
+    let outcome = finish_redirect_login(&state, &id, &jar, params).await;
     let jar = jar.remove(SessionCodec::login_removal());
     match outcome {
         Ok(user) => (start_session(&state, jar, &user), found("/".to_owned())).into_response(),
@@ -60,42 +68,35 @@ async fn callback(
     }
 }
 
-async fn finish_oidc_login(
+async fn finish_redirect_login(
     state: &AppState,
-    login: Option<LoginState>,
-    callback: &Callback,
+    id: &str,
+    jar: &PrivateCookieJar,
+    params: BTreeMap<String, String>,
 ) -> Result<User, ApiError> {
-    let identity = oidc(state)?;
-    let login = login.ok_or_else(|| {
+    let provider = state.provider(id)?;
+    let pending = SessionCodec::decode_login(jar, provider.id()).ok_or_else(|| {
         ApiError::new(StatusCode::BAD_REQUEST, "no login in progress, start again")
     })?;
-    let principal = identity
-        .complete(login, &callback.code, &callback.state)
+    let identity = provider
+        .verify(Answer::Redirect { pending, params })
         .await?;
-    Ok(state.accounts.login(principal).await?)
+    Ok(state.accounts.login(identity).await?)
 }
 
-async fn local(
+async fn finish_password(
     State(state): State<AppState>,
+    PathParam(id): PathParam<String>,
     ClientAddress(address): ClientAddress,
     jar: PrivateCookieJar,
-    JsonBody(form): JsonBody<LocalLogin>,
+    JsonBody(form): JsonBody<PasswordLogin>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let local = local_accounts(&state)?;
-    let attempt = state
+    let provider = state.provider(&id)?;
+    let identity = state
         .logins
-        .admit(&form.username, address, Instant::now())
-        .ok_or_else(|| {
-            ApiError::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "too many failed logins, try again later",
-            )
-        })?;
-    let authenticated = local.authenticate(&form.username, form.password).await;
-    if !matches!(authenticated, Err(Error::Forbidden)) {
-        attempt.release();
-    }
-    let user = state.accounts.login(authenticated?).await?;
+        .verify(provider, form.username, form.password, address)
+        .await?;
+    let user = state.accounts.login(identity).await?;
     Ok((start_session(&state, jar, &user), Json(Me::from(&user))))
 }
 
@@ -104,10 +105,6 @@ async fn logout(jar: PrivateCookieJar) -> impl IntoResponse {
         jar.remove(SessionCodec::session_removal()),
         StatusCode::NO_CONTENT,
     )
-}
-
-fn oidc(state: &AppState) -> Result<&dyn IdentityProvider, ApiError> {
-    state.identity.as_deref().ok_or_else(ApiError::not_found)
 }
 
 fn start_session(state: &AppState, jar: PrivateCookieJar, user: &User) -> PrivateCookieJar {

@@ -5,11 +5,10 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use corral_core::Error;
-use corral_core::domain::UserId;
+use corral_core::domain::{Handle, UserId};
 use uuid::Uuid;
 
-use super::local_accounts;
-use crate::auth::CurrentUser;
+use crate::auth::{CurrentAdmin, CurrentUser};
 use crate::dto::{LocalAccountDto, NewLocalAccount, NewPassword, OwnedSandbox, UserDto};
 use crate::error::ApiError;
 use crate::extract::{JsonBody, PathParam};
@@ -92,48 +91,45 @@ async fn sandboxes(
 }
 
 async fn local_account_list(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<LocalAccountDto>>, ApiError> {
-    let accounts = local_accounts(&state)?.list(&admin).await?;
+    let accounts = state.account_admin()?.list(&admin).await?;
     Ok(Json(
         accounts.into_iter().map(LocalAccountDto::from).collect(),
     ))
 }
 
 async fn create_local_account(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
     JsonBody(account): JsonBody<NewLocalAccount>,
 ) -> Result<StatusCode, ApiError> {
-    local_accounts(&state)?
-        .create(
-            Some(&admin),
-            &account.username,
-            account.password,
-            account.role,
-        )
+    state
+        .account_admin()?
+        .create(&admin, &account.username, account.password, account.role)
         .await?;
     Ok(StatusCode::CREATED)
 }
 
 async fn set_password(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
-    PathParam(username): PathParam<String>,
+    PathParam(username): PathParam<Handle>,
     JsonBody(body): JsonBody<NewPassword>,
 ) -> Result<StatusCode, ApiError> {
-    local_accounts(&state)?
+    state
+        .account_admin()?
         .set_password(&admin, &username, body.password)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_local_account(
-    CurrentUser(admin): CurrentUser,
+    CurrentAdmin(admin): CurrentAdmin,
     State(state): State<AppState>,
-    PathParam(username): PathParam<String>,
+    PathParam(username): PathParam<Handle>,
 ) -> Result<StatusCode, ApiError> {
-    local_accounts(&state)?.delete(&admin, &username).await?;
+    state.account_admin()?.delete(&admin, &username).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -4,20 +4,15 @@ use corral_core::domain::{
     CredentialName, Handle, LocalAccount, Role, SandboxName, SandboxStatus, SshKey, SshUsername,
     User,
 };
+use corral_core::ports::{IdentityProvider, Method};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Deserialize)]
-pub(crate) struct LocalLogin {
+pub(crate) struct PasswordLogin {
     pub username: String,
     pub password: SecretString,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct Callback {
-    pub code: String,
-    pub state: String,
 }
 
 #[derive(Deserialize)]
@@ -41,7 +36,7 @@ pub(crate) struct CredentialValue {
 
 #[derive(Deserialize)]
 pub(crate) struct NewLocalAccount {
-    pub username: String,
+    pub username: Handle,
     pub password: SecretString,
     pub role: Role,
 }
@@ -52,9 +47,18 @@ pub(crate) struct NewPassword {
 }
 
 #[derive(Serialize)]
-pub(crate) struct Methods {
-    pub oidc: bool,
-    pub local: bool,
+pub(crate) struct Provider {
+    id: String,
+    method: Method,
+}
+
+impl From<&dyn IdentityProvider> for Provider {
+    fn from(provider: &dyn IdentityProvider) -> Self {
+        Self {
+            id: provider.id().to_owned(),
+            method: provider.method(),
+        }
+    }
 }
 
 #[derive(Serialize)]

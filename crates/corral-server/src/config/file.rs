@@ -9,8 +9,6 @@ use serde::Deserialize;
 pub(super) struct File {
     pub http: HttpSection,
     #[serde(default)]
-    pub access: AccessSection,
-    #[serde(default)]
     pub identity: IdentitySection,
     #[serde(default)]
     pub secrets: SecretsSection,
@@ -45,22 +43,6 @@ fn internal_addr() -> SocketAddr {
     (Ipv4Addr::UNSPECIFIED, 8081).into()
 }
 
-#[derive(Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct AccessSection {
-    pub member_group: String,
-    pub admin_group: String,
-}
-
-impl Default for AccessSection {
-    fn default() -> Self {
-        Self {
-            member_group: "corral-users".to_owned(),
-            admin_group: "corral-admins".to_owned(),
-        }
-    }
-}
-
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct IdentitySection {
@@ -75,6 +57,18 @@ pub(super) struct OidcSection {
     pub client_id: String,
     #[serde(default = "OidcConfig::default_scopes")]
     pub scopes: Vec<String>,
+    #[serde(default = "member_group")]
+    pub member_group: String,
+    #[serde(default = "admin_group")]
+    pub admin_group: String,
+}
+
+fn member_group() -> String {
+    "corral-users".to_owned()
+}
+
+fn admin_group() -> String {
+    "corral-admins".to_owned()
 }
 
 #[derive(Deserialize)]

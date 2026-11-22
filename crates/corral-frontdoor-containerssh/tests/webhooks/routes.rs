@@ -7,7 +7,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use corral_core::app::{Credentials, Limits, RegisteredKeyVerifier, Sandboxes, SshAccess};
-use corral_core::domain::{Handle, User, UserId};
+use corral_core::domain::{Handle, Role, User, UserId};
 use corral_core::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore};
 use corral_core::ports::{Readiness, SshTarget, UserRepo};
 use corral_core::{Error, Result};
@@ -17,8 +17,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::common::{
-    ADMINS, MEMBERS, Member, NAMESPACE, World, catalog, generate_key, principal, private_pem,
-    public_line,
+    Member, NAMESPACE, World, catalog, generate_key, identity, private_pem, public_line,
 };
 
 fn app(access: Arc<SshAccess>, proxy_private_key: &str) -> Router {
@@ -92,7 +91,7 @@ async fn config(app: &Router, username: &str, authenticated_username: &str) -> (
 async fn disable(world: &World, member: &Member) {
     let root = world
         .accounts
-        .login(principal("root", &[MEMBERS, ADMINS]))
+        .login(identity("root", Role::Admin))
         .await
         .unwrap();
     world

@@ -3,7 +3,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use cookie::time::{Duration as CookieDuration, OffsetDateTime};
 use cookie::{Cookie, CookieBuilder, Key, SameSite};
 use corral_core::domain::UserId;
-use corral_core::ports::LoginState;
+use corral_core::ports::PendingLogin;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -29,6 +29,12 @@ impl Session {
 }
 
 #[derive(Serialize, Deserialize)]
+struct LoginPayload {
+    provider: String,
+    pending: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct SessionPayload {
     user: Uuid,
     expires_at: DateTime<Utc>,
@@ -46,16 +52,22 @@ impl SessionCodec {
     }
 
     #[must_use]
-    pub fn encode_login(&self, state: &LoginState) -> Cookie<'static> {
-        self.cookie(LOGIN_COOKIE, state.0.clone())
+    pub fn encode_login(&self, provider: &str, pending: &PendingLogin) -> Cookie<'static> {
+        let payload = LoginPayload {
+            provider: provider.to_owned(),
+            pending: pending.0.clone(),
+        };
+        self.cookie(LOGIN_COOKIE, serde_json::json!(payload).to_string())
             .max_age(LOGIN_TTL)
             .build()
     }
 
+    /// The login in progress, only if it was started with `provider`.
     #[must_use]
-    pub fn decode_login(jar: &PrivateCookieJar) -> Option<LoginState> {
-        jar.get(LOGIN_COOKIE)
-            .map(|cookie| LoginState(cookie.value().to_owned()))
+    pub fn decode_login(jar: &PrivateCookieJar, provider: &str) -> Option<PendingLogin> {
+        let cookie = jar.get(LOGIN_COOKIE)?;
+        let payload: LoginPayload = serde_json::from_str(cookie.value()).ok()?;
+        (payload.provider == provider).then_some(PendingLogin(payload.pending))
     }
 
     #[must_use]
@@ -112,7 +124,7 @@ mod tests {
     use chrono::{TimeDelta, TimeZone, Utc};
     use cookie::{Cookie, Key};
     use corral_core::domain::UserId;
-    use corral_core::ports::LoginState;
+    use corral_core::ports::PendingLogin;
     use uuid::Uuid;
 
     use super::{Session, SessionCodec};
@@ -160,12 +172,12 @@ mod tests {
     fn sessions_and_login_states_survive_the_round_trip() {
         let key = Key::generate();
         let session = session();
-        let login = LoginState("pkce-verifier-and-nonce".to_owned());
+        let login = PendingLogin("pkce-verifier-and-nonce".to_owned());
         let wire = sent(
             &key,
             vec![
                 codec(&key).encode_session(&session),
-                codec(&key).encode_login(&login),
+                codec(&key).encode_login("oidc", &login),
             ],
         );
         assert_eq!(
@@ -182,7 +194,8 @@ mod tests {
             SessionCodec::decode_session(&jar, session.expires_at - TimeDelta::seconds(1)),
             Some(session)
         );
-        assert_eq!(SessionCodec::decode_login(&jar), Some(login));
+        assert_eq!(SessionCodec::decode_login(&jar, "oidc"), Some(login));
+        assert_eq!(SessionCodec::decode_login(&jar, "other"), None);
     }
 
     #[test]
@@ -209,7 +222,7 @@ mod tests {
             &key,
             vec![
                 codec(&key).encode_session(&session),
-                codec(&key).encode_login(&LoginState("state".to_owned())),
+                codec(&key).encode_login("oidc", &PendingLogin("state".to_owned())),
             ],
         );
         assert!(SessionCodec::decode_session(&received(&key, &wire), before).is_some());
@@ -242,6 +255,6 @@ mod tests {
         }
         let other_key = received(&Key::generate(), &wire);
         assert_eq!(SessionCodec::decode_session(&other_key, before), None);
-        assert_eq!(SessionCodec::decode_login(&other_key), None);
+        assert_eq!(SessionCodec::decode_login(&other_key, "oidc"), None);
     }
 }

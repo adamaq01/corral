@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::Handle;
+use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UserId(pub Uuid);
@@ -23,6 +24,20 @@ pub struct User {
     pub role: Role,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
+}
+
+/// Proof that the acting user is an admin, for ports that act on an admin's behalf.
+#[derive(Debug)]
+pub struct Admin(());
+
+impl Admin {
+    pub fn check(actor: &User) -> Result<Self> {
+        if actor.role == Role::Admin {
+            Ok(Self(()))
+        } else {
+            Err(Error::Forbidden)
+        }
+    }
 }
 
 #[cfg(test)]

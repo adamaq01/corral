@@ -5,20 +5,18 @@ use std::time::Duration;
 use async_trait::async_trait;
 use corral_core::Result;
 use corral_core::app::{
-    AccessPolicy, Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
+    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
     RegisteredKeyVerifier, Sandboxes, SizePreset, SshAccess, SshEndpoint,
 };
-use corral_core::domain::{Principal, Sandbox, SandboxId, SandboxName, SandboxStatus, User};
+use corral_core::domain::{Role, Sandbox, SandboxId, SandboxName, SandboxStatus, User};
 use corral_core::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo};
 use corral_core::ports::{
-    Env, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
+    Env, Identity, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
 };
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
 pub const NAMESPACE: &str = "corral-sandboxes";
-pub const MEMBERS: &str = "corral-users";
-pub const ADMINS: &str = "corral-admins";
 
 pub struct World {
     pub access: Arc<SshAccess>,
@@ -61,17 +59,14 @@ impl World {
             vec![Arc::new(RegisteredKeyVerifier::new(key_repo.clone()))],
             Duration::from_secs(1),
         ));
-        let accounts = Accounts::new(
-            users,
-            AccessPolicy {
-                member_group: MEMBERS.to_owned(),
-                admin_group: ADMINS.to_owned(),
-            },
-        );
+        let accounts = Accounts::new(users);
         let keys = Keys::new(key_repo);
         let mut members = Vec::new();
         for handle in ["adam", "eve"] {
-            let user = accounts.login(principal(handle, &[MEMBERS])).await.unwrap();
+            let user = accounts
+                .login(identity(handle, Role::Member))
+                .await
+                .unwrap();
             let key = generate_key();
             keys.add(&user, "laptop", &public_line(&key)).await.unwrap();
             let request = CreateSandbox {
@@ -106,12 +101,12 @@ pub fn private_pem(key: &PrivateKey) -> String {
     key.to_openssh(LineEnding::LF).unwrap().to_string()
 }
 
-pub fn principal(handle: &str, groups: &[&str]) -> Principal {
-    Principal {
+pub fn identity(handle: &str, role: Role) -> Identity {
+    Identity {
         subject: format!("subject-{handle}"),
-        preferred_username: handle.to_owned(),
+        username: handle.to_owned(),
         email: None,
-        groups: groups.iter().map(|&group| group.to_owned()).collect(),
+        role: Some(role),
     }
 }
 

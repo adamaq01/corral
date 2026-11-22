@@ -1,23 +1,23 @@
-use corral_core::ports::LoginState;
+use corral_core::ports::PendingLogin;
 use corral_core::{Error, Result};
 use openidconnect::{CsrfToken, Nonce, PkceCodeVerifier};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct PendingLogin {
+pub(crate) struct LoginSecrets {
     pub csrf: CsrfToken,
     pub nonce: Nonce,
     pub pkce_verifier: PkceCodeVerifier,
 }
 
-impl PendingLogin {
-    pub fn encode(&self) -> Result<LoginState> {
+impl LoginSecrets {
+    pub fn encode(&self) -> Result<PendingLogin> {
         serde_json::to_string(self)
-            .map(LoginState)
+            .map(PendingLogin)
             .map_err(|err| Error::internal("encoding login state", err))
     }
 
-    pub fn decode(state: &LoginState) -> Result<Self> {
-        serde_json::from_str(&state.0).map_err(|_| Error::Forbidden)
+    pub fn decode(pending: &PendingLogin) -> Result<Self> {
+        serde_json::from_str(&pending.0).map_err(|_| Error::Forbidden)
     }
 }

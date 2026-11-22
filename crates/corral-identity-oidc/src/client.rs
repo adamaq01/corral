@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use corral_core::domain::Principal;
-use corral_core::ports::{IdentityProvider, LoginStart, LoginState};
+use corral_core::domain::Role;
+use corral_core::ports::{Answer, Challenge, Identity, IdentityProvider, Method};
 use corral_core::{Error, Result};
 use openidconnect::core::{
     CoreAuthDisplay, CoreAuthPrompt, CoreAuthenticationFlow, CoreErrorResponseType,
@@ -21,7 +21,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 use crate::OidcConfig;
-use crate::pending_login::PendingLogin;
+use crate::login_secrets::LoginSecrets;
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -77,10 +77,14 @@ pub struct OidcProvider {
     client_secret: ClientSecret,
     redirect_url: RedirectUrl,
     scopes: Vec<Scope>,
+    member_group: String,
+    admin_group: String,
     http: reqwest::Client,
 }
 
 impl OidcProvider {
+    pub const ID: &str = "oidc";
+
     pub async fn discover(config: OidcConfig) -> Result<Self> {
         let issuer =
             IssuerUrl::new(config.issuer).map_err(|err| Error::internal("issuer url", err))?;
@@ -105,6 +109,8 @@ impl OidcProvider {
             client_secret: ClientSecret::new(config.client_secret.expose_secret().to_owned()),
             redirect_url,
             scopes: config.scopes.into_iter().map(Scope::new).collect(),
+            member_group: config.member_group,
+            admin_group: config.admin_group,
             http,
         })
     }
@@ -125,11 +131,39 @@ impl OidcProvider {
             .await
             .map_err(|err| Error::internal("jwks", err))
     }
+
+    fn identity(&self, claims: &Claims) -> Result<Identity> {
+        let username = claims
+            .preferred_username()
+            .ok_or_else(|| Error::internal("id token", "no preferred_username claim"))?;
+        let groups = &claims.additional_claims().groups;
+        let role = if groups.contains(&self.admin_group) {
+            Some(Role::Admin)
+        } else if groups.contains(&self.member_group) {
+            Some(Role::Member)
+        } else {
+            None
+        };
+        Ok(Identity {
+            subject: format!("{}:{}", Self::ID, claims.subject().as_str()),
+            username: username.as_str().to_owned(),
+            email: claims.email().map(|email| email.as_str().to_owned()),
+            role,
+        })
+    }
 }
 
 #[async_trait]
 impl IdentityProvider for OidcProvider {
-    async fn begin(&self) -> Result<LoginStart> {
+    fn id(&self) -> &str {
+        Self::ID
+    }
+
+    fn method(&self) -> Method {
+        Method::Redirect
+    }
+
+    async fn challenge(&self) -> Result<Challenge> {
         let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
         let (url, csrf, nonce) = self
             .client(self.metadata.clone())
@@ -141,32 +175,34 @@ impl IdentityProvider for OidcProvider {
             .add_scopes(self.scopes.iter().cloned())
             .set_pkce_challenge(pkce_challenge)
             .url();
-        let state = PendingLogin {
+        let pending = LoginSecrets {
             csrf,
             nonce,
             pkce_verifier,
         }
         .encode()?;
-        Ok(LoginStart {
+        Ok(Challenge::Redirect {
             url: url.into(),
-            state,
+            pending,
         })
     }
 
-    async fn complete(
-        &self,
-        state: LoginState,
-        code: &str,
-        returned_state: &str,
-    ) -> Result<Principal> {
-        let pending = PendingLogin::decode(&state)?;
-        if pending.csrf != CsrfToken::new(returned_state.to_owned()) {
+    async fn verify(&self, answer: Answer) -> Result<Identity> {
+        let Answer::Redirect { pending, params } = answer else {
+            return Err(Error::Invalid("OIDC logs in through a redirect".to_owned()));
+        };
+        let secrets = LoginSecrets::decode(&pending)?;
+        let returned_state = params.get("state").map_or("", String::as_str);
+        if secrets.csrf != CsrfToken::new(returned_state.to_owned()) {
             return Err(Error::Forbidden);
         }
+        let code = params
+            .get("code")
+            .ok_or_else(|| Error::Invalid("the identity provider returned no code".to_owned()))?;
         let client = self.client(self.metadata.clone().set_jwks(self.current_keys().await?));
         let tokens = client
-            .exchange_code(AuthorizationCode::new(code.to_owned()))
-            .set_pkce_verifier(pending.pkce_verifier)
+            .exchange_code(AuthorizationCode::new(code.clone()))
+            .set_pkce_verifier(secrets.pkce_verifier)
             .request_async(&self.http)
             .await
             .map_err(token_error)?;
@@ -174,22 +210,10 @@ impl IdentityProvider for OidcProvider {
             .id_token()
             .ok_or_else(|| Error::internal("token endpoint", "response has no id token"))?;
         let claims = id_token
-            .claims(&client.id_token_verifier(), &pending.nonce)
+            .claims(&client.id_token_verifier(), &secrets.nonce)
             .map_err(claims_error)?;
-        principal(claims)
+        self.identity(claims)
     }
-}
-
-fn principal(claims: &Claims) -> Result<Principal> {
-    let preferred_username = claims
-        .preferred_username()
-        .ok_or_else(|| Error::internal("id token", "no preferred_username claim"))?;
-    Ok(Principal {
-        subject: claims.subject().as_str().to_owned(),
-        preferred_username: preferred_username.as_str().to_owned(),
-        email: claims.email().map(|email| email.as_str().to_owned()),
-        groups: claims.additional_claims().groups.clone(),
-    })
 }
 
 fn token_error(err: RequestTokenError<HttpError, TokenError>) -> Error {

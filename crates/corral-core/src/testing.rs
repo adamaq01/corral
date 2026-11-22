@@ -4,19 +4,15 @@ use std::time::Duration;
 use secrecy::ExposeSecret;
 
 use crate::app::{
-    AccessPolicy, Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
-    LocalAccounts, RegisteredKeyVerifier, SandboxView, Sandboxes, SizePreset, SshAccess,
-    SshEndpoint,
+    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
+    RegisteredKeyVerifier, SandboxView, Sandboxes, SizePreset, SshAccess, SshEndpoint,
 };
-use crate::domain::{CredentialName, Principal, Sandbox, SandboxName, User};
+use crate::domain::{CredentialName, Role, Sandbox, SandboxName, User};
 use crate::fakes::{
-    FakeEngine, FakePasswordHasher, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo,
-    MemorySecretStore, MemoryUserRepo,
+    FakeEngine, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
 };
-use crate::ports::{Env, IdlePolicy, Resources, SandboxRepo};
+use crate::ports::{Env, Identity, IdlePolicy, Resources, SandboxRepo};
 
-pub const MEMBERS: &str = "corral-users";
-pub const ADMINS: &str = "corral-admins";
 pub const MAX_SANDBOXES: usize = 3;
 pub const WAKE_DEADLINE: Duration = Duration::from_secs(7);
 
@@ -36,12 +32,12 @@ pub fn algorithm_and_blob(line: &str) -> String {
         .join(" ")
 }
 
-pub fn principal(subject: &str, preferred_username: &str, groups: &[&str]) -> Principal {
-    Principal {
+pub fn identity(subject: &str, username: &str, role: Option<Role>) -> Identity {
+    Identity {
         subject: subject.to_owned(),
-        preferred_username: preferred_username.to_owned(),
-        email: Some(format!("{preferred_username}@example.com")),
-        groups: groups.iter().map(|&group| group.to_owned()).collect(),
+        username: username.to_owned(),
+        email: Some(format!("{username}@example.com")),
+        role,
     }
 }
 
@@ -119,8 +115,6 @@ pub struct World {
     pub sandboxes: Sandboxes,
     pub key_repo: Arc<MemoryKeyRepo>,
     pub access: SshAccess,
-    pub hasher: Arc<FakePasswordHasher>,
-    pub local: LocalAccounts,
 }
 
 impl World {
@@ -130,10 +124,6 @@ impl World {
 
     pub fn with_sandbox_repo(sandbox_repo: Arc<dyn SandboxRepo>) -> Self {
         let users = Arc::new(MemoryUserRepo::default());
-        let policy = AccessPolicy {
-            member_group: MEMBERS.to_owned(),
-            admin_group: ADMINS.to_owned(),
-        };
         let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
         let engine = Arc::new(FakeEngine::default());
         let limits = Limits {
@@ -153,16 +143,8 @@ impl World {
             vec![Arc::new(RegisteredKeyVerifier::new(key_repo.clone()))],
             WAKE_DEADLINE,
         );
-        let hasher = Arc::new(FakePasswordHasher::default());
-        let local = LocalAccounts::new(
-            Arc::new(MemoryLocalAccountRepo::default()),
-            users.clone(),
-            hasher.clone(),
-            policy.clone(),
-        )
-        .unwrap();
         Self {
-            accounts: Accounts::new(users.clone(), policy),
+            accounts: Accounts::new(users.clone()),
             keys: Keys::new(key_repo.clone()),
             sandboxes,
             credentials,
@@ -170,8 +152,6 @@ impl World {
             users,
             key_repo,
             access,
-            hasher,
-            local,
         }
     }
 
@@ -183,17 +163,17 @@ impl World {
     }
 
     pub async fn member(&self, handle: &str) -> User {
-        self.login(handle, &[MEMBERS]).await
+        self.login(handle, Role::Member).await
     }
 
     pub async fn admin(&self, handle: &str) -> User {
-        self.login(handle, &[MEMBERS, ADMINS]).await
+        self.login(handle, Role::Admin).await
     }
 
-    async fn login(&self, handle: &str, groups: &[&str]) -> User {
+    async fn login(&self, handle: &str, role: Role) -> User {
         let user = self
             .accounts
-            .login(principal(handle, handle, groups))
+            .login(identity(handle, handle, Some(role)))
             .await
             .unwrap();
         assert_eq!(user.handle.as_str(), handle);

@@ -12,13 +12,11 @@ base_url = "https://corral.adamaq01.fr"
 # Behind Traefik every peer is the proxy, so password-login limits key on X-Forwarded-For.
 trust_forwarded_for = true
 
-[access]
-member_group = "corral-users"
-admin_group = "corral-admins"
-
 [identity.oidc]
 issuer = "https://auth.adamaq01.fr"
 client_id = "corral"
+member_group = "corral-users"
+admin_group = "corral-admins"
 
 [secrets]
 kind = "database"

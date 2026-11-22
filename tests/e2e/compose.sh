@@ -144,7 +144,7 @@ ok "docker compose exec corral corral-server local-account create adam --admin"
 login() {
   jq -cn --arg u "$1" --arg p "$2" '{username: $u, password: $p}' \
     | curl -sS --fail-with-body -c "$work/$1.jar" -H 'Content-Type: application/json' \
-      --data @- "$base/auth/local" >/dev/null
+      --data @- "$base/auth/local/finish" >/dev/null
 }
 
 api() {
@@ -165,7 +165,7 @@ add_key() {
 
 login adam "$admin_password"
 expect "GET /api/me" "adam admin" "$(api adam GET api/me | jq -r '"\(.handle) \(.role)"')"
-ok "adam logs in with POST /auth/local"
+ok "adam logs in with POST /auth/local/finish"
 
 mkdir -m 700 keys
 for name in adam bob stranger; do
@@ -328,12 +328,12 @@ ok "after docker compose restart containerssh, the pinned host key still matches
 
 for _ in 1 2 3 4 5; do
   expect "a wrong password" 403 "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-    --data '{"username":"adam","password":"not the password"}' "$base/auth/local")"
+    --data '{"username":"adam","password":"not the password"}' "$base/auth/local/finish")"
 done
 expect "the right password after 5 wrong ones" 429 "$(jq -cn --arg p "$admin_password" \
   '{username: "adam", password: $p}' | curl -sS -o /dev/null -w '%{http_code}' \
-  -H 'Content-Type: application/json' --data @- "$base/auth/local")"
-ok "after 5 wrong passwords, POST /auth/local answers 429 even to the right one"
+  -H 'Content-Type: application/json' --data @- "$base/auth/local/finish")"
+ok "after 5 wrong passwords, POST /auth/local/finish answers 429 even to the right one"
 
 # Short timings for the rest: a wake deadline a slow wake can exceed, and a quick idle timeout.
 # The bind mount follows config.toml's inode, so it is rewritten in place.

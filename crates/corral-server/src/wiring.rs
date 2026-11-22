@@ -4,14 +4,12 @@ use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::get;
 use corral_api::{ApiState, SessionCodec};
-use corral_core::app::{
-    Accounts, Credentials, Keys, LocalAccounts, RegisteredKeyVerifier, Sandboxes, SshAccess,
-};
+use corral_core::app::{Accounts, Credentials, Keys, RegisteredKeyVerifier, Sandboxes, SshAccess};
 use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use corral_engine_docker::{DockerConfig, DockerEngine};
 use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy};
-use corral_identity_local::Argon2Hasher;
+use corral_identity_local::LocalProvider;
 use corral_identity_oidc::{OidcConfig, OidcProvider};
 use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig, OpenBaoStore};
 use corral_store_sql::{DatabaseSecretStore, Store};
@@ -37,8 +35,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     let proxy_key = ProxyKey::parse(&env::secret(keys::PROXY_PRIVATE_KEY)?)?;
     let store = store::connect().await?;
     let credentials = Credentials::new(secret_store(&config.secrets, &store).await?);
-    let identity = identity(config).await?;
-    let local = local_accounts(config, &store)?;
+    let providers = providers(config, &store).await?;
     let (engine, lifecycle) = engine(&config.engine, &proxy_key, shutdown).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
@@ -54,13 +51,12 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         config.wake_deadline,
     );
     let api = ApiState {
-        accounts: Accounts::new(store.clone(), config.access.clone()),
+        accounts: Accounts::new(store.clone()),
         keys: Keys::new(store.clone()),
         credentials,
         sandboxes,
         catalog: config.catalog.clone(),
-        identity,
-        local,
+        providers,
         sessions: SessionCodec::new(session_key, config.http.base_url.starts_with("https://")),
         wake_deadline: config.wake_deadline,
         trust_forwarded_for: config.http.trust_forwarded_for,
@@ -72,17 +68,11 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     })
 }
 
-pub fn local_accounts(config: &Config, store: &Arc<Store>) -> Result<Option<LocalAccounts>> {
+pub fn local_provider(config: &Config, store: &Arc<Store>) -> Result<Option<LocalProvider>> {
     if !config.identity.local {
         return Ok(None);
     }
-    let accounts = LocalAccounts::new(
-        store.clone(),
-        store.clone(),
-        Arc::new(Argon2Hasher),
-        config.access.clone(),
-    )?;
-    Ok(Some(accounts))
+    Ok(Some(LocalProvider::new(store.clone(), store.clone())?))
 }
 
 async fn secret_store(secrets: &Secrets, store: &Arc<Store>) -> Result<Arc<dyn SecretStore>> {
@@ -111,20 +101,26 @@ async fn secret_store(secrets: &Secrets, store: &Arc<Store>) -> Result<Arc<dyn S
     }
 }
 
-async fn identity(config: &Config) -> Result<Option<Arc<dyn IdentityProvider>>> {
-    let Some(oidc) = &config.identity.oidc else {
-        return Ok(None);
-    };
-    let provider = OidcProvider::discover(OidcConfig {
-        issuer: oidc.issuer.clone(),
-        client_id: oidc.client_id.clone(),
-        client_secret: env::secret("CORRAL_OIDC_CLIENT_SECRET")?,
-        redirect_url: format!("{}/auth/callback", config.http.base_url),
-        scopes: oidc.scopes.clone(),
-    })
-    .await
-    .context("OIDC discovery failed")?;
-    Ok(Some(Arc::new(provider)))
+async fn providers(config: &Config, store: &Arc<Store>) -> Result<Vec<Arc<dyn IdentityProvider>>> {
+    let mut providers: Vec<Arc<dyn IdentityProvider>> = Vec::new();
+    if let Some(local) = local_provider(config, store)? {
+        providers.push(Arc::new(local));
+    }
+    if let Some(oidc) = &config.identity.oidc {
+        let provider = OidcProvider::discover(OidcConfig {
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            client_secret: env::secret("CORRAL_OIDC_CLIENT_SECRET")?,
+            redirect_url: format!("{}/auth/{}/finish", config.http.base_url, OidcProvider::ID),
+            scopes: oidc.scopes.clone(),
+            member_group: oidc.member_group.clone(),
+            admin_group: oidc.admin_group.clone(),
+        })
+        .await
+        .context("OIDC discovery failed")?;
+        providers.push(Arc::new(provider));
+    }
+    Ok(providers)
 }
 
 async fn engine(
