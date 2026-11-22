@@ -17,10 +17,10 @@ use corral_sql::Pool;
 use corral_store_sql::Store;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tower_http::services::ServeDir;
 
 use crate::adapters::{Adapters, EngineChoice, Oidc, SecretsChoice};
 use crate::config::{Config, FrontDoor};
+use crate::ui::Ui;
 
 pub struct App {
     pub public: Router,
@@ -31,7 +31,6 @@ pub struct App {
 pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> {
     let Adapters {
         database_url,
-        static_dir,
         session_key,
         secrets,
         engine,
@@ -74,8 +73,8 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         trust_forwarded_for: config.http.trust_forwarded_for,
     };
     let mut public = corral_api::router(api, provider_routes).route("/healthz", get(healthz));
-    if let Some(dir) = static_dir {
-        public = public.fallback_service(ServeDir::new(dir));
+    if let Some(ui) = Ui::find(config.http.ui_dir.as_deref())? {
+        public = public.fallback_service(ui.router());
     }
     let internal = match config.frontdoor {
         FrontDoor::ContainerSsh {} => corral_frontdoor_containerssh::router(Arc::new(access)),

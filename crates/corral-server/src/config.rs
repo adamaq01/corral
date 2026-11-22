@@ -3,7 +3,7 @@ mod quantity;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU64;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use corral_core::app::Catalog;
@@ -47,6 +47,9 @@ pub struct Http {
     pub base_url: BaseUrl,
     #[serde(default)]
     pub trust_forwarded_for: bool,
+    /// The directory of the built web UI, which must hold one. Without it, the UI is served from
+    /// `/usr/share/corral/web` when that holds one, as in the server image.
+    pub ui_dir: Option<PathBuf>,
 }
 
 fn public_addr() -> SocketAddr {
@@ -243,6 +246,7 @@ mod tests {
         assert_eq!(config.http.public_addr.to_string(), "0.0.0.0:8080");
         assert_eq!(config.http.internal_addr.to_string(), "0.0.0.0:8081");
         assert!(!config.http.trust_forwarded_for);
+        assert!(config.http.ui_dir.is_none());
         assert!(config.identity.local.is_some());
         assert!(config.identity.oidc.is_none());
         assert!(matches!(config.secrets, Secrets::Database {}));
@@ -429,5 +433,19 @@ mod tests {
         let config =
             Config::parse(&MINIMAL.replace("corral.lan:8080\"", "corral.lan:8080/\"")).unwrap();
         assert_eq!(config.http.base_url.as_str(), "http://corral.lan:8080");
+    }
+
+    #[test]
+    fn the_ui_directory_is_optional() {
+        assert!(Config::parse(MINIMAL).unwrap().http.ui_dir.is_none());
+        let config = Config::parse(&MINIMAL.replace(
+            "base_url = \"http://corral.lan:8080\"",
+            "base_url = \"http://corral.lan:8080\"\nui_dir = \"/srv/corral-web\"",
+        ))
+        .unwrap();
+        assert_eq!(
+            config.http.ui_dir.as_deref(),
+            Some(std::path::Path::new("/srv/corral-web"))
+        );
     }
 }

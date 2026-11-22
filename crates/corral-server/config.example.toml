@@ -11,6 +11,8 @@ internal_addr = "0.0.0.0:8081"
 base_url = "https://corral.adamaq01.fr"
 # Behind Traefik every peer is the proxy, so password-login limits key on X-Forwarded-For.
 trust_forwarded_for = true
+# The built web UI. The server image has it in /usr/share/corral/web, which is the default.
+# ui_dir = "/usr/share/corral/web"
 
 [identity.oidc]
 issuer = "https://auth.adamaq01.fr"

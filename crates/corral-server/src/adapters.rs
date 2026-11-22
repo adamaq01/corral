@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use anyhow::{Result, ensure};
 use corral_api::Key;
 use corral_engine_agent_sandbox::AgentSandboxConfig;
@@ -15,14 +13,12 @@ use crate::keys::{self, PROXY_PUBLIC_KEY, SECRETS_KEY, SESSION_KEY};
 
 const DATABASE_URL: &str = "DATABASE_URL";
 const DEFAULT_DATABASE_URL: &str = "sqlite:///var/lib/corral/corral.db";
-const STATIC_DIR: &str = "CORRAL_STATIC_DIR";
 const VAULT_TOKEN: &str = "CORRAL_VAULT_TOKEN";
 const OIDC_CLIENT_SECRET: &str = "CORRAL_OIDC_CLIENT_SECRET";
 
 /// The adapters the config selects, each with the secrets it reads from the environment.
 pub struct Adapters {
     pub database_url: String,
-    pub static_dir: Option<PathBuf>,
     pub session_key: Key,
     pub secrets: SecretsChoice,
     pub engine: EngineChoice,
@@ -96,7 +92,6 @@ impl Adapters {
         };
         Ok(Self {
             database_url: database_url_from(var(DATABASE_URL)),
-            static_dir: var(STATIC_DIR).map(PathBuf::from),
             session_key: keys::session_key(&secret(SESSION_KEY))?,
             secrets,
             engine,
@@ -203,7 +198,6 @@ mod tests {
         ));
         assert!(adapters.oidc.is_none());
         assert_eq!(adapters.database_url, "sqlite:///var/lib/corral/corral.db");
-        assert!(adapters.static_dir.is_none());
 
         let elsewhere = config(
             "[identity.oidc]\nissuer = \"https://idp\"\nclient_id = \"corral\"\n\

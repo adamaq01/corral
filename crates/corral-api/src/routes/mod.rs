@@ -7,12 +7,27 @@ mod me;
 mod sandboxes;
 
 use axum::Router;
+use axum::routing::any;
 use serde_json::Value;
 
+use crate::error::ApiError;
 use crate::state::AppState;
 
+/// Every path under these is the API's, unknown ones included.
+const PREFIXES: [&str; 2] = ["/api", "/auth"];
+
 pub(crate) fn all(providers: Vec<Value>) -> Router<AppState> {
-    Router::new()
+    let mut router = Router::new();
+    for prefix in PREFIXES {
+        for path in [
+            prefix,
+            &format!("{prefix}/"),
+            &format!("{prefix}/{{*path}}"),
+        ] {
+            router = router.route(path, any(not_found));
+        }
+    }
+    router
         .merge(auth::routes(providers))
         .merge(me::routes())
         .merge(catalog::routes())
@@ -20,4 +35,8 @@ pub(crate) fn all(providers: Vec<Value>) -> Router<AppState> {
         .merge(keys::routes())
         .merge(credentials::routes())
         .merge(admin::routes())
+}
+
+async fn not_found() -> ApiError {
+    ApiError::not_found()
 }

@@ -25,6 +25,10 @@ impl ApiError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
     }
 
+    pub(crate) fn not_found() -> Self {
+        Self::new(StatusCode::NOT_FOUND, "not found")
+    }
+
     pub(crate) fn unauthenticated() -> Self {
         Self::new(StatusCode::UNAUTHORIZED, "not signed in")
     }

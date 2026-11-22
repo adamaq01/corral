@@ -273,6 +273,44 @@ async fn providers_are_listed_as_they_describe_themselves() {
 }
 
 #[tokio::test]
+async fn unknown_api_and_auth_paths_are_json_404s_whatever_serves_the_rest() {
+    let world = World::new();
+    let app = router(api(&world), vec![stub()]).fallback(|| async { "the rest" });
+    let mut browser = Browser::new(&app, "192.0.2.10:50000");
+    for uri in [
+        "/api",
+        "/api/",
+        "/api/nope",
+        "/api/sandboxes/main/nope",
+        "/api/admin",
+        "/auth",
+        "/auth/",
+        "/auth/nope",
+        "/auth/nope/start",
+        "/auth/test",
+        "/auth/test/",
+        "/auth/test/nope",
+    ] {
+        for method in ["GET", "POST", "DELETE"] {
+            let reply = browser.call(method, uri, None).await;
+            assert_eq!(reply.status, StatusCode::NOT_FOUND, "{method} {uri}");
+            assert_eq!(
+                reply.json(),
+                json!({ "error": "not found" }),
+                "{method} {uri}"
+            );
+        }
+    }
+    assert_eq!(
+        browser.get("/api/me").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    for uri in ["/", "/apis", "/authors", "/sandboxes/main"] {
+        assert_eq!(browser.get(uri).await.text(), "the rest", "{uri}");
+    }
+}
+
+#[tokio::test]
 async fn provider_cookies_carry_a_login_between_steps_unreadable() {
     let corral = Corral::new();
     let mut browser = corral.browser();
