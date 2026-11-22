@@ -6,7 +6,7 @@
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { states } from '#lib/sandbox-status.js';
 
-	/** With `detail`, a failed sandbox's reason shows under the badge, cut to fit a table cell. */
+	/** With `detail`, a failed sandbox's reason shows under the badge, wrapped to fit a table cell. */
 	let { status, detail = false }: { status: SandboxStatus; detail?: boolean } = $props();
 </script>
 
@@ -33,8 +33,7 @@
 		{@render badge()}
 		{#if status.state === 'failed'}
 			<span
-				class="max-w-32 truncate text-xs text-muted-foreground sm:max-w-48"
-				title={status.detail}
+				class="max-w-32 text-xs wrap-break-word whitespace-normal text-muted-foreground first-letter:uppercase sm:max-w-56"
 			>
 				{status.detail}
 			</span>

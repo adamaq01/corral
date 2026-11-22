@@ -1,7 +1,7 @@
 <script lang="ts">
-	import FenceIcon from '@lucide/svelte/icons/fence';
 	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
+	import BrandMark from '#lib/components/brand-mark.svelte';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import UserMenu from '#lib/components/user-menu.svelte';
 	import type { Me } from '#lib/api/generated/index.js';
@@ -53,11 +53,7 @@
 				<Sidebar.MenuButton size="lg">
 					{#snippet child({ props })}
 						<a href="/sandboxes" {...props}>
-							<div
-								class="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground"
-							>
-								<FenceIcon class="size-4" />
-							</div>
+							<BrandMark />
 							<span class="truncate text-base font-semibold">Corral</span>
 						</a>
 					{/snippet}

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
-	import FenceIcon from '@lucide/svelte/icons/fence';
 	import { redirectLogin } from '#lib/api/auth.js';
+	import BrandMark from '#lib/components/brand-mark.svelte';
 	import PasswordSignIn from '#lib/components/password-sign-in.svelte';
 	import ThemeToggle from '#lib/components/theme-toggle.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
@@ -22,11 +22,7 @@
 		<ThemeToggle />
 	</div>
 	<div class="flex items-center gap-2 text-lg font-semibold">
-		<div
-			class="flex size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground"
-		>
-			<FenceIcon class="size-4" />
-		</div>
+		<BrandMark />
 		Corral
 	</div>
 	<Card.Root class="w-full max-w-sm">

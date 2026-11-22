@@ -1,5 +1,6 @@
 <script lang="ts">
 	import AppSidebar from '#lib/components/app-sidebar.svelte';
+	import BrandMark from '#lib/components/brand-mark.svelte';
 	import ThemeToggle from '#lib/components/theme-toggle.svelte';
 	import { SIDEBAR_COOKIE_NAME } from '#lib/components/ui/sidebar/constants.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
@@ -18,7 +19,10 @@
 			class="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur"
 		>
 			<Sidebar.Trigger class="-ml-1" />
-			<span class="font-semibold md:hidden">Corral</span>
+			<a href="/sandboxes" class="flex items-center gap-2 font-semibold md:hidden">
+				<BrandMark class="size-6 rounded-md [&_svg]:size-3.5" />
+				Corral
+			</a>
 			<div class="ml-auto">
 				<ThemeToggle />
 			</div>

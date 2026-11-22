@@ -111,6 +111,9 @@ for (const scheme of ['light', 'dark'] as const) {
 				await answer(page, '/api/admin/sandboxes', sandboxes);
 				await page.goto('/admin/sandboxes');
 				await page.getByRole('row', { name: /kernel/ }).waitFor();
+				const detail = page.getByText('the image could not be pulled');
+				await expect(detail).toBeVisible();
+				expect(await detail.evaluate((text) => text.scrollWidth <= text.clientWidth)).toBe(true);
 				await shot(page, 'admin-sandboxes');
 			});
 
