@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use corral_core::ports::SshTarget;
-use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy, router};
+use corral_frontdoor_containerssh::router;
 use serde_json::{Value, json};
 use ssh_key::{HashAlg, PrivateKey};
 use tempfile::NamedTempFile;
@@ -71,12 +71,7 @@ async fn line_containing(lines: &mut mpsc::UnboundedReceiver<String>, needle: &s
 
 async fn serve_webhooks(w: &World) -> u16 {
     let (webhooks, port) = listen().await;
-    let app = router(
-        w.access.clone(),
-        FrontDoorConfig {
-            lockout: LockoutPolicy::default(),
-        },
-    );
+    let app = router(w.access.clone());
     tokio::spawn(async move { axum::serve(webhooks, app).await.unwrap() });
     port
 }
@@ -246,8 +241,6 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
         .with_wait_for(WaitFor::message_on_stderr("Server listening on"))
         .with_env_var("CORRAL_SSHD", "1")
         .with_env_var("CORRAL_SSH_HOST_KEY", private_pem(&host_key))
-        // Images built before the engine wrote this file read the key from the variable.
-        .with_env_var("CORRAL_AUTHORIZED_KEY", public_line(&proxy_key))
         .with_copy_to(
             "/etc/ssh/corral_authorized_keys",
             public_line(&proxy_key).into_bytes(),

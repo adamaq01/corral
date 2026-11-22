@@ -8,7 +8,6 @@ use corral_core::app::{Accounts, Credentials, Keys, Sandboxes, SshAccess};
 use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use corral_engine_docker::{DockerConfig, DockerEngine};
-use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy};
 use corral_identity_local::LocalProvider;
 use corral_identity_oidc::{OidcConfig, OidcProvider};
 use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig, OpenBaoStore};
@@ -167,12 +166,7 @@ fn public_router(api: ApiState) -> Router {
 
 fn internal_router(frontdoor: FrontDoor, access: SshAccess) -> Router {
     let router = match frontdoor {
-        FrontDoor::ContainerSsh => corral_frontdoor_containerssh::router(
-            Arc::new(access),
-            FrontDoorConfig {
-                lockout: LockoutPolicy::default(),
-            },
-        ),
+        FrontDoor::ContainerSsh => corral_frontdoor_containerssh::router(Arc::new(access)),
     };
     router.route("/healthz", get(healthz))
 }

@@ -101,8 +101,8 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
 - Put the web API behind your existing HTTPS reverse proxy and use an `https://` `base_url`: the
   session cookie is marked `Secure` exactly then. Behind a proxy, set `trust_forwarded_for = true`
   under `[http]`, so password-login limits count each client, not the proxy.
-- ContainerSSH accepts public keys only, and Corral locks out a source address after 10 failed
-  connections in 5 minutes. ContainerSSH's audit log is off.
+- ContainerSSH accepts public keys only, and Corral locks out a source address (for IPv6, its
+  /64) after 10 failed connections in 5 minutes. ContainerSSH's audit log is off.
 
 ## Known limitation: one-shot commands
 
