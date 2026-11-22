@@ -1,8 +1,8 @@
 # Corral on Docker Compose
 
-Two containers run the whole service: Corral (the API, local accounts, SQLite and the Docker
-engine) and [ContainerSSH](https://containerssh.io) (the SSH front door). Each sandbox is a Docker
-container with its home on a named volume. Users reach a sandbox with any SSH client:
+Two containers run the whole service: Corral (the web UI and API, local accounts, SQLite and the
+Docker engine) and [ContainerSSH](https://containerssh.io) (the SSH front door). Each sandbox is a
+Docker container with its home on a named volume. Users reach a sandbox with any SSH client:
 
 ```
 ssh -p 48291 <handle>+<sandbox>@<public_host>
@@ -10,7 +10,7 @@ ssh -p 48291 <handle>+<sandbox>@<public_host>
 
 ## Install
 
-You need Docker with the Compose plugin, `ssh-keygen` and `curl`.
+You need Docker with the Compose plugin and `ssh-keygen`.
 
 1. Copy this directory to the host and keep it private, since it will hold the key that opens
    every sandbox and the key that decrypts every stored credential:
@@ -55,43 +55,40 @@ You need Docker with the Compose plugin, `ssh-keygen` and `curl`.
 
 ## First sandbox
 
-The JSON API lives at `base_url`. Log in, register a public key, and create a sandbox:
+Open `base_url` in a browser and sign in with the admin account from step 6. Then:
 
-```sh
-curl -c jar -H 'Content-Type: application/json' \
-  -d '{"username": "<name>", "password": "<password>"}' <base_url>/auth/local/login
-curl -b jar -H 'Content-Type: application/json' \
-  -d "{\"label\": \"laptop\", \"publicKey\": \"$(cat ~/.ssh/id_ed25519.pub)\"}" <base_url>/api/keys
-curl -b jar -H 'Content-Type: application/json' -d '{"name": "main"}' <base_url>/api/sandboxes
-ssh -p 48291 <name>+main@<public_host>
-```
+1. Under **SSH keys**, add your public key, such as the contents of `~/.ssh/id_ed25519.pub`.
+2. Under **Sandboxes**, create a sandbox. The first one is called `main` unless you name it
+   otherwise, and it pulls the sandbox image (`ghcr.io/adamaq01/corral-sandbox`, about 2 GB
+   unpacked), so it can take a few minutes to start.
+3. Copy a command from the sandbox's page and connect:
 
-The first sandbox pulls the sandbox image (`ghcr.io/adamaq01/corral-sandbox`, about 2 GB
-unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
-`Content-Type: application/json`, including the ones without a body, such as
-`POST /api/sandboxes/main/stop`.
+   ```sh
+   ssh -p 48291 <name>+main@<public_host>
+   ```
+
+The sandbox's page also shows the Herdr command (`hc machine add ...`) and an `~/.ssh/config`
+block, and wakes, stops, restarts or deletes the sandbox.
 
 - `ssh -p 48291 <name>@<public_host>` opens the default sandbox: the first one created, or the
-  one set with `POST /api/sandboxes/<sandbox>/default`.
-- Herdr: `hc machine add <name>+main@<public_host>:48291 --name main`.
+  one set with **Make default** on its page.
 - Port forwarding works: `ssh -p 48291 -L 3000:127.0.0.1:3000 <name>+main@<public_host>`.
-- `PUT /api/credentials/<NAME>` with `{"value": "..."}` stores a credential, encrypted with
-  `CORRAL_SECRETS_KEY`. It reaches SSH sessions as an environment variable from the sandbox's
-  next wake or `POST /api/sandboxes/<sandbox>/restart` on. Values are never returned.
-- Admins add local accounts with `POST /auth/local/accounts` and
-  `{"username": "...", "password": "...", "role": "member"}`, list them with
-  `GET /auth/local/accounts`, reset a password with `PUT /auth/local/accounts/<name>/password`
-  and `{"password": "..."}`, and delete one, with the user it logged in as, with
-  `DELETE /auth/local/accounts/<name>`. `GET /api/admin/users` lists users with their status
-  (`active`, `disabled` or `deleting`), and `POST /api/admin/users/<id>/disable` and `/enable`
-  switch it.
-- `DELETE /api/admin/users/<id>` (admins) or `DELETE /api/me` (anyone, for themselves) deletes a
-  user with their sandboxes and homes, keys, credentials and local account. The username is free
-  again afterwards, and a new account with it starts empty. A deletion that fails part way leaves
-  the user with status `deleting`, unable to log in, and the same request again finishes it.
+- **Credentials** stores secrets such as LLM API keys, encrypted with `CORRAL_SECRETS_KEY`. Each
+  reaches SSH sessions as an environment variable from the sandbox's next wake or restart on.
+  Values are never shown again.
+- Admins add, reset and delete local accounts under **Local accounts**, and disable, enable or
+  delete users under **Users**. **All sandboxes** lists every user's sandboxes.
+- Deleting a user, as an admin or from your own **Profile**, deletes their sandboxes with their
+  homes, keys, credentials and local account. The username is free again afterwards, and a new
+  account with it starts empty. A deletion that fails part way leaves the user with status
+  Deleting, unable to log in, and deleting them again finishes it.
 - A sandbox sleeps (its container stops) after 30 minutes with no SSH session and no Herdr
-  terminal at work (`timeout_secs` under `[idle]`), and wakes on the next SSH login. Sleep keeps the container, so its files
-  survive until the sandbox is deleted.
+  terminal at work (`timeout_secs` under `[idle]`), and wakes on the next SSH login. Sleep keeps
+  the container, so its files survive until the sandbox is deleted.
+
+The web UI runs on a JSON API at the same address (`/api` and `/auth`), which scripts can call
+too. Every `POST` and `PUT` there needs `Content-Type: application/json`, including the ones
+without a body, such as `POST /api/sandboxes/main/stop`.
 
 ## Security
 
@@ -106,9 +103,10 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
   sandbox can reach it.
 - Every sandbox on `corral-sandboxes` can reach every other sandbox's ports. Users have
   passwordless sudo inside their own sandbox. Both are accepted for a group of trusted users.
-- Put the web API behind your existing HTTPS reverse proxy and use an `https://` `base_url`: the
-  session cookie is marked `Secure` exactly then. Behind a proxy, set `trust_forwarded_for = true`
-  under `[http]`, so password-login limits count each client, not the proxy.
+- Put the web UI and API behind your existing HTTPS reverse proxy and use an `https://`
+  `base_url`: the session cookie is marked `Secure` exactly then. Behind a proxy, set
+  `trust_forwarded_for = true` under `[http]`, so password-login limits count each client, not
+  the proxy. Over plain HTTP on a LAN the UI works too, copy buttons included.
 - ContainerSSH accepts public keys only, and Corral locks out a source address (for IPv6, its
   /64) after 10 failed connections in 5 minutes. ContainerSSH's audit log is off.
 
@@ -134,7 +132,7 @@ the same tests.
   pins the Corral image tag (`latest` when unset).
 - `docker compose down` stops Corral and ContainerSSH only. Sandbox containers are not part of
   the Compose project: running ones keep running, and they hold the `corral-sandboxes` network
-  until they are deleted through the API.
+  until they are deleted in the web UI.
 - Logs: `docker compose logs corral`. `RUST_LOG` in `.env` sets the level (`info` by default).
 
 ## Optional adapters
@@ -148,7 +146,7 @@ configuration; `crates/corral-server/config.example.toml` shows a Kubernetes ins
   URI. Members of `member_group` (default `corral-users`) log in as members and members of
   `admin_group` (default `corral-admins`) as admins; anyone else is refused, and a user who
   leaves both groups is disabled at their next login. Local accounts keep working alongside
-  it, and `GET /auth/providers` lists the login methods that are on.
+  it, and the sign-in page offers each login method that is on.
 - Vault or OpenBao: add a `[secrets]` section with `kind = "vault"` and `address`, and a
   `[secrets.auth]` section with `kind = "token"`, with `CORRAL_VAULT_TOKEN` in `.env`, to keep
   credentials in a KV v2 mount (`secret` by default) instead of in the database. The adapter
