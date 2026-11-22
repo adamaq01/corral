@@ -138,6 +138,13 @@ ok "generated ContainerSSH's host and proxy keys, and gave Corral the proxy's pu
 docker compose up -d --wait >>"$log" 2>&1
 ok "docker compose up -d --wait: corral and containerssh are healthy"
 
+page=$(curl -sS --fail-with-body -D "$work/ui.headers" "$base/sandboxes/main")
+[[ "$page" == *"<title>Corral</title>"* ]] || fail "GET /sandboxes/main is not the web UI: $page"
+grep -qi "^content-security-policy: .*script-src 'self' 'sha256-" "$work/ui.headers" \
+  || fail "the web UI's CSP allows no inline script: $(cat "$work/ui.headers")"
+expect "GET /api/nope" '{"error":"not found"}' "$(curl -sS "$base/api/nope")"
+ok "the image serves the web UI at a deep link with its CSP, and the API's JSON 404s"
+
 admin_password=$(head -c 18 /dev/urandom | base64)
 docker compose exec corral corral-server local-account create adam --admin <<<"$admin_password" >>"$log"
 ok "docker compose exec corral corral-server local-account create adam --admin"

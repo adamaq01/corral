@@ -27,8 +27,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corral-cargo-registry
  && cp "target/$target/release/corral-server" /corral-server
 RUN mkdir /data
 
+# The web UI is the same files on every platform, so it builds once, natively.
+FROM --platform=$BUILDPLATFORM node:22.22.1-trixie-slim AS web
+WORKDIR /web
+COPY web/package.json web/package-lock.json web/.npmrc ./
+RUN --mount=type=cache,target=/root/.npm,id=corral-npm npm ci
+COPY web ./
+RUN npm run build
+
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /corral-server /usr/local/bin/corral-server
+COPY --from=web /web/build /usr/share/corral/web
 COPY --from=build --chown=65532:65532 /data /var/lib/corral
 ENTRYPOINT ["corral-server"]
 CMD ["serve"]
