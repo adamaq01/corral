@@ -52,6 +52,8 @@ impl Cluster {
             eprintln!("skipped: CORRAL_TEST_KUBE_NAMESPACE is not set");
             return None;
         };
+        // A workspace build also compiles in aws-lc-rs, so rustls needs to be told which to use.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client = Client::try_default().await.unwrap();
         let config = AgentSandboxConfig {
             namespace: namespace.clone(),

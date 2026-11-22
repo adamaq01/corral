@@ -802,6 +802,7 @@ dependencies = [
  "corral-core",
  "k8s-openapi",
  "kube",
+ "rustls",
  "secrecy",
  "serde",
  "serde_json",
