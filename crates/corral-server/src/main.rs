@@ -1,6 +1,7 @@
 mod adapters;
 mod cli;
 mod config;
+mod crypto;
 mod healthcheck;
 mod keys;
 mod local_account;
@@ -22,6 +23,7 @@ use crate::config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    crypto::install_provider();
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(
