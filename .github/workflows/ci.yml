@@ -64,9 +64,38 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: tests/e2e/compose.sh
 
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # The Playwright harness builds and runs the real corral-server.
+      - uses: Swatinem/rust-cache@v2
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright
+          path: |
+            web/test-results
+            web/playwright-report
+          retention-days: 14
+
   publish:
     if: github.event_name == 'push'
-    needs: [check, test]
+    needs: [check, test, web]
     runs-on: ubuntu-latest
     permissions:
       contents: read
