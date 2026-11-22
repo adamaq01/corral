@@ -11,9 +11,10 @@ use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
 use corral_identity_local::LocalProvider;
 use corral_identity_oidc::OidcProvider;
+use corral_secrets_database::DatabaseSecretStore;
 use corral_secrets_openbao::OpenBaoStore;
 use corral_sql::Pool;
-use corral_store_sql::{DatabaseSecretStore, Store};
+use corral_store_sql::Store;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower_http::services::ServeDir;
@@ -36,8 +37,9 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         engine,
         oidc,
     } = Adapters::resolve(config)?;
-    let store = store(&database_url).await?;
-    let credentials = Credentials::new(secret_store(secrets, &store).await?);
+    let pool = database(&database_url).await?;
+    let store = Arc::new(Store::open(pool.clone()).await?);
+    let credentials = Credentials::new(secret_store(secrets, &pool).await?);
     let providers = providers(config, oidc, &store).await?;
     let (engine, lifecycle) = start_engine(config, engine, shutdown).await?;
     let sandboxes = Sandboxes::new(
@@ -80,11 +82,14 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     })
 }
 
-pub async fn store(database_url: &str) -> Result<Arc<Store>> {
-    let pool = Pool::connect(database_url)
+pub async fn database(database_url: &str) -> Result<Pool> {
+    Pool::connect(database_url)
         .await
-        .context("opening the database at DATABASE_URL")?;
-    Ok(Arc::new(Store::open(pool).await?))
+        .context("opening the database at DATABASE_URL")
+}
+
+pub async fn store(database_url: &str) -> Result<Arc<Store>> {
+    Ok(Arc::new(Store::open(database(database_url).await?).await?))
 }
 
 pub fn local_provider(config: &Config, store: &Arc<Store>) -> Result<Option<LocalProvider>> {
@@ -94,10 +99,10 @@ pub fn local_provider(config: &Config, store: &Arc<Store>) -> Result<Option<Loca
     Ok(Some(LocalProvider::new(store.clone(), store.clone())?))
 }
 
-async fn secret_store(choice: SecretsChoice, store: &Arc<Store>) -> Result<Arc<dyn SecretStore>> {
+async fn secret_store(choice: SecretsChoice, pool: &Pool) -> Result<Arc<dyn SecretStore>> {
     Ok(match choice {
         SecretsChoice::Database(keyring) => {
-            Arc::new(DatabaseSecretStore::new(store.clone(), keyring))
+            Arc::new(DatabaseSecretStore::open(pool.clone(), keyring).await?)
         }
         SecretsChoice::OpenBao(config) => Arc::new(OpenBaoStore::connect(config).await?),
     })

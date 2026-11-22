@@ -1,5 +1,3 @@
-mod secrets;
-
 use std::sync::Arc;
 
 use chrono::{DateTime, TimeDelta, Utc};
@@ -23,7 +21,6 @@ async fn meets_every_repo_contract(url: &str) {
             .expect("reopen a migrated database"),
     );
     repos::every_repo(&*store, &*store, &*store, &*store).await;
-    secrets::database_secret_store(&store, url).await;
 }
 
 #[tokio::test]

@@ -1,25 +1,27 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use corral_core::domain::{CredentialName, UserId};
 use corral_core::ports::{CredentialMap, SecretStore};
 use corral_core::{Error, Result};
+use corral_sql::{Migrations, Pool, db_error, on_pool, parsed};
 use secrecy::{ExposeSecret, SecretString};
 
-use super::Keyring;
-use super::cipher::{Sealed, open, seal};
-use crate::Store;
-use corral_sql::{db_error, on_pool, parsed};
+use crate::Keyring;
+use crate::cipher::{Sealed, open, seal};
 
 pub struct DatabaseSecretStore {
-    store: Arc<Store>,
+    pool: Pool,
     keyring: Keyring,
 }
 
 impl DatabaseSecretStore {
-    #[must_use]
-    pub fn new(store: Arc<Store>, keyring: Keyring) -> Self {
-        Self { store, keyring }
+    pub async fn open(pool: Pool, keyring: Keyring) -> Result<Self> {
+        pool.migrate(Migrations::new(
+            "credentials",
+            sqlx::migrate!("migrations/sqlite"),
+            sqlx::migrate!("migrations/postgres"),
+        ))
+        .await?;
+        Ok(Self { pool, keyring })
     }
 
     fn unseal(&self, user: UserId, name: &CredentialName, sealed: &[u8]) -> Result<SecretString> {
@@ -47,7 +49,7 @@ impl SecretStore for DatabaseSecretStore {
             value.expose_secret().as_bytes(),
         )
         .to_bytes();
-        on_pool!(self.store.pool, |pool| {
+        on_pool!(self.pool, |pool| {
             sqlx::query(
                 "insert into credentials (user_id, name, sealed) values ($1, $2, $3) \
                  on conflict (user_id, name) do update set sealed = excluded.sealed",
@@ -63,7 +65,7 @@ impl SecretStore for DatabaseSecretStore {
     }
 
     async fn remove(&self, user: UserId, name: &CredentialName) -> Result<bool> {
-        let deleted = on_pool!(self.store.pool, |pool| {
+        let deleted = on_pool!(self.pool, |pool| {
             sqlx::query("delete from credentials where user_id = $1 and name = $2")
                 .bind(user.0)
                 .bind(name.as_str())
@@ -76,7 +78,7 @@ impl SecretStore for DatabaseSecretStore {
     }
 
     async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
-        let names: Vec<String> = on_pool!(self.store.pool, |pool| {
+        let names: Vec<String> = on_pool!(self.pool, |pool| {
             sqlx::query_scalar("select name from credentials where user_id = $1 order by name")
                 .bind(user.0)
                 .fetch_all(pool)
@@ -90,7 +92,7 @@ impl SecretStore for DatabaseSecretStore {
     }
 
     async fn load(&self, user: UserId) -> Result<CredentialMap> {
-        let rows: Vec<(String, Vec<u8>)> = on_pool!(self.store.pool, |pool| {
+        let rows: Vec<(String, Vec<u8>)> = on_pool!(self.pool, |pool| {
             sqlx::query_as("select name, sealed from credentials where user_id = $1")
                 .bind(user.0)
                 .fetch_all(pool)

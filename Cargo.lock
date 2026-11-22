@@ -869,6 +869,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "corral-secrets-database"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm 0.11.1",
+ "async-trait",
+ "base64 0.23.1",
+ "corral-core",
+ "corral-sql",
+ "secrecy",
+ "sqlx",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "corral-secrets-openbao"
 version = "0.1.0"
 dependencies = [
@@ -903,6 +919,7 @@ dependencies = [
  "corral-frontdoor-containerssh",
  "corral-identity-local",
  "corral-identity-oidc",
+ "corral-secrets-database",
  "corral-secrets-openbao",
  "corral-sql",
  "corral-store-sql",
@@ -937,17 +954,13 @@ dependencies = [
 name = "corral-store-sql"
 version = "0.1.0"
 dependencies = [
- "aes-gcm 0.11.1",
  "async-trait",
- "base64 0.23.1",
  "chrono",
  "corral-core",
  "corral-sql",
- "secrecy",
  "sqlx",
  "tokio",
  "uuid",
- "zeroize",
 ]
 
 [[package]]

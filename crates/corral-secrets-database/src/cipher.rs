@@ -2,7 +2,7 @@ use aes_gcm::Nonce;
 use aes_gcm::aead::{Aead, Generate, Payload};
 use corral_core::{Error, Result};
 
-use super::Keyring;
+use crate::Keyring;
 
 const NONCE_LEN: usize = 12;
 
@@ -85,7 +85,7 @@ mod tests {
     use corral_core::Error;
 
     use super::{Sealed, open, seal};
-    use crate::secrets::Keyring;
+    use crate::Keyring;
 
     fn kr() -> Keyring {
         Keyring::from_env(&format!("1:{}", STANDARD.encode([1; 32]))).unwrap()

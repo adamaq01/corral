@@ -3,7 +3,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use corral_api::Key;
 
-use corral_store_sql::Keyring;
+use corral_secrets_database::Keyring;
 use secrecy::{ExposeSecret, SecretString};
 use ssh_key::PublicKey;
 use ssh_key::rand_core::{OsRng, RngCore};

@@ -50,6 +50,6 @@ mod tests {
             &MemoryLocalAccountRepo::default(),
         )
         .await;
-        super::secrets::secret_store(&users, &MemorySecretStore::default()).await;
+        super::secrets::secret_store(&MemorySecretStore::default()).await;
     }
 }

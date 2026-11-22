@@ -4,21 +4,16 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 async-trait.workspace = true
-base64.workspace = true
 chrono.workspace = true
 corral-core = { path = "../corral-core" }
 corral-sql = { path = "../corral-sql" }
-secrecy.workspace = true
 sqlx = { workspace = true, features = ["chrono", "macros", "migrate", "postgres", "sqlite", "uuid"] }
 uuid.workspace = true
-zeroize = "1.9.2"
 
 [dev-dependencies]
 corral-core = { path = "../corral-core", features = ["contract"] }
 corral-sql = { path = "../corral-sql", features = ["testing"] }
-sqlx = { workspace = true, features = ["any"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

@@ -1,13 +1,10 @@
 mod keys;
 mod local_accounts;
 mod sandboxes;
-mod secrets;
 mod users;
 
 use corral_core::Result;
 use corral_sql::{Migrations, Pool};
-
-pub use crate::secrets::{DatabaseSecretStore, Keyring};
 
 pub struct Store {
     pool: Pool,

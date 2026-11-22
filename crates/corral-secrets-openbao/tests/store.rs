@@ -9,7 +9,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use corral_core::Error;
 use corral_core::contract::secrets;
 use corral_core::domain::{CredentialName, UserId};
-use corral_core::fakes::{MemoryUserRepo, exposed};
+use corral_core::fakes::exposed;
 use corral_core::ports::SecretStore;
 use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig, OpenBaoStore};
 use secrecy::SecretString;
@@ -45,7 +45,7 @@ fn path(user: UserId) -> String {
 async fn meets_the_secret_store_contract() {
     let bao = OpenBao::start().await;
     let store = OpenBaoStore::connect(bao.root_config()).await.unwrap();
-    secrets::secret_store(&MemoryUserRepo::default(), &store).await;
+    secrets::secret_store(&store).await;
 }
 
 #[tokio::test]

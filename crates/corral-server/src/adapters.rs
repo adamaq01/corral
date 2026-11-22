@@ -5,8 +5,8 @@ use corral_api::Key;
 use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
 use corral_identity_oidc::OidcConfig;
+use corral_secrets_database::Keyring;
 use corral_secrets_openbao::{OpenBaoAuth, OpenBaoConfig};
-use corral_store_sql::Keyring;
 use secrecy::SecretString;
 use ssh_key::PublicKey;
 

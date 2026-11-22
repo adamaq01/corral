@@ -29,13 +29,6 @@ create table sandboxes (
     unique (owner, name)
 ) strict;
 
-create table credentials (
-    user_id blob not null references users on delete cascade,
-    name text not null,
-    sealed blob not null,
-    primary key (user_id, name)
-) strict;
-
 create table local_accounts (
     username text primary key not null,
     password_hash text not null,

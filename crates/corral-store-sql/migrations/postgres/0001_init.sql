@@ -30,13 +30,6 @@ create table sandboxes (
 
 alter table users add column default_sandbox text references sandboxes on delete set null;
 
-create table credentials (
-    user_id uuid not null references users on delete cascade,
-    name text collate "C" not null,
-    sealed bytea not null,
-    primary key (user_id, name)
-);
-
 create table local_accounts (
     username text collate "C" primary key,
     password_hash text not null,
