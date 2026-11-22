@@ -3,6 +3,7 @@ use corral_core::Result;
 use crate::{Exec, herdr, pgrep};
 
 const CONTAINER_INIT: &str = "1";
+const FORWARD_SERVER: &str = "containerssh-agent forward-server";
 
 /// How an SSH session shows in a sandbox's process list, which depends on how the engine
 /// connects sessions.
@@ -26,15 +27,23 @@ impl Sessions {
             Self::Sshd => pgrep::matches(exec, &["pgrep", "-f", "sshd: sandbox"]).await,
             // pgrep leaves itself out, and it is this probe's own exec.
             Self::Exec => {
-                let argv = ["pgrep", "-P", "0"];
+                let argv = ["pgrep", "-a", "-P", "0"];
                 let output = exec.run(&argv).await?;
                 match output.code {
-                    0 | 1 => Ok(output.stdout.lines().any(|pid| pid != CONTAINER_INIT)),
+                    0 | 1 => Ok(output.stdout.lines().any(is_exec_session)),
                     code => Err(pgrep::unexpected_exit(&argv, code)),
                 }
             }
         }
     }
+}
+
+// A `pgrep -a` line of a process whose parent is outside the container. The ContainerSSH
+// agent serves port forwards from a process that outlives the connection that started it, so
+// that process never counts as a session.
+fn is_exec_session(line: &str) -> bool {
+    let (pid, command) = line.split_once(' ').unwrap_or((line, ""));
+    pid != CONTAINER_INIT && !command.ends_with(FORWARD_SERVER)
 }
 
 #[cfg(test)]
@@ -43,7 +52,7 @@ mod tests {
     use crate::testing::ScriptedExec;
 
     const SSHD: &str = "pgrep -f sshd: sandbox";
-    const EXEC_ROOTS: &str = "pgrep -P 0";
+    const EXEC_ROOTS: &str = "pgrep -a -P 0";
     const HERDR_CORE: &str = "pgrep -x herdr-core";
     const HERDR_LIST: &str = "hc ls --json";
 
@@ -62,13 +71,33 @@ mod tests {
 
     #[tokio::test]
     async fn an_exec_root_other_than_init_is_a_session() {
-        let session = ScriptedExec::default().exits(EXEC_ROOTS, 0, "1\n57\n");
-        let init_alone = no_herdr(ScriptedExec::default().exits(EXEC_ROOTS, 0, "1\n"));
+        let session =
+            ScriptedExec::default().exits(EXEC_ROOTS, 0, "1 /usr/bin/tini\n57 /bin/bash -l\n");
+        let init_alone =
+            no_herdr(ScriptedExec::default().exits(EXEC_ROOTS, 0, "1 /usr/bin/tini\n"));
         let nothing = no_herdr(ScriptedExec::default().exits(EXEC_ROOTS, 1, ""));
 
         assert!(is_active(Sessions::Exec, &session).await.unwrap());
         assert!(!is_active(Sessions::Exec, &init_alone).await.unwrap());
         assert!(!is_active(Sessions::Exec, &nothing).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_port_forward_server_is_not_a_session() {
+        const FORWARDER: &str = "/opt/containerssh-agent/usr/bin/containerssh-agent forward-server";
+        let forwards_only = no_herdr(ScriptedExec::default().exits(
+            EXEC_ROOTS,
+            0,
+            &format!("1 /usr/bin/tini -- /usr/local/bin/corral-entrypoint\n35 {FORWARDER}\n75 {FORWARDER}\n"),
+        ));
+        let with_a_shell = ScriptedExec::default().exits(
+            EXEC_ROOTS,
+            0,
+            &format!("1 /usr/bin/tini\n35 {FORWARDER}\n80 /bin/bash -l\n"),
+        );
+
+        assert!(!is_active(Sessions::Exec, &forwards_only).await.unwrap());
+        assert!(is_active(Sessions::Exec, &with_a_shell).await.unwrap());
     }
 
     #[tokio::test]
