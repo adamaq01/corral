@@ -9,15 +9,16 @@ mod routes;
 mod session;
 mod state;
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::middleware::from_fn;
 
 pub use cookie::Key;
-pub use session::{Session, SessionCodec};
-pub use state::{ApiState, SshEndpoint};
+pub use state::{Api, Providers, SshEndpoint};
 
-pub fn router(state: ApiState) -> Router {
+pub fn router(api: Api) -> Router {
     routes::all()
         .layer(from_fn(json_only::require_json))
-        .with_state(state::AppState::new(state))
+        .with_state(Arc::new(api))
 }

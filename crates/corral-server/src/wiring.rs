@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::get;
-use corral_api::{ApiState, SessionCodec, SshEndpoint};
+use corral_api::{Api, Providers, SshEndpoint};
 use corral_core::app::{Accounts, Credentials, Keys, Limits, Sandboxes, SshAccess};
 use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
@@ -57,17 +57,18 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         },
     );
     let access = SshAccess::new(store.clone(), store.clone(), sandboxes.clone());
-    let api = ApiState {
+    let api = Api {
         accounts: Accounts::new(store.clone()),
         keys: Keys::new(store.clone()),
         credentials,
         sandboxes,
+        providers: Providers::new(providers),
         ssh: SshEndpoint {
             host: config.ssh.public_host.clone(),
             port: config.ssh.public_port,
         },
-        providers,
-        sessions: SessionCodec::new(session_key, config.http.base_url.is_https()),
+        session_key,
+        secure_cookies: config.http.base_url.is_https(),
         trust_forwarded_for: config.http.trust_forwarded_for,
     };
     let mut public = corral_api::router(api).route("/healthz", get(healthz));

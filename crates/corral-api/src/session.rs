@@ -1,31 +1,30 @@
+use std::convert::Infallible;
+
+use axum::extract::FromRequestParts;
+use axum::http::HeaderMap;
+use axum::http::request::Parts;
+use axum::response::{IntoResponseParts, ResponseParts};
 use axum_extra::extract::cookie::PrivateCookieJar;
 use chrono::{DateTime, TimeDelta, Utc};
 use cookie::time::{Duration as CookieDuration, OffsetDateTime};
-use cookie::{Cookie, CookieBuilder, Key, SameSite};
+use cookie::{Cookie, CookieBuilder, SameSite};
 use corral_core::domain::UserId;
 use corral_core::ports::PendingLogin;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::state::{Api, AppState};
 
 const LOGIN_COOKIE: &str = "corral_login";
 const SESSION_COOKIE: &str = "corral_session";
 const LOGIN_TTL: CookieDuration = CookieDuration::minutes(10);
 const SESSION_TTL: TimeDelta = TimeDelta::days(7);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Session {
-    pub user_id: UserId,
-    pub expires_at: DateTime<Utc>,
-}
-
-impl Session {
-    #[must_use]
-    pub fn new(user_id: UserId, now: DateTime<Utc>) -> Self {
-        Self {
-            user_id,
-            expires_at: now + SESSION_TTL,
-        }
-    }
+/// The browser's signed-in user and its redirect login in progress, each in a private cookie.
+/// Changes reach the browser when the session is part of the response.
+pub(crate) struct Session {
+    jar: PrivateCookieJar,
+    secure: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,76 +39,96 @@ struct SessionPayload {
     expires_at: DateTime<Utc>,
 }
 
-pub struct SessionCodec {
-    key: Key,
-    secure: bool,
-}
+impl Session {
+    pub(crate) fn from_headers(headers: &HeaderMap, api: &Api) -> Self {
+        Self {
+            jar: PrivateCookieJar::from_headers(headers, api.session_key.clone()),
+            secure: api.secure_cookies,
+        }
+    }
 
-impl SessionCodec {
-    #[must_use]
-    pub fn new(key: Key, secure: bool) -> Self {
-        Self { key, secure }
+    pub(crate) fn current(&self, now: DateTime<Utc>) -> Option<UserId> {
+        let payload: SessionPayload = self.read(SESSION_COOKIE)?;
+        (payload.expires_at > now).then_some(UserId(payload.user))
     }
 
     #[must_use]
-    pub fn encode_login(&self, provider: &str, pending: &PendingLogin) -> Cookie<'static> {
+    pub(crate) fn start(self, user: UserId, now: DateTime<Utc>) -> Self {
+        let expires_at = now + SESSION_TTL;
+        let payload = SessionPayload {
+            user: user.0,
+            expires_at,
+        };
+        let expires = OffsetDateTime::from_unix_timestamp(expires_at.timestamp()).ok();
+        let cookie = self.cookie(SESSION_COOKIE, &payload).expires(expires);
+        self.add(cookie)
+    }
+
+    #[must_use]
+    pub(crate) fn end(self) -> Self {
+        self.remove(SESSION_COOKIE)
+    }
+
+    #[must_use]
+    pub(crate) fn start_login(self, provider: &str, pending: &PendingLogin) -> Self {
         let payload = LoginPayload {
             provider: provider.to_owned(),
             pending: pending.0.clone(),
         };
-        self.cookie(LOGIN_COOKIE, serde_json::json!(payload).to_string())
-            .max_age(LOGIN_TTL)
-            .build()
+        let cookie = self.cookie(LOGIN_COOKIE, &payload).max_age(LOGIN_TTL);
+        self.add(cookie)
     }
 
     /// The login in progress, only if it was started with `provider`.
-    #[must_use]
-    pub fn decode_login(jar: &PrivateCookieJar, provider: &str) -> Option<PendingLogin> {
-        let cookie = jar.get(LOGIN_COOKIE)?;
-        let payload: LoginPayload = serde_json::from_str(cookie.value()).ok()?;
+    pub(crate) fn pending_login(&self, provider: &str) -> Option<PendingLogin> {
+        let payload: LoginPayload = self.read(LOGIN_COOKIE)?;
         (payload.provider == provider).then_some(PendingLogin(payload.pending))
     }
 
     #[must_use]
-    pub fn encode_session(&self, session: &Session) -> Cookie<'static> {
-        let payload = SessionPayload {
-            user: session.user_id.0,
-            expires_at: session.expires_at,
-        };
-        let expires = OffsetDateTime::from_unix_timestamp(session.expires_at.timestamp()).ok();
-        self.cookie(SESSION_COOKIE, serde_json::json!(payload).to_string())
-            .expires(expires)
-            .build()
+    pub(crate) fn end_login(self) -> Self {
+        self.remove(LOGIN_COOKIE)
     }
 
-    #[must_use]
-    pub fn decode_session(jar: &PrivateCookieJar, now: DateTime<Utc>) -> Option<Session> {
-        let cookie = jar.get(SESSION_COOKIE)?;
-        let payload: SessionPayload = serde_json::from_str(cookie.value()).ok()?;
-        (payload.expires_at > now).then_some(Session {
-            user_id: UserId(payload.user),
-            expires_at: payload.expires_at,
-        })
+    fn read<T: for<'de> Deserialize<'de>>(&self, name: &str) -> Option<T> {
+        serde_json::from_str(self.jar.get(name)?.value()).ok()
     }
 
-    pub(crate) fn key(&self) -> Key {
-        self.key.clone()
-    }
-
-    pub(crate) fn login_removal() -> Cookie<'static> {
-        Cookie::build(LOGIN_COOKIE).path("/").build()
-    }
-
-    pub(crate) fn session_removal() -> Cookie<'static> {
-        Cookie::build(SESSION_COOKIE).path("/").build()
-    }
-
-    fn cookie(&self, name: &'static str, value: String) -> CookieBuilder<'static> {
-        Cookie::build((name, value))
+    fn cookie(&self, name: &'static str, payload: &impl Serialize) -> CookieBuilder<'static> {
+        Cookie::build((name, serde_json::json!(payload).to_string()))
             .path("/")
             .http_only(true)
             .same_site(SameSite::Lax)
             .secure(self.secure)
+    }
+
+    fn add(mut self, cookie: CookieBuilder<'static>) -> Self {
+        self.jar = self.jar.add(cookie);
+        self
+    }
+
+    fn remove(mut self, name: &'static str) -> Self {
+        self.jar = self.jar.remove(Cookie::build(name).path("/"));
+        self
+    }
+}
+
+impl FromRequestParts<AppState> for Session {
+    type Rejection = Infallible;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> impl Future<Output = Result<Self, Infallible>> + Send {
+        std::future::ready(Ok(Self::from_headers(&parts.headers, state)))
+    }
+}
+
+impl IntoResponseParts for Session {
+    type Error = Infallible;
+
+    fn into_response_parts(self, parts: ResponseParts) -> Result<ResponseParts, Infallible> {
+        self.jar.into_response_parts(parts)
     }
 }
 
@@ -121,32 +140,40 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue};
     use axum::response::IntoResponse;
     use axum_extra::extract::cookie::PrivateCookieJar;
-    use chrono::{TimeDelta, TimeZone, Utc};
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use cookie::{Cookie, Key};
     use corral_core::domain::UserId;
     use corral_core::ports::PendingLogin;
     use uuid::Uuid;
 
-    use super::{Session, SessionCodec};
-
-    fn codec(key: &Key) -> SessionCodec {
-        SessionCodec::new(key.clone(), true)
-    }
-
-    fn session() -> Session {
-        Session::new(
-            UserId(Uuid::new_v4()),
-            Utc.with_ymd_and_hms(2026, 11, 21, 12, 0, 0).unwrap(),
-        )
-    }
+    use super::{SESSION_TTL, Session};
 
     type Wire = BTreeMap<String, String>;
 
-    fn sent(key: &Key, cookies: Vec<Cookie<'static>>) -> Wire {
-        let jar = cookies
-            .into_iter()
-            .fold(PrivateCookieJar::new(key.clone()), PrivateCookieJar::add);
-        jar.into_response()
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, 21, 12, 0, 0).unwrap()
+    }
+
+    fn received(key: &Key, cookies: &Wire) -> Session {
+        let line = cookies
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut headers = HeaderMap::new();
+        if !line.is_empty() {
+            headers.insert(COOKIE, HeaderValue::from_str(&line).unwrap());
+        }
+        Session {
+            jar: PrivateCookieJar::from_headers(&headers, key.clone()),
+            secure: true,
+        }
+    }
+
+    fn sent(session: Session) -> Wire {
+        session
+            .jar
+            .into_response()
             .headers()
             .get_all(SET_COOKIE)
             .iter()
@@ -157,29 +184,18 @@ mod tests {
             .collect()
     }
 
-    fn received(key: &Key, cookies: &Wire) -> PrivateCookieJar {
-        let line = cookies
-            .iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let mut headers = HeaderMap::new();
-        headers.insert(COOKIE, HeaderValue::from_str(&line).unwrap());
-        PrivateCookieJar::from_headers(&headers, key.clone())
+    fn signed_in(key: &Key, user: UserId) -> Wire {
+        let session = received(key, &Wire::new())
+            .start(user, now())
+            .start_login("oidc", &PendingLogin("pkce-verifier-and-nonce".to_owned()));
+        sent(session)
     }
 
     #[test]
-    fn sessions_and_login_states_survive_the_round_trip() {
+    fn sessions_and_logins_survive_the_round_trip_unreadable() {
         let key = Key::generate();
-        let session = session();
-        let login = PendingLogin("pkce-verifier-and-nonce".to_owned());
-        let wire = sent(
-            &key,
-            vec![
-                codec(&key).encode_session(&session),
-                codec(&key).encode_login("oidc", &login),
-            ],
-        );
+        let user = UserId(Uuid::new_v4());
+        let wire = signed_in(&key, user);
         assert_eq!(
             wire.keys().collect::<Vec<_>>(),
             ["corral_login", "corral_session"]
@@ -189,43 +205,44 @@ mod tests {
                 .all(|value| !value.contains("pkce") && !value.contains("expires")),
             "{wire:?}"
         );
-        let jar = received(&key, &wire);
+        let session = received(&key, &wire);
+        assert_eq!(session.current(now()), Some(user));
         assert_eq!(
-            SessionCodec::decode_session(&jar, session.expires_at - TimeDelta::seconds(1)),
-            Some(session)
+            session.pending_login("oidc"),
+            Some(PendingLogin("pkce-verifier-and-nonce".to_owned()))
         );
-        assert_eq!(SessionCodec::decode_login(&jar, "oidc"), Some(login));
-        assert_eq!(SessionCodec::decode_login(&jar, "other"), None);
+        assert_eq!(session.pending_login("other"), None);
     }
 
     #[test]
-    fn expired_session_is_rejected() {
+    fn a_session_expires() {
         let key = Key::generate();
-        let session = session();
-        let jar = received(
-            &key,
-            &sent(&key, vec![codec(&key).encode_session(&session)]),
-        );
-        assert_eq!(SessionCodec::decode_session(&jar, session.expires_at), None);
+        let session = received(&key, &signed_in(&key, UserId(Uuid::new_v4())));
+        let expiry = now() + SESSION_TTL;
+        assert!(session.current(expiry - TimeDelta::seconds(1)).is_some());
+        assert_eq!(session.current(expiry), None);
+        assert_eq!(session.current(expiry + TimeDelta::days(30)), None);
+    }
+
+    #[test]
+    fn ending_removes_each_cookie() {
+        let key = Key::generate();
+        let wire = signed_in(&key, UserId(Uuid::new_v4()));
+        let ended = sent(received(&key, &wire).end().end_login());
         assert_eq!(
-            SessionCodec::decode_session(&jar, session.expires_at + TimeDelta::days(30)),
-            None
+            ended,
+            Wire::from([
+                ("corral_login".to_owned(), String::new()),
+                ("corral_session".to_owned(), String::new()),
+            ])
         );
     }
 
     #[test]
-    fn tampered_cookie_is_rejected() {
+    fn tampered_cookies_are_rejected() {
         let key = Key::generate();
-        let session = session();
-        let before = session.expires_at - TimeDelta::hours(1);
-        let wire = sent(
-            &key,
-            vec![
-                codec(&key).encode_session(&session),
-                codec(&key).encode_login("oidc", &PendingLogin("state".to_owned())),
-            ],
-        );
-        assert!(SessionCodec::decode_session(&received(&key, &wire), before).is_some());
+        let user = UserId(Uuid::new_v4());
+        let wire = signed_in(&key, user);
 
         let mut flipped = wire.clone();
         let value = flipped.get_mut("corral_session").unwrap();
@@ -242,19 +259,13 @@ mod tests {
         ]);
         let plain = Wire::from([(
             "corral_session".to_owned(),
-            serde_json::json!({"user": session.user_id.0, "expires_at": session.expires_at})
-                .to_string(),
+            serde_json::json!({"user": user.0, "expires_at": now() + SESSION_TTL}).to_string(),
         )]);
         for forged in [flipped, swapped, plain] {
-            let jar = received(&key, &forged);
-            assert_eq!(
-                SessionCodec::decode_session(&jar, before),
-                None,
-                "{forged:?}"
-            );
+            assert_eq!(received(&key, &forged).current(now()), None, "{forged:?}");
         }
         let other_key = received(&Key::generate(), &wire);
-        assert_eq!(SessionCodec::decode_session(&other_key, before), None);
-        assert_eq!(SessionCodec::decode_login(&other_key, "oidc"), None);
+        assert_eq!(other_key.current(now()), None);
+        assert_eq!(other_key.pending_login("oidc"), None);
     }
 }

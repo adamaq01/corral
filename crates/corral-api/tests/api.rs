@@ -11,7 +11,7 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use cookie::{Cookie, SameSite};
-use corral_api::{ApiState, Key, SessionCodec, SshEndpoint, router};
+use corral_api::{Api, Key, Providers, SshEndpoint, router};
 use corral_core::app::{
     Accounts, Catalog, Credentials, ImageOption, Keys, Limits, Sandboxes, SizePreset,
 };
@@ -187,7 +187,7 @@ impl Setup {
         if let Some(oidc) = self.oidc {
             providers.push(Arc::new(oidc));
         }
-        let state = ApiState {
+        let api = Api {
             sandboxes: Sandboxes::new(
                 Arc::new(MemorySandboxRepo::default()),
                 users.clone(),
@@ -206,12 +206,13 @@ impl Setup {
                 host: "corral.example.com".to_owned(),
                 port: 48291,
             },
-            providers,
-            sessions: SessionCodec::new(Key::generate(), self.secure),
+            providers: Providers::new(providers),
+            session_key: Key::generate(),
+            secure_cookies: self.secure,
             trust_forwarded_for: self.trust_forwarded_for,
         };
         Corral {
-            app: router(state),
+            app: router(api),
             local,
             engine,
         }
