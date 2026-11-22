@@ -63,6 +63,17 @@ jobs:
           ln -s herdr-core "$HOME/.local/bin/hc"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: tests/e2e/compose.sh
+      # The opkssh e2e drives its browser steps with the web UI's Playwright.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: tests/e2e/opkssh.sh
 
   web:
     runs-on: ubuntu-latest
