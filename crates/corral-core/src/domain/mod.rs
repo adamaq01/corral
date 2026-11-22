@@ -1,9 +1,19 @@
 macro_rules! validated_string {
     ($name:ident, $check:path) => {
         #[derive(
-            Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+            Clone,
+            Debug,
+            PartialEq,
+            Eq,
+            Hash,
+            PartialOrd,
+            Ord,
+            serde::Serialize,
+            serde::Deserialize,
+            ts_rs::TS,
         )]
         #[serde(try_from = "String", into = "String")]
+        #[ts(type = "string")]
         pub struct $name(String);
 
         impl $name {

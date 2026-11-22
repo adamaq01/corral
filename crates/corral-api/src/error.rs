@@ -3,6 +3,8 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use corral_core::Error;
+use serde::Serialize;
+use ts_rs::TS;
 
 /// A `{"error": message}` response with its status. Core errors keep their message; internal
 /// ones are logged and answered with a generic 500.
@@ -10,6 +12,12 @@ use corral_core::Error;
 pub struct ApiError {
     status: StatusCode,
     message: String,
+}
+
+/// What every error answers with.
+#[derive(Serialize, TS)]
+pub(crate) struct ErrorBody {
+    error: String,
 }
 
 impl ApiError {
@@ -87,7 +95,9 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (
             self.status,
-            Json(serde_json::json!({ "error": self.message })),
+            Json(ErrorBody {
+                error: self.message,
+            }),
         )
             .into_response()
     }

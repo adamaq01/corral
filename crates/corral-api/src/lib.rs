@@ -12,6 +12,7 @@ mod state;
 #[cfg(feature = "testing")]
 #[allow(clippy::missing_panics_doc)]
 pub mod testing;
+mod typescript;
 
 use std::sync::Arc;
 
@@ -28,6 +29,7 @@ pub use provider::{
     SignedIn, provider_path, return_path, sign_in_failed,
 };
 pub use state::{Api, SshEndpoint};
+pub use typescript::TypeScript;
 
 /// The API with each provider's routes under `provider_path` of its id.
 pub fn router(api: Api, providers: Vec<ProviderRoutes>) -> Router {

@@ -15,6 +15,7 @@ secrecy = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["chrono", "macros", "migrate", "postgres", "sqlite"] }
+ts-rs = { workspace = true, features = ["chrono-impl"] }
 uuid.workspace = true
 
 [dev-dependencies]

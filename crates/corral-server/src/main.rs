@@ -6,6 +6,8 @@ mod keys;
 mod local_account;
 mod serve;
 mod ui;
+#[cfg(test)]
+mod web_types;
 mod wiring;
 
 use std::io::IsTerminal;

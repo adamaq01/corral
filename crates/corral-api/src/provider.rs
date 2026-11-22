@@ -11,6 +11,7 @@ use corral_core::domain::{Admin, User};
 use corral_core::ports::Identity;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use ts_rs::TS;
 
 use crate::cookies::Jar;
 use crate::dto::Me;
@@ -62,7 +63,7 @@ pub struct ProviderRoutes {
 }
 
 /// What the sign-in page draws a provider from.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 pub struct ProviderDescription {
     pub label: String,
     pub kind: LoginKind,
@@ -72,7 +73,7 @@ pub struct ProviderDescription {
     pub accounts: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum LoginKind {
     /// The browser opens `login`, optionally with `?next=<path>`, and comes back to that path
@@ -82,7 +83,8 @@ pub enum LoginKind {
     Password,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
+#[ts(rename = "Provider")]
 pub(crate) struct ProviderListing {
     id: String,
     #[serde(flatten)]

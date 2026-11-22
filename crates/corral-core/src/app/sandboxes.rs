@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use serde::Deserialize;
+use ts_rs::TS;
 
 use super::{Catalog, Credentials};
 use crate::domain::{
@@ -19,10 +20,13 @@ pub struct Limits {
     pub wake_deadline: Duration,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+/// Without an image or a size, the catalog's first.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, TS)]
 pub struct CreateSandbox {
     pub name: SandboxName,
+    #[ts(optional)]
     pub image: Option<ImageKey>,
+    #[ts(optional)]
     pub size: Option<SizeKey>,
 }
 

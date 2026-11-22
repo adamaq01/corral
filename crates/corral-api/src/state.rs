@@ -4,6 +4,7 @@ use axum::http::request::Parts;
 use cookie::Key;
 use corral_core::app::{Accounts, Credentials, Keys, Sandboxes};
 use serde::Serialize;
+use ts_rs::TS;
 
 use crate::error::ApiError;
 
@@ -24,7 +25,7 @@ pub struct Api {
 }
 
 /// Where people point their SSH client.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 pub struct SshEndpoint {
     pub host: String,
     pub port: u16,

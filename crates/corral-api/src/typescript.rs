@@ -1,0 +1,88 @@
+use std::collections::BTreeMap;
+
+use ts_rs::{Config, TS, TypeVisitor};
+
+use crate::dto::{
+    CatalogDto, CredentialDto, CredentialValue, KeyDto, Me, NewKey, OwnedSandbox, SandboxDto,
+    UserDto, Wake,
+};
+use crate::error::ErrorBody;
+use crate::provider::ProviderListing;
+use corral_core::app::CreateSandbox;
+use corral_core::domain::SandboxStatus;
+
+/// TypeScript declarations of the types the API takes and answers with, and of every type they
+/// use, for the web UI.
+pub struct TypeScript {
+    config: Config,
+    declarations: BTreeMap<String, String>,
+}
+
+impl TypeScript {
+    /// The API's own types; providers add the types of their routes.
+    #[must_use]
+    pub fn api() -> Self {
+        let mut types = Self {
+            config: Config::new(),
+            declarations: BTreeMap::new(),
+        };
+        types
+            .add::<Me>()
+            .add::<CatalogDto>()
+            .add::<CreateSandbox>()
+            .add::<SandboxDto>()
+            .add::<SandboxStatus>()
+            .add::<Wake>()
+            .add::<OwnedSandbox>()
+            .add::<NewKey>()
+            .add::<KeyDto>()
+            .add::<CredentialDto>()
+            .add::<CredentialValue>()
+            .add::<UserDto>()
+            .add::<ProviderListing>()
+            .add::<ErrorBody>();
+        types
+    }
+
+    pub fn add<T: TS + 'static>(&mut self) -> &mut Self {
+        self.visit::<T>();
+        self
+    }
+
+    /// One module declaring every type, by name.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut module = String::from(
+            "// Generated from the Rust API types by ts-rs. Do not edit: regenerate with\n\
+             // CORRAL_WRITE_TYPES=1 cargo test -p corral-server web_types\n",
+        );
+        for declaration in self.declarations.values() {
+            module.push('\n');
+            for line in declaration.lines() {
+                module.push_str(line.trim_end());
+                module.push('\n');
+            }
+        }
+        module
+    }
+}
+
+impl TypeVisitor for TypeScript {
+    fn visit<T: TS + 'static + ?Sized>(&mut self) {
+        // Only declarable types have an output path; the rest, such as `string`, are inlined.
+        if T::output_path().is_none() {
+            return;
+        }
+        let name = T::ident(&self.config);
+        if self.declarations.contains_key(&name) {
+            return;
+        }
+        let declaration = format!(
+            "{}export {}",
+            T::docs().unwrap_or_default(),
+            T::decl(&self.config)
+        );
+        self.declarations.insert(name, declaration);
+        T::visit_dependencies(self);
+    }
+}

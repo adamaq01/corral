@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use super::{ImageKey, SandboxName, SizeKey, UserId};
@@ -27,7 +28,7 @@ pub struct Sandbox {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(tag = "state", content = "detail", rename_all = "lowercase")]
 pub enum SandboxStatus {
     Starting,

@@ -18,6 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 tower = { workspace = true, features = ["util"], optional = true }
 tracing.workspace = true
+ts-rs = { workspace = true, features = ["chrono-impl", "uuid-impl"] }
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]

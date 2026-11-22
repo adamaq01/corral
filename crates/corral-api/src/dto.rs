@@ -6,23 +6,25 @@ use corral_core::domain::{
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::state::SshEndpoint;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NewKey {
     pub label: String,
     pub public_key: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 pub(crate) struct CredentialValue {
+    #[ts(type = "string")]
     pub value: SecretString,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 pub(crate) struct Me {
     handle: Handle,
     email: Option<String>,
@@ -41,14 +43,15 @@ impl From<&User> for Me {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 pub(crate) struct Choice {
     key: String,
     label: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "Catalog")]
 pub(crate) struct CatalogDto {
     images: Vec<Choice>,
     sizes: Vec<Choice>,
@@ -85,15 +88,16 @@ impl CatalogDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 pub(crate) struct SandboxSsh {
     username: SshUsername,
     #[serde(flatten)]
     endpoint: SshEndpoint,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "Sandbox")]
 pub(crate) struct SandboxDto {
     name: SandboxName,
     image: ImageKey,
@@ -131,13 +135,13 @@ impl SandboxDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 pub(crate) struct Owner {
     handle: Handle,
     picture: Option<PictureUrl>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 pub(crate) struct OwnedSandbox {
     owner: Owner,
     #[serde(flatten)]
@@ -156,13 +160,14 @@ impl OwnedSandbox {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 pub(crate) struct Wake {
     pub ready: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "SshKey")]
 pub(crate) struct KeyDto {
     id: Uuid,
     label: String,
@@ -183,7 +188,8 @@ impl From<SshKey> for KeyDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
+#[ts(rename = "Credential")]
 pub(crate) struct CredentialDto {
     name: CredentialName,
 }
@@ -194,8 +200,9 @@ impl From<CredentialName> for CredentialDto {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "User")]
 pub(crate) struct UserDto {
     id: Uuid,
     handle: Handle,

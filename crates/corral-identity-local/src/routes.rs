@@ -8,37 +8,42 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use corral_api::{
     ApiError, ClientAddress, CurrentAdmin, Identities, JsonBody, LoginKind, PathParam,
-    ProviderDescription, ProviderRoutes, SignedIn, provider_path,
+    ProviderDescription, ProviderRoutes, SignedIn, TypeScript, provider_path,
 };
 use corral_core::Error;
 use corral_core::domain::{Handle, Role};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::LocalProvider;
 
 type Local = State<Arc<LocalProvider>>;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 struct PasswordLogin {
     username: String,
+    #[ts(type = "string")]
     password: SecretString,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 struct NewAccount {
     username: Handle,
+    #[ts(type = "string")]
     password: SecretString,
     role: Role,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, TS)]
 struct NewPassword {
+    #[ts(type = "string")]
     password: SecretString,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(rename = "LocalAccount")]
 struct AccountDto {
     username: Handle,
     role: Role,
@@ -46,6 +51,15 @@ struct AccountDto {
 }
 
 impl LocalProvider {
+    /// The types its routes take and answer with.
+    pub fn typescript(types: &mut TypeScript) {
+        types
+            .add::<PasswordLogin>()
+            .add::<NewAccount>()
+            .add::<NewPassword>()
+            .add::<AccountDto>();
+    }
+
     /// `POST /login` with `{"username", "password"}`, and for admins the accounts under
     /// `/accounts`.
     #[must_use]

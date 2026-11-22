@@ -1,12 +1,15 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use super::{Handle, SandboxName};
 use crate::{Error, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// `<handle>` or `<handle>+<sandbox>`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(type = "string")]
 pub struct SshUsername {
     pub handle: Handle,
     pub sandbox: Option<SandboxName>,
