@@ -226,6 +226,30 @@ async fn admins_create_list_and_reset_accounts(pool: Pool) {
     assert!(accounts.json()[0]["createdAt"].is_string());
 }
 
+async fn the_admin_asking_sees_which_account_is_theirs(pool: Pool) {
+    let corral = Corral::open(
+        pool,
+        &[
+            ("root", Role::Admin),
+            ("adam", Role::Admin),
+            ("never", Role::Member),
+        ],
+    )
+    .await;
+    for admin in ["root", "adam"] {
+        let mut browser = corral.signed_in(admin).await;
+        let accounts = browser.get("/auth/local/accounts").await.json();
+        let yours: Vec<&str> = accounts
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|account| account["yours"] == true)
+            .map(|account| account["username"].as_str().unwrap())
+            .collect();
+        assert_eq!(yours, [admin]);
+    }
+}
+
 async fn short_passwords_are_refused(pool: Pool) {
     let corral = Corral::open(pool, &[("root", Role::Admin)]).await;
     let mut root = corral.signed_in("root").await;
@@ -409,6 +433,7 @@ async fn every_scenario(databases: &Databases) {
     wrong_password_and_unknown_user_are_both_forbidden(databases.pool().await).await;
     unknown_usernames_cost_a_full_password_check(databases.pool().await).await;
     admins_create_list_and_reset_accounts(databases.pool().await).await;
+    the_admin_asking_sees_which_account_is_theirs(databases.pool().await).await;
     short_passwords_are_refused(databases.pool().await).await;
     deleting_an_account_deletes_its_user_and_frees_the_username(databases.pool().await).await;
     an_account_that_never_logged_in_is_only_forgotten(databases.pool().await).await;

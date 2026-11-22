@@ -36,7 +36,7 @@ impl Accounts {
     }
 
     pub async fn login(&self, provider: &str, identity: Identity) -> Result<User> {
-        let subject = user_subject(provider, &identity.subject);
+        let subject = User::subject_of(provider, &identity.subject);
         let existing = self.users.by_subject(&subject).await?;
         let Some(role) = identity.role else {
             if let Some(user) = existing.filter(|user| user.status == UserStatus::Active) {
@@ -99,7 +99,7 @@ impl Accounts {
     /// Deletes the user the provider's subject logged in as, if any, else only has the provider
     /// forget the subject. Whether there was such a user.
     pub async fn delete_identity(&self, _: &Admin, provider: &str, subject: &str) -> Result<bool> {
-        let subject_of_user = user_subject(provider, subject);
+        let subject_of_user = User::subject_of(provider, subject);
         if let Some(user) = self.users.by_subject(&subject_of_user).await? {
             self.erase(user).await?;
             return Ok(true);
@@ -194,10 +194,6 @@ fn inactive(user: &User) -> Error {
         "disabled"
     };
     Error::Inactive(format!("this account is {state}"))
-}
-
-fn user_subject(provider: &str, subject: &str) -> String {
-    format!("{provider}:{subject}")
 }
 
 #[cfg(test)]

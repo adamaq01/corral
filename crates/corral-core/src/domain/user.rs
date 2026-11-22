@@ -39,6 +39,20 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
+impl User {
+    /// The subject a provider's identity gives the user who logs in with it.
+    #[must_use]
+    pub fn subject_of(provider: &str, subject: &str) -> String {
+        format!("{provider}:{subject}")
+    }
+
+    /// The subject the user logs in with at `provider`, when they log in there.
+    #[must_use]
+    pub fn subject_at(&self, provider: &str) -> Option<&str> {
+        self.subject.strip_prefix(provider)?.strip_prefix(':')
+    }
+}
+
 /// Proof that the acting user is an admin, for ports that act on an admin's behalf.
 #[derive(Debug)]
 pub struct Admin(());
@@ -55,7 +69,7 @@ impl Admin {
 
 #[cfg(test)]
 mod tests {
-    use super::{Admin, Role, UserStatus};
+    use super::{Admin, Role, User, UserStatus};
     use crate::Error;
     use crate::fakes::World;
 
@@ -67,6 +81,17 @@ mod tests {
             Admin::check(&w.member("adam").await),
             Err(Error::Forbidden)
         ));
+    }
+
+    #[tokio::test]
+    async fn a_user_logs_in_at_the_provider_of_their_subject_only() {
+        let user = User {
+            subject: User::subject_of("local", "adam"),
+            ..World::new().member("adam").await
+        };
+        assert_eq!(user.subject_at("local"), Some("adam"));
+        assert_eq!(user.subject_at("loc"), None);
+        assert_eq!(user.subject_at("oidc"), None);
     }
 
     #[test]

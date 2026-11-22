@@ -95,6 +95,20 @@ test.describe('an admin', () => {
 		await self.getByRole('link', { name: 'Profile' }).click();
 		await expect(page).toHaveURL('/profile');
 	});
+
+	test('cannot delete their own local account, only from their profile', async ({ page }) => {
+		const { username } = account('admin');
+		await page.goto('/admin/accounts');
+		const accounts = page.getByRole('table', { name: 'Local accounts' });
+		await expect(accounts.getByRole('row', { name: new RegExp(username) })).toContainText('You');
+		await expect(accounts.getByRole('row', { name: /bob/ })).not.toContainText('You');
+
+		await page.getByRole('button', { name: `Actions for ${username}` }).click();
+		await expect(page.getByRole('menuitem', { name: 'Change password' })).toBeVisible();
+		await expect(page.getByRole('menuitem', { name: 'Delete', exact: true })).toHaveCount(0);
+		await page.getByRole('menuitem', { name: 'Delete from Profile' }).click();
+		await expect(page).toHaveURL('/profile');
+	});
 });
 
 test.describe('a member', () => {

@@ -24,9 +24,9 @@ const users: User[] = [
 ];
 
 const accounts: LocalAccount[] = [
-	{ username: 'ada', role: 'admin', createdAt: days(40) },
-	{ username: 'bob', role: 'member', createdAt: days(31) },
-	{ username: 'grace-hopper', role: 'member', createdAt: days(12) }
+	{ username: 'ada', role: 'admin', createdAt: days(40), yours: true },
+	{ username: 'bob', role: 'member', createdAt: days(31), yours: false },
+	{ username: 'grace-hopper', role: 'member', createdAt: days(12), yours: false }
 ];
 
 const sandboxes: OwnedSandbox[] = [

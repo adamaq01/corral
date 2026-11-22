@@ -52,6 +52,8 @@ struct AccountDto {
     username: Handle,
     role: Role,
     created_at: DateTime<Utc>,
+    /// Whether the admin asking signs in with this account.
+    yours: bool,
 }
 
 impl LocalProvider {
@@ -118,12 +120,18 @@ async fn login_route(
     identities.sign_in(identity).await
 }
 
-async fn list(_: CurrentAdmin, State(local): Local) -> Result<Json<Vec<AccountDto>>, ApiError> {
+async fn list(
+    _: CurrentAdmin,
+    State(local): Local,
+    identities: Identities,
+) -> Result<Json<Vec<AccountDto>>, ApiError> {
     let accounts = local.accounts.list().await?;
+    let yours = identities.signed_in_subject().await?;
     Ok(Json(
         accounts
             .into_iter()
             .map(|account| AccountDto {
+                yours: yours.as_deref() == Some(account.username.as_str()),
                 username: account.username,
                 role: account.role,
                 created_at: account.created_at,

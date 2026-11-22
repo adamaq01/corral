@@ -12,6 +12,7 @@
 	import TableSkeleton from '#lib/components/table-skeleton.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
@@ -78,7 +79,9 @@
 
 	async function reset(account: LocalAccount) {
 		await api.setPassword(account.username, newPassword);
-		notice = `Reset the password of ${account.username}.`;
+		notice = account.yours
+			? 'Changed your password.'
+			: `Reset the password of ${account.username}.`;
 	}
 
 	function startDeleting(account: LocalAccount) {
@@ -147,7 +150,14 @@
 					{:else}
 						{#each list.current.value as account (account.username)}
 							<Table.Row>
-								<Table.Cell class="font-medium">{account.username}</Table.Cell>
+								<Table.Cell class="font-medium">
+									<span class="flex items-center gap-2">
+										{account.username}
+										{#if account.yours}
+											<Badge variant="outline">You</Badge>
+										{/if}
+									</span>
+								</Table.Cell>
 								<Table.Cell>{account.role === 'admin' ? 'Admin' : 'Member'}</Table.Cell>
 								<Table.Cell class={created}><Timestamp value={account.createdAt} /></Table.Cell>
 								<Table.Cell class="w-0 text-right">
@@ -166,14 +176,22 @@
 										</DropdownMenu.Trigger>
 										<DropdownMenu.Content align="end">
 											<DropdownMenu.Item onSelect={() => startResetting(account)}>
-												Reset password
+												{account.yours ? 'Change password' : 'Reset password'}
 											</DropdownMenu.Item>
-											<DropdownMenu.Item
-												variant="destructive"
-												onSelect={() => startDeleting(account)}
-											>
-												Delete
-											</DropdownMenu.Item>
+											{#if account.yours}
+												<DropdownMenu.Item>
+													{#snippet child({ props })}
+														<a href="/profile" {...props}>Delete from Profile</a>
+													{/snippet}
+												</DropdownMenu.Item>
+											{:else}
+												<DropdownMenu.Item
+													variant="destructive"
+													onSelect={() => startDeleting(account)}
+												>
+													Delete
+												</DropdownMenu.Item>
+											{/if}
 										</DropdownMenu.Content>
 									</DropdownMenu.Root>
 								</Table.Cell>
@@ -244,9 +262,9 @@
 	{@const account = target}
 	<FormDialog
 		bind:open={resetting}
-		title="Reset the password of {account.username}"
-		description="They sign in with the new password from now on."
-		submit="Reset password"
+		title={account.yours ? 'Change your password' : `Reset the password of ${account.username}`}
+		description="{account.yours ? 'You sign' : 'They sign'} in with the new password from now on."
+		submit={account.yours ? 'Change password' : 'Reset password'}
 		onsubmit={() => reset(account)}
 	>
 		<div class="grid gap-2">

@@ -25,7 +25,11 @@ export type Handle = string;
 
 export type ImageKey = string;
 
-export type LocalAccount = { username: Handle, role: Role, createdAt: string, };
+export type LocalAccount = { username: Handle, role: Role, createdAt: string,
+/**
+ * Whether the admin asking signs in with this account.
+ */
+yours: boolean, };
 
 export type LoginKind = "redirect" | "password";
 

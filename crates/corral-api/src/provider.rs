@@ -155,6 +155,15 @@ impl Identities {
         })
     }
 
+    /// The subject the signed-in user logs in with at this provider, if they log in here.
+    pub async fn signed_in_subject(&self) -> Result<Option<String>, ApiError> {
+        let Some(id) = self.session.current(Utc::now()) else {
+            return Ok(None);
+        };
+        let user = self.api.accounts.require_active(id).await?;
+        Ok(user.subject_at(&self.provider).map(str::to_owned))
+    }
+
     /// Deletes the user the subject logged in as with everything they own, or, if it never
     /// did, only has the provider forget it. Whether there was such a user.
     pub async fn delete(&self, admin: &Admin, subject: &str) -> Result<bool, ApiError> {
