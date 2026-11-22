@@ -1,0 +1,98 @@
+suite: Corral's config file
+templates:
+  - templates/configmap.yaml
+release:
+  name: corral
+  namespace: corral
+values:
+  - ../../examples/minimal.yaml
+tests:
+  - it: runs the agent-sandbox engine in the sandbox namespace, on the cluster's default storage class
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[engine\]\s+agent_image = "containerssh/agent:v0.11.0"\s+kind = "agent-sandbox"\s+namespace = "corral-sandboxes"\s+service_account = "corral-sandbox"\s+\['
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: storage_class
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[identity\.local\]'
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: 'oidc|catalog'
+
+  - it: names the storage class and namespace it is given
+    set:
+      sandboxes.storageClass: fast-nvme
+      sandboxes.namespace.name: homes
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'namespace = "homes"\s+service_account = "corral-sandbox"\s+storage_class = "fast-nvme"'
+
+  - it: maps OIDC values to the [identity.oidc] keys, without local accounts when they are off
+    set:
+      identity.local.enabled: false
+      identity.oidc:
+        enabled: true
+        issuer: https://auth.example.com
+        clientId: corral
+        clientSecret: { value: s3cret }
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[identity\.oidc\]\s+admin_group = "corral-admins"\s+client_id = "corral"\s+issuer = "https://auth.example.com"\s+member_group = "corral-users"\s+scopes = \["openid", "profile", "email", "groups"\]'
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: 'identity\.local|s3cret'
+
+  - it: maps the Vault store with Kubernetes auth
+    set:
+      secretStore:
+        kind: vault
+        vault:
+          address: http://openbao:8200
+          auth: { kind: kubernetes, role: corral }
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[secrets\]\s+address = "http://openbao:8200"\s+kind = "vault"\s+mount = "secret"\s+path_prefix = "corral"\s+\[secrets\.auth\]\s+kind = "kubernetes"\s+role = "corral"'
+
+  - it: leaves the token out of the config with Vault token auth
+    set:
+      secretStore:
+        kind: vault
+        vault:
+          address: http://openbao:8200
+          auth: { kind: token, token: { value: hvs.token } }
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[secrets\.auth\]\s+kind = "token"\s*(\[|$)'
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: 'hvs\.token|role'
+
+  - it: writes catalog sizes with the server's key names and integers for every count
+    set:
+      idle.timeoutSecs: 600
+      limits.maxRunning: 10
+      catalog.sizes:
+        - key: big
+          label: Big
+          cpuRequest: "1"
+          cpuLimit: "4"
+          memoryRequest: 2Gi
+          memoryLimit: 8Gi
+          homeSize: 30Gi
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[catalog\.sizes\]\]\s+cpu_limit = "4"\s+cpu_request = "1"\s+home_size = "30Gi"\s+key = "big"\s+label = "Big"\s+memory_limit = "8Gi"\s+memory_request = "2Gi"'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'timeout_secs = 600\n'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'max_running = 10\n'

@@ -1,0 +1,30 @@
+{{- $svc := .Values.containerssh.service }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "corral.containersshName" . }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: containerssh
+  {{- with $svc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ $svc.type }}
+  {{- if ne $svc.type "ClusterIP" }}
+  externalTrafficPolicy: {{ $svc.externalTrafficPolicy }}
+  {{- end }}
+  {{- if and (eq $svc.type "LoadBalancer") $svc.loadBalancerClass }}
+  loadBalancerClass: {{ $svc.loadBalancerClass }}
+  {{- end }}
+  selector:
+    {{- include "corral.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: containerssh
+  ports:
+    - name: ssh
+      port: {{ include "corral.sshServicePort" . }}
+      targetPort: ssh
+      {{- if and (ne $svc.type "ClusterIP") $svc.nodePort }}
+      nodePort: {{ $svc.nodePort }}
+      {{- end }}

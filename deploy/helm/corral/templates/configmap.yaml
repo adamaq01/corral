@@ -1,0 +1,66 @@
+{{- $identity := dict }}
+{{- if .Values.identity.local.enabled }}
+{{- $_ := set $identity "local" dict }}
+{{- end }}
+{{- with .Values.identity.oidc }}{{ if .enabled }}
+{{- $_ := set $identity "oidc" (dict
+  "issuer" .issuer
+  "client_id" .clientId
+  "scopes" .scopes
+  "member_group" .memberGroup
+  "admin_group" .adminGroup) }}
+{{- end }}{{ end }}
+{{- $secrets := dict "kind" .Values.secretStore.kind }}
+{{- with .Values.secretStore.vault }}{{ if eq $.Values.secretStore.kind "vault" }}
+{{- $auth := dict "kind" .auth.kind }}
+{{- if eq .auth.kind "kubernetes" }}
+{{- $_ := set $auth "role" .auth.role }}
+{{- end }}
+{{- $secrets = dict "kind" "vault" "address" .address "mount" .mount "path_prefix" .pathPrefix "auth" $auth }}
+{{- end }}{{ end }}
+{{- $engine := dict
+  "kind" "agent-sandbox"
+  "namespace" (include "corral.sandboxNamespace" .)
+  "service_account" (include "corral.sandboxServiceAccount" .)
+  "agent_image" .Values.sandboxes.agentImage }}
+{{- with .Values.sandboxes.storageClass }}
+{{- $_ := set $engine "storage_class" . }}
+{{- end }}
+{{- $images := list }}
+{{- range .Values.catalog.images }}
+{{- $images = append $images (dict "key" .key "label" .label "reference" .reference) }}
+{{- end }}
+{{- $sizes := list }}
+{{- range .Values.catalog.sizes }}
+{{- $sizes = append $sizes (dict
+  "key" .key
+  "label" .label
+  "cpu_request" .cpuRequest
+  "cpu_limit" .cpuLimit
+  "memory_request" .memoryRequest
+  "memory_limit" .memoryLimit
+  "home_size" .homeSize) }}
+{{- end }}
+{{- $catalog := dict }}
+{{- with $images }}{{ $_ := set $catalog "images" . }}{{ end }}
+{{- with $sizes }}{{ $_ := set $catalog "sizes" . }}{{ end }}
+{{- $config := dict
+  "http" (dict "base_url" .Values.baseUrl "trust_forwarded_for" .Values.trustForwardedFor)
+  "identity" $identity
+  "secrets" $secrets
+  "engine" $engine
+  "idle" (dict "timeout_secs" (int .Values.idle.timeoutSecs) "probe_interval_secs" (int .Values.idle.probeIntervalSecs))
+  "frontdoor" (dict "kind" "containerssh")
+  "ssh" (dict "public_host" .Values.ssh.publicHost "public_port" (int .Values.ssh.publicPort) "wake_deadline_secs" (int .Values.ssh.wakeDeadlineSecs))
+  "limits" (dict "max_sandboxes_per_user" (int .Values.limits.maxSandboxesPerUser) "max_running" (int .Values.limits.maxRunning)) }}
+{{- with $catalog }}{{ $_ := set $config "catalog" . }}{{ end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "corral.fullname" . }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+data:
+  config.toml: |
+    {{- toToml $config | nindent 4 }}

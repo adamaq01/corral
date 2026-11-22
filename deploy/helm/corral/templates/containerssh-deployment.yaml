@@ -1,0 +1,93 @@
+{{- $name := include "corral.containersshName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: containerssh
+spec:
+  replicas: {{ .Values.containerssh.replicas }}
+  selector:
+    matchLabels:
+      {{- include "corral.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: containerssh
+  template:
+    metadata:
+      labels:
+        {{- include "corral.labels" . | nindent 8 }}
+        app.kubernetes.io/component: containerssh
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/containerssh-configmap.yaml") . | sha256sum }}
+        {{- with .Values.containerssh.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $name }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1022
+        runAsGroup: 1022
+        fsGroup: 1022
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: containerssh
+          image: "{{ .Values.containerssh.image.repository }}:{{ .Values.containerssh.image.tag }}"
+          imagePullPolicy: {{ .Values.containerssh.image.pullPolicy }}
+          args: [--config, /etc/containerssh/config/config.yaml]
+          ports:
+            - name: ssh
+              containerPort: 2222
+          readinessProbe:
+            exec:
+              command: [/containerssh, --config, /etc/containerssh/config/config.yaml, --healthcheck]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: [/containerssh, --config, /etc/containerssh/config/config.yaml, --healthcheck]
+            periodSeconds: 10
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          {{- with .Values.containerssh.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/containerssh/config
+              readOnly: true
+            - name: keys
+              mountPath: /etc/containerssh/keys
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+        - name: keys
+          secret:
+            secretName: {{ include "corral.hostKeySecret" . }}
+            items:
+              - key: host_key
+                path: host_key
+            defaultMode: 0440
+      {{- with .Values.containerssh.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.containerssh.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.containerssh.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,15 @@
+{{- if .Values.sandboxes.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "corral.sandboxNamespace" . }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sandboxes
+    # Sandboxes run as uid 1000 with sudo, which baseline allows and restricted does not.
+    pod-security.kubernetes.io/enforce: baseline
+  {{- with include "corral.keepAnnotation" . }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+{{- end }}

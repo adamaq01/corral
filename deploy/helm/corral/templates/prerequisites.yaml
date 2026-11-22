@@ -1,0 +1,4 @@
+{{- /* lookup finds kube-system only against a live cluster, so helm template and lint skip this. */}}
+{{- if and (lookup "v1" "Namespace" "" "kube-system") (not (.Capabilities.APIVersions.Has "agents.x-k8s.io/v1beta1")) }}
+{{- fail "agent-sandbox is not installed: kubectl apply --server-side -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.11/sandbox.yaml" }}
+{{- end }}

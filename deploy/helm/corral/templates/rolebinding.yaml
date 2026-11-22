@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "corral.fullname" . }}
+  namespace: {{ include "corral.sandboxNamespace" . }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "corral.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "corral.fullname" . }}
+    namespace: {{ .Release.Namespace }}

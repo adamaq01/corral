@@ -1,0 +1,842 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Corral chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "baseUrl",
+    "ssh"
+  ],
+  "properties": {
+    "global": {
+      "description": "Helm's values shared with subcharts; Corral reads none.",
+      "type": "object"
+    },
+    "baseUrl": {
+      "description": "The address people open in a browser.",
+      "type": "string",
+      "pattern": "^https?://[^/]+/?$"
+    },
+    "trustForwardedFor": {
+      "description": "Count password-login limits by X-Forwarded-For.",
+      "type": "boolean"
+    },
+    "logLevel": {
+      "description": "RUST_LOG for the server.",
+      "type": "string",
+      "minLength": 1
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "image": {
+      "$ref": "#/$defs/image"
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "ssh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publicHost"
+      ],
+      "properties": {
+        "publicHost": {
+          "description": "The host name people pass to ssh.",
+          "type": "string",
+          "minLength": 1
+        },
+        "publicPort": {
+          "$ref": "#/$defs/port"
+        },
+        "wakeDeadlineSecs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "local": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "oidc": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "issuer": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": "string"
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "memberGroup": {
+              "type": "string",
+              "minLength": 1
+            },
+            "adminGroup": {
+              "type": "string",
+              "minLength": 1
+            },
+            "clientSecret": {
+              "$ref": "#/$defs/secretValue"
+            }
+          },
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "issuer",
+              "clientId",
+              "clientSecret"
+            ],
+            "properties": {
+              "issuer": {
+                "pattern": "^https?://"
+              },
+              "clientId": {
+                "minLength": 1
+              },
+              "clientSecret": {
+                "$ref": "#/$defs/secretSet"
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "local": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "$comment": "At least one login method: without local accounts, OIDC must be on.",
+        "required": [
+          "oidc"
+        ],
+        "properties": {
+          "oidc": {
+            "required": [
+              "enabled"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "keys": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {
+          "type": "string"
+        }
+      }
+    },
+    "secretStore": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "database",
+            "vault"
+          ]
+        },
+        "vault": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "address": {
+              "type": "string"
+            },
+            "mount": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pathPrefix": {
+              "type": "string",
+              "minLength": 1
+            },
+            "auth": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "kubernetes",
+                    "token"
+                  ]
+                },
+                "role": {
+                  "type": "string"
+                },
+                "token": {
+                  "$ref": "#/$defs/secretValue"
+                }
+              }
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "vault"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "vault": {
+            "properties": {
+              "address": {
+                "pattern": "^https?://"
+              },
+              "auth": {
+                "if": {
+                  "properties": {
+                    "kind": {
+                      "const": "token"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "token": {
+                      "$ref": "#/$defs/secretSet"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "role": {
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "sqlite",
+            "postgres",
+            "cnpg"
+          ]
+        },
+        "sqlite": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "size": {
+              "$ref": "#/$defs/byteQuantity"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "existingClaim": {
+              "type": "string"
+            }
+          }
+        },
+        "postgres": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "$ref": "#/$defs/secretValue"
+            }
+          }
+        },
+        "cnpg": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "instances": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "size": {
+              "$ref": "#/$defs/byteQuantity"
+            },
+            "storageClass": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "postgres"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "postgres": {
+            "properties": {
+              "url": {
+                "$ref": "#/$defs/secretSet"
+              }
+            }
+          }
+        }
+      }
+    },
+    "sandboxes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^([a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)?$"
+            },
+            "create": {
+              "type": "boolean"
+            }
+          }
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "agentImage": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "keepOnUninstall": {
+      "type": "boolean"
+    },
+    "idle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutSecs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "probeIntervalSecs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxSandboxesPerUser": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxRunning": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "images": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "label",
+              "reference"
+            ],
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/catalogKey"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reference": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "sizes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "label",
+              "cpuRequest",
+              "cpuLimit",
+              "memoryRequest",
+              "memoryLimit",
+              "homeSize"
+            ],
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/catalogKey"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "cpuRequest": {
+                "$ref": "#/$defs/cpuQuantity"
+              },
+              "cpuLimit": {
+                "$ref": "#/$defs/cpuQuantity"
+              },
+              "memoryRequest": {
+                "$ref": "#/$defs/byteQuantity"
+              },
+              "memoryLimit": {
+                "$ref": "#/$defs/byteQuantity"
+              },
+              "homeSize": {
+                "$ref": "#/$defs/byteQuantity"
+              }
+            }
+          }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "$ref": "#/$defs/stringMap"
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "port": {
+          "$ref": "#/$defs/port"
+        },
+        "annotations": {
+          "$ref": "#/$defs/stringMap"
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tlsSecretName": {
+          "type": "string"
+        }
+      }
+    },
+    "httpRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "parentRefs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "annotations": {
+          "$ref": "#/$defs/stringMap"
+        }
+      },
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "then": {
+        "required": [
+          "parentRefs"
+        ],
+        "properties": {
+          "parentRefs": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "resources": {
+      "$ref": "#/$defs/resources"
+    },
+    "podAnnotations": {
+      "$ref": "#/$defs/stringMap"
+    },
+    "nodeSelector": {
+      "$ref": "#/$defs/stringMap"
+    },
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "containerssh": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hostKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "LoadBalancer",
+                "NodePort",
+                "ClusterIP"
+              ]
+            },
+            "port": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/port"
+                }
+              ]
+            },
+            "nodePort": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "integer",
+                  "minimum": 30000,
+                  "maximum": 32767
+                }
+              ]
+            },
+            "externalTrafficPolicy": {
+              "enum": [
+                "Local",
+                "Cluster"
+              ]
+            },
+            "loadBalancerClass": {
+              "type": "string"
+            },
+            "annotations": {
+              "$ref": "#/$defs/stringMap"
+            }
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "podAnnotations": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "nodeSelector": {
+          "$ref": "#/$defs/stringMap"
+        },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "affinity": {
+          "type": "object"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Ingress and HTTPRoute both serve baseUrl's host; pick one.",
+      "if": {
+        "properties": {
+          "ingress": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          }
+        },
+        "required": [
+          "ingress"
+        ]
+      },
+      "then": {
+        "properties": {
+          "httpRoute": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "stringMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "catalogKey": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{1,32}$"
+    },
+    "cpuQuantity": {
+      "description": "A CPU quantity such as 2, 1.5 or 500m.",
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?m?$"
+    },
+    "byteQuantity": {
+      "description": "A byte quantity such as 4Gi, 512Mi or 1G.",
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE])?$"
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number"
+            ]
+          }
+        }
+      }
+    },
+    "secretValue": {
+      "description": "A secret: existingSecret and key name a Secret in the release namespace; value is stored in a Secret by the chart.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "dependentRequired": {
+        "existingSecret": [
+          "key"
+        ],
+        "key": [
+          "existingSecret"
+        ]
+      },
+      "dependentSchemas": {
+        "value": {
+          "$comment": "A value, or a Secret to read it from, not both.",
+          "properties": {
+            "existingSecret": false,
+            "key": false
+          }
+        }
+      }
+    },
+    "secretSet": {
+      "description": "A secretValue that is set.",
+      "anyOf": [
+        {
+          "required": [
+            "existingSecret"
+          ]
+        },
+        {
+          "required": [
+            "value"
+          ]
+        }
+      ]
+    }
+  }
+}

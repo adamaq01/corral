@@ -1,0 +1,92 @@
+suite: database and what outlives helm uninstall
+release:
+  name: corral
+  namespace: corral
+values:
+  - ../../examples/minimal.yaml
+tests:
+  - it: puts SQLite on a volume at the server's default path, deleted on uninstall by default
+    templates:
+      - templates/data-pvc.yaml
+      - templates/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.resources.requests.storage
+          value: 1Gi
+        template: templates/data-pvc.yaml
+      - notExists:
+          path: metadata.annotations
+        template: templates/data-pvc.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: data, mountPath: /var/lib/corral }
+        template: templates/deployment.yaml
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content: { name: DATABASE_URL }
+          any: true
+        template: templates/deployment.yaml
+
+  - it: mounts an existing claim instead of creating one
+    templates:
+      - templates/data-pvc.yaml
+      - templates/deployment.yaml
+    set:
+      database.sqlite.existingClaim: old-data
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/data-pvc.yaml
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: data, persistentVolumeClaim: { claimName: old-data } }
+        template: templates/deployment.yaml
+
+  - it: creates a CNPG Cluster and reads its app URI
+    templates:
+      - templates/cnpg-cluster.yaml
+      - templates/data-pvc.yaml
+      - templates/deployment.yaml
+    set:
+      database.kind: cnpg
+    asserts:
+      - equal:
+          path: spec.bootstrap.initdb
+          value: { database: corral, owner: corral }
+        template: templates/cnpg-cluster.yaml
+      - hasDocuments:
+          count: 0
+        template: templates/data-pvc.yaml
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_URL
+            valueFrom: { secretKeyRef: { name: corral-db-app, key: uri } }
+        template: templates/deployment.yaml
+
+  - it: keeps the data volume, the CNPG Cluster and the sandbox namespace with keepOnUninstall
+    templates:
+      - templates/data-pvc.yaml
+      - templates/cnpg-cluster.yaml
+      - templates/sandbox-namespace.yaml
+    set:
+      keepOnUninstall: true
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+        template: templates/data-pvc.yaml
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+        template: templates/sandbox-namespace.yaml
+
+  - it: keeps the CNPG Cluster with keepOnUninstall
+    template: templates/cnpg-cluster.yaml
+    set:
+      keepOnUninstall: true
+      database.kind: cnpg
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep

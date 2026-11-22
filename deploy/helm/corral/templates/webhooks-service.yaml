@@ -1,0 +1,17 @@
+{{- /* Always ClusterIP: the webhooks are unauthenticated and wake any sandbox they are asked about. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "corral.webhooksName" . }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "corral.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: internal
+      port: 8081
+      targetPort: internal

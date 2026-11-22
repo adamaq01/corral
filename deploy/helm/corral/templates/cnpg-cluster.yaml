@@ -1,0 +1,24 @@
+{{- if eq .Values.database.kind "cnpg" }}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "corral.fullname" . }}-db
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+  {{- with include "corral.keepAnnotation" . }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  instances: {{ .Values.database.cnpg.instances }}
+  storage:
+    size: {{ .Values.database.cnpg.size }}
+    {{- with .Values.database.cnpg.storageClass }}
+    storageClass: {{ . }}
+    {{- end }}
+  bootstrap:
+    initdb:
+      database: corral
+      owner: corral
+{{- end }}

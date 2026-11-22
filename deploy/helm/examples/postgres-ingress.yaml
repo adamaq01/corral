@@ -1,0 +1,32 @@
+# An existing Postgres server, a Vault token, an Ingress with TLS, ContainerSSH on a fixed node
+# port, and Corral's keys from a Secret made with `corral-server keys generate`.
+baseUrl: https://corral.example.org
+trustForwardedFor: true
+ssh:
+  publicHost: corral.example.org
+  publicPort: 30022
+keys:
+  existingSecret: corral-keys
+database:
+  kind: postgres
+  postgres:
+    url:
+      existingSecret: corral-database
+      key: url
+secretStore:
+  kind: vault
+  vault:
+    address: https://vault.example.org
+    auth:
+      kind: token
+      token:
+        existingSecret: corral-vault
+        key: token
+ingress:
+  enabled: true
+  className: nginx
+  tlsSecretName: corral-tls
+containerssh:
+  service:
+    type: NodePort
+    nodePort: 30022

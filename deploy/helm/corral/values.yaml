@@ -1,0 +1,245 @@
+# Values for the Corral chart. values.schema.json validates every key: an unknown or misspelled
+# key fails `helm install`.
+
+# baseUrl is the address people open in a browser, http:// or https://. Required. The Ingress and
+# HTTPRoute serve its host name. The session cookie is marked Secure exactly when it is https.
+# baseUrl: https://corral.example.com
+
+# trustForwardedFor makes password-login limits count each client by X-Forwarded-For. Turn it on
+# behind an Ingress controller or Gateway, where every peer is the proxy.
+trustForwardedFor: false
+
+# logLevel sets RUST_LOG for the server, such as info, debug or corral_api=debug.
+logLevel: info
+
+# nameOverride replaces the chart name in resource names.
+nameOverride: ""
+# fullnameOverride replaces the release-and-chart name that prefixes every resource.
+fullnameOverride: ""
+
+image:
+  # image.repository is the Corral server image.
+  repository: ghcr.io/adamaq01/corral
+  # image.tag defaults to the chart's appVersion.
+  tag: ""
+  # image.pullPolicy is the server container's pull policy.
+  pullPolicy: IfNotPresent
+
+# imagePullSecrets are the Secrets for pulling the Corral and ContainerSSH images.
+imagePullSecrets: []
+
+ssh:
+  # ssh.publicHost is the host name people pass to ssh. Required.
+  # publicHost: ssh.example.com
+  # ssh.publicPort is the port people pass to ssh, and the ContainerSSH Service's port.
+  publicPort: 48291
+  # ssh.wakeDeadlineSecs is how long a login waits for a sleeping sandbox to wake. ContainerSSH
+  # waits 10 seconds longer for Corral's answer.
+  wakeDeadlineSecs: 20
+
+identity:
+  local:
+    # identity.local.enabled turns on local accounts, created with
+    # `kubectl exec deploy/<release> -- corral-server local-account create <name> --admin`.
+    enabled: true
+  oidc:
+    # identity.oidc.enabled turns on OIDC login. Register <baseUrl>/auth/oidc/callback as the
+    # redirect URI.
+    enabled: false
+    # identity.oidc.issuer is the issuer URL, as in its discovery document.
+    issuer: ""
+    # identity.oidc.clientId is Corral's client id at the issuer.
+    clientId: ""
+    # identity.oidc.scopes are the scopes requested at login.
+    scopes: [openid, profile, email, groups]
+    # identity.oidc.memberGroup is the group whose members log in as members.
+    memberGroup: corral-users
+    # identity.oidc.adminGroup is the group whose members log in as admins.
+    adminGroup: corral-admins
+    # identity.oidc.clientSecret is the client secret: either `existingSecret` and `key`, naming
+    # a Secret in the release namespace, or `value`, which the chart stores in a Secret.
+    clientSecret: {}
+
+# keys.existingSecret names a Secret with CORRAL_SESSION_KEY and CORRAL_SECRETS_KEY, as printed by
+# `corral-server keys generate`. Empty: the chart generates both once and keeps them across
+# upgrades, and `helm uninstall` leaves that Secret behind, since stored credentials need it.
+keys:
+  existingSecret: ""
+
+secretStore:
+  # secretStore.kind is where users' credentials are kept: database (encrypted with
+  # CORRAL_SECRETS_KEY) or vault (a Vault or OpenBao KV v2 mount).
+  kind: database
+  vault:
+    # secretStore.vault.address is the Vault or OpenBao URL.
+    address: ""
+    # secretStore.vault.mount is the KV v2 mount.
+    mount: secret
+    # secretStore.vault.pathPrefix is the path under the mount that holds Corral's secrets.
+    pathPrefix: corral
+    auth:
+      # secretStore.vault.auth.kind is kubernetes (Corral's ServiceAccount token, which the
+      # role must bind) or token.
+      kind: kubernetes
+      # secretStore.vault.auth.role is the Kubernetes auth role, for kind kubernetes.
+      role: ""
+      # secretStore.vault.auth.token is the Vault token, for kind token: `existingSecret` and
+      # `key`, or `value`.
+      token: {}
+
+database:
+  # database.kind is sqlite (a file on a PersistentVolumeClaim), postgres (any server, by URL) or
+  # cnpg (a CloudNativePG Cluster this chart creates; the CNPG operator must be installed).
+  kind: sqlite
+  sqlite:
+    # database.sqlite.size is the size of the volume that holds the database file.
+    size: 1Gi
+    # database.sqlite.storageClass is the volume's StorageClass. Empty: the cluster default.
+    storageClass: ""
+    # database.sqlite.existingClaim mounts this PersistentVolumeClaim instead of creating one.
+    existingClaim: ""
+  postgres:
+    # database.postgres.url is the postgres:// URL: `existingSecret` and `key`, or `value`.
+    url: {}
+  cnpg:
+    # database.cnpg.instances is the number of Postgres instances.
+    instances: 1
+    # database.cnpg.size is each instance's volume size.
+    size: 1Gi
+    # database.cnpg.storageClass is the instances' StorageClass. Empty: the cluster default.
+    storageClass: ""
+
+sandboxes:
+  namespace:
+    # sandboxes.namespace.name is the namespace of the sandboxes. Empty: <fullname>-sandboxes.
+    # Corral and ContainerSSH get rights in this namespace only.
+    name: ""
+    # sandboxes.namespace.create creates the namespace. With false it must exist.
+    create: true
+  # sandboxes.storageClass is the StorageClass of sandbox homes. Empty: the cluster default.
+  storageClass: ""
+  # sandboxes.agentImage is the ContainerSSH agent image, mounted into every sandbox.
+  agentImage: containerssh/agent:v0.11.0
+
+# keepOnUninstall keeps the database volume or CNPG Cluster and the chart-created sandbox
+# namespace, with every sandbox and home in it, when the release is uninstalled.
+keepOnUninstall: false
+
+idle:
+  # idle.timeoutSecs is how long a sandbox with no SSH session and no Herdr terminal at work stays
+  # awake.
+  timeoutSecs: 1800
+  # idle.probeIntervalSecs is how often running sandboxes are checked for activity.
+  probeIntervalSecs: 60
+
+limits:
+  # limits.maxSandboxesPerUser is how many sandboxes each user may have.
+  maxSandboxesPerUser: 5
+  # limits.maxRunning is how many sandboxes may be awake at once, across all users.
+  maxRunning: 6
+
+catalog:
+  # catalog.images are the images users pick from; the first is the default. Empty: the
+  # corral-sandbox image. Each has key, label and reference.
+  images: []
+  # catalog.sizes are the sizes users pick from; the first is the default. Empty: one size of
+  # 2 CPUs, 4 GiB and a 10 GiB home. Each has key, label, cpuRequest, cpuLimit, memoryRequest,
+  # memoryLimit and homeSize.
+  sizes: []
+
+serviceAccount:
+  # serviceAccount.annotations are added to Corral's ServiceAccount.
+  annotations: {}
+
+service:
+  # service.type is the web UI and API Service's type.
+  type: ClusterIP
+  # service.port is the web UI and API Service's port.
+  port: 8080
+  # service.annotations are added to the Service.
+  annotations: {}
+
+ingress:
+  # ingress.enabled serves baseUrl's host through an Ingress.
+  enabled: false
+  # ingress.className is the IngressClass. Empty: the cluster default.
+  className: ""
+  # ingress.annotations are added to the Ingress.
+  annotations: {}
+  # ingress.tlsSecretName is the TLS certificate's Secret. Empty: no TLS section.
+  tlsSecretName: ""
+
+httpRoute:
+  # httpRoute.enabled serves baseUrl's host through a Gateway API HTTPRoute.
+  enabled: false
+  # httpRoute.parentRefs are the Gateways the route attaches to.
+  parentRefs: []
+  # httpRoute.annotations are added to the HTTPRoute.
+  annotations: {}
+
+# networkPolicy.enabled lets only ContainerSSH reach Corral's webhook port, which wakes any
+# sandbox it is asked about. It needs a network plugin that enforces NetworkPolicy.
+networkPolicy:
+  enabled: true
+
+# resources are the Corral container's requests and limits.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+# podAnnotations are added to the Corral pod.
+podAnnotations: {}
+# nodeSelector constrains the Corral pod's nodes.
+nodeSelector: {}
+# tolerations are the Corral pod's tolerations.
+tolerations: []
+# affinity is the Corral pod's affinity.
+affinity: {}
+
+containerssh:
+  image:
+    # containerssh.image.repository is the ContainerSSH image.
+    repository: containerssh/containerssh
+    # containerssh.image.tag is the ContainerSSH version.
+    tag: v0.6.1
+    # containerssh.image.pullPolicy is the ContainerSSH container's pull policy.
+    pullPolicy: IfNotPresent
+  # containerssh.replicas is the number of ContainerSSH pods.
+  replicas: 1
+  # containerssh.hostKey.existingSecret names a Secret whose `host_key` is the SSH host private
+  # key. Empty: the chart generates an ed25519 key once, keeps it across upgrades, and
+  # `helm uninstall` leaves it behind, so known_hosts entries stay valid.
+  hostKey:
+    existingSecret: ""
+  service:
+    # containerssh.service.type is LoadBalancer, NodePort or ClusterIP.
+    type: LoadBalancer
+    # containerssh.service.port is the Service port. Empty: ssh.publicPort.
+    port: null
+    # containerssh.service.nodePort fixes the node port, for type NodePort or LoadBalancer.
+    nodePort: null
+    # containerssh.service.externalTrafficPolicy is Local, so Corral sees each client's address
+    # and failed-login lockouts count per client, or Cluster. NodePort and LoadBalancer only.
+    externalTrafficPolicy: Local
+    # containerssh.service.loadBalancerClass selects a load balancer implementation.
+    loadBalancerClass: ""
+    # containerssh.service.annotations are added to the Service, such as
+    # metallb.io/loadBalancerIPs.
+    annotations: {}
+  # containerssh.resources are the ContainerSSH container's requests and limits.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  # containerssh.podAnnotations are added to the ContainerSSH pods.
+  podAnnotations: {}
+  # containerssh.nodeSelector constrains the ContainerSSH pods' nodes.
+  nodeSelector: {}
+  # containerssh.tolerations are the ContainerSSH pods' tolerations.
+  tolerations: []
+  # containerssh.affinity is the ContainerSSH pods' affinity.
+  affinity: {}

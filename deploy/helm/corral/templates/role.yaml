@@ -1,0 +1,26 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "corral.fullname" . }}
+  namespace: {{ include "corral.sandboxNamespace" . }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+rules:
+  - apiGroups: [agents.x-k8s.io]
+    resources: [sandboxes]
+    verbs: [get, list, create, patch, delete]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, patch, delete]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [list, deletecollection]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  # The idle sweep execs a probe in each running sandbox. A WebSocket exec is a GET, which
+  # newer API servers also authorize as create.
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]

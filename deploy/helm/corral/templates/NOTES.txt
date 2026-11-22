@@ -1,0 +1,17 @@
+Corral is starting at {{ .Values.baseUrl }}.
+{{- if .Values.identity.local.enabled }}
+
+Create the first admin; the password is read twice from the terminal, at least 12 characters:
+
+  kubectl --namespace {{ .Release.Namespace }} exec -it deploy/{{ include "corral.fullname" . }} -- corral-server local-account create <name> --admin
+{{- end }}
+
+Users connect with:
+
+  ssh -p {{ .Values.ssh.publicPort }} <name>+<sandbox>@{{ .Values.ssh.publicHost }}
+
+The host key fingerprint they see on first connect:
+
+  ssh-keyscan -p {{ .Values.ssh.publicPort }} {{ .Values.ssh.publicHost }} | ssh-keygen -lf -
+
+Sandboxes run in the namespace {{ include "corral.sandboxNamespace" . }}.

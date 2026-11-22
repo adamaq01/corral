@@ -1,0 +1,141 @@
+# Each document is laid over examples/minimal.yaml and must fail `helm template` with an error
+# that contains its `expect` line.
+# expect: at '/baseUrl': got null, want string
+baseUrl: null
+---
+# expect: at '/baseUrl': 'corral.example.lan' does not match pattern
+baseUrl: corral.example.lan
+---
+# expect: at '/ssh/publicHost': got null, want string
+ssh:
+  publicHost: null
+---
+# expect: additional properties 'trustForwardedfor' not allowed
+trustForwardedfor: true
+---
+# expect: at '/ssh': additional properties 'publicHots' not allowed
+ssh:
+  publicHots: corral.example.lan
+---
+# expect: at '/ssh/publicPort': got string, want integer
+ssh:
+  publicPort: "48291"
+---
+# expect: at '/identity/oidc/clientId': minLength: got 0, want 1
+identity:
+  oidc:
+    enabled: true
+---
+# expect: at '/identity/oidc/enabled': value must be true
+identity:
+  local:
+    enabled: false
+---
+# expect: at '/identity/oidc/clientSecret/existingSecret': false schema
+identity:
+  oidc:
+    enabled: true
+    issuer: https://auth.example.com
+    clientId: corral
+    clientSecret:
+      existingSecret: corral-oidc
+      key: client-secret
+      value: in-plain-text
+---
+# expect: at '/identity/oidc/clientSecret': properties 'key' required, if 'existingSecret' exists
+identity:
+  oidc:
+    enabled: true
+    issuer: https://auth.example.com
+    clientId: corral
+    clientSecret:
+      existingSecret: corral-oidc
+---
+# expect: at '/secretStore/vault/address': '' does not match pattern
+secretStore:
+  kind: vault
+  vault:
+    auth:
+      role: corral
+---
+# expect: at '/secretStore/vault/auth/role': minLength: got 0, want 1
+secretStore:
+  kind: vault
+  vault:
+    address: http://openbao:8200
+---
+# expect: at '/secretStore/vault/auth/token': missing property 'existingSecret'
+secretStore:
+  kind: vault
+  vault:
+    address: http://openbao:8200
+    auth:
+      kind: token
+---
+# expect: at '/secretStore/kind': value must be one of 'database', 'vault'
+secretStore:
+  kind: openbao
+---
+# expect: at '/database/postgres/url': missing property 'existingSecret'
+database:
+  kind: postgres
+---
+# expect: at '/database/kind': value must be one of 'sqlite', 'postgres', 'cnpg'
+database:
+  kind: mysql
+---
+# expect: at '/catalog/sizes/0/memoryLimit': '4GB' does not match pattern
+catalog:
+  sizes:
+    - key: small
+      label: Small
+      cpuRequest: 500m
+      cpuLimit: "2"
+      memoryRequest: 1Gi
+      memoryLimit: 4GB
+      homeSize: 10Gi
+---
+# expect: at '/catalog/images/0/key': 'Ubuntu' does not match pattern
+catalog:
+  images:
+    - key: Ubuntu
+      label: Ubuntu
+      reference: ghcr.io/adamaq01/corral-sandbox
+---
+# expect: at '/catalog/images/0': missing property 'reference'
+catalog:
+  images:
+    - key: ubuntu
+      label: Ubuntu
+---
+# expect: at '/httpRoute/enabled': value must be false
+ingress:
+  enabled: true
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+---
+# expect: at '/httpRoute/parentRefs': minItems: got 0, want 1
+httpRoute:
+  enabled: true
+---
+# expect: at '/containerssh/service/nodePort'
+containerssh:
+  service:
+    type: NodePort
+    nodePort: 2222
+---
+# expect: at '/containerssh/service/type': value must be one of 'LoadBalancer', 'NodePort', 'ClusterIP'
+containerssh:
+  service:
+    type: Ingress
+---
+# expect: at '/idle/probeIntervalSecs': minimum: got 0, want 1
+idle:
+  probeIntervalSecs: 0
+---
+# expect: at '/sandboxes/namespace/name': 'Corral_Sandboxes' does not match pattern
+sandboxes:
+  namespace:
+    name: Corral_Sandboxes

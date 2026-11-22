@@ -1,0 +1,62 @@
+# OIDC login, a CloudNativePG database, credentials in OpenBao with Kubernetes auth, the web UI
+# behind a Gateway, and ContainerSSH on a MetalLB address.
+baseUrl: https://corral.example.com
+trustForwardedFor: true
+ssh:
+  publicHost: ssh.example.com
+identity:
+  local:
+    enabled: false
+  oidc:
+    enabled: true
+    issuer: https://auth.example.com
+    clientId: corral
+    clientSecret:
+      existingSecret: corral-oidc
+      key: client-secret
+secretStore:
+  kind: vault
+  vault:
+    address: http://openbao.openbao.svc:8200
+    auth:
+      kind: kubernetes
+      role: corral
+database:
+  kind: cnpg
+  cnpg:
+    instances: 2
+    size: 5Gi
+sandboxes:
+  storageClass: fast-nvme
+keepOnUninstall: true
+limits:
+  maxRunning: 10
+catalog:
+  images:
+    - key: ubuntu
+      label: Ubuntu 24.04
+      reference: ghcr.io/adamaq01/corral-sandbox:latest
+  sizes:
+    - key: small
+      label: "Small: 2 CPUs, 4 GiB"
+      cpuRequest: 500m
+      cpuLimit: "2"
+      memoryRequest: 1Gi
+      memoryLimit: 4Gi
+      homeSize: 10Gi
+    - key: large
+      label: "Large: 4 CPUs, 8 GiB"
+      cpuRequest: "1"
+      cpuLimit: "4"
+      memoryRequest: 2Gi
+      memoryLimit: 8Gi
+      homeSize: 30Gi
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway
+containerssh:
+  service:
+    annotations:
+      metallb.io/loadBalancerIPs: 192.168.1.40

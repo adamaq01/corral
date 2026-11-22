@@ -1,0 +1,186 @@
+suite: rights in the sandbox namespace and the SSH front door
+release:
+  name: corral
+  namespace: corral
+values:
+  - ../../examples/minimal.yaml
+tests:
+  - it: grants Corral and ContainerSSH Roles in the sandbox namespace only, never cluster-wide
+    templates:
+      - templates/role.yaml
+      - templates/containerssh-role.yaml
+      - templates/rolebinding.yaml
+      - templates/containerssh-rolebinding.yaml
+    asserts:
+      - isKind:
+          of: Role
+        template: templates/role.yaml
+      - equal:
+          path: metadata.namespace
+          value: corral-sandboxes
+      - equal:
+          path: rules
+          value:
+            - { apiGroups: [""], resources: [pods], verbs: [get] }
+            - { apiGroups: [""], resources: [pods/exec], verbs: [create] }
+        template: templates/containerssh-role.yaml
+      - equal:
+          path: subjects
+          value: [{ kind: ServiceAccount, name: corral, namespace: corral }]
+        template: templates/rolebinding.yaml
+
+  - it: uses an existing sandbox namespace without creating it
+    templates:
+      - templates/sandbox-namespace.yaml
+      - templates/role.yaml
+    set:
+      sandboxes.namespace: { name: homes, create: false }
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/sandbox-namespace.yaml
+      - equal:
+          path: metadata.namespace
+          value: homes
+        template: templates/role.yaml
+
+  - it: gives sandboxes no ServiceAccount token
+    template: templates/sandbox-serviceaccount.yaml
+    asserts:
+      - equal:
+          path: automountServiceAccountToken
+          value: false
+
+  - it: keeps the webhook port off the web Service, whatever its type
+    templates:
+      - templates/service.yaml
+      - templates/webhooks-service.yaml
+    set:
+      service.type: LoadBalancer
+    asserts:
+      - equal:
+          path: spec.ports
+          value: [{ name: http, port: 8080, targetPort: http }]
+        template: templates/service.yaml
+      - equal:
+          path: spec.type
+          value: ClusterIP
+        template: templates/webhooks-service.yaml
+
+  - it: lets only ContainerSSH reach Corral's webhook port
+    template: templates/networkpolicy.yaml
+    asserts:
+      - equal:
+          path: spec.ingress
+          value:
+            - ports: [{ port: http }]
+            - from:
+                - podSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: corral
+                      app.kubernetes.io/instance: corral
+                      app.kubernetes.io/component: containerssh
+              ports: [{ port: internal }]
+
+  - it: configures ContainerSSH for keys only, forwarding, the Kubernetes backend and a timeout above the wake deadline
+    template: templates/containerssh-configmap.yaml
+    set:
+      ssh.wakeDeadlineSecs: 45
+    asserts:
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'keyboardInteractive:\s+method: ""\s+password:\s+method: ""\s+publicKey:\s+method: webhook\s+webhook:\s+url: http://corral-webhooks:8081\n'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'backend: kubernetes\n'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'configserver:\s+timeout: 55s\s+url: http://corral-webhooks:8081/config\n'
+      - matchRegex:
+          path: data["config.yaml"]
+          pattern: 'forwardingMode: enable\n'
+
+  - it: serves SSH on ssh.publicPort through a LoadBalancer that keeps client addresses
+    template: templates/containerssh-service.yaml
+    asserts:
+      - equal:
+          path: spec.type
+          value: LoadBalancer
+      - equal:
+          path: spec.externalTrafficPolicy
+          value: Local
+      - equal:
+          path: spec.ports
+          value: [{ name: ssh, port: 48291, targetPort: ssh }]
+
+  - it: sets the node port and drops the traffic policy where it does not apply
+    template: templates/containerssh-service.yaml
+    set:
+      containerssh.service: { type: NodePort, nodePort: 30022, port: 22 }
+    asserts:
+      - equal:
+          path: spec.ports
+          value: [{ name: ssh, port: 22, targetPort: ssh, nodePort: 30022 }]
+
+  - it: has no traffic policy on a ClusterIP Service
+    template: templates/containerssh-service.yaml
+    set:
+      containerssh.service.type: ClusterIP
+    asserts:
+      - notExists:
+          path: spec.externalTrafficPolicy
+
+  - it: serves baseUrl's host, without its port, through the Ingress
+    template: templates/ingress.yaml
+    set:
+      baseUrl: https://corral.example.com:8443
+      ingress: { enabled: true, tlsSecretName: corral-tls }
+    asserts:
+      - equal:
+          path: spec.rules[0].host
+          value: corral.example.com
+      - equal:
+          path: spec.tls
+          value: [{ hosts: [corral.example.com], secretName: corral-tls }]
+
+  - it: serves baseUrl's host through the HTTPRoute
+    template: templates/httproute.yaml
+    set:
+      baseUrl: https://corral.example.com
+      httpRoute: { enabled: true, parentRefs: [{ name: public, namespace: gateway }] }
+    asserts:
+      - equal:
+          path: spec.hostnames
+          value: [corral.example.com]
+
+  - it: refuses to install into a cluster without agent-sandbox
+    template: templates/prerequisites.yaml
+    kubernetesProvider:
+      scheme:
+        "v1/Namespace":
+          gvr: { version: v1, resource: namespaces }
+          namespaced: false
+      objects:
+        - apiVersion: v1
+          kind: Namespace
+          metadata: { name: kube-system }
+    asserts:
+      - failedTemplate:
+          errorPattern: "agent-sandbox is not installed"
+
+  - it: installs into a cluster with agent-sandbox
+    template: templates/prerequisites.yaml
+    capabilities:
+      apiVersions: [agents.x-k8s.io/v1beta1]
+    kubernetesProvider:
+      scheme:
+        "v1/Namespace":
+          gvr: { version: v1, resource: namespaces }
+          namespaced: false
+      objects:
+        - apiVersion: v1
+          kind: Namespace
+          metadata: { name: kube-system }
+    asserts:
+      - hasDocuments:
+          count: 0

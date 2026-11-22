@@ -1,0 +1,21 @@
+{{- if and (eq .Values.database.kind "sqlite") (not .Values.database.sqlite.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "corral.fullname" . }}-data
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  {{- with include "corral.keepAnnotation" . }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.database.sqlite.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.database.sqlite.size }}
+{{- end }}
