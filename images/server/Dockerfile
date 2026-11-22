@@ -20,8 +20,8 @@ WORKDIR /src
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 RUN rustup target add "$(cat /rust-target)"
 COPY crates crates
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corral-cargo-registry \
-    --mount=type=cache,target=/src/target,id=corral-server-target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corral-cargo-registry,sharing=locked \
+    --mount=type=cache,target=/src/target,id=corral-server-target,sharing=locked \
     target="$(cat /rust-target)" \
  && cargo build --release --locked --package corral-server --target "$target" \
  && cp "target/$target/release/corral-server" /corral-server
@@ -31,7 +31,7 @@ RUN mkdir /data
 FROM --platform=$BUILDPLATFORM node:22.22.1-trixie-slim AS web
 WORKDIR /web
 COPY web/package.json web/package-lock.json web/.npmrc ./
-RUN --mount=type=cache,target=/root/.npm,id=corral-npm npm ci
+RUN --mount=type=cache,target=/root/.npm,id=corral-npm,sharing=locked npm ci
 COPY web ./
 RUN npm run build
 
