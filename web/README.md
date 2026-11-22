@@ -21,10 +21,18 @@ server's `base_url`, so it only works in dev when `base_url` is the dev server's
 ## Check
 
 ```sh
-npm run lint    # prettier
-npm run check   # svelte-check
+npm run lint      # prettier
+npm run check     # svelte-check
 npm run build
+npm run test:e2e  # Playwright
 ```
+
+The Playwright suite builds the UI and the corral-server binary (set `CORRAL_SERVER_BIN` to use a
+built one), then runs the server on SQLite in a temporary directory with local accounts and the
+Docker engine on a network of its own, which it removes afterwards. Sandboxes use
+`corral-sandbox:dev` unless `CORRAL_SANDBOX_IMAGE` names another image. A failed test keeps its
+trace in `test-results/`, next to `corral-server.log`. With `CORRAL_SCREENSHOTS=<dir>`, the suite
+also takes screenshots of the sign-in page and the shell in both themes at desktop and phone width.
 
 ## API types
 
