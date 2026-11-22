@@ -1,6 +1,7 @@
 use corral_core::ports::CredentialMap;
 use secrecy::ExposeSecret;
 use ssh_key::PublicKey;
+use tracing::warn;
 
 const AUTHORIZED_KEYS: &str = "etc/ssh/corral_authorized_keys";
 const SSHD_ENV: &str = "etc/corral/sshd_env.conf";
@@ -34,12 +35,18 @@ pub(crate) fn archive(proxy_key: &PublicKey, env: &CredentialMap) -> Vec<u8> {
 fn set_env(env: &CredentialMap) -> String {
     let quoted: Vec<String> = env
         .iter()
-        .map(|(name, value)| {
-            let value = value
-                .expose_secret()
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            format!("\"{}={value}\"", name.as_str())
+        .filter_map(|(name, value)| {
+            let value = value.expose_secret();
+            // A line break would end the SetEnv line and let the value write sshd directives.
+            if value.contains(['\n', '\r', '\0']) {
+                warn!(
+                    credential = name.as_str(),
+                    "left out a credential that is not one line"
+                );
+                return None;
+            }
+            let value = value.replace('\\', "\\\\").replace('"', "\\\"");
+            Some(format!("\"{}={value}\"", name.as_str()))
         })
         .collect();
     if quoted.is_empty() {
@@ -128,5 +135,17 @@ mod tests {
             "SetEnv \"ODD_TOKEN=p#ss \\\"word\\\" it's $HOME \\\\x\\\\\"\n"
         );
         assert_eq!(entries(&CredentialMap::new())[1].3, "");
+    }
+
+    #[test]
+    fn values_that_are_not_one_line_never_reach_sshd_config() {
+        let written = entries(&env(&[
+            ("GH_TOKEN", "gh"),
+            ("NEWLINE", "x\nForceCommand /bin/false"),
+            ("RETURN", "x\rPermitTTY no"),
+            ("NUL", "x\0y"),
+        ]));
+
+        assert_eq!(written[1].3, "SetEnv \"GH_TOKEN=gh\"\n");
     }
 }
