@@ -2,8 +2,7 @@ use crate::{Error, Result};
 
 const MAX_LEN: usize = 64;
 const RESERVED_PREFIX: &str = "CORRAL_";
-// The sandbox entrypoint keeps these from SSH sessions while Kubernetes would still apply them,
-// so refusing them keeps both engines alike.
+// SSH sessions and the sandbox image depend on these, and both engines would apply them.
 const RESERVED: [&str; 12] = [
     "HOME", "HOSTNAME", "LOGNAME", "MAIL", "OLDPWD", "PATH", "PWD", "SHELL", "SHLVL", "TERM",
     "USER", "_",

@@ -125,21 +125,23 @@ async fn engine(
 ) -> Result<(Arc<dyn SandboxEngine>, JoinHandle<()>)> {
     match &engine.backend {
         EngineBackend::Docker { network } => {
-            let docker = DockerEngine::connect(DockerConfig {
-                network: network.clone(),
-                proxy_public_key: proxy_key.public_openssh.clone(),
-                max_running: engine.max_running,
-                idle_timeout: engine.idle_timeout,
-            })
-            .await?;
-            let lifecycle = docker.spawn_lifecycle(engine.probe_interval, shutdown);
-            Ok((Arc::new(docker), lifecycle))
+            let docker = Arc::new(
+                DockerEngine::connect(DockerConfig {
+                    network: network.clone(),
+                    proxy_public_key: proxy_key.public_key.clone(),
+                    max_running: engine.max_running,
+                    idle_timeout: engine.idle_timeout,
+                })
+                .await?,
+            );
+            let lifecycle = corral_activity::spawn(docker.clone(), engine.probe_interval, shutdown);
+            Ok((docker, lifecycle))
         }
         EngineBackend::AgentSandbox(agent) => {
             let client = kube::Client::try_default()
                 .await
                 .context("connecting to Kubernetes")?;
-            let agent = AgentSandboxEngine::new(
+            let agent = Arc::new(AgentSandboxEngine::new(
                 client,
                 AgentSandboxConfig {
                     namespace: agent.namespace.clone(),
@@ -149,9 +151,9 @@ async fn engine(
                     max_running: engine.max_running,
                     idle_timeout: engine.idle_timeout,
                 },
-            );
-            let lifecycle = agent.spawn_lifecycle(engine.probe_interval, shutdown);
-            Ok((Arc::new(agent), lifecycle))
+            ));
+            let lifecycle = corral_activity::spawn(agent.clone(), engine.probe_interval, shutdown);
+            Ok((agent, lifecycle))
         }
     }
 }

@@ -1,16 +1,15 @@
 mod decide;
 mod error;
 mod exec;
-mod herdr_probe;
+mod herdr;
 mod pgrep;
 mod probe;
-mod ssh_session_probe;
+mod sweep;
 #[cfg(test)]
 mod testing;
 
 pub use decide::{IdleDecision, decide};
 pub use error::ActivityError;
 pub use exec::{Exec, ExecOutput};
-pub use herdr_probe::HerdrProbe;
-pub use probe::{ActivityProbe, any_active};
-pub use ssh_session_probe::SshSessionProbe;
+pub use probe::{Sessions, is_active};
+pub use sweep::{LastActive, Sweepable, Waking, spawn};

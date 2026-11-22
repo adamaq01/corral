@@ -6,9 +6,13 @@ edition.workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+corral-core = { path = "../corral-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "process", "rt", "time"] }

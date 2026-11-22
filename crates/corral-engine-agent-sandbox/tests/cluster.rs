@@ -3,18 +3,17 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use corral_core::Error;
 use corral_core::domain::{
     Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
 };
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_engine_agent_sandbox::crd::{OperatingMode, Sandbox};
-use corral_engine_agent_sandbox::manifest::{CONTAINER, LAST_ACTIVE, SANDBOX_ID};
+use corral_engine_agent_sandbox::manifest::{CONTAINER, SANDBOX_ID};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine, exec};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{AttachParams, AttachedProcess, ListParams};
-use kube::{Api, Client, ResourceExt};
+use kube::{Api, Client};
 use secrecy::SecretString;
 use tokio::io::AsyncReadExt;
 use tokio::sync::{Barrier, Mutex};
@@ -110,12 +109,6 @@ impl Cluster {
             })
         );
         assert_eq!(self.state(id).await, SandboxStatus::Running);
-    }
-
-    async fn last_active(&self, id: &SandboxId) -> DateTime<Utc> {
-        let sandbox = self.sandboxes.get(&id.0).await.unwrap();
-        let value = &sandbox.annotations()[LAST_ACTIVE];
-        DateTime::parse_from_rfc3339(value).unwrap().into()
     }
 
     async fn home_marker(&self, id: &SandboxId) -> String {
@@ -330,15 +323,10 @@ async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
     start_a_plain_process_under_herdr(&cluster, &herdr).await;
     let ssh_session = open_containerssh_session(&cluster, &session).await;
     let busy = [&herdr, &session];
-    let mut last_active = Vec::new();
-    for id in busy {
-        last_active.push(cluster.last_active(id).await);
-    }
 
     let shutdown = CancellationToken::new();
-    let lifecycle = cluster
-        .engine
-        .spawn_lifecycle(LIFECYCLE_INTERVAL, shutdown.clone());
+    let lifecycle =
+        corral_activity::spawn(cluster.engine.clone(), LIFECYCLE_INTERVAL, shutdown.clone());
     let started = tokio::time::Instant::now();
     wait_until("the idle sandbox to sleep", ASLEEP_WITHIN, || async {
         for id in busy {
@@ -349,9 +337,8 @@ async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
     .await;
     eprintln!("idle sandbox asleep after {:?}", started.elapsed());
     tokio::time::sleep(2 * LIFECYCLE_INTERVAL).await;
-    for (id, before) in busy.into_iter().zip(last_active) {
+    for id in busy {
         assert_eq!(cluster.state(id).await, SandboxStatus::Running, "{}", id.0);
-        assert!(cluster.last_active(id).await > before, "{}", id.0);
     }
 
     shutdown.cancel();

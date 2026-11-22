@@ -2,9 +2,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use corral_activity::{
-    ActivityError, ActivityProbe, Exec, ExecOutput, HerdrProbe, SshSessionProbe,
-};
+use corral_activity::{ActivityError, Exec, ExecOutput, Sessions, is_active};
 
 struct Container {
     name: String,
@@ -76,9 +74,13 @@ async fn herdr_core_running(container: &Container) -> bool {
     }
 }
 
-async fn eventually_inactive(probe: &dyn ActivityProbe, container: &Container) -> bool {
+async fn active(container: &Container) -> bool {
+    is_active(Sessions::Sshd, container).await.unwrap()
+}
+
+async fn eventually_inactive(container: &Container) -> bool {
     for _ in 0..20 {
-        if !probe.is_active(container).await.unwrap() {
+        if !active(container).await {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
@@ -87,7 +89,7 @@ async fn eventually_inactive(probe: &dyn ActivityProbe, container: &Container) -
 }
 
 #[tokio::test]
-async fn probes_read_a_real_sandbox() {
+async fn activity_reads_a_real_sandbox() {
     let image =
         std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned());
     if !image_available(&image) {
@@ -98,12 +100,18 @@ async fn probes_read_a_real_sandbox() {
     }
     let sandbox = Container::start(&image);
 
-    let nothing = SshSessionProbe::new("corral-activity-no-such-process");
-    assert!(!nothing.is_active(&sandbox).await.unwrap());
-    let entrypoint = SshSessionProbe::new("sleep infinity");
-    assert!(entrypoint.is_active(&sandbox).await.unwrap());
-
-    assert!(!HerdrProbe.is_active(&sandbox).await.unwrap());
+    assert!(!active(&sandbox).await);
+    assert!(!is_active(Sessions::Exec, &sandbox).await.unwrap());
+    let exec_session = Command::new("docker")
+        .args(["exec", "--detach", &sandbox.name, "sleep", "600"])
+        .status()
+        .expect("run docker");
+    assert!(exec_session.success());
+    assert!(is_active(Sessions::Exec, &sandbox).await.unwrap());
+    assert!(
+        !active(&sandbox).await,
+        "an exec is no sshd session and no Herdr terminal"
+    );
     assert!(
         !herdr_core_running(&sandbox).await,
         "the probe started a herdr core"
@@ -116,18 +124,18 @@ async fn probes_read_a_real_sandbox() {
     assert_eq!(started.code, 0, "hc run --bg failed");
     let terminal: serde_json::Value = serde_json::from_str(&started.stdout).unwrap();
     let address = terminal["address"].as_str().unwrap();
-    assert!(HerdrProbe.is_active(&sandbox).await.unwrap());
+    assert!(active(&sandbox).await);
 
     let killed = sandbox.run(&["hc", "kill", address]).await.unwrap();
     assert_eq!(killed.code, 0, "hc kill {address} failed");
     assert!(herdr_core_running(&sandbox).await);
-    assert!(eventually_inactive(&HerdrProbe, &sandbox).await);
+    assert!(eventually_inactive(&sandbox).await);
 
     let short = sandbox
         .run(&["hc", "run", "--bg", "sleep", "2"])
         .await
         .unwrap();
     assert_eq!(short.code, 0, "hc run --bg failed");
-    assert!(HerdrProbe.is_active(&sandbox).await.unwrap());
-    assert!(eventually_inactive(&HerdrProbe, &sandbox).await);
+    assert!(active(&sandbox).await);
+    assert!(eventually_inactive(&sandbox).await);
 }

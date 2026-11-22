@@ -4,9 +4,9 @@ mod docker_error;
 mod docker_exec;
 mod engine;
 mod host_key;
+mod idle;
 mod image;
-mod locks;
-mod reaper;
+mod session_files;
 mod status;
 
 pub use config::DockerConfig;

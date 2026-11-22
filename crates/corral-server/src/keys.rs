@@ -5,7 +5,7 @@ use corral_api::Key;
 use corral_store_sql::Keyring;
 use secrecy::{ExposeSecret, SecretString};
 use ssh_key::rand_core::{OsRng, RngCore};
-use ssh_key::{Algorithm, LineEnding, PrivateKey};
+use ssh_key::{Algorithm, LineEnding, PrivateKey, PublicKey};
 
 pub const SESSION_KEY: &str = "CORRAL_SESSION_KEY";
 pub const SECRETS_KEY: &str = "CORRAL_SECRETS_KEY";
@@ -14,7 +14,7 @@ pub const PROXY_PRIVATE_KEY: &str = "CORRAL_PROXY_PRIVATE_KEY";
 /// The environment carries the OpenSSH PEM base64-encoded, so it fits on one `.env` line.
 pub struct ProxyKey {
     pub private_pem: SecretString,
-    pub public_openssh: String,
+    pub public_key: PublicKey,
 }
 
 pub fn generate() -> Result<String> {
@@ -62,7 +62,7 @@ impl ProxyKey {
             "{PROXY_PRIVATE_KEY} must not be protected by a passphrase"
         );
         Ok(Self {
-            public_openssh: key.public_key().to_openssh()?,
+            public_key: key.public_key().clone(),
             private_pem: SecretString::from(pem),
         })
     }
@@ -75,7 +75,7 @@ mod tests {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
     use secrecy::{ExposeSecret, SecretString};
-    use ssh_key::{PrivateKey, PublicKey};
+    use ssh_key::PrivateKey;
 
     use super::{
         PROXY_PRIVATE_KEY, ProxyKey, SECRETS_KEY, SESSION_KEY, generate, keyring, session_key,
@@ -111,10 +111,7 @@ mod tests {
                 .expose_secret()
                 .starts_with("-----BEGIN OPENSSH PRIVATE KEY-----")
         );
-        assert_eq!(
-            PublicKey::from_openssh(&proxy.public_openssh).unwrap(),
-            *private.public_key()
-        );
+        assert_eq!(proxy.public_key, *private.public_key());
     }
 
     #[test]

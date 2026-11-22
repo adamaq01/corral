@@ -78,8 +78,8 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
   `{"username": "...", "password": "...", "role": "member"}`, and disable one with
   `POST /api/admin/users/<id>/disable`.
 - A sandbox sleeps (its container stops) after 30 minutes with no SSH session and no Herdr
-  terminal at work, and wakes on the next SSH login. Only `/home/sandbox` is sure to survive
-  sleep: a wake after a credential change starts a fresh container on the same home.
+  terminal at work, and wakes on the next SSH login. Sleep keeps the container, so its files
+  survive until the sandbox is deleted.
 
 ## Security
 

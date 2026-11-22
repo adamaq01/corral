@@ -7,36 +7,9 @@ if [[ "${CORRAL_SSHD:-}" != 1 ]]; then
   exec sleep infinity
 fi
 
+# The engine writes /etc/ssh/corral_authorized_keys and /etc/corral/sshd_env.conf before each start.
 : "${CORRAL_SSH_HOST_KEY:?CORRAL_SSHD=1 needs CORRAL_SSH_HOST_KEY}"
-: "${CORRAL_AUTHORIZED_KEY:?CORRAL_SSHD=1 needs CORRAL_AUTHORIZED_KEY}"
-
-write_root_file() {
-  sudo install -o root -g root -m "$1" /dev/stdin "$2"
-}
-
-session_setenv() {
-  local name value line=
-  for name in $(compgen -e); do
-    case "$name" in
-      CORRAL_* | PATH | HOME | HOSTNAME | TERM | PWD | OLDPWD | SHLVL | _ | USER | LOGNAME | SHELL | MAIL) continue ;;
-    esac
-    value=${!name}
-    if [[ "$value" == *$'\n'* ]]; then
-      echo "corral-entrypoint: $name contains a line break, which sshd cannot pass on; SSH sessions will not see it" >&2
-      continue
-    fi
-    value=${value//\\/\\\\}
-    value=${value//\"/\\\"}
-    line+=" \"$name=$value\""
-  done
-  if [[ -n "$line" ]]; then
-    printf 'SetEnv%s\n' "$line"
-  fi
-}
-
-printf '%s\n' "$CORRAL_SSH_HOST_KEY" | write_root_file 0600 /etc/ssh/corral_host_key
-printf '%s\n' "$CORRAL_AUTHORIZED_KEY" | write_root_file 0644 /etc/ssh/corral_authorized_keys
-session_setenv | write_root_file 0600 /etc/corral/sshd_env.conf
+printf '%s\n' "$CORRAL_SSH_HOST_KEY" | sudo install -o root -g root -m 0600 /dev/stdin /etc/ssh/corral_host_key
 
 unset "${!CORRAL_@}"
 sudo mkdir -p /run/sshd

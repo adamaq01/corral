@@ -6,19 +6,18 @@ edition.workspace = true
 [dependencies]
 async-trait.workspace = true
 bollard = "0.20.2"
-chrono.workspace = true
 corral-activity = { path = "../corral-activity" }
 corral-core = { path = "../corral-core" }
 futures-util = "0.3.34"
 secrecy.workspace = true
-sha2 = "0.11.1"
 ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
+tar = "0.4.46"
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio-util.workspace = true
 
 [lints]
 workspace = true

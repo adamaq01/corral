@@ -10,7 +10,7 @@ use futures_util::TryStreamExt;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-pub(crate) struct DockerExec {
+pub struct DockerExec {
     docker: Docker,
     container: String,
 }

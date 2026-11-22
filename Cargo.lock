@@ -744,10 +744,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "corral-core",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -790,7 +793,6 @@ name = "corral-engine-agent-sandbox"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "corral-activity",
  "corral-core",
  "k8s-openapi",
@@ -809,13 +811,12 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bollard",
- "chrono",
  "corral-activity",
  "corral-core",
  "futures-util",
  "secrecy",
- "sha2 0.11.1",
  "ssh-key",
+ "tar",
  "tokio",
  "tokio-util",
  "tracing",
@@ -893,6 +894,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "clap",
+ "corral-activity",
  "corral-api",
  "corral-core",
  "corral-engine-agent-sandbox",
@@ -1582,6 +1584,16 @@ name = "fiat-crypto"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
+
+[[package]]
+name = "filetime"
+version = "0.2.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1255e7a9f1902190d4c10a75f2f7f495d3d3ce13e9ba26e6c48683a0f4dbed7"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
 
 [[package]]
 name = "find-msvc-tools"
@@ -4727,6 +4739,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+ "xattr",
 ]
 
 [[package]]

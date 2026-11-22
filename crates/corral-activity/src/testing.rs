@@ -1,19 +1,20 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use crate::{ActivityError, Exec, ExecOutput};
 
+#[derive(Clone)]
 enum Reply {
     Exit(ExecOutput),
     Fail,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ScriptedExec {
     replies: HashMap<String, Reply>,
-    calls: Mutex<Vec<String>>,
+    calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl ScriptedExec {
@@ -43,7 +44,7 @@ impl Exec for ScriptedExec {
         self.calls.lock().unwrap().push(command.clone());
         match self.replies.get(&command) {
             Some(Reply::Exit(output)) => Ok(output.clone()),
-            Some(Reply::Fail) => Err(ActivityError::Exec("pod exec failed".to_owned())),
+            Some(Reply::Fail) => Err(ActivityError::Exec("exec failed".to_owned())),
             None => panic!("unscripted command: {command}"),
         }
     }

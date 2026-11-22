@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
 use corral_core::domain::{Allocation, Resources, SandboxId};
 use corral_core::ports::{Env, SandboxSpec};
 use k8s_openapi::ByteString;
@@ -17,7 +16,6 @@ use secrecy::ExposeSecret;
 use crate::AgentSandboxConfig;
 use crate::crd::{self, FailedPodPolicy, OperatingMode, Sandbox};
 
-pub const LAST_ACTIVE: &str = "corral.adamaq01.fr/last-active";
 pub const MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub const MANAGER: &str = "corral";
 pub const OWNER: &str = "corral.adamaq01.fr/owner";
@@ -38,19 +36,13 @@ pub fn secret_name(id: &SandboxId) -> String {
 }
 
 #[must_use]
-pub fn build(
-    id: &SandboxId,
-    spec: &SandboxSpec,
-    cfg: &AgentSandboxConfig,
-    now: DateTime<Utc>,
-) -> Sandbox {
+pub fn build(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Sandbox {
     let labels = labels(id, spec);
     Sandbox {
         metadata: ObjectMeta {
             name: Some(id.0.clone()),
             namespace: Some(cfg.namespace.clone()),
             labels: Some(labels.clone()),
-            annotations: Some(BTreeMap::from([(LAST_ACTIVE.to_owned(), now.to_rfc3339())])),
             ..ObjectMeta::default()
         },
         spec: crd::SandboxSpec {
@@ -217,7 +209,6 @@ mod tests {
     use std::num::NonZeroU64;
     use std::time::Duration;
 
-    use chrono::{DateTime, Utc};
     use corral_core::domain::{
         Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName,
     };
@@ -269,13 +260,10 @@ mod tests {
 
     fn manifests() -> (Value, Value) {
         let id = SandboxId("sbx-0123456789ab".to_owned());
-        let now = DateTime::parse_from_rfc3339("2026-11-21T10:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
         let spec = spec();
         let cfg = cfg();
         (
-            serde_json::to_value(build(&id, &spec, &cfg, now)).unwrap(),
+            serde_json::to_value(build(&id, &spec, &cfg)).unwrap(),
             serde_json::to_value(env_secret(&id, &env(), &cfg.namespace)).unwrap(),
         )
     }
@@ -294,10 +282,7 @@ mod tests {
         assert_eq!(sandbox["metadata"]["name"], "sbx-0123456789ab");
         assert_eq!(sandbox["metadata"]["namespace"], "corral-sandboxes");
         assert_eq!(sandbox["metadata"]["labels"], labels);
-        assert_eq!(
-            sandbox["metadata"]["annotations"],
-            json!({"corral.adamaq01.fr/last-active": "2026-11-21T10:00:00+00:00"})
-        );
+        assert!(sandbox["metadata"].get("annotations").is_none());
         assert_eq!(sandbox["spec"]["operatingMode"], "Suspended");
         assert_eq!(sandbox["spec"]["failedPodPolicy"], "Recreate");
         assert!(sandbox["spec"].get("shutdownTime").is_none());

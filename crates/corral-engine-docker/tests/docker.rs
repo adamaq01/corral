@@ -10,6 +10,7 @@ use corral_core::domain::{
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_engine_docker::{DockerConfig, DockerEngine};
 use secrecy::SecretString;
+use ssh_key::PublicKey;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -42,11 +43,20 @@ fn docker_ok(args: &[&str]) -> String {
         .to_owned()
 }
 
-fn env(token: &str) -> Env {
-    Env::from([(
-        CredentialName::parse("FOO_TOKEN").unwrap(),
-        SecretString::from(token),
-    )])
+fn env(pairs: &[(&str, &str)]) -> Env {
+    pairs
+        .iter()
+        .map(|(name, value)| {
+            (
+                CredentialName::parse(name).unwrap(),
+                SecretString::from(*value),
+            )
+        })
+        .collect()
+}
+
+fn token(token: &str) -> Env {
+    env(&[("FOO_TOKEN", token)])
 }
 
 fn spec(name: &str) -> SandboxSpec {
@@ -84,7 +94,7 @@ fn docker_answers(args: &[&str]) -> bool {
 struct Lab {
     network: String,
     client: String,
-    proxy_public_key: String,
+    proxy_public_key: Option<PublicKey>,
     sandboxes: Mutex<Vec<SandboxId>>,
 }
 
@@ -101,7 +111,7 @@ impl Lab {
         let mut lab = Self {
             client: format!("{network}-client"),
             network,
-            proxy_public_key: String::new(),
+            proxy_public_key: None,
             sandboxes: Mutex::default(),
         };
         docker_ok(&["network", "create", &lab.network]);
@@ -117,19 +127,21 @@ impl Lab {
         lab.client_sh(
             "mkdir -p -m 700 ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/proxy_key",
         );
-        lab.proxy_public_key = lab.client_sh("cat ~/.ssh/proxy_key.pub");
+        let public_key = lab.client_sh("cat ~/.ssh/proxy_key.pub");
+        lab.proxy_public_key = Some(PublicKey::from_openssh(&public_key).unwrap());
         Some(lab)
     }
 
-    async fn engine(&self, max_running: usize, idle_timeout: Duration) -> DockerEngine {
-        DockerEngine::connect(DockerConfig {
+    async fn engine(&self, max_running: usize, idle_timeout: Duration) -> Arc<DockerEngine> {
+        let engine = DockerEngine::connect(DockerConfig {
             network: self.network.clone(),
-            proxy_public_key: self.proxy_public_key.clone(),
+            proxy_public_key: self.proxy_public_key.clone().unwrap(),
             max_running,
             idle_timeout,
         })
         .await
-        .unwrap()
+        .unwrap();
+        Arc::new(engine)
     }
 
     async fn create(&self, engine: &DockerEngine, name: &str) -> SandboxId {
@@ -224,7 +236,7 @@ impl Drop for Lab {
             .iter()
         {
             let name = container_name(id);
-            docker(&["rm", "--force", &name, &format!("{name}-next")]);
+            docker(&["rm", "--force", &name]);
             docker(&["volume", "rm", &format!("corral-home-{}", id.0)]);
         }
         docker(&["rm", "--force", &self.client]);
@@ -236,8 +248,8 @@ async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxStatus {
     engine.status(id).await.unwrap()
 }
 
-async fn wake(engine: &DockerEngine, id: &SandboxId, token: &str) -> SshTarget {
-    match engine.start(id, env(token), WAKE).await.unwrap() {
+async fn wake(engine: &DockerEngine, id: &SandboxId, env: Env) -> SshTarget {
+    match engine.start(id, env, WAKE).await.unwrap() {
         Readiness::Ready(target) => target,
         Readiness::Waking => panic!("sandbox {} was not ready within {WAKE:?}", id.0),
     }
@@ -269,7 +281,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
         "a sandbox joins only the sandbox network"
     );
 
-    let target = wake(&engine, &id, "one").await;
+    let target = wake(&engine, &id, Env::new()).await;
     assert_eq!(state(&engine, &id).await, SandboxStatus::Running);
     let SshTarget::SshServer {
         host,
@@ -286,47 +298,18 @@ async fn sandbox_lifecycle_over_real_ssh() {
     );
     lab.pin_host_key(&target);
     assert_eq!(lab.ssh(host, "id -un"), "sandbox");
-    assert_eq!(lab.ssh(host, "printenv FOO_TOKEN"), "one");
+    assert_eq!(
+        lab.ssh(host, "env | grep ^CORRAL_; true"),
+        "",
+        "no CORRAL_ variable reaches the session"
+    );
     lab.ssh(host, "echo kept > ~/persist-check");
 
     engine.stop(&id).await.unwrap();
     assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
     engine.stop(&id).await.unwrap();
-    // Left behind by a replace that was interrupted before it removed the old container.
-    docker_ok(&["create", "--name", &format!("{name}-next"), &image()]);
-
-    assert_eq!(wake(&engine, &id, "two").await, target);
-    assert_eq!(
-        lab.ssh(host, "printenv FOO_TOKEN"),
-        "two",
-        "the changed credential applies at wake"
-    );
+    assert_eq!(wake(&engine, &id, Env::new()).await, target);
     assert_eq!(lab.ssh(host, "cat ~/persist-check"), "kept");
-    assert!(!exists("container", &format!("{name}-next")));
-
-    assert_eq!(wake(&engine, &id, "ignored").await, target);
-    assert_eq!(
-        lab.ssh(host, "printenv FOO_TOKEN"),
-        "two",
-        "a running sandbox keeps its env"
-    );
-    engine.stop(&id).await.unwrap();
-    assert_eq!(wake(&engine, &id, "three").await, target);
-    assert_eq!(
-        lab.ssh(host, "printenv FOO_TOKEN"),
-        "three",
-        "a stop and a start apply the new env"
-    );
-
-    engine.stop(&id).await.unwrap();
-    // A replace interrupted after it removed the old container leaves only the staged one.
-    docker_ok(&["rename", &name, &format!("{name}-next")]);
-    assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
-    assert_eq!(wake(&engine, &id, "three").await, target);
-    assert_eq!(
-        lab.ssh(host, "printenv FOO_TOKEN; cat ~/persist-check"),
-        "three\nkept"
-    );
 
     engine.delete(&id).await.unwrap();
     assert!(!exists("container", &name));
@@ -334,10 +317,65 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.delete(&id).await.unwrap();
     assert!(matches!(engine.status(&id).await, Err(Error::NotFound(_))));
     assert!(matches!(
-        engine.start(&id, env("one"), WAKE).await,
+        engine.start(&id, Env::new(), WAKE).await,
         Err(Error::NotFound(_))
     ));
     assert!(matches!(engine.stop(&id).await, Err(Error::NotFound(_))));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn credentials_apply_at_each_start_and_stay_out_of_the_container_config() {
+    let Some(lab) = Lab::open("credentials") else {
+        return;
+    };
+    let engine = lab.engine(10, LONG_IDLE).await;
+    let id = lab.create(&engine, "main").await;
+    let name = container_name(&id);
+    let secret = |word: &str| format!("corral-test-{word}-{}", std::process::id());
+
+    let target = wake(&engine, &id, token(&secret("one"))).await;
+    lab.pin_host_key(&target);
+    assert_eq!(lab.ssh(&name, "printenv FOO_TOKEN"), secret("one"));
+    lab.ssh(&name, "echo kept > ~/persist-check");
+
+    engine.stop(&id).await.unwrap();
+    wake(&engine, &id, token(&secret("two"))).await;
+    assert_eq!(
+        lab.ssh(&name, "printenv FOO_TOKEN; cat ~/persist-check"),
+        format!("{}\nkept", secret("two")),
+        "a start after a stop applies the changed credential and keeps the home"
+    );
+
+    wake(&engine, &id, token(&secret("ignored"))).await;
+    assert_eq!(
+        lab.ssh(&name, "printenv FOO_TOKEN"),
+        secret("two"),
+        "a running sandbox keeps its credentials"
+    );
+
+    let odd = r#"p#ss "word" it's $HOME \x\"#;
+    engine.stop(&id).await.unwrap();
+    wake(
+        &engine,
+        &id,
+        env(&[("ODD_TOKEN", odd), ("MULTI_LINE", "one\ntwo")]),
+    )
+    .await;
+    assert_eq!(lab.ssh(&name, "printenv ODD_TOKEN"), odd);
+    assert_eq!(
+        lab.ssh(&name, "printenv FOO_TOKEN MULTI_LINE; true"),
+        "",
+        "a removed credential is gone and an unpassable one is left out"
+    );
+
+    let inspected = docker_ok(&["inspect", &name]);
+    for word in ["one", "two", "ignored"] {
+        assert!(
+            !inspected.contains(&secret(word)),
+            "{word} in docker inspect"
+        );
+    }
+    assert!(!inspected.contains("ODD_TOKEN"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -346,7 +384,7 @@ async fn concurrent_starts_never_exceed_max_running() {
     let Some(lab) = Lab::open("capacity") else {
         return;
     };
-    let engine = Arc::new(lab.engine(MAX, LONG_IDLE).await);
+    let engine = lab.engine(MAX, LONG_IDLE).await;
     let mut ids = Vec::new();
     for n in 0..2 * MAX {
         ids.push(lab.create(&engine, &format!("box-{n}")).await);
@@ -399,7 +437,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     let herdr = lab.create(&engine, "herdr").await;
     let mut targets = Vec::new();
     for id in [&idle, &ssh, &herdr] {
-        targets.push(wake(&engine, id, "one").await);
+        targets.push(wake(&engine, id, Env::new()).await);
     }
 
     lab.pin_host_key(&targets[1]);
@@ -432,7 +470,8 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     ]);
 
     let shutdown = CancellationToken::new();
-    let lifecycle = engine.spawn_lifecycle(Duration::from_secs(1), shutdown.clone());
+    let lifecycle =
+        corral_activity::spawn(engine.clone(), Duration::from_secs(1), shutdown.clone());
     let started = Instant::now();
     while state(&engine, &idle).await != SandboxStatus::Sleeping {
         assert!(
@@ -461,7 +500,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
 }
 
 #[tokio::test]
-async fn connect_refuses_a_missing_network_or_a_bad_key() {
+async fn connect_refuses_a_missing_network() {
     if !docker_answers(&["info"]) {
         eprintln!("skipped: no Docker daemon");
         return;
@@ -470,8 +509,7 @@ async fn connect_refuses_a_missing_network_or_a_bad_key() {
         ssh_key::PrivateKey::random(&mut ssh_key::rand_core::OsRng, ssh_key::Algorithm::Ed25519)
             .unwrap()
             .public_key()
-            .to_openssh()
-            .unwrap();
+            .clone();
     let missing = format!("corral-test-docker-missing-{}", std::process::id());
     let refused = DockerEngine::connect(DockerConfig {
         network: missing.clone(),
@@ -485,13 +523,4 @@ async fn connect_refuses_a_missing_network_or_a_bad_key() {
         "{:?}",
         refused.err()
     );
-
-    let refused = DockerEngine::connect(DockerConfig {
-        network: missing,
-        proxy_public_key: "not a key".to_owned(),
-        max_running: 1,
-        idle_timeout: LONG_IDLE,
-    })
-    .await;
-    assert!(matches!(refused, Err(Error::Invalid(_))));
 }

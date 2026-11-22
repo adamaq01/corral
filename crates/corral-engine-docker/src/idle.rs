@@ -1,0 +1,39 @@
+use std::time::Duration;
+
+use async_trait::async_trait;
+use corral_activity::{LastActive, Sessions, Sweepable};
+use corral_core::Result;
+use corral_core::domain::SandboxId;
+use corral_core::ports::SandboxEngine;
+
+use crate::DockerEngine;
+use crate::container;
+use crate::docker_exec::DockerExec;
+
+#[async_trait]
+impl Sweepable for DockerEngine {
+    const SESSIONS: Sessions = Sessions::Sshd;
+    type Listed = ();
+    type Exec = DockerExec;
+
+    fn last_active(&self) -> &LastActive {
+        &self.last_active
+    }
+
+    fn idle_timeout(&self) -> Duration {
+        self.config.idle_timeout
+    }
+
+    async fn running(&self) -> Result<Vec<(SandboxId, ())>> {
+        let ids = self.running_ids().await?;
+        Ok(ids.into_iter().map(|id| (id, ())).collect())
+    }
+
+    fn exec(&self, id: &SandboxId) -> DockerExec {
+        DockerExec::new(self.docker.clone(), container::name(id))
+    }
+
+    async fn suspend(&self, id: &SandboxId, (): &()) -> Result<()> {
+        self.stop(id).await
+    }
+}

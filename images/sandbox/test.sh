@@ -53,7 +53,6 @@ docker exec "$client" ssh-keygen -q -t ed25519 -N '' -C proxy -f /home/sandbox/.
 docker exec "$client" ssh-keygen -q -t ed25519 -N '' -C host -f /tmp/host_key
 host_key=$(docker exec "$client" cat /tmp/host_key)
 host_pub=$(docker exec "$client" cat /tmp/host_key.pub)
-proxy_pub=$(docker exec "$client" cat /home/sandbox/.ssh/proxy_key.pub)
 echo "$server $host_pub" | docker exec --interactive "$client" tee /home/sandbox/.ssh/known_hosts >/dev/null
 
 ssh_run() {
@@ -63,12 +62,21 @@ ssh_run() {
     "sandbox@$server" "$@"
 }
 
-odd_value='p#ss "word" it'\''s $HOME \x\'
+# Stands in for the engine, which writes these files into the stopped container before each start.
+docker exec "$client" sh -c '
+  mkdir -p /tmp/session/etc/ssh /tmp/session/etc/corral
+  cp /home/sandbox/.ssh/proxy_key.pub /tmp/session/etc/ssh/corral_authorized_keys
+  echo "SetEnv \"FOO_TOKEN=bar\"" > /tmp/session/etc/corral/sshd_env.conf
+  chmod 0644 /tmp/session/etc/ssh/corral_authorized_keys
+  chmod 0600 /tmp/session/etc/corral/sshd_env.conf
+'
 
 start_server() {
-  docker run --detach --name "$server" --network "$network" --volume "$volume:/home/sandbox" \
-    --env CORRAL_SSHD=1 --env CORRAL_SSH_HOST_KEY="$host_key" --env CORRAL_AUTHORIZED_KEY="$proxy_pub" \
-    --env FOO_TOKEN=bar --env ODD_TOKEN="$odd_value" --env MULTI_LINE=$'one\ntwo' "$image" >/dev/null
+  docker create --name "$server" --network "$network" --volume "$volume:/home/sandbox" \
+    --env CORRAL_SSHD=1 --env CORRAL_SSH_HOST_KEY="$host_key" "$image" >/dev/null
+  docker exec "$client" tar -C /tmp/session --owner=0 --group=0 -cf - \
+    etc/ssh/corral_authorized_keys etc/corral/sshd_env.conf | docker cp - "$server:/"
+  docker start "$server" >/dev/null
   for _ in $(seq 50); do
     if ssh_run true 2>/dev/null; then
       return
@@ -89,13 +97,7 @@ out=$(ssh_run id -un)
 check "ssh session runs as sandbox" sandbox "$out"
 
 out=$(ssh_run printenv FOO_TOKEN)
-check "container env reaches the ssh session" bar "$out"
-
-out=$(ssh_run printenv ODD_TOKEN)
-check "a value with # quotes \$ and backslashes arrives unchanged" "$odd_value" "$out"
-
-out=$(ssh_run 'printenv MULTI_LINE || true')
-check "a multi-line value is left out without stopping sshd" "" "$out"
+check "the written SetEnv reaches the ssh session" bar "$out"
 
 out=$(ssh_run 'printenv CORRAL_SSH_HOST_KEY; env | grep ^CORRAL_; true')
 check "no CORRAL_ variable reaches the ssh session" "" "$out"
