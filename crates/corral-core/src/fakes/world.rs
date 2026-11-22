@@ -4,28 +4,27 @@ use std::time::Duration;
 
 use secrecy::ExposeSecret;
 
+use super::{FakeEngine, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo};
 use crate::app::{
     Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, SandboxView,
     Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{Allocation, CredentialName, Resources, Role, Sandbox, SandboxName, User};
-use crate::fakes::{
-    FakeEngine, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
-};
 use crate::ports::{Env, Identity};
 
 pub const MAX_SANDBOXES: usize = 3;
 pub const WAKE_DEADLINE: Duration = Duration::from_secs(7);
 
-pub const ADAM_KEY: &str = include_str!("../tests/fixtures/adam_ed25519.pub");
+pub const ADAM_KEY: &str = include_str!("../../tests/fixtures/adam_ed25519.pub");
 pub const ADAM_FINGERPRINT: &str = "SHA256:0nvzQlr5lq8mmP7FV396FL0Mlt63oN/Y5WfWKMEYeFo";
-pub const ADAM_CERT: &str = include_str!("../tests/fixtures/adam_ed25519-cert.pub");
-pub const EVE_KEY: &str = include_str!("../tests/fixtures/eve_ed25519.pub");
-pub const RSA_KEY: &str = include_str!("../tests/fixtures/rsa.pub");
+pub const ADAM_CERT: &str = include_str!("../../tests/fixtures/adam_ed25519-cert.pub");
+pub const EVE_KEY: &str = include_str!("../../tests/fixtures/eve_ed25519.pub");
+pub const RSA_KEY: &str = include_str!("../../tests/fixtures/rsa.pub");
 pub const RSA_FINGERPRINT: &str = "SHA256:PTr4dboxJ8PoU/y724TlAf+nl4O3y4vCRaovx7ZLWJU";
-pub const ECDSA_KEY: &str = include_str!("../tests/fixtures/ecdsa.pub");
+pub const ECDSA_KEY: &str = include_str!("../../tests/fixtures/ecdsa.pub");
 pub const ECDSA_FINGERPRINT: &str = "SHA256:hMOfWR5wKX3dtdOhwiIqanCHKC/tiF1yv8dyhMctTWY";
 
+#[must_use]
 pub fn algorithm_and_blob(line: &str) -> String {
     line.split_whitespace()
         .take(2)
@@ -33,6 +32,7 @@ pub fn algorithm_and_blob(line: &str) -> String {
         .join(" ")
 }
 
+#[must_use]
 pub fn identity(subject: &str, username: &str, role: Option<Role>) -> Identity {
     Identity {
         subject: subject.to_owned(),
@@ -42,10 +42,12 @@ pub fn identity(subject: &str, username: &str, role: Option<Role>) -> Identity {
     }
 }
 
+#[must_use]
 pub fn credential(name: &str) -> CredentialName {
     CredentialName::parse(name).unwrap()
 }
 
+#[must_use]
 pub fn sandbox_name(name: &str) -> SandboxName {
     SandboxName::parse(name).unwrap()
 }
@@ -58,6 +60,7 @@ pub fn request(name: &str, image: Option<&str>, size: Option<&str>) -> CreateSan
     }
 }
 
+#[must_use]
 pub fn catalog() -> Catalog {
     let image = |key: &str, reference: &str| ImageOption {
         key: key.to_owned(),
@@ -83,6 +86,7 @@ pub fn catalog() -> Catalog {
     .unwrap()
 }
 
+#[must_use]
 pub fn default_names(views: &[SandboxView]) -> Vec<&str> {
     views
         .iter()
@@ -91,6 +95,7 @@ pub fn default_names(views: &[SandboxView]) -> Vec<&str> {
         .collect()
 }
 
+#[must_use]
 pub fn exposed(env: &Env) -> Vec<String> {
     env.iter()
         .map(|(name, value)| format!("{name}={}", value.expose_secret()))
@@ -104,10 +109,11 @@ pub struct World {
     pub credentials: Credentials,
     pub engine: Arc<FakeEngine>,
     pub sandboxes: Sandboxes,
-    pub access: SshAccess,
+    pub access: Arc<SshAccess>,
 }
 
 impl World {
+    #[must_use]
     pub fn new() -> Self {
         let users = Arc::new(MemoryUserRepo::default());
         let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
@@ -125,7 +131,11 @@ impl World {
             limits,
         );
         let key_repo = Arc::new(MemoryKeyRepo::default());
-        let access = SshAccess::new(users.clone(), key_repo.clone(), sandboxes.clone());
+        let access = Arc::new(SshAccess::new(
+            users.clone(),
+            key_repo.clone(),
+            sandboxes.clone(),
+        ));
         Self {
             accounts: Accounts::new(users.clone()),
             keys: Keys::new(key_repo),
@@ -161,5 +171,11 @@ impl World {
             .unwrap();
         assert_eq!(user.handle.as_str(), handle);
         user
+    }
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::new()
     }
 }

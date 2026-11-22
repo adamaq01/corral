@@ -43,6 +43,10 @@ struct Cluster {
 impl Cluster {
     async fn connect(max_running: usize, idle_timeout: Duration) -> Option<Self> {
         let Ok(namespace) = std::env::var("CORRAL_TEST_KUBE_NAMESPACE") else {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI needs a kind cluster: run tests/kind/up.sh and set CORRAL_TEST_KUBE_NAMESPACE"
+            );
             eprintln!("skipped: CORRAL_TEST_KUBE_NAMESPACE is not set");
             return None;
         };

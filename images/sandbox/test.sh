@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# CORRAL_SANDBOX_IMAGE names a prebuilt image; when unset, corral-sandbox:dev is built from here.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -30,8 +31,10 @@ check() {
   echo "ok - $1"
 }
 
-docker build --quiet --tag "$image" "$here" >/dev/null
-echo "built $image"
+if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
+  docker build --quiet --tag "$image" "$here" >/dev/null
+  echo "built $image"
+fi
 
 docker network create "$network" >/dev/null
 docker run --detach --name "$client" --network "$network" "$image" >/dev/null

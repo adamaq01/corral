@@ -5,9 +5,8 @@ pub mod contract;
 pub mod domain;
 mod error;
 #[cfg(any(test, feature = "fakes"))]
+#[allow(clippy::missing_panics_doc)]
 pub mod fakes;
 pub mod ports;
-#[cfg(test)]
-mod testing;
 
 pub use error::{Error, Result};

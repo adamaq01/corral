@@ -46,9 +46,7 @@ impl Keys {
 #[cfg(test)]
 mod tests {
     use crate::Error;
-    use crate::testing::{
-        ADAM_CERT, ADAM_FINGERPRINT, ADAM_KEY, EVE_KEY, World, algorithm_and_blob,
-    };
+    use crate::fakes::{ADAM_CERT, ADAM_FINGERPRINT, ADAM_KEY, EVE_KEY, World, algorithm_and_blob};
 
     #[tokio::test]
     async fn keys_normalize_and_reject_duplicates_and_certs() {

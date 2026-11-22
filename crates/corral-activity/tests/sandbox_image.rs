@@ -93,6 +93,10 @@ async fn activity_reads_a_real_sandbox() {
     let image =
         std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned());
     if !image_available(&image) {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI needs a Docker daemon and image {image}"
+        );
         eprintln!(
             "skipped: no Docker daemon or image {image} (build it with images/sandbox/test.sh)"
         );

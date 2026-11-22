@@ -14,12 +14,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
 
-  e2e:
+  test:
     runs-on: ubuntu-latest
+    env:
+      CORRAL_SERVER_IMAGE: corral-server:e2e
+      CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
     steps:
       - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
@@ -35,6 +38,10 @@ jobs:
           load: true
           tags: corral-sandbox:e2e
           cache-from: type=gha,scope=corral-sandbox
+      - run: images/sandbox/test.sh
+      # Every test but the agent-sandbox cluster tests, which need a kind cluster and run locally.
+      - run: cargo test --workspace --all-features --exclude corral-engine-agent-sandbox
+      - run: cargo test --package corral-engine-agent-sandbox --all-features --lib
       - name: Install hc, the version and checksum the sandbox image pins
         run: |
           version=$(sed -n 's/^ARG HERDR_CORE_VERSION=//p' images/sandbox/Dockerfile)
@@ -47,13 +54,10 @@ jobs:
           ln -s herdr-core "$HOME/.local/bin/hc"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: tests/e2e/compose.sh
-        env:
-          CORRAL_SERVER_IMAGE: corral-server:e2e
-          CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
 
   publish:
     if: github.event_name == 'push'
-    needs: [check, e2e]
+    needs: [check, test]
     runs-on: ubuntu-latest
     permissions:
       contents: read

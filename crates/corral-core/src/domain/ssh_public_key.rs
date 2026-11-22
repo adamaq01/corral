@@ -40,7 +40,7 @@ impl SshPublicKey {
 mod tests {
     use super::SshPublicKey;
     use crate::Error;
-    use crate::testing::{
+    use crate::fakes::{
         ADAM_CERT, ADAM_FINGERPRINT, ADAM_KEY, ECDSA_FINGERPRINT, ECDSA_KEY, RSA_FINGERPRINT,
         RSA_KEY, algorithm_and_blob,
     };

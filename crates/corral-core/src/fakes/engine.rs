@@ -34,6 +34,7 @@ struct State {
     waking: bool,
     failing_creates: bool,
     sandboxes: BTreeMap<SandboxId, FakeSandbox>,
+    targets: BTreeMap<SandboxId, SshTarget>,
     calls: Vec<EngineCall>,
 }
 
@@ -48,9 +49,26 @@ impl State {
             .get_mut(id)
             .ok_or_else(|| Error::NotFound(format!("sandbox {}", id.0)))
     }
+
+    fn target(&self, id: &SandboxId) -> SshTarget {
+        self.targets
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| SshTarget::KubernetesPod {
+                namespace: FakeEngine::NAMESPACE.to_owned(),
+                pod: id.0.clone(),
+            })
+    }
 }
 
 impl FakeEngine {
+    /// The namespace of the pod a sandbox is reached at, unless `set_target` says otherwise.
+    pub const NAMESPACE: &str = "fake";
+
+    pub fn set_target(&self, id: &SandboxId, target: SshTarget) {
+        lock(&self.state).targets.insert(id.clone(), target);
+    }
+
     /// Whether a start leaves a stopped sandbox still waking instead of ready.
     pub fn set_waking(&self, waking: bool) {
         lock(&self.state).waking = waking;
@@ -71,13 +89,6 @@ impl FakeEngine {
     #[must_use]
     pub fn calls(&self) -> Vec<EngineCall> {
         lock(&self.state).calls.clone()
-    }
-
-    fn target(id: &SandboxId) -> SshTarget {
-        SshTarget::KubernetesPod {
-            namespace: "fake".to_owned(),
-            pod: id.0.clone(),
-        }
     }
 }
 
@@ -107,9 +118,10 @@ impl SandboxEngine for FakeEngine {
             deadline,
         });
         let waking = state.waking;
+        let target = state.target(id);
         let sandbox = state.sandbox(id)?;
         if sandbox.status == SandboxStatus::Running {
-            return Ok(Readiness::Ready(Self::target(id)));
+            return Ok(Readiness::Ready(target));
         }
         sandbox.env = env;
         if waking {
@@ -117,7 +129,7 @@ impl SandboxEngine for FakeEngine {
             Ok(Readiness::Waking)
         } else {
             sandbox.status = SandboxStatus::Running;
-            Ok(Readiness::Ready(Self::target(id)))
+            Ok(Readiness::Ready(target))
         }
     }
 

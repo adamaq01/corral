@@ -100,8 +100,8 @@ mod tests {
 
     use crate::Error;
     use crate::domain::{Role, UserId};
+    use crate::fakes::{World, identity};
     use crate::ports::UserRepo;
-    use crate::testing::{World, identity};
 
     #[tokio::test]
     async fn login_requires_a_role() {

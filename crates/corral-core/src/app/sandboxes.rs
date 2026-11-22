@@ -245,11 +245,11 @@ mod tests {
     use crate::Error;
     use crate::domain::{Sandbox, SandboxStatus};
     use crate::fakes::EngineCall;
-    use crate::ports::{Readiness, SandboxEngine, SshTarget};
-    use crate::testing::{
+    use crate::fakes::{
         MAX_SANDBOXES, WAKE_DEADLINE, World, catalog, credential, default_names, exposed, request,
         sandbox_name,
     };
+    use crate::ports::{Readiness, SandboxEngine, SshTarget};
 
     #[tokio::test]
     async fn create_provisions_from_the_catalog_then_starts_without_waiting() {

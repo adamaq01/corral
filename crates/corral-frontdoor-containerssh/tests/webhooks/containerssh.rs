@@ -3,7 +3,6 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use corral_core::ports::SshTarget;
-use corral_frontdoor_containerssh::router;
 use serde_json::{Value, json};
 use ssh_key::{HashAlg, PrivateKey};
 use tempfile::NamedTempFile;
@@ -16,7 +15,9 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use crate::common::{Member, NAMESPACE, World, generate_key, private_pem, public_line};
+use corral_core::fakes::FakeEngine;
+
+use crate::common::{Fixture, Member, generate_key, private_pem, public_line};
 
 const GATEWAY: &str = "host.docker.internal";
 const PROXY_KEY_PATH: &str = "/etc/containerssh/proxy_key";
@@ -69,9 +70,9 @@ async fn line_containing(lines: &mut mpsc::UnboundedReceiver<String>, needle: &s
     seen
 }
 
-async fn serve_webhooks(w: &World) -> u16 {
+async fn serve_webhooks(w: &Fixture) -> u16 {
     let (webhooks, port) = listen().await;
-    let app = router(w.access.clone());
+    let app = w.router();
     tokio::spawn(async move { axum::serve(webhooks, app).await.unwrap() });
     port
 }
@@ -159,12 +160,12 @@ fn ssh(port: u16, key: &NamedTempFile, username: &str) -> Child {
 
 #[tokio::test]
 async fn containerssh_accepts_our_answers_for_both_target_kinds() {
-    let w = World::new().await;
+    let w = Fixture::new().await;
     let (sshd, sshd_port) = listen().await;
     let (kube, kube_port) = listen().await;
     let mut banners = first_lines(sshd);
     let mut kube_requests = first_lines(kube);
-    w.engine.set_target(
+    w.world.engine.set_target(
         &w.eve.main.id,
         SshTarget::SshServer {
             host: GATEWAY.to_owned(),
@@ -191,16 +192,25 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
     let stderr = String::from_utf8_lossy(&denied.stderr);
     assert!(stderr.contains("Permission denied"), "{stderr}");
 
-    w.engine.answer_wakes_with(&[false]);
+    let eve_main = &w.eve.main;
+    w.world
+        .sandboxes
+        .stop(&w.eve.user, &eve_main.name)
+        .await
+        .unwrap();
+    w.world.engine.set_waking(true);
+    let starts = w.starts(&eve_main.id);
     let _eve = ssh(port, &eve_key, "eve+main");
+    let first_wake = async {
+        while w.starts(&eve_main.id) == starts {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    timeout(Duration::from_secs(60), first_wake).await.unwrap();
+    w.world.engine.set_waking(false);
     let banner = timeout(Duration::from_secs(60), banners.recv()).await;
     assert_eq!(banner.unwrap().unwrap(), "SSH-2.0-ContainerSSH");
-    let eve_wakes = w
-        .engine
-        .woken()
-        .into_iter()
-        .filter(|id| *id == w.eve.main.id);
-    assert_eq!(eve_wakes.count(), 2);
+    assert_eq!(w.starts(&eve_main.id), starts + 2);
 
     let _adam = ssh(port, &adam_key, "adam+main");
     let request = timeout(Duration::from_secs(60), kube_requests.recv()).await;
@@ -211,7 +221,12 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
         (method, path),
         (
             "GET",
-            format!("/api/v1/namespaces/{NAMESPACE}/pods/{}", w.adam.main.id.0).as_str()
+            format!(
+                "/api/v1/namespaces/{}/pods/{}",
+                FakeEngine::NAMESPACE,
+                w.adam.main.id.0
+            )
+            .as_str()
         )
     );
 }
@@ -227,13 +242,17 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
         .status()
         .is_ok_and(|status| status.success());
     if !available {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI needs a Docker daemon and image {image}"
+        );
         eprintln!(
             "skipped: no Docker daemon or image {image} (build it with images/sandbox/test.sh)"
         );
         return;
     }
     let (name, tag) = image.rsplit_once(':').unwrap_or((&image, "latest"));
-    let w = World::new().await;
+    let w = Fixture::new().await;
     let proxy_key = generate_key();
     let host_key = generate_key();
     let sandbox = GenericImage::new(name, tag)
@@ -253,7 +272,7 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
         .await
         .unwrap();
     let mut sshd_log = every_line(sandbox.stderr(true));
-    w.engine.set_target(
+    w.world.engine.set_target(
         &w.eve.main.id,
         SshTarget::SshServer {
             host: GATEWAY.to_owned(),

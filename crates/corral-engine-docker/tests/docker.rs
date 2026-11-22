@@ -102,6 +102,10 @@ impl Lab {
     fn open(test: &str) -> Option<Self> {
         let image = image();
         if !docker_answers(&["image", "inspect", &image]) {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI needs a Docker daemon and image {image}"
+            );
             eprintln!(
                 "skipped: no Docker daemon or image {image} (build it with images/sandbox/test.sh)"
             );
@@ -502,6 +506,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
 #[tokio::test]
 async fn connect_refuses_a_missing_network() {
     if !docker_answers(&["info"]) {
+        assert!(std::env::var_os("CI").is_none(), "CI needs a Docker daemon");
         eprintln!("skipped: no Docker daemon");
         return;
     }

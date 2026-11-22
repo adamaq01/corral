@@ -85,7 +85,7 @@ fn check_keys<'a>(kind: &str, keys: impl Iterator<Item = &'a str>) -> Result<()>
 mod tests {
     use super::Catalog;
     use crate::Error;
-    use crate::testing::catalog;
+    use crate::fakes::catalog;
 
     #[test]
     fn new_requires_unique_keys_and_at_least_one_of_each() {

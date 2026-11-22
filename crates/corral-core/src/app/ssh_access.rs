@@ -63,10 +63,10 @@ mod tests {
     use crate::Error;
     use crate::domain::User;
     use crate::fakes::EngineCall;
-    use crate::ports::{Readiness, SshTarget};
-    use crate::testing::{
+    use crate::fakes::{
         ADAM_CERT, ADAM_KEY, EVE_KEY, WAKE_DEADLINE, World, algorithm_and_blob, credential, exposed,
     };
+    use crate::ports::{Readiness, SshTarget};
 
     async fn adam_and_eve() -> (World, User, User) {
         let w = World::new();

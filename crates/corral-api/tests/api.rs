@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
@@ -12,14 +10,9 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use cookie::{Cookie, SameSite};
 use corral_api::{Api, Key, Providers, SshEndpoint, router};
-use corral_core::app::{
-    Accounts, Catalog, Credentials, ImageOption, Keys, Limits, Sandboxes, SizePreset,
-};
-use corral_core::domain::{Allocation, CredentialName, Handle, Resources, Role, UserId};
-use corral_core::fakes::{
-    FakeEngine, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo, MemorySecretStore,
-    MemoryUserRepo,
-};
+use corral_core::app::Credentials;
+use corral_core::domain::{CredentialName, Handle, Role, UserId};
+use corral_core::fakes::{ADAM_KEY, FakeEngine, MAX_SANDBOXES, MemoryLocalAccountRepo, World};
 use corral_core::ports::{
     AccountAdmin, Answer, Challenge, Env, Identity, IdentityProvider, Method, PendingLogin,
     SecretStore,
@@ -31,7 +24,6 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery";
-const ADAM_KEY: &str = include_str!("../../corral-core/tests/fixtures/adam_ed25519.pub");
 const IDP_URL: &str = "https://idp.example.com/authorize?state=public-state";
 
 struct StubOidc {
@@ -131,7 +123,7 @@ struct Setup {
     local: bool,
     secure: bool,
     trust_forwarded_for: bool,
-    secrets: Arc<dyn SecretStore>,
+    secrets: Option<Arc<dyn SecretStore>>,
 }
 
 impl Default for Setup {
@@ -141,7 +133,7 @@ impl Default for Setup {
             local: true,
             secure: false,
             trust_forwarded_for: false,
-            secrets: Arc::new(MemorySecretStore::default()),
+            secrets: None,
         }
     }
 }
@@ -152,32 +144,15 @@ struct Corral {
     engine: Arc<FakeEngine>,
 }
 
-fn catalog() -> Catalog {
-    let image = ImageOption {
-        key: "base".to_owned(),
-        label: "Base".to_owned(),
-        reference: "ghcr.io/adamaq01/corral-sandbox:1".to_owned(),
-    };
-    let size = SizePreset {
-        key: "small".to_owned(),
-        label: "Small".to_owned(),
-        resources: Resources {
-            cpu_millis: Allocation::new(1000, 2000).unwrap(),
-            memory_bytes: Allocation::new(2 << 30, 4 << 30).unwrap(),
-            home_bytes: NonZeroU64::new(10 << 30).unwrap(),
-        },
-    };
-    Catalog::new(vec![image], vec![size]).unwrap()
-}
-
 impl Setup {
     fn build(self) -> Corral {
-        let users = Arc::new(MemoryUserRepo::default());
-        let credentials = Credentials::new(self.secrets);
-        let engine = Arc::new(FakeEngine::default());
+        let world = World::new();
         let local = Arc::new(CountingLocal {
-            local: LocalProvider::new(Arc::new(MemoryLocalAccountRepo::default()), users.clone())
-                .unwrap(),
+            local: LocalProvider::new(
+                Arc::new(MemoryLocalAccountRepo::default()),
+                world.users.clone(),
+            )
+            .unwrap(),
             verifications: AtomicUsize::new(0),
         });
         let mut providers: Vec<Arc<dyn IdentityProvider>> = Vec::new();
@@ -188,25 +163,17 @@ impl Setup {
             providers.push(Arc::new(oidc));
         }
         let api = Api {
-            sandboxes: Sandboxes::new(
-                Arc::new(MemorySandboxRepo::default()),
-                users.clone(),
-                engine.clone(),
-                credentials.clone(),
-                catalog(),
-                Limits {
-                    max_sandboxes_per_user: 2,
-                    wake_deadline: Duration::from_secs(5),
-                },
-            ),
-            accounts: Accounts::new(users),
-            keys: Keys::new(Arc::new(MemoryKeyRepo::default())),
-            credentials,
+            accounts: world.accounts.clone(),
+            keys: world.keys.clone(),
+            credentials: self
+                .secrets
+                .map_or_else(|| world.credentials.clone(), Credentials::new),
+            sandboxes: world.sandboxes.clone(),
+            providers: Providers::new(providers),
             ssh: SshEndpoint {
                 host: "corral.example.com".to_owned(),
                 port: 48291,
             },
-            providers: Providers::new(providers),
             session_key: Key::generate(),
             secure_cookies: self.secure,
             trust_forwarded_for: self.trust_forwarded_for,
@@ -214,7 +181,7 @@ impl Setup {
         Corral {
             app: router(api),
             local,
-            engine,
+            engine: world.engine,
         }
     }
 }
@@ -800,8 +767,8 @@ async fn create_then_list_shows_the_ssh_username() {
     assert_eq!(
         adam.get("/api/catalog").await.json(),
         json!({
-            "images": [{ "key": "base", "label": "Base" }],
-            "sizes": [{ "key": "small", "label": "Small" }],
+            "images": [{ "key": "base", "label": "BASE" }, { "key": "tools", "label": "TOOLS" }],
+            "sizes": [{ "key": "small", "label": "SMALL" }, { "key": "large", "label": "LARGE" }],
             "defaultImage": "base",
             "defaultSize": "small",
             "ssh": { "host": "corral.example.com", "port": 48291 },
@@ -1008,11 +975,11 @@ async fn core_errors_map_to_their_status() {
         json!({ "error": "conflict: sandbox main" })
     );
 
-    adam.post("/api/sandboxes", json!({ "name": "spare" }))
-        .await;
-    let over_limit = adam
-        .post("/api/sandboxes", json!({ "name": "third" }))
-        .await;
+    for spare in 1..MAX_SANDBOXES {
+        adam.post("/api/sandboxes", json!({ "name": format!("spare{spare}") }))
+            .await;
+    }
+    let over_limit = adam.post("/api/sandboxes", json!({ "name": "over" })).await;
     assert_eq!(over_limit.status, StatusCode::UNPROCESSABLE_ENTITY);
 
     for invalid in [
@@ -1147,7 +1114,7 @@ async fn post_and_put_accept_only_json() {
 #[tokio::test]
 async fn internal_errors_have_a_generic_body() {
     let corral = Setup {
-        secrets: Arc::new(BrokenVault),
+        secrets: Some(Arc::new(BrokenVault)),
         ..Setup::default()
     }
     .build();

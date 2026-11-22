@@ -6,15 +6,15 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use corral_core::app::SshAccess;
-use corral_core::domain::{Handle, Role, User, UserId};
-use corral_core::fakes::MemoryKeyRepo;
+use corral_core::domain::{Handle, User, UserId};
+use corral_core::fakes::{FakeEngine, MemoryKeyRepo};
 use corral_core::ports::{SshTarget, UserRepo};
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::router;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::common::{Member, NAMESPACE, World, generate_key, identity, public_line, sandboxes};
+use crate::common::{Fixture, Member, generate_key, public_line};
 
 async fn send(app: &Router, method: Method, path: &str, body: String) -> (StatusCode, Value) {
     let label = format!("{method} {path}");
@@ -74,13 +74,9 @@ async fn config(app: &Router, username: &str, authenticated_username: &str) -> (
     send(app, Method::POST, "/config", body.to_string()).await
 }
 
-async fn disable(world: &World, member: &Member) {
-    let root = world
-        .accounts
-        .login(identity("root", Role::Admin))
-        .await
-        .unwrap();
-    world
+async fn disable(w: &Fixture, member: &Member) {
+    let root = w.world.admin("root").await;
+    w.world
         .accounts
         .set_enabled(&root, member.user.id, false)
         .await
@@ -89,8 +85,8 @@ async fn disable(world: &World, member: &Member) {
 
 #[tokio::test]
 async fn pubkey_accepts_the_owners_key() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     for username in ["adam", "adam+main"] {
         assert!(accepted(&app, username, &w.adam.public_key(), "1.2.3.4:50022").await);
     }
@@ -99,8 +95,8 @@ async fn pubkey_accepts_the_owners_key() {
 
 #[tokio::test]
 async fn pubkey_denies_with_200_and_false() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     let adam = w.adam.public_key();
     let eve = w.eve.public_key();
     let stranger = public_line(&generate_key());
@@ -125,8 +121,8 @@ async fn pubkey_denies_with_200_and_false() {
 
 #[tokio::test(start_paused = true)]
 async fn pubkey_locks_out_an_address_after_repeated_failures() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     let adam = w.adam.public_key();
     let stranger = public_line(&generate_key());
     for attempt in 0..10 {
@@ -148,8 +144,8 @@ async fn pubkey_locks_out_an_address_after_repeated_failures() {
 
 #[tokio::test]
 async fn pubkey_counts_a_connection_offering_many_keys_once() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     let unregistered: Vec<String> = (0..3).map(|_| public_line(&generate_key())).collect();
     for connection in 0..9 {
         let address = format!("1.2.3.4:{}", 50000 + connection);
@@ -162,8 +158,8 @@ async fn pubkey_counts_a_connection_offering_many_keys_once() {
 
 #[tokio::test]
 async fn pubkey_locks_out_rotating_addresses_in_one_ipv6_64_together() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     let adam = w.adam.public_key();
     let stranger = public_line(&generate_key());
     for host in 1..=10 {
@@ -177,9 +173,9 @@ async fn pubkey_locks_out_rotating_addresses_in_one_ipv6_64_together() {
 
 #[tokio::test]
 async fn config_answers_each_target_kind() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
-    w.engine.set_target(
+    let w = Fixture::new().await;
+    let app = w.router();
+    w.world.engine.set_target(
         &w.eve.main.id,
         SshTarget::SshServer {
             host: "corral-sbx-eve".to_owned(),
@@ -194,7 +190,7 @@ async fn config_answers_each_target_kind() {
     assert_eq!(
         body,
         json!({"config": {"backend": "kubernetes", "kubernetes": {"pod": {
-            "metadata": {"name": w.adam.main.id.0, "namespace": NAMESPACE},
+            "metadata": {"name": w.adam.main.id.0, "namespace": FakeEngine::NAMESPACE},
             "mode": "persistent",
         }}}})
     );
@@ -214,8 +210,8 @@ async fn config_answers_each_target_kind() {
 
 #[tokio::test]
 async fn config_routes_the_authenticated_username() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     let (status, body) = config(&app, "eve+main", "adam+main").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -226,14 +222,23 @@ async fn config_routes_the_authenticated_username() {
 
 #[tokio::test]
 async fn config_returns_503_while_waking() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
-    w.engine.answer_wakes_with(&[false]);
+    let w = Fixture::new().await;
+    let app = w.router();
+    let main = &w.adam.main;
+    w.world
+        .sandboxes
+        .stop(&w.adam.user, &main.name)
+        .await
+        .unwrap();
+    w.world.engine.set_waking(true);
+    let starts = w.starts(&main.id);
     assert_eq!(
         config(&app, "adam+main", "adam+main").await,
         (StatusCode::SERVICE_UNAVAILABLE, json!({}))
     );
-    assert_eq!(w.engine.woken(), vec![w.adam.main.id.clone()]);
+    assert_eq!(w.starts(&main.id), starts + 1);
+    assert_eq!(w.starts(&w.eve.main.id), 1);
+    w.world.engine.set_waking(false);
     assert_eq!(
         config(&app, "adam+main", "adam+main").await.0,
         StatusCode::OK
@@ -242,8 +247,8 @@ async fn config_returns_503_while_waking() {
 
 #[tokio::test]
 async fn config_refuses_unknown_disabled_or_missing_with_403() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     disable(&w, &w.eve).await;
     for username in ["nobody", "adam+missing", "eve", "eve+main", "ADAM", ""] {
         assert_eq!(
@@ -280,11 +285,11 @@ impl UserRepo for BrokenUsers {
 
 #[tokio::test]
 async fn store_errors_never_become_success() {
-    let w = World::new().await;
+    let w = Fixture::new().await;
     let access = Arc::new(SshAccess::new(
         Arc::new(BrokenUsers),
         Arc::new(MemoryKeyRepo::default()),
-        sandboxes(Arc::new(BrokenUsers), w.engine.clone()),
+        w.world.sandboxes.clone(),
     ));
     let app = router(access);
     let adam = w.adam.public_key();
@@ -302,8 +307,8 @@ async fn store_errors_never_become_success() {
 
 #[tokio::test]
 async fn every_response_is_json() {
-    let w = World::new().await;
-    let app = router(w.access.clone());
+    let w = Fixture::new().await;
+    let app = w.router();
     let missing_address = json!({"connectionId": "c", "username": "adam", "publicKey": "k"});
     let bad_address = json!({"remoteAddress": "nowhere", "connectionId": "c", "username": "adam", "publicKey": "k"});
     for (method, path, body, status) in [

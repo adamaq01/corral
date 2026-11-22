@@ -54,7 +54,7 @@ mod tests {
     use secrecy::SecretString;
 
     use crate::Error;
-    use crate::testing::{World, credential, exposed};
+    use crate::fakes::{World, credential, exposed};
 
     #[tokio::test]
     async fn removing_a_missing_credential_is_not_found() {
