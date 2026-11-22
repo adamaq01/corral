@@ -14,7 +14,7 @@ use tracing::warn;
 use super::exec_session_probe::ExecSessionProbe;
 use super::pod_exec::PodExec;
 use crate::crd::{OperatingMode, Sandbox};
-use crate::manifest::{IDLE_TIMEOUT_SECONDS, LAST_ACTIVE, MANAGED_BY, MANAGER};
+use crate::manifest::{LAST_ACTIVE, MANAGED_BY, MANAGER};
 use crate::status;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -28,14 +28,16 @@ pub(crate) struct Reaper {
     sandboxes: Api<Sandbox>,
     pods: Api<Pod>,
     probes: Vec<Box<dyn ActivityProbe>>,
+    idle_timeout: Duration,
 }
 
 impl Reaper {
-    pub(crate) fn new(sandboxes: Api<Sandbox>, pods: Api<Pod>) -> Self {
+    pub(crate) fn new(sandboxes: Api<Sandbox>, pods: Api<Pod>, idle_timeout: Duration) -> Self {
         Self {
             sandboxes,
             pods,
             probes: probes(),
+            idle_timeout,
         }
     }
 
@@ -73,7 +75,7 @@ impl Reaper {
         }
         let now = Utc::now();
         let exec = PodExec::new(&self.pods, &name);
-        let patch = match assess(sandbox, &self.probes, &exec, now).await {
+        let patch = match assess(sandbox, &self.probes, &exec, self.idle_timeout, now).await {
             Action::RecordActivity => {
                 json!({"metadata": {"annotations": {LAST_ACTIVE: now.to_rfc3339()}}})
             }
@@ -99,6 +101,7 @@ async fn assess(
     sandbox: &Sandbox,
     probes: &[Box<dyn ActivityProbe>],
     exec: &dyn Exec,
+    timeout: Duration,
     now: DateTime<Utc>,
 ) -> Action {
     let active = any_active(probes, exec).await;
@@ -107,8 +110,11 @@ async fn assess(
         Ok(false) => {}
         Err(error) => warn!(sandbox = sandbox.name_any(), %error, "activity probe failed"),
     }
-    let (Some(last_active), Some(timeout)) = (last_active(sandbox), idle_timeout(sandbox)) else {
-        warn!(sandbox = sandbox.name_any(), "unreadable idle annotations");
+    let Some(last_active) = last_active(sandbox) else {
+        warn!(
+            sandbox = sandbox.name_any(),
+            "unreadable last-active annotation"
+        );
         return Action::Leave;
     };
     match decide(active, last_active, timeout, now) {
@@ -120,11 +126,6 @@ async fn assess(
 fn last_active(sandbox: &Sandbox) -> Option<DateTime<Utc>> {
     let value = sandbox.annotations().get(LAST_ACTIVE)?;
     DateTime::parse_from_rfc3339(value).ok().map(Into::into)
-}
-
-fn idle_timeout(sandbox: &Sandbox) -> Option<Duration> {
-    let value = sandbox.annotations().get(IDLE_TIMEOUT_SECONDS)?;
-    value.parse().ok().map(Duration::from_secs)
 }
 
 #[cfg(test)]
@@ -155,7 +156,7 @@ mod tests {
 
     fn idle_for(seconds: i64) -> Sandbox {
         let last_active = now() - TimeDelta::seconds(seconds);
-        sandbox(&json!({LAST_ACTIVE: last_active.to_rfc3339(), IDLE_TIMEOUT_SECONDS: "60"}))
+        sandbox(&json!({LAST_ACTIVE: last_active.to_rfc3339()}))
     }
 
     fn nothing_running() -> ScriptedExec {
@@ -176,7 +177,7 @@ mod tests {
     }
 
     async fn action(sandbox: &Sandbox, exec: &ScriptedExec) -> Action {
-        assess(sandbox, &probes(), exec, now()).await
+        assess(sandbox, &probes(), exec, Duration::from_mins(1), now()).await
     }
 
     #[tokio::test]
@@ -224,15 +225,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unreadable_idle_annotations_never_suspend() {
-        let garbled = sandbox(&json!({LAST_ACTIVE: "yesterday", IDLE_TIMEOUT_SECONDS: "60"}));
-        let untimed = sandbox(&json!({LAST_ACTIVE: "2026-11-20T12:00:00Z"}));
+    async fn an_unreadable_last_active_never_suspends() {
+        let garbled = sandbox(&json!({LAST_ACTIVE: "yesterday"}));
+        let unmarked = sandbox(&json!({}));
         let busy = ScriptedExec::default()
             .exits(EXEC_ROOTS, 0, "1\n57\n")
             .exits(HERDR_CORE, 1, "");
 
         assert_eq!(action(&garbled, &nothing_running()).await, Action::Leave);
-        assert_eq!(action(&untimed, &nothing_running()).await, Action::Leave);
+        assert_eq!(action(&unmarked, &nothing_running()).await, Action::Leave);
         assert_eq!(action(&garbled, &busy).await, Action::RecordActivity);
     }
 }

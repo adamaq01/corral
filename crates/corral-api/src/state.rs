@@ -1,10 +1,9 @@
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::extract::FromRef;
 use cookie::Key;
-use corral_core::app::{Accounts, Catalog, Credentials, Keys, Sandboxes};
+use corral_core::app::{Accounts, Credentials, Keys, Sandboxes};
 use corral_core::ports::{AccountAdmin, IdentityProvider};
 
 use crate::error::ApiError;
@@ -16,11 +15,17 @@ pub struct ApiState {
     pub keys: Keys,
     pub credentials: Credentials,
     pub sandboxes: Sandboxes,
-    pub catalog: Catalog,
+    pub ssh: SshEndpoint,
     pub providers: Vec<Arc<dyn IdentityProvider>>,
     pub sessions: SessionCodec,
-    pub wake_deadline: Duration,
     pub trust_forwarded_for: bool,
+}
+
+/// Where people point their SSH client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshEndpoint {
+    pub host: String,
+    pub port: u16,
 }
 
 impl ApiState {

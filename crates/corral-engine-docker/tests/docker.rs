@@ -1,14 +1,16 @@
+use std::num::NonZeroU64;
 use std::process::{Command, Output, Stdio};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use corral_core::Error;
-use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName, SandboxStatus};
-use corral_core::ports::{
-    Env, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
+use corral_core::domain::{
+    Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
 };
+use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_engine_docker::{DockerConfig, DockerEngine};
 use secrecy::SecretString;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 const WAKE: Duration = Duration::from_secs(60);
@@ -47,20 +49,16 @@ fn env(token: &str) -> Env {
     )])
 }
 
-fn spec(name: &str, token: &str, idle: Duration) -> SandboxSpec {
+fn spec(name: &str) -> SandboxSpec {
     SandboxSpec {
         owner: Handle::parse("adam").unwrap(),
         name: SandboxName::parse(name).unwrap(),
         image: image(),
         resources: Resources {
-            cpu_request: "250m".to_owned(),
-            cpu_limit: "1".to_owned(),
-            memory_request: "256Mi".to_owned(),
-            memory_limit: "1Gi".to_owned(),
-            home_size: "1Gi".to_owned(),
+            cpu_millis: Allocation::new(250, 1000).unwrap(),
+            memory_bytes: Allocation::new(256 << 20, 1 << 30).unwrap(),
+            home_bytes: NonZeroU64::new(1 << 30).unwrap(),
         },
-        env: env(token),
-        idle: IdlePolicy { timeout: idle },
     }
 }
 
@@ -123,18 +121,20 @@ impl Lab {
         Some(lab)
     }
 
-    async fn engine(&self, max_running: usize) -> DockerEngine {
+    async fn engine(&self, max_running: usize, idle_timeout: Duration) -> DockerEngine {
         DockerEngine::connect(DockerConfig {
             network: self.network.clone(),
             proxy_public_key: self.proxy_public_key.clone(),
             max_running,
+            idle_timeout,
         })
         .await
         .unwrap()
     }
 
-    async fn create(&self, engine: &DockerEngine, spec: SandboxSpec) -> SandboxId {
-        let id = engine.create(spec).await.unwrap();
+    async fn create(&self, engine: &DockerEngine, name: &str) -> SandboxId {
+        let id = SandboxId::generate();
+        engine.create(&id, &spec(name)).await.unwrap();
         self.sandboxes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -236,9 +236,11 @@ async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxStatus {
     engine.status(id).await.unwrap()
 }
 
-async fn wake(engine: &DockerEngine, id: &SandboxId, token: &str) {
-    let readiness = engine.ensure_running(id, env(token), WAKE).await.unwrap();
-    assert_eq!(readiness, Readiness::Ready);
+async fn wake(engine: &DockerEngine, id: &SandboxId, token: &str) -> SshTarget {
+    match engine.start(id, env(token), WAKE).await.unwrap() {
+        Readiness::Ready(target) => target,
+        Readiness::Waking => panic!("sandbox {} was not ready within {WAKE:?}", id.0),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -246,10 +248,16 @@ async fn sandbox_lifecycle_over_real_ssh() {
     let Some(lab) = Lab::open("lifecycle") else {
         return;
     };
-    let engine = lab.engine(10).await;
+    let engine = lab.engine(10, LONG_IDLE).await;
 
-    let id = lab.create(&engine, spec("main", "one", LONG_IDLE)).await;
+    let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
+    assert_eq!(
+        state(&engine, &id).await,
+        SandboxStatus::Sleeping,
+        "create only provisions"
+    );
+    engine.create(&id, &spec("main")).await.unwrap();
     let networks = docker_ok(&[
         "inspect",
         "--format",
@@ -261,9 +269,8 @@ async fn sandbox_lifecycle_over_real_ssh() {
         "a sandbox joins only the sandbox network"
     );
 
-    wake(&engine, &id, "one").await;
+    let target = wake(&engine, &id, "one").await;
     assert_eq!(state(&engine, &id).await, SandboxStatus::Running);
-    let target = engine.ssh_target(&id).await.unwrap();
     let SshTarget::SshServer {
         host,
         port,
@@ -284,11 +291,11 @@ async fn sandbox_lifecycle_over_real_ssh() {
 
     engine.stop(&id).await.unwrap();
     assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
+    engine.stop(&id).await.unwrap();
     // Left behind by a replace that was interrupted before it removed the old container.
     docker_ok(&["create", "--name", &format!("{name}-next"), &image()]);
 
-    wake(&engine, &id, "two").await;
-    assert_eq!(engine.ssh_target(&id).await.unwrap(), target);
+    assert_eq!(wake(&engine, &id, "two").await, target);
     assert_eq!(
         lab.ssh(host, "printenv FOO_TOKEN"),
         "two",
@@ -297,37 +304,29 @@ async fn sandbox_lifecycle_over_real_ssh() {
     assert_eq!(lab.ssh(host, "cat ~/persist-check"), "kept");
     assert!(!exists("container", &format!("{name}-next")));
 
-    wake(&engine, &id, "ignored").await;
+    assert_eq!(wake(&engine, &id, "ignored").await, target);
     assert_eq!(
         lab.ssh(host, "printenv FOO_TOKEN"),
         "two",
         "a running sandbox keeps its env"
     );
-    engine.restart(&id, env("three")).await.unwrap();
-    wake(&engine, &id, "ignored").await;
+    engine.stop(&id).await.unwrap();
+    assert_eq!(wake(&engine, &id, "three").await, target);
     assert_eq!(
         lab.ssh(host, "printenv FOO_TOKEN"),
         "three",
-        "restart applies the env it is given"
+        "a stop and a start apply the new env"
     );
-    assert_eq!(engine.ssh_target(&id).await.unwrap(), target);
 
     engine.stop(&id).await.unwrap();
     // A replace interrupted after it removed the old container leaves only the staged one.
     docker_ok(&["rename", &name, &format!("{name}-next")]);
     assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
-    wake(&engine, &id, "three").await;
+    assert_eq!(wake(&engine, &id, "three").await, target);
     assert_eq!(
         lab.ssh(host, "printenv FOO_TOKEN; cat ~/persist-check"),
         "three\nkept"
     );
-    assert_eq!(engine.ssh_target(&id).await.unwrap(), target);
-
-    let full = lab.engine(1).await;
-    assert!(matches!(
-        full.create(spec("other", "one", LONG_IDLE)).await,
-        Err(Error::LimitReached(_))
-    ));
 
     engine.delete(&id).await.unwrap();
     assert!(!exists("container", &name));
@@ -335,9 +334,57 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.delete(&id).await.unwrap();
     assert!(matches!(engine.status(&id).await, Err(Error::NotFound(_))));
     assert!(matches!(
-        engine.ensure_running(&id, env("one"), WAKE).await,
+        engine.start(&id, env("one"), WAKE).await,
         Err(Error::NotFound(_))
     ));
+    assert!(matches!(engine.stop(&id).await, Err(Error::NotFound(_))));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_starts_never_exceed_max_running() {
+    const MAX: usize = 2;
+    let Some(lab) = Lab::open("capacity") else {
+        return;
+    };
+    let engine = Arc::new(lab.engine(MAX, LONG_IDLE).await);
+    let mut ids = Vec::new();
+    for n in 0..2 * MAX {
+        ids.push(lab.create(&engine, &format!("box-{n}")).await);
+    }
+
+    let mut starts = JoinSet::new();
+    for id in ids.clone() {
+        let engine = engine.clone();
+        starts.spawn(async move { engine.start(&id, Env::new(), Duration::ZERO).await });
+    }
+    let (mut started, mut refused) = (0, 0);
+    while let Some(outcome) = starts.join_next().await {
+        match outcome.unwrap() {
+            Ok(_) => started += 1,
+            Err(Error::LimitReached(_)) => refused += 1,
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+    assert_eq!((started, refused), (MAX, MAX));
+    let mut running = Vec::new();
+    for id in &ids {
+        if state(&engine, id).await == SandboxStatus::Running {
+            running.push(id.clone());
+        }
+    }
+    assert_eq!(running.len(), MAX);
+
+    let asleep = ids.iter().find(|id| !running.contains(id)).unwrap();
+    assert!(matches!(
+        engine.start(asleep, Env::new(), Duration::ZERO).await,
+        Err(Error::LimitReached(_))
+    ));
+    engine.stop(&running[0]).await.unwrap();
+    engine
+        .start(asleep, Env::new(), Duration::ZERO)
+        .await
+        .unwrap();
+    assert_eq!(state(&engine, asleep).await, SandboxStatus::Running);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -345,17 +392,17 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     let Some(lab) = Lab::open("reaper") else {
         return;
     };
-    let engine = lab.engine(10).await;
     let timeout = Duration::from_secs(3);
-    let idle = lab.create(&engine, spec("idle", "one", timeout)).await;
-    let ssh = lab.create(&engine, spec("ssh", "one", timeout)).await;
-    let herdr = lab.create(&engine, spec("herdr", "one", timeout)).await;
+    let engine = lab.engine(10, timeout).await;
+    let idle = lab.create(&engine, "idle").await;
+    let ssh = lab.create(&engine, "ssh").await;
+    let herdr = lab.create(&engine, "herdr").await;
+    let mut targets = Vec::new();
     for id in [&idle, &ssh, &herdr] {
-        wake(&engine, id, "one").await;
+        targets.push(wake(&engine, id, "one").await);
     }
 
-    let target = engine.ssh_target(&ssh).await.unwrap();
-    lab.pin_host_key(&target);
+    lab.pin_host_key(&targets[1]);
     lab.ssh_in_background(&container_name(&ssh), "sleep 120");
     let started = Instant::now();
     while !docker(&[
@@ -430,6 +477,7 @@ async fn connect_refuses_a_missing_network_or_a_bad_key() {
         network: missing.clone(),
         proxy_public_key: key,
         max_running: 1,
+        idle_timeout: LONG_IDLE,
     })
     .await;
     assert!(
@@ -442,6 +490,7 @@ async fn connect_refuses_a_missing_network_or_a_bad_key() {
         network: missing,
         proxy_public_key: "not a key".to_owned(),
         max_running: 1,
+        idle_timeout: LONG_IDLE,
     })
     .await;
     assert!(matches!(refused, Err(Error::Invalid(_))));

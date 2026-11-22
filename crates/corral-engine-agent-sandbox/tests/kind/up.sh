@@ -53,6 +53,10 @@ if ! docker exec "$node" ctr --namespace=k8s.io images ls | grep -F "$sandbox_im
   fi
 fi
 docker exec "$node" crictl pull "$agent_image" >/dev/null
+# The volume provisioner's helper image ships packed, so the prune below would drop its layers.
+helper_image=$(kubectl --context "$context" -n local-path-storage get configmap local-path-config \
+  -o jsonpath='{.data.helperPod\.yaml}' | awk '$1 == "image:" { print $2 }')
+docker exec "$node" crictl pull "$helper_image" >/dev/null
 # The node only needs the unpacked snapshots; dropping the layer blobs saves about 1 GB of Docker disk.
 docker exec "$node" ctr --namespace=k8s.io content prune references
 

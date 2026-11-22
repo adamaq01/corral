@@ -30,7 +30,7 @@ async fn list(
     Ok(Json(
         views
             .into_iter()
-            .map(|view| SandboxDto::new(view, &user.handle, &state.catalog.ssh))
+            .map(|view| SandboxDto::new(view, &state.ssh))
             .collect(),
     ))
 }
@@ -40,8 +40,7 @@ async fn create(
     State(state): State<AppState>,
     JsonBody(request): JsonBody<NewSandbox>,
 ) -> Result<(StatusCode, Json<SandboxDto>), ApiError> {
-    let name = request.name.clone();
-    state
+    let view = state
         .sandboxes
         .create(
             &user,
@@ -52,11 +51,7 @@ async fn create(
             },
         )
         .await?;
-    let view = state.sandboxes.get(&user, &name).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(SandboxDto::new(view, &user.handle, &state.catalog.ssh)),
-    ))
+    Ok((StatusCode::CREATED, Json(SandboxDto::new(view, &state.ssh))))
 }
 
 async fn show(
@@ -65,11 +60,7 @@ async fn show(
     PathParam(name): PathParam<SandboxName>,
 ) -> Result<Json<SandboxDto>, ApiError> {
     let view = state.sandboxes.get(&user, &name).await?;
-    Ok(Json(SandboxDto::new(
-        view,
-        &user.handle,
-        &state.catalog.ssh,
-    )))
+    Ok(Json(SandboxDto::new(view, &state.ssh)))
 }
 
 async fn delete(
@@ -86,12 +77,9 @@ async fn wake(
     State(state): State<AppState>,
     PathParam(name): PathParam<SandboxName>,
 ) -> Result<Json<Wake>, ApiError> {
-    let readiness = state
-        .sandboxes
-        .wake(&user, &name, state.wake_deadline)
-        .await?;
+    let readiness = state.sandboxes.wake(&user, &name).await?;
     Ok(Json(Wake {
-        ready: readiness == Readiness::Ready,
+        ready: matches!(readiness, Readiness::Ready(_)),
     }))
 }
 

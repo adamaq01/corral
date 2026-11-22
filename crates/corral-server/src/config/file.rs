@@ -132,6 +132,7 @@ pub(super) struct EngineSection {
     pub kind: EngineKind,
     pub max_running: usize,
     pub probe_interval_secs: NonZeroU64,
+    pub idle_timeout_secs: u64,
     pub docker: DockerSection,
     #[serde(rename = "agent-sandbox")]
     pub agent_sandbox: Option<AgentSandbox>,
@@ -143,6 +144,7 @@ impl Default for EngineSection {
             kind: EngineKind::default(),
             max_running: 6,
             probe_interval_secs: const { NonZeroU64::new(60).unwrap() },
+            idle_timeout_secs: 1800,
             docker: DockerSection::default(),
             agent_sandbox: None,
         }
@@ -215,14 +217,12 @@ fn wake_deadline_secs() -> u64 {
 #[serde(default, deny_unknown_fields)]
 pub(super) struct LimitsSection {
     pub max_sandboxes_per_user: usize,
-    pub idle_timeout_secs: u64,
 }
 
 impl Default for LimitsSection {
     fn default() -> Self {
         Self {
             max_sandboxes_per_user: 5,
-            idle_timeout_secs: 1800,
         }
     }
 }
@@ -230,8 +230,6 @@ impl Default for LimitsSection {
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(super) struct CatalogSection {
-    pub default_image: Option<String>,
-    pub default_size: Option<String>,
     pub images: Vec<ImageEntry>,
     pub sizes: Vec<SizeEntry>,
 }
@@ -239,8 +237,6 @@ pub(super) struct CatalogSection {
 impl Default for CatalogSection {
     fn default() -> Self {
         Self {
-            default_image: None,
-            default_size: None,
             images: vec![ImageEntry {
                 key: "ubuntu".to_owned(),
                 label: "Ubuntu 24.04".to_owned(),

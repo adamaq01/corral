@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use corral_core::app::{Catalog, SandboxView, SshEndpoint};
+use corral_core::app::{Catalog, SandboxView};
 use corral_core::domain::{
     CredentialName, Handle, LocalAccount, Role, SandboxName, SandboxStatus, SshKey, SshUsername,
     User,
@@ -8,6 +8,8 @@ use corral_core::ports::{IdentityProvider, Method};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::state::SshEndpoint;
 
 #[derive(Deserialize)]
 pub(crate) struct PasswordLogin {
@@ -109,26 +111,28 @@ pub(crate) struct CatalogDto {
     ssh: Endpoint,
 }
 
-impl From<&Catalog> for CatalogDto {
-    fn from(catalog: &Catalog) -> Self {
+impl CatalogDto {
+    pub(crate) fn new(catalog: &Catalog, ssh: &SshEndpoint) -> Self {
         let choice = |key: &str, label: &str| Choice {
             key: key.to_owned(),
             label: label.to_owned(),
         };
+        let images: Vec<Choice> = catalog
+            .images()
+            .iter()
+            .map(|image| choice(&image.key, &image.label))
+            .collect();
+        let sizes: Vec<Choice> = catalog
+            .sizes()
+            .iter()
+            .map(|size| choice(&size.key, &size.label))
+            .collect();
         Self {
-            images: catalog
-                .images
-                .iter()
-                .map(|image| choice(&image.key, &image.label))
-                .collect(),
-            sizes: catalog
-                .sizes
-                .iter()
-                .map(|size| choice(&size.key, &size.label))
-                .collect(),
-            default_image: catalog.default_image.clone(),
-            default_size: catalog.default_size.clone(),
-            ssh: Endpoint::from(&catalog.ssh),
+            default_image: images[0].key.clone(),
+            default_size: sizes[0].key.clone(),
+            images,
+            sizes,
+            ssh: Endpoint::from(ssh),
         }
     }
 }
@@ -153,12 +157,17 @@ pub(crate) struct SandboxDto {
 }
 
 impl SandboxDto {
-    pub(crate) fn new(view: SandboxView, owner: &Handle, ssh: &SshEndpoint) -> Self {
-        let SandboxView { sandbox, status } = view;
+    pub(crate) fn new(view: SandboxView, ssh: &SshEndpoint) -> Self {
+        let SandboxView {
+            sandbox,
+            owner,
+            is_default,
+            status,
+        } = view;
         Self {
             ssh: SandboxSsh {
                 username: SshUsername {
-                    handle: owner.clone(),
+                    handle: owner,
                     sandbox: Some(sandbox.name.clone()),
                 },
                 endpoint: Endpoint::from(ssh),
@@ -166,7 +175,7 @@ impl SandboxDto {
             name: sandbox.name,
             image: sandbox.image,
             size: sandbox.size,
-            is_default: sandbox.is_default,
+            is_default,
             status,
         }
     }
@@ -180,10 +189,10 @@ pub(crate) struct OwnedSandbox {
 }
 
 impl OwnedSandbox {
-    pub(crate) fn new(view: SandboxView, owner: &Handle, ssh: &SshEndpoint) -> Self {
+    pub(crate) fn new(view: SandboxView, ssh: &SshEndpoint) -> Self {
         Self {
-            owner: owner.clone(),
-            sandbox: SandboxDto::new(view, owner, ssh),
+            owner: view.owner.clone(),
+            sandbox: SandboxDto::new(view, ssh),
         }
     }
 }

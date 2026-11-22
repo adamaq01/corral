@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
-use corral_core::app::{Credentials, Limits, RegisteredKeyVerifier, Sandboxes, SshAccess};
+use corral_core::app::SshAccess;
 use corral_core::domain::{Handle, Role, User, UserId};
-use corral_core::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore};
-use corral_core::ports::{Readiness, SshTarget, UserRepo};
+use corral_core::fakes::MemoryKeyRepo;
+use corral_core::ports::{SshTarget, UserRepo};
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy, router};
 use secrecy::SecretString;
@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use crate::common::{
-    Member, NAMESPACE, World, catalog, generate_key, identity, private_pem, public_line,
+    Member, NAMESPACE, World, generate_key, identity, private_pem, public_line, sandboxes,
 };
 
 fn app(access: Arc<SshAccess>, proxy_private_key: &str) -> Router {
@@ -251,7 +251,7 @@ async fn config_routes_the_authenticated_username() {
 async fn config_returns_503_while_waking() {
     let w = World::new().await;
     let app = app(w.access.clone(), "PROXY");
-    w.engine.answer_wakes_with(&[Readiness::StillWaking]);
+    w.engine.answer_wakes_with(&[false]);
     assert_eq!(
         config(&app, "adam+main", "adam+main").await,
         (StatusCode::SERVICE_UNAVAILABLE, json!({}))
@@ -304,22 +304,10 @@ impl UserRepo for BrokenUsers {
 #[tokio::test]
 async fn store_errors_never_become_success() {
     let w = World::new().await;
-    let sandboxes = Sandboxes::new(
-        Arc::new(MemorySandboxRepo::default()),
-        w.engine.clone(),
-        Credentials::new(Arc::new(MemorySecretStore::default())),
-        catalog(),
-        Limits {
-            max_sandboxes_per_user: 1,
-        },
-    );
     let access = Arc::new(SshAccess::new(
         Arc::new(BrokenUsers),
-        sandboxes,
-        vec![Arc::new(RegisteredKeyVerifier::new(Arc::new(
-            MemoryKeyRepo::default(),
-        )))],
-        Duration::from_secs(1),
+        Arc::new(MemoryKeyRepo::default()),
+        sandboxes(Arc::new(BrokenUsers), w.engine.clone()),
     ));
     let app = app(access, "PROXY");
     let adam = w.adam.public_key();

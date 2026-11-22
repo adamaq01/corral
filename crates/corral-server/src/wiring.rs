@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::get;
 use corral_api::{ApiState, SessionCodec};
-use corral_core::app::{Accounts, Credentials, Keys, RegisteredKeyVerifier, Sandboxes, SshAccess};
+use corral_core::app::{Accounts, Credentials, Keys, Sandboxes, SshAccess};
 use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use corral_engine_docker::{DockerConfig, DockerEngine};
@@ -39,26 +39,21 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     let (engine, lifecycle) = engine(&config.engine, &proxy_key, shutdown).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
+        store.clone(),
         engine,
         credentials.clone(),
         config.catalog.clone(),
         config.limits,
     );
-    let access = SshAccess::new(
-        store.clone(),
-        sandboxes.clone(),
-        vec![Arc::new(RegisteredKeyVerifier::new(store.clone()))],
-        config.wake_deadline,
-    );
+    let access = SshAccess::new(store.clone(), store.clone(), sandboxes.clone());
     let api = ApiState {
         accounts: Accounts::new(store.clone()),
         keys: Keys::new(store.clone()),
         credentials,
         sandboxes,
-        catalog: config.catalog.clone(),
+        ssh: config.ssh.clone(),
         providers,
         sessions: SessionCodec::new(session_key, config.http.base_url.starts_with("https://")),
-        wake_deadline: config.wake_deadline,
         trust_forwarded_for: config.http.trust_forwarded_for,
     };
     Ok(App {
@@ -134,6 +129,7 @@ async fn engine(
                 network: network.clone(),
                 proxy_public_key: proxy_key.public_openssh.clone(),
                 max_running: engine.max_running,
+                idle_timeout: engine.idle_timeout,
             })
             .await?;
             let lifecycle = docker.spawn_lifecycle(engine.probe_interval, shutdown);
@@ -151,6 +147,7 @@ async fn engine(
                     storage_class: agent.storage_class.clone(),
                     agent_image: agent.agent_image.clone(),
                     max_running: engine.max_running,
+                    idle_timeout: engine.idle_timeout,
                 },
             );
             let lifecycle = agent.spawn_lifecycle(engine.probe_interval, shutdown);

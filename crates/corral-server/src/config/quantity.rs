@@ -1,6 +1,4 @@
-use corral_core::{Error, Result};
-
-const NANOS_PER_CPU: u128 = 1_000_000_000;
+use anyhow::{Result, anyhow};
 
 const MEMORY_SUFFIXES: [(&str, u128); 12] = [
     ("Ki", 1 << 10),
@@ -17,15 +15,17 @@ const MEMORY_SUFFIXES: [(&str, u128); 12] = [
     ("E", 1_000_000_000_000_000_000),
 ];
 
-pub(crate) fn nano_cpus(quantity: &str) -> Result<i64> {
+/// A Kubernetes-style CPU quantity such as `2`, `1.5` or `500m`, in thousandths of a CPU.
+pub(super) fn cpu_millis(quantity: &str) -> Result<u64> {
     let parsed = match quantity.strip_suffix('m') {
-        Some(millis) => scaled(millis, NANOS_PER_CPU / 1_000),
-        None => scaled(quantity, NANOS_PER_CPU),
+        Some(millis) => scaled(millis, 1),
+        None => scaled(quantity, 1_000),
     };
     parsed.ok_or_else(|| invalid("CPU", quantity))
 }
 
-pub(crate) fn bytes(quantity: &str) -> Result<i64> {
+/// A Kubernetes-style byte quantity such as `4Gi`, `512Mi` or `1G`.
+pub(super) fn bytes(quantity: &str) -> Result<u64> {
     let (number, multiplier) = MEMORY_SUFFIXES
         .iter()
         .find_map(|(suffix, multiplier)| {
@@ -34,10 +34,10 @@ pub(crate) fn bytes(quantity: &str) -> Result<i64> {
                 .map(|number| (number, *multiplier))
         })
         .unwrap_or((quantity, 1));
-    scaled(number, multiplier).ok_or_else(|| invalid("memory", quantity))
+    scaled(number, multiplier).ok_or_else(|| invalid("byte", quantity))
 }
 
-fn scaled(number: &str, multiplier: u128) -> Option<i64> {
+fn scaled(number: &str, multiplier: u128) -> Option<u64> {
     let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
     let digits = format!("{whole}{fraction}");
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -49,37 +49,39 @@ fn scaled(number: &str, multiplier: u128) -> Option<i64> {
         .ok()?
         .checked_mul(multiplier)?
         .div_ceil(divisor);
-    i64::try_from(value).ok().filter(|value| *value > 0)
+    // Docker and Kubernetes hold quantities as signed 64-bit integers.
+    let value = i64::try_from(value).ok().filter(|value| *value > 0)?;
+    u64::try_from(value).ok()
 }
 
-fn invalid(kind: &str, quantity: &str) -> Error {
-    Error::Invalid(format!(
+fn invalid(kind: &str, quantity: &str) -> anyhow::Error {
+    anyhow!(
         "{kind} quantity {quantity:?} must be a positive number with an optional Kubernetes suffix"
-    ))
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{bytes, nano_cpus};
+    use super::{bytes, cpu_millis};
 
     #[test]
     fn cpu_quantities() {
         for (quantity, expected) in [
-            ("2", 2_000_000_000),
-            ("1.5", 1_500_000_000),
-            ("500m", 500_000_000),
-            ("0.25", 250_000_000),
-            ("1m", 1_000_000),
+            ("2", 2000),
+            ("1.5", 1500),
+            ("500m", 500),
+            ("0.25", 250),
+            ("1m", 1),
         ] {
-            assert_eq!(nano_cpus(quantity).unwrap(), expected, "{quantity}");
+            assert_eq!(cpu_millis(quantity).unwrap(), expected, "{quantity}");
         }
         for bad in ["", "0", "m", "-1", "two", "1.2.3", "1Gi", " 1"] {
-            assert!(nano_cpus(bad).is_err(), "{bad:?}");
+            assert!(cpu_millis(bad).is_err(), "{bad:?}");
         }
     }
 
     #[test]
-    fn memory_quantities() {
+    fn byte_quantities() {
         for (quantity, expected) in [
             ("4Gi", 4 * 1024 * 1024 * 1024),
             ("512Mi", 512 * 1024 * 1024),

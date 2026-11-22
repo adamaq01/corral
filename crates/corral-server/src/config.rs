@@ -1,17 +1,20 @@
 mod file;
+mod quantity;
 
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corral_core::app::{Catalog, ImageOption, Limits, SizePreset, SshEndpoint};
-use corral_core::ports::{IdlePolicy, Resources};
+use corral_api::SshEndpoint;
+use corral_core::app::{Catalog, ImageOption, Limits, SizePreset};
+use corral_core::domain::{Allocation, Resources};
 
 pub use file::AgentSandbox;
 use file::{
     CatalogSection, EngineKind, EngineSection, File, FrontDoorKind, IdentitySection,
-    OpenBaoAuthKind, SecretsKind, SecretsSection,
+    OpenBaoAuthKind, SecretsKind, SecretsSection, SizeEntry,
 };
 
 pub struct Config {
@@ -22,7 +25,7 @@ pub struct Config {
     pub frontdoor: FrontDoor,
     pub catalog: Catalog,
     pub limits: Limits,
-    pub wake_deadline: Duration,
+    pub ssh: SshEndpoint,
 }
 
 pub struct Http {
@@ -67,6 +70,7 @@ pub struct Engine {
     pub backend: EngineBackend,
     pub max_running: usize,
     pub probe_interval: Duration,
+    pub idle_timeout: Duration,
 }
 
 pub enum EngineBackend {
@@ -110,16 +114,6 @@ impl TryFrom<File> for Config {
             base_url.starts_with("https://") || base_url.starts_with("http://"),
             "http.base_url must start with https:// or http://"
         );
-        let catalog = catalog(
-            file.catalog,
-            SshEndpoint {
-                host: file.ssh.public_host,
-                port: file.ssh.public_port,
-            },
-            IdlePolicy {
-                timeout: Duration::from_secs(file.limits.idle_timeout_secs),
-            },
-        )?;
         Ok(Self {
             http: Http {
                 public_addr: file.http.public_addr,
@@ -133,11 +127,15 @@ impl TryFrom<File> for Config {
             frontdoor: match file.frontdoor.kind {
                 FrontDoorKind::ContainerSsh => FrontDoor::ContainerSsh,
             },
-            catalog,
+            catalog: catalog(file.catalog).context("catalog is invalid")?,
             limits: Limits {
                 max_sandboxes_per_user: file.limits.max_sandboxes_per_user,
+                wake_deadline: Duration::from_secs(file.ssh.wake_deadline_secs),
             },
-            wake_deadline: Duration::from_secs(file.ssh.wake_deadline_secs),
+            ssh: SshEndpoint {
+                host: file.ssh.public_host,
+                port: file.ssh.public_port,
+            },
         })
     }
 }
@@ -200,50 +198,51 @@ fn engine(section: EngineSection) -> Result<Engine> {
         backend,
         max_running: section.max_running,
         probe_interval: Duration::from_secs(section.probe_interval_secs.get()),
+        idle_timeout: Duration::from_secs(section.idle_timeout_secs),
     })
 }
 
-fn catalog(section: CatalogSection, ssh: SshEndpoint, idle: IdlePolicy) -> Result<Catalog> {
-    let first_image = section.images.first().map(|image| image.key.clone());
-    let first_size = section.sizes.first().map(|size| size.key.clone());
-    let catalog = Catalog {
-        default_image: section
-            .default_image
-            .or(first_image)
-            .context("catalog.images lists no image")?,
-        default_size: section
-            .default_size
-            .or(first_size)
-            .context("catalog.sizes lists no size")?,
-        images: section
-            .images
-            .into_iter()
-            .map(|image| ImageOption {
-                key: image.key,
-                label: image.label,
-                reference: image.reference,
-            })
-            .collect(),
-        sizes: section
-            .sizes
-            .into_iter()
-            .map(|size| SizePreset {
-                key: size.key,
-                label: size.label,
-                resources: Resources {
-                    cpu_request: size.cpu_request,
-                    cpu_limit: size.cpu_limit,
-                    memory_request: size.memory_request,
-                    memory_limit: size.memory_limit,
-                    home_size: size.home_size,
-                },
-            })
-            .collect(),
-        ssh,
-        idle,
-    };
-    catalog.validate().context("catalog is invalid")?;
-    Ok(catalog)
+fn catalog(section: CatalogSection) -> Result<Catalog> {
+    let images = section
+        .images
+        .into_iter()
+        .map(|image| ImageOption {
+            key: image.key,
+            label: image.label,
+            reference: image.reference,
+        })
+        .collect();
+    let sizes = section
+        .sizes
+        .into_iter()
+        .map(|size| {
+            let key = size.key.clone();
+            size_preset(size).with_context(|| format!("size {key:?} is invalid"))
+        })
+        .collect::<Result<_>>()?;
+    Ok(Catalog::new(images, sizes)?)
+}
+
+fn size_preset(size: SizeEntry) -> Result<SizePreset> {
+    let cpu_millis = Allocation::new(
+        quantity::cpu_millis(&size.cpu_request)?,
+        quantity::cpu_millis(&size.cpu_limit)?,
+    )?;
+    let memory_bytes = Allocation::new(
+        quantity::bytes(&size.memory_request)?,
+        quantity::bytes(&size.memory_limit)?,
+    )?;
+    let home_bytes =
+        NonZeroU64::new(quantity::bytes(&size.home_size)?).context("home_size must be positive")?;
+    Ok(SizePreset {
+        key: size.key,
+        label: size.label,
+        resources: Resources {
+            cpu_millis,
+            memory_bytes,
+            home_bytes,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -291,10 +290,10 @@ mod tests {
         ));
         assert_eq!(config.engine.max_running, 6);
         assert_eq!(config.engine.probe_interval, Duration::from_mins(1));
-        assert_eq!(config.catalog.ssh.port, 48291);
-        assert_eq!(config.catalog.idle.timeout, Duration::from_mins(30));
+        assert_eq!(config.engine.idle_timeout, Duration::from_mins(30));
+        assert_eq!(config.ssh.port, 48291);
         assert_eq!(config.limits.max_sandboxes_per_user, 5);
-        assert_eq!(config.wake_deadline, Duration::from_secs(20));
+        assert_eq!(config.limits.wake_deadline, Duration::from_secs(20));
         assert_eq!(
             config.catalog.image(None).unwrap().reference,
             "ghcr.io/adamaq01/corral-sandbox"
@@ -320,8 +319,23 @@ mod tests {
         assert_eq!(agent.namespace, "corral-sandboxes");
         assert_eq!(agent.storage_class, "tns-csi-nvmeof");
         assert!(matches!(config.secrets, Secrets::Database));
-        let sizes: Vec<_> = config.catalog.sizes.iter().map(|size| &size.key).collect();
+        let sizes: Vec<_> = config
+            .catalog
+            .sizes()
+            .iter()
+            .map(|size| &size.key)
+            .collect();
         assert_eq!(sizes, ["small", "large"]);
+        let small = config.catalog.size(None).unwrap().resources;
+        assert_eq!(
+            (small.cpu_millis.request(), small.cpu_millis.limit()),
+            (500, 2000)
+        );
+        assert_eq!(
+            (small.memory_bytes.request(), small.memory_bytes.limit()),
+            (1 << 30, 4 << 30)
+        );
+        assert_eq!(small.home_bytes.get(), 10 << 30);
     }
 
     #[test]
@@ -379,28 +393,36 @@ mod tests {
     }
 
     #[test]
-    fn catalog_defaults_validated() {
-        let message = rejection(&format!("{MINIMAL}\n[catalog]\ndefault_image = \"debian\""));
-        assert!(message.contains("debian"), "{message}");
-
-        let duplicate_sizes = format!(
-            "{MINIMAL}\n{size}\n{size}",
-            size = "[[catalog.sizes]]\nkey = \"small\"\nlabel = \"Small\"\ncpu_request = \"1\"\n\
-                    cpu_limit = \"1\"\nmemory_request = \"1Gi\"\nmemory_limit = \"1Gi\"\n\
-                    home_size = \"1Gi\""
-        );
-        let message = rejection(&duplicate_sizes);
+    fn catalog_sizes_are_parsed_and_validated() {
+        let size = |cpu_request: &str, memory_limit: &str| {
+            format!(
+                "[[catalog.sizes]]\nkey = \"small\"\nlabel = \"Small\"\n\
+                 cpu_request = \"{cpu_request}\"\ncpu_limit = \"1\"\nmemory_request = \"1Gi\"\n\
+                 memory_limit = \"{memory_limit}\"\nhome_size = \"1Gi\""
+            )
+        };
+        let message = rejection(&format!(
+            "{MINIMAL}\n{}\n{}",
+            size("1", "1Gi"),
+            size("1", "1Gi")
+        ));
         assert!(message.contains("listed twice"), "{message}");
-
+        let message = rejection(&format!("{MINIMAL}\n{}", size("2", "1Gi")));
+        assert!(
+            message.contains("\"small\"") && message.contains("above its limit"),
+            "{message}"
+        );
+        let message = rejection(&format!("{MINIMAL}\n{}", size("1", "lots")));
+        assert!(message.contains("\"lots\""), "{message}");
         let message = rejection(&format!("{MINIMAL}\n[catalog]\nimages = []"));
-        assert!(message.contains("catalog.images"), "{message}");
+        assert!(message.contains("no image"), "{message}");
 
         let config = Config::parse(&format!(
             "{MINIMAL}\n[[catalog.images]]\nkey = \"debian\"\nlabel = \"Debian\"\n\
              reference = \"example.org/debian\""
         ))
         .unwrap();
-        assert_eq!(config.catalog.default_image, "debian");
+        assert_eq!(config.catalog.image(None).unwrap().key, "debian");
     }
 
     #[test]

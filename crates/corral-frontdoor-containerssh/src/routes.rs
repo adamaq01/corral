@@ -8,7 +8,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use corral_core::Error;
-use corral_core::app::{RouteOutcome, SshAccess};
+use corral_core::app::SshAccess;
+use corral_core::ports::Readiness;
 use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 
@@ -79,11 +80,11 @@ async fn config(
         .route(&request.authenticated_username)
         .await
     {
-        Ok(RouteOutcome::Target(target)) => answer(&ConfigResponse::for_target(
+        Ok(Readiness::Ready(target)) => answer(&ConfigResponse::for_target(
             &target,
             front_door.proxy_private_key.expose_secret(),
         )),
-        Ok(RouteOutcome::Waking) => failure(StatusCode::SERVICE_UNAVAILABLE),
+        Ok(Readiness::Waking) => failure(StatusCode::SERVICE_UNAVAILABLE),
         Err(Error::Forbidden) => failure(StatusCode::FORBIDDEN),
         Err(error) => internal_error(&error),
     }

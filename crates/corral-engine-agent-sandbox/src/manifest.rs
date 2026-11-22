@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use corral_core::domain::SandboxId;
-use corral_core::ports::{Env, Resources, SandboxSpec};
+use corral_core::domain::{Allocation, Resources, SandboxId};
+use corral_core::ports::{Env, SandboxSpec};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
     Container, EnvFromSource, ImageVolumeSource, PersistentVolumeClaimSpec,
@@ -13,13 +13,11 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use secrecy::ExposeSecret;
-use uuid::Uuid;
 
 use crate::AgentSandboxConfig;
 use crate::crd::{self, FailedPodPolicy, OperatingMode, Sandbox};
 
 pub const LAST_ACTIVE: &str = "corral.adamaq01.fr/last-active";
-pub const IDLE_TIMEOUT_SECONDS: &str = "corral.adamaq01.fr/idle-timeout-seconds";
 pub const MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub const MANAGER: &str = "corral";
 pub const OWNER: &str = "corral.adamaq01.fr/owner";
@@ -33,14 +31,6 @@ const HOME_PATH: &str = "/home/sandbox";
 const AGENT_VOLUME: &str = "containerssh-agent";
 const AGENT_PATH: &str = "/opt/containerssh-agent";
 const HOME_INIT: &str = "/usr/local/bin/corral-home-init";
-
-#[must_use]
-pub fn new_id() -> SandboxId {
-    SandboxId(format!(
-        "sbx-{}",
-        &Uuid::new_v4().simple().to_string()[..12]
-    ))
-}
 
 #[must_use]
 pub fn secret_name(id: &SandboxId) -> String {
@@ -60,17 +50,11 @@ pub fn build(
             name: Some(id.0.clone()),
             namespace: Some(cfg.namespace.clone()),
             labels: Some(labels.clone()),
-            annotations: Some(BTreeMap::from([
-                (LAST_ACTIVE.to_owned(), now.to_rfc3339()),
-                (
-                    IDLE_TIMEOUT_SECONDS.to_owned(),
-                    spec.idle.timeout.as_secs().to_string(),
-                ),
-            ])),
+            annotations: Some(BTreeMap::from([(LAST_ACTIVE.to_owned(), now.to_rfc3339())])),
             ..ObjectMeta::default()
         },
         spec: crd::SandboxSpec {
-            operating_mode: OperatingMode::Running,
+            operating_mode: OperatingMode::Suspended,
             failed_pod_policy: Some(FailedPodPolicy::Recreate),
             pod_template: PodTemplateSpec {
                 metadata: Some(ObjectMeta {
@@ -183,18 +167,21 @@ fn home_mount() -> VolumeMount {
 }
 
 fn resources(resources: &Resources) -> ResourceRequirements {
-    let quantities = |cpu: &str, memory: &str| {
+    let quantities = |pick: fn(Allocation) -> u64| {
         BTreeMap::from([
-            ("cpu".to_owned(), Quantity(cpu.to_owned())),
-            ("memory".to_owned(), Quantity(memory.to_owned())),
+            (
+                "cpu".to_owned(),
+                Quantity(format!("{}m", pick(resources.cpu_millis))),
+            ),
+            (
+                "memory".to_owned(),
+                Quantity(pick(resources.memory_bytes).to_string()),
+            ),
         ])
     };
     ResourceRequirements {
-        requests: Some(quantities(
-            &resources.cpu_request,
-            &resources.memory_request,
-        )),
-        limits: Some(quantities(&resources.cpu_limit, &resources.memory_limit)),
+        requests: Some(quantities(Allocation::request)),
+        limits: Some(quantities(Allocation::limit)),
         ..ResourceRequirements::default()
     }
 }
@@ -216,7 +203,7 @@ fn home_claim(
             resources: Some(VolumeResourceRequirements {
                 requests: Some(BTreeMap::from([(
                     "storage".to_owned(),
-                    Quantity(resources.home_size.clone()),
+                    Quantity(resources.home_bytes.to_string()),
                 )])),
                 ..VolumeResourceRequirements::default()
             }),
@@ -227,15 +214,18 @@ fn home_claim(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
     use std::time::Duration;
 
     use chrono::{DateTime, Utc};
-    use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName};
-    use corral_core::ports::{IdlePolicy, Resources, SandboxSpec};
+    use corral_core::domain::{
+        Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName,
+    };
+    use corral_core::ports::{Env, SandboxSpec};
     use secrecy::SecretString;
     use serde_json::{Value, json};
 
-    use super::{build, env_secret, new_id};
+    use super::{build, env_secret};
     use crate::AgentSandboxConfig;
 
     fn spec() -> SandboxSpec {
@@ -244,28 +234,26 @@ mod tests {
             name: SandboxName::parse("main").unwrap(),
             image: "ghcr.io/adamaq01/corral-sandbox:1".to_owned(),
             resources: Resources {
-                cpu_request: "500m".to_owned(),
-                cpu_limit: "2".to_owned(),
-                memory_request: "1Gi".to_owned(),
-                memory_limit: "4Gi".to_owned(),
-                home_size: "10Gi".to_owned(),
-            },
-            env: [
-                ("ANTHROPIC_API_KEY", "sk-ant-1"),
-                ("GH_TOKEN", "gh#\"quoted\\"),
-            ]
-            .into_iter()
-            .map(|(name, value)| {
-                (
-                    CredentialName::parse(name).unwrap(),
-                    SecretString::from(value),
-                )
-            })
-            .collect(),
-            idle: IdlePolicy {
-                timeout: Duration::from_mins(30),
+                cpu_millis: Allocation::new(500, 2000).unwrap(),
+                memory_bytes: Allocation::new(1 << 30, 4 << 30).unwrap(),
+                home_bytes: NonZeroU64::new(10 << 30).unwrap(),
             },
         }
+    }
+
+    fn env() -> Env {
+        [
+            ("ANTHROPIC_API_KEY", "sk-ant-1"),
+            ("GH_TOKEN", "gh#\"quoted\\"),
+        ]
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                CredentialName::parse(name).unwrap(),
+                SecretString::from(value),
+            )
+        })
+        .collect()
     }
 
     fn cfg() -> AgentSandboxConfig {
@@ -275,6 +263,7 @@ mod tests {
             storage_class: "tns-csi-nvmeof".to_owned(),
             agent_image: "containerssh/agent:v0.11.0".to_owned(),
             max_running: 6,
+            idle_timeout: Duration::from_mins(30),
         }
     }
 
@@ -287,7 +276,7 @@ mod tests {
         let cfg = cfg();
         (
             serde_json::to_value(build(&id, &spec, &cfg, now)).unwrap(),
-            serde_json::to_value(env_secret(&id, &spec.env, &cfg.namespace)).unwrap(),
+            serde_json::to_value(env_secret(&id, &env(), &cfg.namespace)).unwrap(),
         )
     }
 
@@ -307,12 +296,9 @@ mod tests {
         assert_eq!(sandbox["metadata"]["labels"], labels);
         assert_eq!(
             sandbox["metadata"]["annotations"],
-            json!({
-                "corral.adamaq01.fr/idle-timeout-seconds": "1800",
-                "corral.adamaq01.fr/last-active": "2026-11-21T10:00:00+00:00",
-            })
+            json!({"corral.adamaq01.fr/last-active": "2026-11-21T10:00:00+00:00"})
         );
-        assert_eq!(sandbox["spec"]["operatingMode"], "Running");
+        assert_eq!(sandbox["spec"]["operatingMode"], "Suspended");
         assert_eq!(sandbox["spec"]["failedPodPolicy"], "Recreate");
         assert!(sandbox["spec"].get("shutdownTime").is_none());
 
@@ -342,8 +328,8 @@ mod tests {
                 "image": "ghcr.io/adamaq01/corral-sandbox:1",
                 "envFrom": [{"secretRef": {"name": "sbx-0123456789ab-env"}}],
                 "resources": {
-                    "requests": {"cpu": "500m", "memory": "1Gi"},
-                    "limits": {"cpu": "2", "memory": "4Gi"},
+                    "requests": {"cpu": "500m", "memory": "1073741824"},
+                    "limits": {"cpu": "2000m", "memory": "4294967296"},
                 },
                 "securityContext": {"allowPrivilegeEscalation": true},
                 "volumeMounts": [
@@ -366,7 +352,7 @@ mod tests {
                 "spec": {
                     "accessModes": ["ReadWriteOnce"],
                     "storageClassName": "tns-csi-nvmeof",
-                    "resources": {"requests": {"storage": "10Gi"}},
+                    "resources": {"requests": {"storage": "10737418240"}},
                 },
             }])
         );
@@ -395,17 +381,5 @@ mod tests {
                 },
             })
         );
-    }
-
-    #[test]
-    fn ids_are_sbx_and_twelve_lowercase_hex() {
-        let id = new_id().0;
-        let hex = id.strip_prefix("sbx-").unwrap();
-        assert_eq!(hex.len(), 12, "{id}");
-        assert!(
-            hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-            "{id}"
-        );
-        assert_ne!(new_id(), new_id());
     }
 }

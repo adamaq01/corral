@@ -5,7 +5,8 @@ create table users (
     email text,
     role text not null,
     enabled integer not null,
-    created_at text not null
+    created_at text not null,
+    default_sandbox text references sandboxes on delete set null
 ) strict;
 
 create table ssh_keys (
@@ -24,7 +25,6 @@ create table sandboxes (
     name text not null,
     image text not null,
     size text not null,
-    is_default integer not null,
     created_at text not null,
     unique (owner, name)
 ) strict;

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::time::Duration;
 
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, HostConfig, Mount, MountTypeEnum, RestartPolicy,
@@ -14,19 +13,18 @@ use sha2::{Digest, Sha256};
 
 use crate::DockerConfig;
 use crate::host_key::HostKey;
-use crate::quantity;
 
 pub(crate) const MANAGED_BY: &str = "app.kubernetes.io/managed-by";
 pub(crate) const MANAGER: &str = "corral";
 pub(crate) const SANDBOX_ID: &str = "corral.adamaq01.fr/sandbox-id";
 pub(crate) const OWNER: &str = "corral.adamaq01.fr/owner";
 pub(crate) const SANDBOX: &str = "corral.adamaq01.fr/sandbox";
-pub(crate) const IDLE_TIMEOUT_SECONDS: &str = "corral.adamaq01.fr/idle-timeout-seconds";
 pub(crate) const HOST_KEY_FINGERPRINT: &str = "corral.adamaq01.fr/host-key-fingerprint";
 pub(crate) const ENV_HASH: &str = "corral.adamaq01.fr/env-hash";
 
 const HOME: &str = "/home/sandbox";
 const HOST_KEY_ENV: &str = "CORRAL_SSH_HOST_KEY";
+const NANOS_PER_MILLI: u64 = 1_000_000;
 
 pub(crate) fn name(id: &SandboxId) -> String {
     format!("corral-{}", id.0)
@@ -65,7 +63,6 @@ pub(crate) struct Blueprint {
     image: String,
     nano_cpus: i64,
     memory_bytes: i64,
-    idle_timeout: Duration,
     host_key: HostKey,
 }
 
@@ -76,9 +73,13 @@ impl Blueprint {
             owner: spec.owner.clone(),
             name: spec.name.clone(),
             image: spec.image.clone(),
-            nano_cpus: quantity::nano_cpus(&spec.resources.cpu_limit)?,
-            memory_bytes: quantity::bytes(&spec.resources.memory_limit)?,
-            idle_timeout: spec.idle.timeout,
+            nano_cpus: docker_quantity(
+                spec.resources
+                    .cpu_millis
+                    .limit()
+                    .checked_mul(NANOS_PER_MILLI),
+            )?,
+            memory_bytes: docker_quantity(Some(spec.resources.memory_bytes.limit()))?,
             host_key,
         })
     }
@@ -115,16 +116,8 @@ impl Blueprint {
             image: config.image.clone().ok_or_else(|| unreadable("image"))?,
             nano_cpus: host.nano_cpus.ok_or_else(|| unreadable("CPU limit"))?,
             memory_bytes: host.memory.ok_or_else(|| unreadable("memory limit"))?,
-            idle_timeout: label(IDLE_TIMEOUT_SECONDS)?
-                .parse()
-                .map(Duration::from_secs)
-                .map_err(|_| invalid(IDLE_TIMEOUT_SECONDS))?,
             host_key: HostKey::from_openssh(host_key)?,
         })
-    }
-
-    pub fn id(&self) -> &SandboxId {
-        &self.id
     }
 
     pub fn fingerprint(&self) -> String {
@@ -152,10 +145,6 @@ impl Blueprint {
         let env_hash = hash(&entries);
         let mut labels = self.identity_labels();
         labels.extend([
-            (
-                IDLE_TIMEOUT_SECONDS.to_owned(),
-                self.idle_timeout.as_secs().to_string(),
-            ),
             (HOST_KEY_FINGERPRINT.to_owned(), self.host_key.fingerprint()),
             (ENV_HASH.to_owned(), env_hash.clone()),
         ]);
@@ -197,6 +186,12 @@ impl Blueprint {
     }
 }
 
+fn docker_quantity(value: Option<u64>) -> Result<i64> {
+    value
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or_else(|| Error::Invalid("a resource limit is too large for Docker".to_owned()))
+}
+
 fn hash(entries: &[String]) -> String {
     let mut hasher = Sha256::new();
     for entry in entries {
@@ -214,13 +209,15 @@ fn hash(entries: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::num::NonZeroU64;
 
     use bollard::models::{
         ContainerConfig, ContainerInspectResponse, MountTypeEnum, RestartPolicyNameEnum,
     };
-    use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName};
-    use corral_core::ports::{Env, IdlePolicy, Resources, SandboxSpec};
+    use corral_core::domain::{
+        Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName,
+    };
+    use corral_core::ports::{Env, SandboxSpec};
     use secrecy::SecretString;
 
     use super::{Blueprint, ContainerCreate, env_hash, name, staged_name, volume_name};
@@ -241,21 +238,15 @@ mod tests {
             .collect()
     }
 
-    fn spec(env: Env) -> SandboxSpec {
+    fn spec() -> SandboxSpec {
         SandboxSpec {
             owner: Handle::parse("adam").unwrap(),
             name: SandboxName::parse("main").unwrap(),
             image: "ghcr.io/adamaq01/corral-sandbox:1.0".to_owned(),
             resources: Resources {
-                cpu_request: "500m".to_owned(),
-                cpu_limit: "1.5".to_owned(),
-                memory_request: "1Gi".to_owned(),
-                memory_limit: "4Gi".to_owned(),
-                home_size: "10Gi".to_owned(),
-            },
-            env,
-            idle: IdlePolicy {
-                timeout: Duration::from_mins(30),
+                cpu_millis: Allocation::new(500, 1500).unwrap(),
+                memory_bytes: Allocation::new(1 << 30, 4 << 30).unwrap(),
+                home_bytes: NonZeroU64::new(10 << 30).unwrap(),
             },
         }
     }
@@ -265,6 +256,7 @@ mod tests {
             network: "corral-sandboxes".to_owned(),
             proxy_public_key: PROXY_KEY.to_owned(),
             max_running: 6,
+            idle_timeout: std::time::Duration::from_mins(30),
         }
     }
 
@@ -273,7 +265,7 @@ mod tests {
     }
 
     fn build(env: &Env, host_key: HostKey) -> ContainerCreate {
-        Blueprint::new(id(), &spec(env.clone()), host_key)
+        Blueprint::new(id(), &spec(), host_key)
             .unwrap()
             .build(env, &cfg())
     }
@@ -340,7 +332,6 @@ mod tests {
             ("corral.adamaq01.fr/sandbox-id", "sbx-0123456789ab"),
             ("corral.adamaq01.fr/owner", "adam"),
             ("corral.adamaq01.fr/sandbox", "main"),
-            ("corral.adamaq01.fr/idle-timeout-seconds", "1800"),
             (
                 "corral.adamaq01.fr/host-key-fingerprint",
                 fingerprint.as_str(),
@@ -354,7 +345,7 @@ mod tests {
 
     #[test]
     fn volume_carries_the_sandbox_identity() {
-        let volume = Blueprint::new(id(), &spec(Env::new()), HostKey::generate())
+        let volume = Blueprint::new(id(), &spec(), HostKey::generate())
             .unwrap()
             .volume();
         assert_eq!(volume.name.as_deref(), Some("corral-home-sbx-0123456789ab"));
@@ -367,7 +358,7 @@ mod tests {
 
     #[test]
     fn env_hash_follows_the_env() {
-        let blueprint = Blueprint::new(id(), &spec(Env::new()), HostKey::generate()).unwrap();
+        let blueprint = Blueprint::new(id(), &spec(), HostKey::generate()).unwrap();
         let one = blueprint
             .build(&env(&[("FOO_TOKEN", "one")]), &cfg())
             .env_hash;
@@ -434,15 +425,5 @@ mod tests {
         let config = container.config.as_mut().unwrap();
         config.env = Some(vec!["PATH=/usr/bin".to_owned()]);
         assert!(Blueprint::read(&id(), &container).is_err());
-    }
-
-    #[test]
-    fn bad_resources_are_invalid() {
-        let mut bad = spec(Env::new());
-        bad.resources.memory_limit = "lots".to_owned();
-        assert!(matches!(
-            Blueprint::new(id(), &bad, HostKey::generate()),
-            Err(corral_core::Error::Invalid(_))
-        ));
     }
 }

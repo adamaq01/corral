@@ -2,7 +2,7 @@ use std::io::Write;
 use std::process::Stdio;
 use std::time::Duration;
 
-use corral_core::ports::{Readiness, SshTarget};
+use corral_core::ports::SshTarget;
 use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy, router};
 use secrecy::SecretString;
 use serde_json::json;
@@ -139,7 +139,7 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
     let stderr = String::from_utf8_lossy(&denied.stderr);
     assert!(stderr.contains("Permission denied"), "{stderr}");
 
-    w.engine.answer_wakes_with(&[Readiness::StillWaking]);
+    w.engine.answer_wakes_with(&[false]);
     let _eve = ssh(port, &eve_key, "eve+main");
     let banner = timeout(Duration::from_secs(60), banners.recv()).await;
     assert_eq!(banner.unwrap().unwrap(), "SSH-2.0-ContainerSSH");

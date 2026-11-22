@@ -6,7 +6,6 @@ mod engine;
 mod host_key;
 mod image;
 mod locks;
-mod quantity;
 mod reaper;
 mod status;
 

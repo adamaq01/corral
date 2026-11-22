@@ -15,8 +15,8 @@ use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
 use ssh_key::PublicKey;
+use tokio::sync::Mutex;
 use tracing::warn;
-use uuid::Uuid;
 
 use crate::container::{self, Blueprint, MANAGED_BY, MANAGER};
 use crate::docker_error::is_not_found;
@@ -35,9 +35,12 @@ const SSHD_ACCEPTS: [&str; 3] = ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"];
 #[derive(Clone)]
 pub struct DockerEngine {
     pub(crate) docker: Docker,
-    config: Arc<DockerConfig>,
+    pub(crate) config: Arc<DockerConfig>,
     pub(crate) last_active: Arc<LastActive>,
     pub(crate) locks: Arc<SandboxLocks>,
+    // Held from the running count to the container start, so concurrent starts cannot pass
+    // max_running together.
+    starts: Arc<Mutex<()>>,
 }
 
 impl DockerEngine {
@@ -68,6 +71,7 @@ impl DockerEngine {
             config: Arc::new(config),
             last_active: Arc::default(),
             locks: Arc::default(),
+            starts: Arc::default(),
         })
     }
 
@@ -111,44 +115,24 @@ impl DockerEngine {
     }
 
     // Finishes a replace that was interrupted after it removed the old container.
-    async fn existing(&self, lock: &SandboxLock) -> Result<ContainerInspectResponse> {
+    async fn existing(&self, lock: &SandboxLock) -> Result<Option<ContainerInspectResponse>> {
         let id = lock.id();
         let name = container::name(id);
         if let Some(found) = self.inspect(&name).await? {
-            return Ok(found);
+            return Ok(Some(found));
         }
         let staged = container::staged_name(id);
         if self.inspect(&staged).await?.is_some() {
             self.rename(&staged, &name).await?;
-            if let Some(found) = self.inspect(&name).await? {
-                return Ok(found);
-            }
+            return self.inspect(&name).await;
         }
-        Err(Error::NotFound(format!("sandbox {}", id.0)))
+        Ok(None)
     }
 
-    async fn ensure_capacity(&self) -> Result<()> {
-        let max = self.config.max_running;
-        if self.running().await?.len() >= max {
-            return Err(Error::LimitReached(format!(
-                "{max} sandboxes are already running"
-            )));
-        }
-        Ok(())
-    }
-
-    async fn provision(&self, blueprint: &Blueprint, env: &Env) -> Result<()> {
-        self.docker
-            .create_volume(blueprint.volume())
-            .await
-            .map_err(|err| Error::internal("create home volume", err))?;
-        let id = blueprint.id();
-        self.create_container(
-            &container::name(id),
-            blueprint.build(env, &self.config).body,
-        )
-        .await?;
-        self.start(id).await
+    async fn require(&self, lock: &SandboxLock) -> Result<ContainerInspectResponse> {
+        self.existing(lock)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("sandbox {}", lock.id().0)))
     }
 
     async fn create_container(&self, name: &str, body: ContainerCreateBody) -> Result<()> {
@@ -190,32 +174,32 @@ impl DockerEngine {
         }
     }
 
-    async fn start(&self, id: &SandboxId) -> Result<()> {
+    async fn boot(
+        &self,
+        lock: &SandboxLock,
+        current: &ContainerInspectResponse,
+        env: &Env,
+    ) -> Result<()> {
+        let id = lock.id();
+        let _start = self.starts.lock().await;
+        let max = self.config.max_running;
+        if self.running().await?.len() >= max {
+            return Err(Error::LimitReached(format!(
+                "{max} sandboxes are already running"
+            )));
+        }
+        let desired = Blueprint::read(id, current)?.build(env, &self.config);
+        if container::env_hash(current) != Some(desired.env_hash.as_str()) {
+            self.replace(lock, desired.body).await?;
+        }
         let name = container::name(id);
         self.docker
             .start_container(&name, None)
             .await
-            .map_err(|err| Error::internal(format!("start {name}"), err))?;
-        self.last_active.touch(id, Utc::now());
-        Ok(())
+            .map_err(|err| Error::internal(format!("start {name}"), err))
     }
 
-    async fn wake(&self, id: &SandboxId, env: &Env) -> Result<()> {
-        let lock = self.locks.lock(id).await;
-        let current = self.existing(&lock).await?;
-        if status::is_running(&current) {
-            self.last_active.touch(id, Utc::now());
-            return Ok(());
-        }
-        self.ensure_capacity().await?;
-        let desired = Blueprint::read(id, &current)?.build(env, &self.config);
-        if container::env_hash(&current) != Some(desired.env_hash.as_str()) {
-            self.replace(&lock, desired.body).await?;
-        }
-        self.start(id).await
-    }
-
-    async fn wait_for_sshd(&self, id: &SandboxId, patience: Duration) -> Result<Readiness> {
+    async fn wait_for_sshd(&self, id: &SandboxId, patience: Duration) -> Result<bool> {
         let exec = DockerExec::new(self.docker.clone(), container::name(id));
         let accepting = async {
             loop {
@@ -229,71 +213,61 @@ impl DockerEngine {
             }
         };
         match tokio::time::timeout(patience, accepting).await {
-            Ok(accepted) => accepted.map(|()| Readiness::Ready),
-            Err(_) => Ok(Readiness::StillWaking),
+            Ok(accepted) => accepted.map(|()| true),
+            Err(_) => Ok(false),
         }
     }
 }
 
 #[async_trait]
 impl SandboxEngine for DockerEngine {
-    async fn create(&self, spec: SandboxSpec) -> Result<SandboxId> {
-        let id = SandboxId(format!(
-            "sbx-{}",
-            &Uuid::new_v4().simple().to_string()[..12]
-        ));
-        let blueprint = Blueprint::new(id.clone(), &spec, HostKey::generate())?;
-        self.ensure_capacity().await?;
-        if let Err(err) = self.provision(&blueprint, &spec.env).await {
-            if let Err(cleanup) = self.delete(&id).await {
-                warn!(
-                    sandbox = id.0.as_str(),
-                    error = %cleanup,
-                    "could not clean up a sandbox that failed to start"
-                );
-            }
-            return Err(err);
+    async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()> {
+        let lock = self.locks.lock(id).await;
+        if self.existing(&lock).await?.is_some() {
+            return Ok(());
         }
-        Ok(id)
-    }
-
-    async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
-        self.observe(id).await.inspect_err(|err| {
-            if !matches!(err, Error::NotFound(_)) {
-                warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
-            }
-        })
-    }
-
-    async fn ensure_running(
-        &self,
-        id: &SandboxId,
-        env: Env,
-        deadline: Duration,
-    ) -> Result<Readiness> {
-        let called = Instant::now();
-        self.wake(id, &env).await?;
-        self.wait_for_sshd(id, deadline.saturating_sub(called.elapsed()))
+        let blueprint = Blueprint::new(id.clone(), spec, HostKey::generate())?;
+        self.docker
+            .create_volume(blueprint.volume())
             .await
+            .map_err(|err| Error::internal("create home volume", err))?;
+        self.create_container(
+            &container::name(id),
+            blueprint.build(&Env::new(), &self.config).body,
+        )
+        .await
+    }
+
+    async fn start(&self, id: &SandboxId, env: Env, deadline: Duration) -> Result<Readiness> {
+        let called = Instant::now();
+        let target = {
+            let lock = self.locks.lock(id).await;
+            let current = self.require(&lock).await?;
+            if !status::is_running(&current) {
+                self.boot(&lock, &current, &env).await?;
+            }
+            self.last_active.touch(id, Utc::now());
+            SshTarget::SshServer {
+                host_key_fingerprint: Blueprint::read(id, &current)?.fingerprint(),
+                host: container::name(id),
+                port: SSH_PORT,
+                username: SSH_USER.to_owned(),
+            }
+        };
+        let patience = deadline.saturating_sub(called.elapsed());
+        if self.wait_for_sshd(id, patience).await? {
+            Ok(Readiness::Ready(target))
+        } else {
+            Ok(Readiness::Waking)
+        }
     }
 
     async fn stop(&self, id: &SandboxId) -> Result<()> {
         let lock = self.locks.lock(id).await;
-        self.existing(&lock).await?;
-        self.stop_container(id).await
-    }
-
-    async fn restart(&self, id: &SandboxId, env: Env) -> Result<()> {
-        let lock = self.locks.lock(id).await;
-        let current = self.existing(&lock).await?;
-        if status::is_running(&current) {
+        if status::is_running(&self.require(&lock).await?) {
             self.stop_container(id).await?;
-        } else {
-            self.ensure_capacity().await?;
         }
-        let desired = Blueprint::read(id, &current)?.build(&env, &self.config);
-        self.replace(&lock, desired.body).await?;
-        self.start(id).await
+        Ok(())
     }
 
     async fn delete(&self, id: &SandboxId) -> Result<()> {
@@ -313,17 +287,11 @@ impl SandboxEngine for DockerEngine {
         }
     }
 
-    async fn ssh_target(&self, id: &SandboxId) -> Result<SshTarget> {
-        let name = container::name(id);
-        let current = self
-            .inspect(&name)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("sandbox {}", id.0)))?;
-        Ok(SshTarget::SshServer {
-            host_key_fingerprint: Blueprint::read(id, &current)?.fingerprint(),
-            host: name,
-            port: SSH_PORT,
-            username: SSH_USER.to_owned(),
+    async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
+        self.observe(id).await.inspect_err(|err| {
+            if !matches!(err, Error::NotFound(_)) {
+                warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
+            }
         })
     }
 }

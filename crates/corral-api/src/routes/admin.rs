@@ -1,10 +1,7 @@
-use std::collections::HashMap;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
-use corral_core::Error;
 use corral_core::domain::{Handle, UserId};
 use uuid::Uuid;
 
@@ -68,26 +65,12 @@ async fn sandboxes(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<OwnedSandbox>>, ApiError> {
     let views = state.sandboxes.list_all(&admin).await?;
-    let handles: HashMap<_, _> = state
-        .accounts
-        .list(&admin)
-        .await?
-        .into_iter()
-        .map(|user| (user.id, user.handle))
-        .collect();
-    let owned = views
-        .into_iter()
-        .map(|view| {
-            let owner = handles.get(&view.sandbox.owner).ok_or_else(|| {
-                Error::internal(
-                    "store",
-                    format!("sandbox {} has no owner", view.sandbox.id.0),
-                )
-            })?;
-            Ok(OwnedSandbox::new(view, owner, &state.catalog.ssh))
-        })
-        .collect::<Result<_, Error>>()?;
-    Ok(Json(owned))
+    Ok(Json(
+        views
+            .into_iter()
+            .map(|view| OwnedSandbox::new(view, &state.ssh))
+            .collect(),
+    ))
 }
 
 async fn local_account_list(

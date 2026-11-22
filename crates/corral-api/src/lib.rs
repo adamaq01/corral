@@ -14,7 +14,7 @@ use axum::middleware::from_fn;
 
 pub use cookie::Key;
 pub use session::{Session, SessionCodec};
-pub use state::ApiState;
+pub use state::{ApiState, SshEndpoint};
 
 pub fn router(state: ApiState) -> Router {
     routes::all()

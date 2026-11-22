@@ -24,10 +24,11 @@ create table sandboxes (
     name text not null,
     image text not null,
     size text not null,
-    is_default boolean not null,
     created_at timestamptz not null,
     unique (owner, name)
 );
+
+alter table users add column default_sandbox text references sandboxes on delete set null;
 
 create table credentials (
     user_id uuid not null references users on delete cascade,

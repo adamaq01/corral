@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -10,18 +11,18 @@ use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use cookie::{Cookie, SameSite};
-use corral_api::{ApiState, Key, SessionCodec, router};
+use corral_api::{ApiState, Key, SessionCodec, SshEndpoint, router};
 use corral_core::app::{
-    Accounts, Catalog, Credentials, ImageOption, Keys, Limits, Sandboxes, SizePreset, SshEndpoint,
+    Accounts, Catalog, Credentials, ImageOption, Keys, Limits, Sandboxes, SizePreset,
 };
-use corral_core::domain::{CredentialName, Handle, Role, UserId};
+use corral_core::domain::{Allocation, CredentialName, Handle, Resources, Role, UserId};
 use corral_core::fakes::{
     FakeEngine, MemoryKeyRepo, MemoryLocalAccountRepo, MemorySandboxRepo, MemorySecretStore,
     MemoryUserRepo,
 };
 use corral_core::ports::{
-    AccountAdmin, Answer, Challenge, Env, Identity, IdentityProvider, IdlePolicy, Method,
-    PendingLogin, Readiness, Resources, SecretStore,
+    AccountAdmin, Answer, Challenge, Env, Identity, IdentityProvider, Method, PendingLogin,
+    SecretStore,
 };
 use corral_core::{Error, Result};
 use corral_identity_local::LocalProvider;
@@ -152,34 +153,21 @@ struct Corral {
 }
 
 fn catalog() -> Catalog {
-    let resources = Resources {
-        cpu_request: "1".to_owned(),
-        cpu_limit: "2".to_owned(),
-        memory_request: "2Gi".to_owned(),
-        memory_limit: "4Gi".to_owned(),
-        home_size: "10Gi".to_owned(),
+    let image = ImageOption {
+        key: "base".to_owned(),
+        label: "Base".to_owned(),
+        reference: "ghcr.io/adamaq01/corral-sandbox:1".to_owned(),
     };
-    Catalog {
-        images: vec![ImageOption {
-            key: "base".to_owned(),
-            label: "Base".to_owned(),
-            reference: "ghcr.io/adamaq01/corral-sandbox:1".to_owned(),
-        }],
-        default_image: "base".to_owned(),
-        sizes: vec![SizePreset {
-            key: "small".to_owned(),
-            label: "Small".to_owned(),
-            resources,
-        }],
-        default_size: "small".to_owned(),
-        ssh: SshEndpoint {
-            host: "corral.example.com".to_owned(),
-            port: 48291,
+    let size = SizePreset {
+        key: "small".to_owned(),
+        label: "Small".to_owned(),
+        resources: Resources {
+            cpu_millis: Allocation::new(1000, 2000).unwrap(),
+            memory_bytes: Allocation::new(2 << 30, 4 << 30).unwrap(),
+            home_bytes: NonZeroU64::new(10 << 30).unwrap(),
         },
-        idle: IdlePolicy {
-            timeout: Duration::from_mins(30),
-        },
-    }
+    };
+    Catalog::new(vec![image], vec![size]).unwrap()
 }
 
 impl Setup {
@@ -200,22 +188,26 @@ impl Setup {
             providers.push(Arc::new(oidc));
         }
         let state = ApiState {
-            accounts: Accounts::new(users),
-            keys: Keys::new(Arc::new(MemoryKeyRepo::default())),
             sandboxes: Sandboxes::new(
                 Arc::new(MemorySandboxRepo::default()),
+                users.clone(),
                 engine.clone(),
                 credentials.clone(),
                 catalog(),
                 Limits {
                     max_sandboxes_per_user: 2,
+                    wake_deadline: Duration::from_secs(5),
                 },
             ),
+            accounts: Accounts::new(users),
+            keys: Keys::new(Arc::new(MemoryKeyRepo::default())),
             credentials,
-            catalog: catalog(),
+            ssh: SshEndpoint {
+                host: "corral.example.com".to_owned(),
+                port: 48291,
+            },
             providers,
             sessions: SessionCodec::new(Key::generate(), self.secure),
-            wake_deadline: Duration::from_secs(5),
             trust_forwarded_for: self.trust_forwarded_for,
         };
         Corral {
@@ -830,10 +822,10 @@ async fn sandbox_actions_reach_the_engine() {
         "sleeping"
     );
 
-    corral.engine.set_wake_result(Readiness::StillWaking);
+    corral.engine.set_waking(true);
     let waking = adam.call("POST", "/api/sandboxes/main/wake", None).await;
     assert_eq!(waking.json(), json!({ "ready": false }));
-    corral.engine.set_wake_result(Readiness::Ready);
+    corral.engine.set_waking(false);
     let ready = adam.call("POST", "/api/sandboxes/main/wake", None).await;
     assert_eq!(ready.json(), json!({ "ready": true }));
     let restart = adam.call("POST", "/api/sandboxes/main/restart", None).await;

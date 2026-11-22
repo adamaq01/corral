@@ -27,6 +27,7 @@ async fn meets_every_repo_contract(url: &str) {
     contract::user_repo(&*store).await;
     contract::key_repo(&*store, &*store).await;
     contract::sandbox_repo(&*store, &*store).await;
+    contract::sandbox_limit_holds_under_concurrent_inserts(&*store, store.clone()).await;
     contract::local_account_repo(&*store).await;
     secrets::database_secret_store(&store, url).await;
 }
@@ -133,13 +134,12 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         name: SandboxName::parse(&format!("box-{}", 9 - i)).unwrap(),
         image: "default".to_owned(),
         size: "small".to_owned(),
-        is_default: i == 0,
         created_at: second + offset,
     })
     .collect();
 
     for sandbox in chronological.iter().rev() {
-        SandboxRepo::insert(&store, sandbox).await.unwrap();
+        SandboxRepo::insert(&store, sandbox, 5).await.unwrap();
     }
     assert_eq!(
         SandboxRepo::list(&store, owner.id).await.unwrap(),

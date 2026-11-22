@@ -9,6 +9,7 @@ use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, Client};
 use serde_json::json;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
@@ -22,6 +23,7 @@ use crate::manifest::{self, LAST_ACTIVE, MANAGED_BY, MANAGER, SANDBOX_ID};
 use crate::status;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+const STOP_PATIENCE: Duration = Duration::from_mins(2);
 
 pub struct AgentSandboxEngine {
     sandboxes: Api<Sandbox>,
@@ -29,6 +31,9 @@ pub struct AgentSandboxEngine {
     claims: Api<PersistentVolumeClaim>,
     pods: Api<Pod>,
     config: AgentSandboxConfig,
+    // Held from the running count to the switch to Running, so concurrent starts cannot pass
+    // max_running together.
+    starts: Mutex<()>,
 }
 
 impl AgentSandboxEngine {
@@ -41,6 +46,7 @@ impl AgentSandboxEngine {
             claims: Api::namespaced(client.clone(), namespace),
             pods: Api::namespaced(client, namespace),
             config,
+            starts: Mutex::new(()),
         }
     }
 
@@ -50,7 +56,11 @@ impl AgentSandboxEngine {
         interval: Duration,
         shutdown: CancellationToken,
     ) -> JoinHandle<()> {
-        let reaper = Reaper::new(self.sandboxes.clone(), self.pods.clone());
+        let reaper = Reaper::new(
+            self.sandboxes.clone(),
+            self.pods.clone(),
+            self.config.idle_timeout,
+        );
         tokio::spawn(reaper.run(interval, shutdown))
     }
 
@@ -83,17 +93,29 @@ impl AgentSandboxEngine {
         Ok(sandboxes
             .items
             .iter()
-            .filter(|sandbox| sandbox.spec.operating_mode == OperatingMode::Running)
+            .filter(|sandbox| {
+                sandbox.spec.operating_mode == OperatingMode::Running
+                    && sandbox.metadata.deletion_timestamp.is_none()
+            })
             .count())
     }
 
-    async fn at_capacity(&self, already_running: bool) -> Result<bool> {
-        let running = self.running_count().await?;
-        Ok(at_capacity(
-            running,
-            self.config.max_running,
-            already_running,
-        ))
+    async fn resume(&self, id: &SandboxId, env: &Env) -> Result<()> {
+        let _start = self.starts.lock().await;
+        let sandbox = self.sandbox(id).await?;
+        let mut patch =
+            json!({"metadata": {"annotations": {LAST_ACTIVE: Utc::now().to_rfc3339()}}});
+        if sandbox.spec.operating_mode != OperatingMode::Running {
+            let max = self.config.max_running;
+            if self.running_count().await? >= max {
+                return Err(Error::LimitReached(format!(
+                    "at most {max} sandboxes may run at once"
+                )));
+            }
+            self.write_env(id, env).await?;
+            patch["spec"] = json!({"operatingMode": OperatingMode::Running});
+        }
+        self.merge_patch(id, patch).await
     }
 
     async fn merge_patch(&self, id: &SandboxId, patch: serde_json::Value) -> Result<()> {
@@ -105,74 +127,33 @@ impl AgentSandboxEngine {
     }
 }
 
-fn at_capacity(running: usize, max: usize, already_running: bool) -> bool {
-    !already_running && running >= max
-}
-
 #[async_trait]
 impl SandboxEngine for AgentSandboxEngine {
-    async fn create(&self, spec: SandboxSpec) -> Result<SandboxId> {
-        let id = manifest::new_id();
-        let mut sandbox = manifest::build(&id, &spec, &self.config, Utc::now());
-        if self.at_capacity(false).await? {
-            sandbox.spec.operating_mode = OperatingMode::Suspended;
-        }
-        self.write_env(&id, &spec.env).await?;
-        if let Err(error) = self
+    async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()> {
+        let sandbox = manifest::build(id, spec, &self.config, Utc::now());
+        match self
             .sandboxes
             .create(&PostParams::default(), &sandbox)
             .await
         {
-            let _ = self
-                .secrets
-                .delete_opt(&manifest::secret_name(&id), &DeleteParams::default())
-                .await;
-            return Err(kube_error(error));
+            Err(kube::Error::Api(status)) if status.is_already_exists() => Ok(()),
+            created => created.map(drop).map_err(kube_error),
         }
-        Ok(id)
     }
 
-    async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
-        self.observe(id).await.inspect_err(|err| {
-            if !matches!(err, Error::NotFound(_)) {
-                warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
-            }
-        })
-    }
-
-    async fn ensure_running(
-        &self,
-        id: &SandboxId,
-        env: Env,
-        deadline: Duration,
-    ) -> Result<Readiness> {
+    async fn start(&self, id: &SandboxId, env: Env, deadline: Duration) -> Result<Readiness> {
         let started = Instant::now();
-        let sandbox = self.sandbox(id).await?;
-        if self
-            .at_capacity(sandbox.spec.operating_mode == OperatingMode::Running)
-            .await?
-        {
-            return Err(Error::LimitReached(format!(
-                "at most {} sandboxes may run at once",
-                self.config.max_running
-            )));
-        }
-        self.write_env(id, &env).await?;
-        self.merge_patch(
-            id,
-            json!({
-                "metadata": {"annotations": {LAST_ACTIVE: Utc::now().to_rfc3339()}},
-                "spec": {"operatingMode": OperatingMode::Running},
-            }),
-        )
-        .await?;
+        self.resume(id, &env).await?;
         loop {
             if self.observe(id).await? == SandboxStatus::Running {
-                return Ok(Readiness::Ready);
+                return Ok(Readiness::Ready(SshTarget::KubernetesPod {
+                    namespace: self.config.namespace.clone(),
+                    pod: id.0.clone(),
+                }));
             }
             let remaining = deadline.saturating_sub(started.elapsed());
             if remaining.is_zero() {
-                return Ok(Readiness::StillWaking);
+                return Ok(Readiness::Waking);
             }
             sleep(POLL_INTERVAL.min(remaining)).await;
         }
@@ -183,16 +164,23 @@ impl SandboxEngine for AgentSandboxEngine {
             id,
             json!({"spec": {"operatingMode": OperatingMode::Suspended}}),
         )
-        .await
-    }
-
-    async fn restart(&self, id: &SandboxId, env: Env) -> Result<()> {
-        self.sandbox(id).await?;
-        self.write_env(id, &env).await?;
-        self.pods
-            .delete_opt(&id.0, &DeleteParams::default())
+        .await?;
+        let started = Instant::now();
+        while self
+            .pods
+            .get_opt(&id.0)
             .await
-            .map_err(kube_error)?;
+            .map_err(kube_error)?
+            .is_some()
+        {
+            if started.elapsed() > STOP_PATIENCE {
+                return Err(Error::internal(
+                    format!("stop sandbox {}", id.0),
+                    format!("its pod is still running after {STOP_PATIENCE:?}"),
+                ));
+            }
+            sleep(POLL_INTERVAL).await;
+        }
         Ok(())
     }
 
@@ -214,30 +202,11 @@ impl SandboxEngine for AgentSandboxEngine {
         Ok(())
     }
 
-    async fn ssh_target(&self, id: &SandboxId) -> Result<SshTarget> {
-        match self.observe(id).await? {
-            SandboxStatus::Running => Ok(SshTarget::KubernetesPod {
-                namespace: self.config.namespace.clone(),
-                pod: id.0.clone(),
-            }),
-            status => Err(Error::internal(
-                format!("sandbox {}", id.0),
-                format!("is {status:?}, not running"),
-            )),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::at_capacity;
-
-    #[test]
-    fn running_capacity_is_enforced() {
-        assert!(!at_capacity(5, 6, false));
-        assert!(at_capacity(6, 6, false));
-        assert!(at_capacity(7, 6, false));
-        assert!(!at_capacity(6, 6, true));
-        assert!(at_capacity(0, 0, false));
+    async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
+        self.observe(id).await.inspect_err(|err| {
+            if !matches!(err, Error::NotFound(_)) {
+                warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
+            }
+        })
     }
 }

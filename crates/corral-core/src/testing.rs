@@ -1,17 +1,18 @@
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
 use secrecy::ExposeSecret;
 
 use crate::app::{
-    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
-    RegisteredKeyVerifier, SandboxView, Sandboxes, SizePreset, SshAccess, SshEndpoint,
+    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, SandboxView,
+    Sandboxes, SizePreset, SshAccess,
 };
-use crate::domain::{CredentialName, Role, Sandbox, SandboxName, User};
+use crate::domain::{Allocation, CredentialName, Resources, Role, Sandbox, SandboxName, User};
 use crate::fakes::{
     FakeEngine, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
 };
-use crate::ports::{Env, Identity, IdlePolicy, Resources, SandboxRepo};
+use crate::ports::{Env, Identity};
 
 pub const MAX_SANDBOXES: usize = 3;
 pub const WAKE_DEADLINE: Duration = Duration::from_secs(7);
@@ -63,39 +64,29 @@ pub fn catalog() -> Catalog {
         label: key.to_uppercase(),
         reference: reference.to_owned(),
     };
-    let size = |key: &str, cpu: &str, memory: &str| SizePreset {
+    let size = |key: &str, cpu_millis: u64, memory_gib: u64| SizePreset {
         key: key.to_owned(),
         label: key.to_uppercase(),
         resources: Resources {
-            cpu_request: cpu.to_owned(),
-            cpu_limit: cpu.to_owned(),
-            memory_request: memory.to_owned(),
-            memory_limit: memory.to_owned(),
-            home_size: "10Gi".to_owned(),
+            cpu_millis: Allocation::new(cpu_millis / 2, cpu_millis).unwrap(),
+            memory_bytes: Allocation::new(memory_gib << 29, memory_gib << 30).unwrap(),
+            home_bytes: NonZeroU64::new(10 << 30).unwrap(),
         },
     };
-    Catalog {
-        images: vec![
+    Catalog::new(
+        vec![
             image("base", "ghcr.io/adamaq01/corral-sandbox:1"),
             image("tools", "ghcr.io/adamaq01/corral-tools:2"),
         ],
-        default_image: "base".to_owned(),
-        sizes: vec![size("small", "1", "2Gi"), size("large", "4", "8Gi")],
-        default_size: "small".to_owned(),
-        ssh: SshEndpoint {
-            host: "corral.example.com".to_owned(),
-            port: 48291,
-        },
-        idle: IdlePolicy {
-            timeout: Duration::from_mins(30),
-        },
-    }
+        vec![size("small", 1000, 2), size("large", 4000, 8)],
+    )
+    .unwrap()
 }
 
 pub fn default_names(views: &[SandboxView]) -> Vec<&str> {
     views
         .iter()
-        .filter(|view| view.sandbox.is_default)
+        .filter(|view| view.is_default)
         .map(|view| view.sandbox.name.as_str())
         .collect()
 }
@@ -113,44 +104,35 @@ pub struct World {
     pub credentials: Credentials,
     pub engine: Arc<FakeEngine>,
     pub sandboxes: Sandboxes,
-    pub key_repo: Arc<MemoryKeyRepo>,
     pub access: SshAccess,
 }
 
 impl World {
     pub fn new() -> Self {
-        Self::with_sandbox_repo(Arc::new(MemorySandboxRepo::default()))
-    }
-
-    pub fn with_sandbox_repo(sandbox_repo: Arc<dyn SandboxRepo>) -> Self {
         let users = Arc::new(MemoryUserRepo::default());
         let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
         let engine = Arc::new(FakeEngine::default());
         let limits = Limits {
             max_sandboxes_per_user: MAX_SANDBOXES,
+            wake_deadline: WAKE_DEADLINE,
         };
         let sandboxes = Sandboxes::new(
-            sandbox_repo,
+            Arc::new(MemorySandboxRepo::default()),
+            users.clone(),
             engine.clone(),
             credentials.clone(),
             catalog(),
             limits,
         );
         let key_repo = Arc::new(MemoryKeyRepo::default());
-        let access = SshAccess::new(
-            users.clone(),
-            sandboxes.clone(),
-            vec![Arc::new(RegisteredKeyVerifier::new(key_repo.clone()))],
-            WAKE_DEADLINE,
-        );
+        let access = SshAccess::new(users.clone(), key_repo.clone(), sandboxes.clone());
         Self {
             accounts: Accounts::new(users.clone()),
-            keys: Keys::new(key_repo.clone()),
+            keys: Keys::new(key_repo),
             sandboxes,
             credentials,
             engine,
             users,
-            key_repo,
             access,
         }
     }
@@ -160,6 +142,7 @@ impl World {
             .create(owner, request(name, None, None))
             .await
             .unwrap()
+            .sandbox
     }
 
     pub async fn member(&self, handle: &str) -> User {

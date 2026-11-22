@@ -1,37 +1,23 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use super::Sandboxes;
-use crate::domain::{Sandbox, SshUsername, User};
-use crate::ports::{KeyVerifier, Readiness, SshTarget, UserRepo};
+use crate::domain::{Sandbox, SshPublicKey, SshUsername, User};
+use crate::ports::{KeyRepo, Readiness, UserRepo};
 use crate::{Error, Result};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RouteOutcome {
-    Target(SshTarget),
-    Waking,
-}
 
 pub struct SshAccess {
     users: Arc<dyn UserRepo>,
+    keys: Arc<dyn KeyRepo>,
     sandboxes: Sandboxes,
-    verifiers: Vec<Arc<dyn KeyVerifier>>,
-    wake_deadline: Duration,
 }
 
 impl SshAccess {
     #[must_use]
-    pub fn new(
-        users: Arc<dyn UserRepo>,
-        sandboxes: Sandboxes,
-        verifiers: Vec<Arc<dyn KeyVerifier>>,
-        wake_deadline: Duration,
-    ) -> Self {
+    pub fn new(users: Arc<dyn UserRepo>, keys: Arc<dyn KeyRepo>, sandboxes: Sandboxes) -> Self {
         Self {
             users,
+            keys,
             sandboxes,
-            verifiers,
-            wake_deadline,
         }
     }
 
@@ -39,26 +25,19 @@ impl SshAccess {
         let Some((user, _)) = self.locate(username).await? else {
             return Ok(false);
         };
-        for verifier in &self.verifiers {
-            if verifier.verify(&user, presented).await? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let Ok(key) = SshPublicKey::parse(presented) else {
+            return Ok(false);
+        };
+        Ok(self
+            .keys
+            .by_public_key(&key)
+            .await?
+            .is_some_and(|registered| registered.user_id == user.id))
     }
 
-    pub async fn route(&self, username: &str) -> Result<RouteOutcome> {
+    pub async fn route(&self, username: &str) -> Result<Readiness> {
         let (_, sandbox) = self.locate(username).await?.ok_or(Error::Forbidden)?;
-        match self
-            .sandboxes
-            .ensure_ready(&sandbox, self.wake_deadline)
-            .await?
-        {
-            Readiness::Ready => Ok(RouteOutcome::Target(
-                self.sandboxes.ssh_target(&sandbox).await?,
-            )),
-            Readiness::StillWaking => Ok(RouteOutcome::Waking),
-        }
+        self.sandboxes.start(&sandbox).await
     }
 
     async fn locate(&self, username: &str) -> Result<Option<(User, Sandbox)>> {
@@ -81,12 +60,13 @@ impl SshAccess {
 mod tests {
     use secrecy::SecretString;
 
-    use super::RouteOutcome;
     use crate::Error;
     use crate::domain::User;
     use crate::fakes::EngineCall;
     use crate::ports::{Readiness, SshTarget};
-    use crate::testing::{ADAM_KEY, EVE_KEY, WAKE_DEADLINE, World, credential, exposed};
+    use crate::testing::{
+        ADAM_CERT, ADAM_KEY, EVE_KEY, WAKE_DEADLINE, World, algorithm_and_blob, credential, exposed,
+    };
 
     async fn adam_and_eve() -> (World, User, User) {
         let w = World::new();
@@ -111,6 +91,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn keys_match_however_they_are_written_but_certificates_never_do() {
+        let (w, ..) = adam_and_eve().await;
+        let bare = algorithm_and_blob(ADAM_KEY);
+        for presented in [
+            bare.clone(),
+            format!("{bare}\n"),
+            format!("{bare} another-comment"),
+        ] {
+            assert!(
+                w.access.authenticate("adam", &presented).await.unwrap(),
+                "{presented}"
+            );
+        }
+        for presented in [ADAM_CERT, "not a key", ""] {
+            assert!(
+                !w.access.authenticate("adam", presented).await.unwrap(),
+                "{presented}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn unknown_disabled_or_malformed_are_refused() {
         let (w, adam, _) = adam_and_eve().await;
         for u in [
@@ -132,24 +134,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn route_waits_or_reports_waking() {
+    async fn route_answers_the_target_or_waking() {
         let (w, adam, _) = adam_and_eve().await;
         let main = w.sandboxes.resolve(&adam, None).await.unwrap();
         assert_eq!(
             w.access.route("adam").await.unwrap(),
-            RouteOutcome::Target(SshTarget::KubernetesPod {
+            Readiness::Ready(SshTarget::KubernetesPod {
                 namespace: "fake".to_owned(),
                 pod: main.id.0.clone(),
             })
         );
-        w.engine.set_wake_result(Readiness::StillWaking);
-        assert!(matches!(
+        w.sandboxes.stop(&adam, &main.name).await.unwrap();
+        w.engine.set_waking(true);
+        assert_eq!(
             w.access.route("adam+main").await.unwrap(),
-            RouteOutcome::Waking
-        ));
+            Readiness::Waking
+        );
         assert!(matches!(
             w.engine.calls().last(),
-            Some(EngineCall::EnsureRunning { id, deadline, .. })
+            Some(EngineCall::Start { id, deadline, .. })
                 if *id == main.id && *deadline == WAKE_DEADLINE
         ));
     }
@@ -189,7 +192,7 @@ mod tests {
         }
         assert!(matches!(
             w.access.route("adam+main").await.unwrap(),
-            RouteOutcome::Target(_)
+            Readiness::Ready(_)
         ));
         assert_eq!(
             exposed(&w.engine.env_of(&main.id).unwrap()),

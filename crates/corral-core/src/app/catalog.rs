@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::ports::{IdlePolicy, Resources};
+use crate::domain::Resources;
 use crate::{Error, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,71 +17,65 @@ pub struct SizePreset {
     pub resources: Resources,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SshEndpoint {
-    pub host: String,
-    pub port: u16,
-}
-
+/// The images and sizes a sandbox is made from. The first of each is the default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
-    pub images: Vec<ImageOption>,
-    pub default_image: String,
-    pub sizes: Vec<SizePreset>,
-    pub default_size: String,
-    pub ssh: SshEndpoint,
-    pub idle: IdlePolicy,
+    images: Vec<ImageOption>,
+    sizes: Vec<SizePreset>,
 }
 
 impl Catalog {
-    pub fn validate(&self) -> Result<()> {
-        check_keys(
-            "image",
-            self.images.iter().map(|image| image.key.as_str()),
-            &self.default_image,
-        )?;
-        check_keys(
-            "size",
-            self.sizes.iter().map(|size| size.key.as_str()),
-            &self.default_size,
-        )
+    pub fn new(images: Vec<ImageOption>, sizes: Vec<SizePreset>) -> Result<Self> {
+        check_keys("image", images.iter().map(|image| image.key.as_str()))?;
+        check_keys("size", sizes.iter().map(|size| size.key.as_str()))?;
+        Ok(Self { images, sizes })
+    }
+
+    #[must_use]
+    pub fn images(&self) -> &[ImageOption] {
+        &self.images
+    }
+
+    #[must_use]
+    pub fn sizes(&self) -> &[SizePreset] {
+        &self.sizes
     }
 
     pub fn image(&self, key: Option<&str>) -> Result<&ImageOption> {
-        let key = key.unwrap_or(&self.default_image);
-        self.images
-            .iter()
-            .find(|image| image.key == key)
-            .ok_or_else(|| unknown("image", key))
+        pick("image", &self.images, key, |image| &image.key)
     }
 
     pub fn size(&self, key: Option<&str>) -> Result<&SizePreset> {
-        let key = key.unwrap_or(&self.default_size);
-        self.sizes
-            .iter()
-            .find(|size| size.key == key)
-            .ok_or_else(|| unknown("size", key))
+        pick("size", &self.sizes, key, |size| &size.key)
     }
 }
 
-fn check_keys<'a>(kind: &str, keys: impl Iterator<Item = &'a str>, default: &str) -> Result<()> {
+fn pick<'a, T>(
+    kind: &str,
+    options: &'a [T],
+    key: Option<&str>,
+    key_of: impl Fn(&T) -> &String,
+) -> Result<&'a T> {
+    let Some(key) = key else {
+        return Ok(&options[0]);
+    };
+    options
+        .iter()
+        .find(|option| key_of(option) == key)
+        .ok_or_else(|| Error::Invalid(format!("unknown {kind} {key:?}")))
+}
+
+fn check_keys<'a>(kind: &str, keys: impl Iterator<Item = &'a str>) -> Result<()> {
     let mut seen = BTreeSet::new();
     for key in keys {
         if !seen.insert(key) {
             return Err(Error::Invalid(format!("{kind} {key:?} is listed twice")));
         }
     }
-    if seen.contains(default) {
-        Ok(())
-    } else {
-        Err(Error::Invalid(format!(
-            "default {kind} {default:?} is not in the catalog"
-        )))
+    if seen.is_empty() {
+        return Err(Error::Invalid(format!("the catalog lists no {kind}")));
     }
-}
-
-fn unknown(kind: &str, key: &str) -> Error {
-    Error::Invalid(format!("unknown {kind} {key:?}"))
+    Ok(())
 }
 
 #[cfg(test)]
@@ -91,43 +85,26 @@ mod tests {
     use crate::testing::catalog;
 
     #[test]
-    fn validate_requires_listed_defaults_and_unique_keys() {
-        assert!(catalog().validate().is_ok());
-        let with_duplicate_image = {
-            let mut c = catalog();
-            c.images.push(c.images[0].clone());
-            c
-        };
-        let with_duplicate_size = {
-            let mut c = catalog();
-            c.sizes.push(c.sizes[1].clone());
-            c
-        };
-        for broken in [
-            Catalog {
-                default_image: "missing".to_owned(),
-                ..catalog()
-            },
-            Catalog {
-                default_size: "missing".to_owned(),
-                ..catalog()
-            },
-            Catalog {
-                sizes: vec![],
-                ..catalog()
-            },
-            with_duplicate_image,
-            with_duplicate_size,
+    fn new_requires_unique_keys_and_at_least_one_of_each() {
+        let c = catalog();
+        let (images, sizes) = (c.images().to_vec(), c.sizes().to_vec());
+        let images_twice = [images.clone(), images.clone()].concat();
+        let sizes_twice = [sizes.clone(), sizes.clone()].concat();
+        for (images, sizes) in [
+            (images_twice, sizes.clone()),
+            (images.clone(), sizes_twice),
+            (vec![], sizes.clone()),
+            (images.clone(), vec![]),
         ] {
             assert!(
-                matches!(broken.validate(), Err(Error::Invalid(_))),
-                "{broken:?}"
+                matches!(Catalog::new(images, sizes), Err(Error::Invalid(_))),
+                "accepted"
             );
         }
     }
 
     #[test]
-    fn image_and_size_fall_back_to_defaults_and_reject_unknown_keys() {
+    fn image_and_size_default_to_the_first_and_reject_unknown_keys() {
         let c = catalog();
         assert_eq!(
             c.image(None).unwrap().reference,
@@ -137,8 +114,8 @@ mod tests {
             c.image(Some("tools")).unwrap().reference,
             "ghcr.io/adamaq01/corral-tools:2"
         );
-        assert_eq!(c.size(None).unwrap().resources.memory_limit, "2Gi");
-        assert_eq!(c.size(Some("large")).unwrap().resources.memory_limit, "8Gi");
+        assert_eq!(c.size(None).unwrap().key, "small");
+        assert_eq!(c.size(Some("large")).unwrap().key, "large");
         assert!(matches!(c.image(Some("nope")), Err(Error::Invalid(_))));
         assert!(matches!(c.size(Some("nope")), Err(Error::Invalid(_))));
     }

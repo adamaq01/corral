@@ -43,6 +43,7 @@ macro_rules! validated_string {
 mod credential_name;
 mod handle;
 mod local_account;
+mod resources;
 mod sandbox;
 mod sandbox_name;
 mod ssh_key;
@@ -53,6 +54,7 @@ mod user;
 pub use credential_name::CredentialName;
 pub use handle::Handle;
 pub use local_account::LocalAccount;
+pub use resources::{Allocation, Resources};
 pub use sandbox::{Sandbox, SandboxId, SandboxStatus};
 pub use sandbox_name::SandboxName;
 pub use ssh_key::SshKey;

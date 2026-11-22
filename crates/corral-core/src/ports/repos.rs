@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::Result;
-use crate::domain::{Handle, Sandbox, SandboxName, SshKey, SshPublicKey, User, UserId};
+use crate::domain::{Handle, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId};
 
 #[async_trait]
 pub trait UserRepo: Send + Sync {
@@ -27,7 +27,12 @@ pub trait SandboxRepo: Send + Sync {
     async fn list(&self, owner: UserId) -> Result<Vec<Sandbox>>;
     async fn list_all(&self) -> Result<Vec<Sandbox>>;
     async fn by_name(&self, owner: UserId, name: &SandboxName) -> Result<Option<Sandbox>>;
-    async fn insert(&self, sandbox: &Sandbox) -> Result<()>;
-    async fn update(&self, sandbox: &Sandbox) -> Result<()>;
+    /// Refuses with `LimitReached` when the owner already has `max_per_owner` sandboxes, checked
+    /// atomically with the insert.
+    async fn insert(&self, sandbox: &Sandbox, max_per_owner: usize) -> Result<()>;
     async fn delete(&self, owner: UserId, name: &SandboxName) -> Result<bool>;
+    /// The sandbox the owner picked as default, if it still exists.
+    async fn default_id(&self, owner: UserId) -> Result<Option<SandboxId>>;
+    /// Does nothing unless `id` is one of the owner's sandboxes.
+    async fn set_default(&self, owner: UserId, id: &SandboxId) -> Result<()>;
 }

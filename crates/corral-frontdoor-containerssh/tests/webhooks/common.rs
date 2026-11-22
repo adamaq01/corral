@@ -1,17 +1,20 @@
 use std::collections::{HashMap, VecDeque};
+use std::num::NonZeroU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use corral_core::Result;
 use corral_core::app::{
-    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
-    RegisteredKeyVerifier, Sandboxes, SizePreset, SshAccess, SshEndpoint,
+    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, Sandboxes,
+    SizePreset, SshAccess,
 };
-use corral_core::domain::{Role, Sandbox, SandboxId, SandboxName, SandboxStatus, User};
+use corral_core::domain::{
+    Allocation, Resources, Role, Sandbox, SandboxId, SandboxName, SandboxStatus, User,
+};
 use corral_core::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo};
 use corral_core::ports::{
-    Env, Identity, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
+    Env, Identity, Readiness, SandboxEngine, SandboxSpec, SshTarget, UserRepo,
 };
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
@@ -43,21 +46,11 @@ impl World {
         let users = Arc::new(MemoryUserRepo::default());
         let key_repo = Arc::new(MemoryKeyRepo::default());
         let engine = Arc::new(StubEngine::default());
-        let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
-        let sandboxes = Sandboxes::new(
-            Arc::new(MemorySandboxRepo::default()),
-            engine.clone(),
-            credentials,
-            catalog(),
-            Limits {
-                max_sandboxes_per_user: 3,
-            },
-        );
+        let sandboxes = sandboxes(users.clone(), engine.clone());
         let access = Arc::new(SshAccess::new(
             users.clone(),
+            key_repo.clone(),
             sandboxes.clone(),
-            vec![Arc::new(RegisteredKeyVerifier::new(key_repo.clone()))],
-            Duration::from_secs(1),
         ));
         let accounts = Accounts::new(users);
         let keys = Keys::new(key_repo);
@@ -74,9 +67,10 @@ impl World {
                 image: None,
                 size: None,
             };
-            let main = sandboxes.create(&user, request).await.unwrap();
+            let main = sandboxes.create(&user, request).await.unwrap().sandbox;
             members.push(Member { user, key, main });
         }
+        engine.state().woken.clear();
         let eve = members.pop().unwrap();
         let adam = members.pop().unwrap();
         Self {
@@ -110,34 +104,36 @@ pub fn identity(handle: &str, role: Role) -> Identity {
     }
 }
 
-pub fn catalog() -> Catalog {
-    Catalog {
-        images: vec![ImageOption {
-            key: "base".to_owned(),
-            label: "Base".to_owned(),
-            reference: "ghcr.io/adamaq01/corral-sandbox".to_owned(),
-        }],
-        default_image: "base".to_owned(),
-        sizes: vec![SizePreset {
-            key: "small".to_owned(),
-            label: "Small".to_owned(),
-            resources: Resources {
-                cpu_request: "1".to_owned(),
-                cpu_limit: "1".to_owned(),
-                memory_request: "1Gi".to_owned(),
-                memory_limit: "1Gi".to_owned(),
-                home_size: "1Gi".to_owned(),
-            },
-        }],
-        default_size: "small".to_owned(),
-        ssh: SshEndpoint {
-            host: "corral.example.com".to_owned(),
-            port: 48291,
+pub fn sandboxes(users: Arc<dyn UserRepo>, engine: Arc<dyn SandboxEngine>) -> Sandboxes {
+    Sandboxes::new(
+        Arc::new(MemorySandboxRepo::default()),
+        users,
+        engine,
+        Credentials::new(Arc::new(MemorySecretStore::default())),
+        catalog(),
+        Limits {
+            max_sandboxes_per_user: 3,
+            wake_deadline: Duration::from_secs(1),
         },
-        idle: IdlePolicy {
-            timeout: Duration::from_mins(30),
+    )
+}
+
+fn catalog() -> Catalog {
+    let image = ImageOption {
+        key: "base".to_owned(),
+        label: "Base".to_owned(),
+        reference: "ghcr.io/adamaq01/corral-sandbox".to_owned(),
+    };
+    let size = SizePreset {
+        key: "small".to_owned(),
+        label: "Small".to_owned(),
+        resources: Resources {
+            cpu_millis: Allocation::new(1000, 1000).unwrap(),
+            memory_bytes: Allocation::new(1 << 30, 1 << 30).unwrap(),
+            home_bytes: NonZeroU64::new(1 << 30).unwrap(),
         },
-    }
+    };
+    Catalog::new(vec![image], vec![size]).unwrap()
 }
 
 #[derive(Default)]
@@ -147,14 +143,15 @@ pub struct StubEngine {
 
 #[derive(Default)]
 struct StubState {
-    wakes: VecDeque<Readiness>,
+    wakes: VecDeque<bool>,
     targets: HashMap<SandboxId, SshTarget>,
     woken: Vec<SandboxId>,
 }
 
 impl StubEngine {
-    pub fn answer_wakes_with(&self, readiness: &[Readiness]) {
-        self.state().wakes.extend(readiness);
+    /// Queues whether each next start finds the sandbox ready.
+    pub fn answer_wakes_with(&self, ready: &[bool]) {
+        self.state().wakes.extend(ready);
     }
 
     pub fn set_target(&self, id: &SandboxId, target: SshTarget) {
@@ -172,30 +169,30 @@ impl StubEngine {
 
 #[async_trait]
 impl SandboxEngine for StubEngine {
-    async fn create(&self, spec: SandboxSpec) -> Result<SandboxId> {
-        Ok(SandboxId(format!("sbx-{}-{}", spec.owner, spec.name)))
-    }
-
-    async fn status(&self, _id: &SandboxId) -> Result<SandboxStatus> {
-        Ok(SandboxStatus::Running)
-    }
-
-    async fn ensure_running(
-        &self,
-        id: &SandboxId,
-        _env: Env,
-        _deadline: Duration,
-    ) -> Result<Readiness> {
-        let mut state = self.state();
-        state.woken.push(id.clone());
-        Ok(state.wakes.pop_front().unwrap_or(Readiness::Ready))
-    }
-
-    async fn stop(&self, _id: &SandboxId) -> Result<()> {
+    async fn create(&self, _id: &SandboxId, _spec: &SandboxSpec) -> Result<()> {
         Ok(())
     }
 
-    async fn restart(&self, _id: &SandboxId, _env: Env) -> Result<()> {
+    async fn start(&self, id: &SandboxId, _env: Env, _deadline: Duration) -> Result<Readiness> {
+        let mut state = self.state();
+        state.woken.push(id.clone());
+        if state.wakes.pop_front().unwrap_or(true) {
+            let target =
+                state
+                    .targets
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| SshTarget::KubernetesPod {
+                        namespace: NAMESPACE.to_owned(),
+                        pod: id.0.clone(),
+                    });
+            Ok(Readiness::Ready(target))
+        } else {
+            Ok(Readiness::Waking)
+        }
+    }
+
+    async fn stop(&self, _id: &SandboxId) -> Result<()> {
         Ok(())
     }
 
@@ -203,15 +200,7 @@ impl SandboxEngine for StubEngine {
         Ok(())
     }
 
-    async fn ssh_target(&self, id: &SandboxId) -> Result<SshTarget> {
-        Ok(self
-            .state()
-            .targets
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| SshTarget::KubernetesPod {
-                namespace: NAMESPACE.to_owned(),
-                pod: id.0.clone(),
-            }))
+    async fn status(&self, _id: &SandboxId) -> Result<SandboxStatus> {
+        Ok(SandboxStatus::Running)
     }
 }

@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::lock;
 use crate::domain::{
-    Handle, LocalAccount, Sandbox, SandboxName, SshKey, SshPublicKey, User, UserId,
+    Handle, LocalAccount, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
 };
 use crate::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
 use crate::{Error, Result};
@@ -25,6 +25,7 @@ pub struct MemoryKeyRepo {
 #[derive(Default)]
 pub struct MemorySandboxRepo {
     sandboxes: Mutex<Vec<Sandbox>>,
+    defaults: Mutex<BTreeMap<UserId, SandboxId>>,
 }
 
 #[derive(Default)]
@@ -154,7 +155,7 @@ impl SandboxRepo for MemorySandboxRepo {
         }))
     }
 
-    async fn insert(&self, sandbox: &Sandbox) -> Result<()> {
+    async fn insert(&self, sandbox: &Sandbox, max_per_owner: usize) -> Result<()> {
         let mut sandboxes = lock(&self.sandboxes);
         if sandboxes
             .iter()
@@ -162,23 +163,17 @@ impl SandboxRepo for MemorySandboxRepo {
         {
             return Err(Error::Conflict(format!("sandbox {}", sandbox.name)));
         }
-        sandboxes.push(sandbox.clone());
-        Ok(())
-    }
-
-    async fn update(&self, sandbox: &Sandbox) -> Result<()> {
-        let mut sandboxes = lock(&self.sandboxes);
         if sandboxes
             .iter()
-            .any(|s| s.id != sandbox.id && s.owner == sandbox.owner && s.name == sandbox.name)
+            .filter(|s| s.owner == sandbox.owner)
+            .count()
+            >= max_per_owner
         {
-            return Err(Error::Conflict(format!("sandbox {}", sandbox.name)));
+            return Err(Error::LimitReached(format!(
+                "at most {max_per_owner} sandboxes per user"
+            )));
         }
-        let stored = sandboxes
-            .iter_mut()
-            .find(|s| s.id == sandbox.id)
-            .ok_or_else(|| Error::NotFound(format!("sandbox {}", sandbox.name)))?;
-        *stored = sandbox.clone();
+        sandboxes.push(sandbox.clone());
         Ok(())
     }
 
@@ -187,6 +182,21 @@ impl SandboxRepo for MemorySandboxRepo {
         let before = sandboxes.len();
         sandboxes.retain(|s| !(s.owner == owner && s.name == *name));
         Ok(sandboxes.len() < before)
+    }
+
+    async fn default_id(&self, owner: UserId) -> Result<Option<SandboxId>> {
+        let picked = lock(&self.defaults).get(&owner).cloned();
+        Ok(picked.filter(|id| lock(&self.sandboxes).iter().any(|s| s.id == *id)))
+    }
+
+    async fn set_default(&self, owner: UserId, id: &SandboxId) -> Result<()> {
+        let theirs = lock(&self.sandboxes)
+            .iter()
+            .any(|s| s.owner == owner && s.id == *id);
+        if theirs {
+            lock(&self.defaults).insert(owner, id.clone());
+        }
+        Ok(())
     }
 }
 

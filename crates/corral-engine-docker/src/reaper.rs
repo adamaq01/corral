@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::DockerEngine;
-use crate::container::{self, IDLE_TIMEOUT_SECONDS, SANDBOX_ID};
+use crate::container::{self, SANDBOX_ID};
 use crate::docker_exec::DockerExec;
 
 const SSH_SESSION: &str = "sshd: sandbox";
@@ -73,16 +73,15 @@ impl DockerEngine {
     }
 
     async fn sweep(&self, probes: &[Box<dyn ActivityProbe>]) -> Result<()> {
-        let running: Vec<(SandboxId, Duration)> = self
+        let running: Vec<SandboxId> = self
             .running()
             .await?
             .iter()
-            .filter_map(idle_policy)
+            .filter_map(sandbox_id)
             .collect();
-        let ids: Vec<SandboxId> = running.iter().map(|(id, _)| id.clone()).collect();
-        self.last_active.retain(&ids);
-        for (id, timeout) in &running {
-            if let Err(err) = self.reap(probes, id, *timeout).await {
+        self.last_active.retain(&running);
+        for id in &running {
+            if let Err(err) = self.reap(probes, id, self.config.idle_timeout).await {
                 warn!(
                     sandbox = id.0.as_str(),
                     error = %err,
@@ -122,9 +121,7 @@ impl DockerEngine {
     }
 }
 
-fn idle_policy(container: &ContainerSummary) -> Option<(SandboxId, Duration)> {
-    let labels = container.labels.as_ref()?;
-    let id = SandboxId(labels.get(SANDBOX_ID)?.clone());
-    let timeout = Duration::from_secs(labels.get(IDLE_TIMEOUT_SECONDS)?.parse().ok()?);
-    Some((id, timeout))
+fn sandbox_id(container: &ContainerSummary) -> Option<SandboxId> {
+    let id = container.labels.as_ref()?.get(SANDBOX_ID)?;
+    Some(SandboxId(id.clone()))
 }

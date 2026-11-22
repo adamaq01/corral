@@ -339,7 +339,7 @@ ok "after 5 wrong passwords, POST /auth/local/finish answers 429 even to the rig
 # The bind mount follows config.toml's inode, so it is rewritten in place.
 awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }' config.toml >config.new
 cat config.new >config.toml
-printf '\n[limits]\nidle_timeout_secs = 3\n' >>config.toml
+printf '\n[engine]\nidle_timeout_secs = 3\n' >>config.toml
 docker compose restart corral >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
 login adam "$admin_password"

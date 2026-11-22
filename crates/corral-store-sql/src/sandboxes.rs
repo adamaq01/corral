@@ -16,7 +16,6 @@ struct SandboxRow {
     name: String,
     image: String,
     size: String,
-    is_default: bool,
     created_at: DateTime<Utc>,
 }
 
@@ -30,7 +29,6 @@ impl TryFrom<SandboxRow> for Sandbox {
             name: parsed("sandbox name", SandboxName::parse(&row.name))?,
             image: row.image,
             size: row.size,
-            is_default: row.is_default,
             created_at: row.created_at,
         })
     }
@@ -41,7 +39,7 @@ impl SandboxRepo for Store {
     async fn list(&self, owner: UserId) -> Result<Vec<Sandbox>> {
         let rows: Vec<SandboxRow> = on_pool!(self, |pool| {
             sqlx::query_as(
-                "select id, owner, name, image, size, is_default, created_at \
+                "select id, owner, name, image, size, created_at \
                  from sandboxes where owner = $1 order by created_at, id",
             )
             .bind(owner.0)
@@ -55,7 +53,7 @@ impl SandboxRepo for Store {
     async fn list_all(&self) -> Result<Vec<Sandbox>> {
         let rows: Vec<SandboxRow> = on_pool!(self, |pool| {
             sqlx::query_as(
-                "select id, owner, name, image, size, is_default, created_at \
+                "select id, owner, name, image, size, created_at \
                  from sandboxes order by created_at, id",
             )
             .fetch_all(pool)
@@ -68,7 +66,7 @@ impl SandboxRepo for Store {
     async fn by_name(&self, owner: UserId, name: &SandboxName) -> Result<Option<Sandbox>> {
         let row: Option<SandboxRow> = on_pool!(self, |pool| {
             sqlx::query_as(
-                "select id, owner, name, image, size, is_default, created_at \
+                "select id, owner, name, image, size, created_at \
                  from sandboxes where owner = $1 and name = $2",
             )
             .bind(owner.0)
@@ -80,48 +78,47 @@ impl SandboxRepo for Store {
         row.map(Sandbox::try_from).transpose()
     }
 
-    async fn insert(&self, sandbox: &Sandbox) -> Result<()> {
-        on_pool!(self, |pool| {
+    async fn insert(&self, sandbox: &Sandbox, max_per_owner: usize) -> Result<()> {
+        let max = i64::try_from(max_per_owner).unwrap_or(i64::MAX);
+        let admitted = on_pool!(self, |pool| async {
+            let mut tx = pool.begin().await?;
+            // Writing the owner's row first serializes inserts for one owner, so the count below
+            // sees every committed sandbox of theirs.
+            sqlx::query("update users set default_sandbox = default_sandbox where id = $1")
+                .bind(sandbox.owner.0)
+                .execute(&mut *tx)
+                .await?;
             sqlx::query(
-                "insert into sandboxes (id, owner, name, image, size, is_default, created_at) \
-                 values ($1, $2, $3, $4, $5, $6, $7)",
+                "insert into sandboxes (id, owner, name, image, size, created_at) \
+                 values ($1, $2, $3, $4, $5, $6)",
             )
             .bind(&sandbox.id.0)
             .bind(sandbox.owner.0)
             .bind(sandbox.name.as_str())
             .bind(&sandbox.image)
             .bind(&sandbox.size)
-            .bind(sandbox.is_default)
             .bind(sandbox.created_at)
-            .execute(pool)
-            .await
-            .map(|_| ())
-        })
-        .map_err(db_error)
-    }
-
-    async fn update(&self, sandbox: &Sandbox) -> Result<()> {
-        let updated = on_pool!(self, |pool| {
-            sqlx::query(
-                "update sandboxes set owner = $1, name = $2, image = $3, size = $4, \
-                 is_default = $5, created_at = $6 where id = $7",
-            )
-            .bind(sandbox.owner.0)
-            .bind(sandbox.name.as_str())
-            .bind(&sandbox.image)
-            .bind(&sandbox.size)
-            .bind(sandbox.is_default)
-            .bind(sandbox.created_at)
-            .bind(&sandbox.id.0)
-            .execute(pool)
-            .await
-            .map(|done| done.rows_affected())
-        })
-        .map_err(db_error)?;
-        if updated == 0 {
-            return Err(Error::NotFound(format!("sandbox {}", sandbox.name)));
+            .execute(&mut *tx)
+            .await?;
+            let count: i64 = sqlx::query_scalar("select count(*) from sandboxes where owner = $1")
+                .bind(sandbox.owner.0)
+                .fetch_one(&mut *tx)
+                .await?;
+            if count > max {
+                return Ok(false);
+            }
+            tx.commit().await?;
+            Ok(true)
         }
-        Ok(())
+        .await)
+        .map_err(db_error)?;
+        if admitted {
+            Ok(())
+        } else {
+            Err(Error::LimitReached(format!(
+                "at most {max_per_owner} sandboxes per user"
+            )))
+        }
     }
 
     async fn delete(&self, owner: UserId, name: &SandboxName) -> Result<bool> {
@@ -135,5 +132,31 @@ impl SandboxRepo for Store {
         })
         .map_err(db_error)?;
         Ok(deleted > 0)
+    }
+
+    async fn default_id(&self, owner: UserId) -> Result<Option<SandboxId>> {
+        let picked: Option<Option<String>> = on_pool!(self, |pool| {
+            sqlx::query_scalar("select default_sandbox from users where id = $1")
+                .bind(owner.0)
+                .fetch_optional(pool)
+                .await
+        })
+        .map_err(db_error)?;
+        Ok(picked.flatten().map(SandboxId))
+    }
+
+    async fn set_default(&self, owner: UserId, id: &SandboxId) -> Result<()> {
+        on_pool!(self, |pool| {
+            sqlx::query(
+                "update users set default_sandbox = $2 where id = $1 \
+                 and exists (select 1 from sandboxes where id = $2 and owner = $1)",
+            )
+            .bind(owner.0)
+            .bind(&id.0)
+            .execute(pool)
+            .await
+            .map(drop)
+        })
+        .map_err(db_error)
     }
 }

@@ -25,6 +25,7 @@ kind = "database"
 kind = "agent-sandbox"
 max_running = 6
 probe_interval_secs = 60
+idle_timeout_secs = 1800
 
 [engine.agent-sandbox]
 namespace = "corral-sandboxes"
@@ -42,12 +43,8 @@ wake_deadline_secs = 20
 
 [limits]
 max_sandboxes_per_user = 5
-idle_timeout_secs = 1800
 
-[catalog]
-default_image = "ubuntu"
-default_size = "small"
-
+# The first image and the first size are the defaults.
 [[catalog.images]]
 key = "ubuntu"
 label = "Ubuntu 24.04"

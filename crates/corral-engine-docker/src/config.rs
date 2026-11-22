@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DockerConfig {
     /// The network sandboxes join. Only sandboxes and the SSH front door may be on it, never
@@ -5,4 +7,5 @@ pub struct DockerConfig {
     pub network: String,
     pub proxy_public_key: String,
     pub max_running: usize,
+    pub idle_timeout: Duration,
 }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::{DateTime, Utc};
 use corral_core::Error;
 use corral_core::domain::{
@@ -6,6 +8,7 @@ use corral_core::domain::{
 use corral_core::ports::{KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
 use ssh_key::PublicKey;
 use ssh_key::public::{Ed25519PublicKey, KeyData};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 pub async fn user_repo(repo: &dyn UserRepo) {
@@ -166,11 +169,11 @@ pub async fn key_repo(users: &dyn UserRepo, keys: &dyn KeyRepo) {
 pub async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     let adam = seed_user(users, "adam").await;
     let eve = seed_user(users, "eve").await;
-    let main = new_sandbox(adam.id, "main", true, 1);
-    let eves_main = new_sandbox(eve.id, "main", true, 2);
-    let dev = new_sandbox(adam.id, "dev", false, 3);
+    let main = new_sandbox(adam.id, "main", 1);
+    let eves_main = new_sandbox(eve.id, "main", 2);
+    let dev = new_sandbox(adam.id, "dev", 3);
     for sandbox in [&dev, &eves_main, &main] {
-        sandboxes.insert(sandbox).await.expect("insert sandbox");
+        sandboxes.insert(sandbox, 2).await.expect("insert sandbox");
     }
 
     assert_eq!(
@@ -202,7 +205,7 @@ pub async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     );
 
     let duplicates = [
-        new_sandbox(adam.id, "main", false, 4),
+        new_sandbox(adam.id, "main", 4),
         Sandbox {
             name: sandbox_name("other"),
             ..main.clone()
@@ -210,55 +213,64 @@ pub async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     ];
     for duplicate in duplicates {
         assert!(
-            matches!(sandboxes.insert(&duplicate).await, Err(Error::Conflict(_))),
+            matches!(
+                sandboxes.insert(&duplicate, 5).await,
+                Err(Error::Conflict(_))
+            ),
             "{duplicate:?}"
         );
     }
+    assert!(matches!(
+        sandboxes.insert(&new_sandbox(adam.id, "third", 4), 2).await,
+        Err(Error::LimitReached(_))
+    ));
     assert_eq!(
         sandboxes.list(adam.id).await.unwrap(),
         vec![main.clone(), dev.clone()]
     );
 
-    let demoted = Sandbox {
-        is_default: false,
-        ..main.clone()
-    };
-    let promoted = Sandbox {
-        is_default: true,
-        image: "other-image".to_owned(),
-        size: "large".to_owned(),
-        ..dev.clone()
-    };
-    sandboxes.update(&demoted).await.expect("update sandbox");
-    sandboxes.update(&promoted).await.expect("update sandbox");
+    assert_eq!(sandboxes.default_id(adam.id).await.unwrap(), None);
+    sandboxes.set_default(adam.id, &dev.id).await.unwrap();
+    sandboxes.set_default(adam.id, &eves_main.id).await.unwrap();
+    sandboxes.set_default(eve.id, &dev.id).await.unwrap();
     assert_eq!(
-        sandboxes.list(adam.id).await.unwrap(),
-        vec![demoted.clone(), promoted.clone()]
+        sandboxes.default_id(adam.id).await.unwrap(),
+        Some(dev.id.clone())
     );
-    let renamed_onto_main = Sandbox {
-        name: main.name.clone(),
-        ..promoted.clone()
-    };
-    assert!(matches!(
-        sandboxes.update(&renamed_onto_main).await,
-        Err(Error::Conflict(_))
-    ));
-    assert!(matches!(
-        sandboxes
-            .update(&new_sandbox(adam.id, "ghost", false, 5))
-            .await,
-        Err(Error::NotFound(_))
-    ));
-    assert_eq!(
-        sandboxes.list(adam.id).await.unwrap(),
-        vec![demoted, promoted.clone()]
-    );
+    assert_eq!(sandboxes.default_id(eve.id).await.unwrap(), None);
 
     assert!(!sandboxes.delete(eve.id, &dev.name).await.unwrap());
-    assert!(sandboxes.delete(adam.id, &main.name).await.unwrap());
-    assert!(!sandboxes.delete(adam.id, &main.name).await.unwrap());
-    assert_eq!(sandboxes.list(adam.id).await.unwrap(), vec![promoted]);
+    assert!(sandboxes.delete(adam.id, &dev.name).await.unwrap());
+    assert!(!sandboxes.delete(adam.id, &dev.name).await.unwrap());
+    assert_eq!(sandboxes.default_id(adam.id).await.unwrap(), None);
+    assert_eq!(sandboxes.list(adam.id).await.unwrap(), vec![main]);
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
+}
+
+pub async fn sandbox_limit_holds_under_concurrent_inserts<R>(
+    users: &dyn UserRepo,
+    sandboxes: Arc<R>,
+) where
+    R: SandboxRepo + 'static,
+{
+    const MAX: usize = 3;
+    let adam = seed_user(users, "adam").await;
+    let mut inserts = JoinSet::new();
+    for n in 0..4 * MAX {
+        let sandboxes = sandboxes.clone();
+        let sandbox = new_sandbox(adam.id, &format!("box-{n}"), 1);
+        inserts.spawn(async move { sandboxes.insert(&sandbox, MAX).await });
+    }
+    let (mut admitted, mut refused) = (0, 0);
+    while let Some(outcome) = inserts.join_next().await {
+        match outcome.unwrap() {
+            Ok(()) => admitted += 1,
+            Err(Error::LimitReached(_)) => refused += 1,
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+    assert_eq!((admitted, refused), (MAX, 3 * MAX));
+    assert_eq!(sandboxes.list(adam.id).await.unwrap().len(), MAX);
 }
 
 pub async fn local_account_repo(repo: &dyn LocalAccountRepo) {
@@ -363,14 +375,13 @@ fn public_key(seed: Uuid) -> SshPublicKey {
     SshPublicKey::parse(&key.to_openssh().expect("encodable key")).expect("valid key")
 }
 
-fn new_sandbox(owner: UserId, name: &str, is_default: bool, created: i64) -> Sandbox {
+fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
     Sandbox {
         id: SandboxId(unique("sbx")),
         owner,
         name: sandbox_name(name),
         image: "default".to_owned(),
         size: "small".to_owned(),
-        is_default,
         created_at: at(created),
     }
 }
