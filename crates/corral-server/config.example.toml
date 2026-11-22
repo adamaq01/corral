@@ -20,6 +20,12 @@ client_id = "corral"
 member_group = "corral-users"
 admin_group = "corral-admins"
 
+# Users who run `opkssh login` with the issuer's public client `opkssh` reach SSH without
+# registering a key. Their certificates last 12h, 24h, 48h or 1week.
+[identity.oidc.opkssh]
+client_id = "opkssh"
+policy = "24h"
+
 [secrets]
 kind = "database"
 

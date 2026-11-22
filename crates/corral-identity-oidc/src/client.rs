@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::OidcConfig;
 use crate::login_secrets::LoginSecrets;
+use crate::opkssh::{Opkssh, OpksshLogin};
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -81,6 +82,7 @@ pub struct OidcProvider {
     member_group: String,
     admin_group: String,
     http: reqwest::Client,
+    opkssh: Option<Opkssh>,
 }
 
 impl OidcProvider {
@@ -93,6 +95,10 @@ impl OidcProvider {
         client_secret: &SecretString,
         base_url: &str,
     ) -> Result<Self> {
+        let opkssh = match config.opkssh {
+            Some(opkssh) => Some(Opkssh::install(&config.issuer, opkssh).await?),
+            None => None,
+        };
         let issuer =
             IssuerUrl::new(config.issuer).map_err(|err| Error::internal("issuer url", err))?;
         let callback = format!(
@@ -124,7 +130,14 @@ impl OidcProvider {
             member_group: config.member_group,
             admin_group: config.admin_group,
             http,
+            opkssh,
         })
+    }
+
+    /// How users log in with opkssh, when it is on.
+    #[must_use]
+    pub fn opkssh_login(&self) -> Option<&OpksshLogin> {
+        self.opkssh.as_ref().map(Opkssh::login)
     }
 
     fn client(&self, metadata: CoreProviderMetadata) -> OidcClient {
@@ -223,6 +236,13 @@ impl OidcProvider {
 impl IdentityProvider for OidcProvider {
     fn id(&self) -> &str {
         Self::ID
+    }
+
+    async fn vouches_for_ssh(&self, subject: &str, presented: &str) -> Result<bool> {
+        let Some(opkssh) = &self.opkssh else {
+            return Ok(false);
+        };
+        Ok(opkssh.subject(presented).await.as_deref() == Some(subject))
     }
 }
 

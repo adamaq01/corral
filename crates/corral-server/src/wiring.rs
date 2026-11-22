@@ -133,7 +133,7 @@ async fn providers(
     {
         let provider = OidcProvider::discover(oidc, &client_secret, config.http.base_url.as_str())
             .await
-            .context("OIDC discovery failed")?;
+            .context("setting up [identity.oidc]")?;
         let provider = Arc::new(provider);
         routes.push(provider.routes());
         providers.push(provider);

@@ -6,17 +6,25 @@ edition.workspace = true
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+base64.workspace = true
 corral-api = { path = "../corral-api" }
 corral-core = { path = "../corral-core" }
 openidconnect = { version = "4.1.0", features = ["timing-resistant-secret-traits"] }
+# Also trusts the system's certificates, so an issuer behind a private CA (SSL_CERT_FILE) works.
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls-native-roots"] }
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ssh-encoding = { version = "0.2.0", features = ["alloc"] }
+tokio = { workspace = true, features = ["process", "time"] }
+tracing.workspace = true
+ts-rs.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true
 corral-api = { path = "../corral-api", features = ["testing"] }
 corral-core = { path = "../corral-core", features = ["fakes"] }
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 wiremock = "0.6.5"
 

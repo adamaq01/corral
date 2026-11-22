@@ -107,6 +107,7 @@ impl Issuer {
                     .into(),
                 member_group: MEMBERS.to_owned(),
                 admin_group: ADMINS.to_owned(),
+                opkssh: None,
             },
             &SecretString::from(CLIENT_SECRET),
             BASE_URL,

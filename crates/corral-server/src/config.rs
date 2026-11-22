@@ -212,6 +212,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use corral_identity_oidc::ExpiryPolicy;
     use corral_secrets_vault::VaultAuth;
 
     use super::{Config, Engine, Secrets};
@@ -277,6 +278,11 @@ mod tests {
         assert_eq!(
             (oidc.member_group.as_str(), oidc.admin_group.as_str()),
             ("corral-users", "corral-admins")
+        );
+        let opkssh = oidc.opkssh.unwrap();
+        assert_eq!(
+            (opkssh.client_id.as_str(), opkssh.policy),
+            ("opkssh", ExpiryPolicy::Hours24)
         );
         assert!(config.identity.local.is_none());
         let Engine::AgentSandbox(agent) = config.engine else {

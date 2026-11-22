@@ -1,8 +1,10 @@
 mod client;
 mod login_secrets;
+mod opkssh;
 mod routes;
 
 pub use client::OidcProvider;
+pub use opkssh::{ExpiryPolicy, OpksshConfig, OpksshLogin};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -16,6 +18,9 @@ pub struct OidcConfig {
     pub member_group: String,
     #[serde(default = "admin_group")]
     pub admin_group: String,
+    /// Lets users who run `opkssh login` reach SSH without registering a key.
+    #[serde(default)]
+    pub opkssh: Option<OpksshConfig>,
 }
 
 fn default_scopes() -> Vec<String> {
