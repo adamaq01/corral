@@ -14,6 +14,7 @@ use crate::state::AppState;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/admin/users", get(users))
+        .route("/api/admin/users/{id}", delete(delete_user))
         .route("/api/admin/users/{id}/enable", post(enable))
         .route("/api/admin/users/{id}/disable", post(disable))
         .route("/api/admin/sandboxes", get(sandboxes))
@@ -58,6 +59,15 @@ async fn disable(
         .set_enabled(&admin, UserId(id), false)
         .await?;
     Ok(Json(UserDto::from(user)))
+}
+
+async fn delete_user(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+    PathParam(id): PathParam<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    state.accounts.delete_user(&admin, UserId(id)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn sandboxes(

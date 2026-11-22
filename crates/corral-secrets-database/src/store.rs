@@ -77,6 +77,17 @@ impl SecretStore for DatabaseSecretStore {
         Ok(deleted > 0)
     }
 
+    async fn remove_all(&self, user: UserId) -> Result<()> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query("delete from credentials where user_id = $1")
+                .bind(user.0)
+                .execute(pool)
+                .await
+                .map(|_| ())
+        })
+        .map_err(db_error)
+    }
+
     async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
         let names: Vec<String> = on_pool!(self.pool, |pool| {
             sqlx::query_scalar("select name from credentials where user_id = $1 order by name")

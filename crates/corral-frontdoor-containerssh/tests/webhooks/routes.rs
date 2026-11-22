@@ -281,6 +281,9 @@ impl UserRepo for BrokenUsers {
     async fn list(&self) -> Result<Vec<User>> {
         Err(Error::internal("store", "down"))
     }
+    async fn delete(&self, _id: UserId) -> Result<bool> {
+        Err(Error::internal("store", "down"))
+    }
 }
 
 #[tokio::test]

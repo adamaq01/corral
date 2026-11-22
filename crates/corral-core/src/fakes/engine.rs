@@ -33,6 +33,7 @@ pub struct FakeEngine {
 struct State {
     waking: bool,
     failing_creates: bool,
+    deletes_before_failing: Option<usize>,
     sandboxes: BTreeMap<SandboxId, FakeSandbox>,
     targets: BTreeMap<SandboxId, SshTarget>,
     calls: Vec<EngineCall>,
@@ -76,6 +77,11 @@ impl FakeEngine {
 
     pub fn fail_creates(&self) {
         lock(&self.state).failing_creates = true;
+    }
+
+    /// With `Some(n)`, the next `n` deletes succeed and every later one fails; `None` stops that.
+    pub fn fail_deletes_after(&self, successes: Option<usize>) {
+        lock(&self.state).deletes_before_failing = successes;
     }
 
     #[must_use]
@@ -148,6 +154,11 @@ impl SandboxEngine for FakeEngine {
     async fn delete(&self, id: &SandboxId) -> Result<()> {
         let mut state = lock(&self.state);
         state.calls.push(EngineCall::Delete(id.clone()));
+        match &mut state.deletes_before_failing {
+            Some(0) => return Err(Error::internal("fake engine", "delete failed")),
+            Some(left) => *left -= 1,
+            None => {}
+        }
         state.sandboxes.remove(id);
         Ok(())
     }

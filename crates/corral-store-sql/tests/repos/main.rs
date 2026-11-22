@@ -6,8 +6,8 @@ use corral_core::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, User, UserId,
 };
 use corral_core::ports::{SandboxRepo, UserRepo};
-use corral_sql::Pool;
 use corral_sql::testing::Databases;
+use corral_sql::{Pool, on_pool};
 use corral_store_sql::Store;
 use uuid::Uuid;
 
@@ -21,6 +21,24 @@ async fn meets_every_repo_contract(url: &str) {
             .expect("reopen a migrated database"),
     );
     repos::every_repo(&*store, &*store, &*store).await;
+
+    let gone = repos::deleting_a_user_leaves_nothing_of_them(&*store, &*store, &*store).await;
+    let pool = Pool::connect(url).await.expect("raw connection");
+    for table in [
+        "users where id",
+        "ssh_keys where user_id",
+        "sandboxes where owner",
+    ] {
+        let sql = format!("select count(*) from {table} = $1");
+        let left: i64 = on_pool!(pool, |pool| {
+            sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .bind(gone.id.0)
+                .fetch_one(pool)
+                .await
+        })
+        .unwrap();
+        assert_eq!(left, 0, "{table}");
+    }
 }
 
 #[tokio::test]

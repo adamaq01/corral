@@ -40,6 +40,10 @@ impl Credentials {
         }
     }
 
+    pub(crate) async fn remove_all(&self, user: UserId) -> Result<()> {
+        self.store.remove_all(user).await
+    }
+
     pub async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
         self.store.names(user).await
     }

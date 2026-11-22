@@ -4,22 +4,39 @@ use chrono::Utc;
 use secrecy::SecretString;
 use uuid::Uuid;
 
+use super::{Credentials, Sandboxes};
 use crate::domain::{Admin, Handle, Role, User, UserId};
 use crate::ports::{
-    Identity, IdentityProvider, ManagedAccount, ManagedAccounts, UserRepo, user_subject,
+    Identity, IdentityProvider, KeyRepo, ManagedAccount, ManagedAccounts, UserRepo,
+    split_user_subject, user_subject,
 };
 use crate::{Error, Result};
 
 #[derive(Clone)]
 pub struct Accounts {
     users: Arc<dyn UserRepo>,
+    keys: Arc<dyn KeyRepo>,
+    sandboxes: Sandboxes,
+    credentials: Credentials,
     providers: Vec<Arc<dyn IdentityProvider>>,
 }
 
 impl Accounts {
     #[must_use]
-    pub fn new(users: Arc<dyn UserRepo>, providers: Vec<Arc<dyn IdentityProvider>>) -> Self {
-        Self { users, providers }
+    pub fn new(
+        users: Arc<dyn UserRepo>,
+        keys: Arc<dyn KeyRepo>,
+        sandboxes: Sandboxes,
+        credentials: Credentials,
+        providers: Vec<Arc<dyn IdentityProvider>>,
+    ) -> Self {
+        Self {
+            users,
+            keys,
+            sandboxes,
+            credentials,
+            providers,
+        }
     }
 
     pub async fn login(&self, provider: &str, identity: Identity) -> Result<User> {
@@ -103,23 +120,56 @@ impl Accounts {
             .await
     }
 
-    /// Removes the account from its provider and disables the user it logged in as.
+    /// Deletes the account with the user it logged in as, if it ever did.
     pub async fn delete_account(&self, _: &Admin, provider: &str, subject: &str) -> Result<()> {
-        if !self.managed(provider)?.delete(subject).await? {
-            return Err(Error::NotFound(format!("account {subject}")));
-        }
-        let linked = self
+        let managed = self.managed(provider)?;
+        match self
             .users
             .by_subject(&user_subject(provider, subject))
-            .await?;
-        if let Some(user) = linked.filter(|user| user.enabled) {
+            .await?
+        {
+            Some(user) => self.erase(user).await,
+            None if managed.delete(subject).await? => Ok(()),
+            None => Err(Error::NotFound(format!("account {subject}"))),
+        }
+    }
+
+    pub async fn delete_user(&self, _: &Admin, id: UserId) -> Result<()> {
+        let user = self
+            .users
+            .get(id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("user {}", id.0)))?;
+        self.erase(user).await
+    }
+
+    pub async fn delete_self(&self, user: User) -> Result<()> {
+        self.erase(user).await
+    }
+
+    /// Deletes the user and everything they own, each step safe to repeat, so running it again
+    /// after a failure finishes the job. The user is disabled first, so logins, sessions and SSH
+    /// stop at once, and their row goes last, so a retry still finds them.
+    async fn erase(&self, user: User) -> Result<()> {
+        if user.enabled {
             self.users
                 .update(&User {
                     enabled: false,
-                    ..user
+                    ..user.clone()
                 })
                 .await?;
         }
+        self.sandboxes.delete_all(user.id).await?;
+        for key in self.keys.list(user.id).await? {
+            self.keys.delete(user.id, key.id).await?;
+        }
+        self.credentials.remove_all(user.id).await?;
+        if let Some((provider, subject)) = split_user_subject(&user.subject)
+            && let Ok(managed) = self.managed(provider)
+        {
+            managed.delete(subject).await?;
+        }
+        self.users.delete(user.id).await?;
         Ok(())
     }
 
@@ -159,9 +209,9 @@ mod tests {
     use uuid::Uuid;
 
     use crate::Error;
-    use crate::domain::{Handle, Role, UserId};
-    use crate::fakes::{PROVIDER, World, admin_proof, identity};
-    use crate::ports::UserRepo;
+    use crate::domain::{Admin, Handle, Role, User, UserId};
+    use crate::fakes::{ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, credential, identity};
+    use crate::ports::{SandboxEngine, UserRepo};
 
     fn password(value: &str) -> SecretString {
         SecretString::from(value)
@@ -375,37 +425,142 @@ mod tests {
         }
     }
 
+    async fn owning_everything(w: &World, handle: &str, key: &str) -> User {
+        let by = admin_proof(&w.admin(&format!("{handle}-admin")).await);
+        w.accounts
+            .create_account(
+                &by,
+                PROVIDER,
+                &Handle::parse(handle).unwrap(),
+                password("p"),
+                Role::Member,
+            )
+            .await
+            .unwrap();
+        let user = w.member(handle).await;
+        w.sandbox(&user, "main").await;
+        w.sandbox(&user, "dev").await;
+        w.keys.add(&user, "laptop", key).await.unwrap();
+        w.credentials
+            .set(user.id, &credential("A_KEY"), password("secret"))
+            .await
+            .unwrap();
+        user
+    }
+
+    async fn owns_nothing(w: &World, user: &User) {
+        assert_eq!(w.users.get(user.id).await.unwrap(), None);
+        assert_eq!(w.users.by_handle(&user.handle).await.unwrap(), None);
+        assert_eq!(w.sandboxes.list(user).await.unwrap(), []);
+        assert_eq!(w.keys.list(user).await.unwrap(), []);
+        assert_eq!(w.credentials.names(user.id).await.unwrap(), []);
+        assert!(w.credentials.load(user.id).await.unwrap().is_empty());
+    }
+
+    async fn accounts(w: &World, by: &Admin) -> Vec<String> {
+        w.accounts
+            .managed_accounts(by, PROVIDER)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|account| account.subject)
+            .collect()
+    }
+
     #[tokio::test]
-    async fn deleting_an_account_disables_the_user_it_logged_in_as() {
+    async fn deleting_a_user_removes_everything_they_own_even_after_a_failure() {
+        let w = World::new();
+        let by = admin_proof(&w.admin("root").await);
+        let eve = owning_everything(&w, "eve", EVE_KEY).await;
+        let adam = owning_everything(&w, "adam", ADAM_KEY).await;
+        let eves: Vec<_> = w.sandboxes.list(&eve).await.unwrap();
+
+        w.engine.fail_deletes_after(Some(1));
+        assert!(matches!(
+            w.accounts.delete_user(&by, eve.id).await,
+            Err(Error::Internal { .. })
+        ));
+        assert!(matches!(
+            w.accounts.require_active(eve.id).await,
+            Err(Error::Forbidden)
+        ));
+        assert!(!w.access.authenticate("eve+dev", EVE_KEY).await.unwrap());
+        assert_eq!(w.sandboxes.list(&eve).await.unwrap().len(), 1);
+
+        w.engine.fail_deletes_after(None);
+        w.accounts.delete_user(&by, eve.id).await.unwrap();
+        owns_nothing(&w, &eve).await;
+        for view in &eves {
+            assert!(matches!(
+                w.engine.status(&view.sandbox.id).await,
+                Err(Error::NotFound(_))
+            ));
+        }
+        assert!(!accounts(&w, &by).await.contains(&"eve".to_owned()));
+        assert!(matches!(
+            w.accounts.delete_user(&by, eve.id).await,
+            Err(Error::NotFound(_))
+        ));
+
+        assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 2);
+        assert_eq!(w.keys.list(&adam).await.unwrap().len(), 1);
+        assert_eq!(w.credentials.names(adam.id).await.unwrap().len(), 1);
+        assert!(w.accounts.require_active(adam.id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn deleting_an_account_deletes_its_user_and_frees_the_username() {
+        let w = World::new();
+        let by = admin_proof(&w.admin("root").await);
+        let eve = owning_everything(&w, "eve", EVE_KEY).await;
+
+        w.accounts
+            .delete_account(&by, PROVIDER, "eve")
+            .await
+            .unwrap();
+        owns_nothing(&w, &eve).await;
+        assert!(!accounts(&w, &by).await.contains(&"eve".to_owned()));
+        assert!(matches!(
+            w.accounts.delete_account(&by, PROVIDER, "eve").await,
+            Err(Error::NotFound(_))
+        ));
+
+        let again = owning_everything(&w, "eve", EVE_KEY).await;
+        assert_ne!(again.id, eve.id);
+        assert_eq!(again.handle, eve.handle);
+        assert!(w.access.authenticate("eve+main", EVE_KEY).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_account_that_never_logged_in_is_only_removed_from_its_provider() {
         let w = World::new();
         let by = admin_proof(&w.admin("root").await);
         w.accounts
             .create_account(
                 &by,
                 PROVIDER,
-                &Handle::parse("eve").unwrap(),
+                &Handle::parse("never").unwrap(),
                 password("p"),
                 Role::Member,
             )
             .await
             .unwrap();
-        let eve = w.member("eve").await;
-
+        let before = w.users.list().await.unwrap();
         w.accounts
-            .delete_account(&by, PROVIDER, "eve")
+            .delete_account(&by, PROVIDER, "never")
             .await
             .unwrap();
-        assert!(matches!(
-            w.accounts.require_active(eve.id).await,
-            Err(Error::Forbidden)
-        ));
-        assert!(matches!(
-            w.accounts.delete_account(&by, PROVIDER, "eve").await,
-            Err(Error::NotFound(_))
-        ));
-        assert_eq!(
-            w.accounts.managed_accounts(&by, PROVIDER).await.unwrap(),
-            []
-        );
+        assert!(!accounts(&w, &by).await.contains(&"never".to_owned()));
+        assert_eq!(w.users.list().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn users_delete_themselves() {
+        let w = World::new();
+        let by = admin_proof(&w.admin("root").await);
+        let eve = owning_everything(&w, "eve", EVE_KEY).await;
+        w.accounts.delete_self(eve.clone()).await.unwrap();
+        owns_nothing(&w, &eve).await;
+        assert!(!accounts(&w, &by).await.contains(&"eve".to_owned()));
     }
 }

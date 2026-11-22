@@ -12,7 +12,7 @@ use cookie::{Cookie, SameSite};
 use corral_api::{Api, Key, Providers, SshEndpoint, router};
 use corral_core::app::Credentials;
 use corral_core::domain::{CredentialName, Handle, Role, UserId};
-use corral_core::fakes::{ADAM_KEY, FakeEngine, MAX_SANDBOXES, World};
+use corral_core::fakes::{ADAM_KEY, EngineCall, FakeEngine, MAX_SANDBOXES, World};
 use corral_core::ports::{
     Answer, Challenge, CredentialMap, Identity, IdentityProvider, ManagedAccounts, Method,
     PendingLogin, SecretStore,
@@ -108,6 +108,10 @@ impl SecretStore for BrokenVault {
 
     async fn remove(&self, _: UserId, _: &CredentialName) -> Result<bool> {
         Ok(false)
+    }
+
+    async fn remove_all(&self, _: UserId) -> Result<()> {
+        Ok(())
     }
 
     async fn names(&self, _: UserId) -> Result<Vec<CredentialName>> {
@@ -657,6 +661,7 @@ async fn oidc_callback_refusals_are_403_and_end_the_login() {
 
 const API_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/me"),
+    ("DELETE", "/api/me"),
     ("GET", "/api/catalog"),
     ("GET", "/api/sandboxes"),
     ("POST", "/api/sandboxes"),
@@ -676,6 +681,11 @@ const API_ROUTES: &[(&str, &str)] = &[
 
 const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("GET", "/api/admin/users", None),
+    (
+        "DELETE",
+        "/api/admin/users/00000000-0000-0000-0000-000000000000",
+        None,
+    ),
     (
         "POST",
         "/api/admin/users/00000000-0000-0000-0000-000000000000/enable",
@@ -972,8 +982,114 @@ async fn admins_manage_users_provider_accounts_and_all_sandboxes() {
             .sign_in("eve", "a newcomer's password")
             .await
             .status,
+        StatusCode::OK
+    );
+    assert_eq!(newcomer.get("/api/me").await.json()["handle"], "eve");
+}
+
+fn user_id(users: &Value, handle: &str) -> String {
+    users
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|user| user["handle"] == handle)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn owning_everything(corral: &Corral, handle: &str) -> Browser {
+    let mut browser = corral.signed_in(handle, Role::Member).await;
+    let created = browser
+        .post("/api/sandboxes", json!({ "name": "main" }))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+    let key = browser
+        .post(
+            "/api/keys",
+            json!({ "label": "laptop", "publicKey": ADAM_KEY }),
+        )
+        .await;
+    assert_eq!(key.status, StatusCode::CREATED, "{}", key.text());
+    let credential = browser
+        .call(
+            "PUT",
+            "/api/credentials/GH_TOKEN",
+            Some(json!({ "value": "gh-secret" })),
+        )
+        .await;
+    assert_eq!(credential.status, StatusCode::NO_CONTENT);
+    browser
+}
+
+async fn owns_nothing_after_signing_up_again(corral: &Corral, root: &mut Browser, handle: &str) {
+    let reused = root
+        .post(
+            "/api/admin/providers/local/accounts",
+            json!({ "username": handle, "password": PASSWORD, "role": "member" }),
+        )
+        .await;
+    assert_eq!(reused.status, StatusCode::CREATED, "{}", reused.text());
+    let mut again = corral.browser_at("192.0.2.99:1000");
+    assert_eq!(again.sign_in(handle, PASSWORD).await.status, StatusCode::OK);
+    for listing in ["/api/sandboxes", "/api/keys", "/api/credentials"] {
+        assert_eq!(again.get(listing).await.json(), json!([]), "{listing}");
+    }
+}
+
+#[tokio::test]
+async fn admins_delete_users_with_everything_they_own() {
+    let corral = Corral::new().await;
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut adam = owning_everything(&corral, "adam").await;
+    let adam_id = user_id(&root.get("/api/admin/users").await.json(), "adam");
+
+    let deleted = root
+        .call("DELETE", &format!("/api/admin/users/{adam_id}"), None)
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
+    assert_eq!(adam.get("/api/me").await.status, StatusCode::FORBIDDEN);
+    let users = root.get("/api/admin/users").await.json();
+    assert!(!users.to_string().contains("adam"), "{users}");
+    assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
+    let accounts = root.get("/api/admin/providers/local/accounts").await.json();
+    assert!(!accounts.to_string().contains("adam"), "{accounts}");
+    let engine_deletes = corral
+        .engine
+        .calls()
+        .into_iter()
+        .filter(|call| matches!(call, EngineCall::Delete(_)))
+        .count();
+    assert_eq!(engine_deletes, 1);
+    assert_eq!(
+        root.call("DELETE", &format!("/api/admin/users/{adam_id}"), None)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    owns_nothing_after_signing_up_again(&corral, &mut root, "adam").await;
+}
+
+#[tokio::test]
+async fn users_delete_themselves() {
+    let corral = Corral::new().await;
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut adam = owning_everything(&corral, "adam").await;
+
+    let deleted = adam.call("DELETE", "/api/me", None).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
+    assert_eq!(adam.get("/api/me").await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        adam.sign_in("adam", PASSWORD).await.status,
         StatusCode::FORBIDDEN
     );
+    let users = root.get("/api/admin/users").await.json();
+    assert!(!users.to_string().contains("adam"), "{users}");
+    assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
+
+    owns_nothing_after_signing_up_again(&corral, &mut root, "adam").await;
 }
 
 #[tokio::test]

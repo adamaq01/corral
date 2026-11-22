@@ -55,7 +55,13 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     );
     let access = SshAccess::new(store.clone(), store.clone(), sandboxes.clone());
     let api = Api {
-        accounts: Accounts::new(store.clone(), providers.clone()),
+        accounts: Accounts::new(
+            store.clone(),
+            store.clone(),
+            sandboxes.clone(),
+            credentials.clone(),
+            providers.clone(),
+        ),
         keys: Keys::new(store.clone()),
         credentials,
         sandboxes,

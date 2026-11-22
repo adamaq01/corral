@@ -88,6 +88,13 @@ impl UserRepo for MemoryUserRepo {
     async fn list(&self) -> Result<Vec<User>> {
         Ok(oldest_first(&self.users, |_| true, |u| u.created_at))
     }
+
+    async fn delete(&self, id: UserId) -> Result<bool> {
+        let mut users = lock(&self.users);
+        let before = users.len();
+        users.retain(|u| u.id != id);
+        Ok(users.len() < before)
+    }
 }
 
 #[async_trait]

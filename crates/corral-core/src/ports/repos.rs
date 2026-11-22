@@ -12,6 +12,8 @@ pub trait UserRepo: Send + Sync {
     async fn insert(&self, user: &User) -> Result<()>;
     async fn update(&self, user: &User) -> Result<()>;
     async fn list(&self) -> Result<Vec<User>>;
+    /// Whether the user existed.
+    async fn delete(&self, id: UserId) -> Result<bool>;
 }
 
 #[async_trait]

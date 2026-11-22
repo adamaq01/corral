@@ -413,12 +413,35 @@ ok "a wake past the deadline: /config answers 503 in ${answered}s, ssh gets in o
 
 api adam POST "api/admin/users/$bob_id/enable" >/dev/null
 login bob "$bob_password"
-api bob DELETE api/sandboxes/main >/dev/null
+api bob PUT api/credentials/BOB_TOKEN '{"value":"bob-secret"}' >/dev/null
+expect "bob's sandboxes, keys and credentials" "1 1 1" "$(for listing in sandboxes keys credentials; do
+  api bob GET "api/$listing" | jq length; done | xargs)"
+api adam DELETE "api/admin/users/$bob_id" >/dev/null
+expect "bob's containers after deleting bob" "" \
+  "$(docker ps --all --quiet --filter "network=$sandbox_network" --filter label=corral.adamaq01.fr/owner=bob)"
+if docker volume inspect "$bob_home" >/dev/null 2>&1; then
+  fail "$bob_home survived deleting bob"
+fi
+refused bob bob+main
+expect "deleted bob's GET /api/me" 403 "$(http_status bob GET api/me)"
+expect "bob in the user list" "" "$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')"
+ok "deleting bob removed his container and home, and his key is refused over SSH"
+
+api adam POST api/admin/providers/local/accounts \
+  "$(jq -cn --arg p "$bob_password" '{username: "bob", password: $p, role: "member"}')" >/dev/null
+login bob "$bob_password"
+expect "the new bob's sandboxes, keys and credentials" "0 0 0" "$(for listing in sandboxes keys credentials; do
+  api bob GET "api/$listing" | jq length; done | xargs)"
+new_bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
+[[ -n "$new_bob_id" && "$new_bob_id" != "$bob_id" ]] || fail "the new bob reused id [$new_bob_id]"
+refused bob bob+main
+ok "recreating the local account bob gives a new, empty user"
+
 api adam DELETE api/sandboxes/main >/dev/null
 api adam DELETE api/sandboxes/idle >/dev/null
 expect "sandbox containers after the deletes" "" \
   "$(docker ps --all --quiet --filter "network=$sandbox_network" --filter label=app.kubernetes.io/managed-by=corral)"
-for volume in "$adam_home" "$bob_home" "$idle_home"; do
+for volume in "$adam_home" "$idle_home"; do
   if docker volume inspect "$volume" >/dev/null 2>&1; then
     fail "$volume survived its sandbox's delete"
   fi

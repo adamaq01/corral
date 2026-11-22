@@ -30,6 +30,11 @@ impl SecretStore for MemorySecretStore {
             .is_some_and(|env| env.remove(name).is_some()))
     }
 
+    async fn remove_all(&self, user: UserId) -> Result<()> {
+        lock(&self.values).remove(&user);
+        Ok(())
+    }
+
     async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
         Ok(self.load(user).await?.into_keys().collect())
     }

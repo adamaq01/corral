@@ -16,6 +16,7 @@ pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dy
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
+    deleting_a_user_leaves_nothing_of_them(users, keys, sandboxes).await;
 }
 
 async fn user_repo(repo: &dyn UserRepo) {
@@ -279,6 +280,71 @@ async fn sandbox_limit_holds_under_concurrent_inserts(
     }
     assert_eq!((admitted, refused), (MAX, 3 * MAX));
     assert_eq!(sandboxes.list(adam.id).await.unwrap().len(), MAX);
+}
+
+/// Deletes the way `Accounts` does, sandboxes and keys before the user, and returns the user.
+pub async fn deleting_a_user_leaves_nothing_of_them(
+    users: &dyn UserRepo,
+    keys: &dyn KeyRepo,
+    sandboxes: &dyn SandboxRepo,
+) -> User {
+    let gone = seed_user(users, "gone").await;
+    let kept = seed_user(users, "kept").await;
+    let key = new_key(gone.id, 1);
+    keys.insert(&key).await.expect("insert key");
+    keys.insert(&new_key(kept.id, 1)).await.expect("insert key");
+    let theirs = [
+        new_sandbox(gone.id, "main", 1),
+        new_sandbox(gone.id, "dev", 2),
+    ];
+    for sandbox in &theirs {
+        sandboxes.insert(sandbox, 5).await.expect("insert sandbox");
+    }
+    sandboxes
+        .insert(&new_sandbox(kept.id, "main", 1), 5)
+        .await
+        .expect("insert sandbox");
+    sandboxes
+        .set_default(gone.id, &theirs[1].id)
+        .await
+        .expect("set default");
+
+    for sandbox in &theirs {
+        assert!(sandboxes.delete(gone.id, &sandbox.name).await.unwrap());
+    }
+    assert!(keys.delete(gone.id, key.id).await.unwrap());
+    assert!(users.delete(gone.id).await.unwrap());
+    assert!(!users.delete(gone.id).await.unwrap());
+
+    assert_eq!(users.get(gone.id).await.unwrap(), None);
+    assert_eq!(users.by_subject(&gone.subject).await.unwrap(), None);
+    assert_eq!(users.by_handle(&gone.handle).await.unwrap(), None);
+    assert!(!users.list().await.unwrap().contains(&gone));
+    assert_eq!(keys.list(gone.id).await.unwrap(), []);
+    assert_eq!(keys.by_public_key(&key.public_key).await.unwrap(), None);
+    assert_eq!(sandboxes.list(gone.id).await.unwrap(), []);
+    assert_eq!(sandboxes.default_id(gone.id).await.unwrap(), None);
+    assert_eq!(users.get(kept.id).await.unwrap(), Some(kept.clone()));
+    assert_eq!(keys.list(kept.id).await.unwrap().len(), 1);
+    assert_eq!(sandboxes.list(kept.id).await.unwrap().len(), 1);
+
+    let again = User {
+        id: UserId(Uuid::new_v4()),
+        ..gone.clone()
+    };
+    users
+        .insert(&again)
+        .await
+        .expect("reuse the subject and handle");
+    keys.insert(&SshKey {
+        id: Uuid::new_v4(),
+        user_id: again.id,
+        ..key
+    })
+    .await
+    .expect("reuse the key");
+    assert_eq!(sandboxes.list(again.id).await.unwrap(), []);
+    gone
 }
 
 fn handle(value: &str) -> Handle {

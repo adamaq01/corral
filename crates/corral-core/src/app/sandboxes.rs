@@ -150,6 +150,14 @@ impl Sandboxes {
         Ok(())
     }
 
+    pub(crate) async fn delete_all(&self, owner: UserId) -> Result<()> {
+        for sandbox in self.repo.list(owner).await? {
+            self.engine.delete(&sandbox.id).await?;
+            self.repo.delete(owner, &sandbox.name).await?;
+        }
+        Ok(())
+    }
+
     pub async fn wake(&self, owner: &User, name: &SandboxName) -> Result<Readiness> {
         let sandbox = self.find(owner, name).await?;
         self.start(&sandbox).await

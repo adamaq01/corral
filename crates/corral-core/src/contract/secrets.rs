@@ -14,6 +14,7 @@ pub async fn secret_store(store: &dyn SecretStore) {
     names_list_in_byte_order(store).await;
     remove_reports_whether_it_existed(store).await;
     users_are_isolated(store).await;
+    remove_all_clears_only_that_user(store).await;
 }
 
 async fn values_round_trip(store: &dyn SecretStore) {
@@ -94,4 +95,29 @@ async fn users_are_isolated(store: &dyn SecretStore) {
     let stranger = user();
     assert_eq!(store.names(stranger).await.unwrap(), []);
     assert!(store.load(stranger).await.unwrap().is_empty());
+}
+
+async fn remove_all_clears_only_that_user(store: &dyn SecretStore) {
+    let (adam, eve) = (user(), user());
+    for (owner, name) in [(adam, "A_KEY"), (adam, "B_KEY"), (eve, "A_KEY")] {
+        store
+            .set(owner, &credential(name), SecretString::from("x"))
+            .await
+            .expect("set");
+    }
+    store.remove_all(adam).await.expect("remove all");
+    assert_eq!(store.names(adam).await.unwrap(), []);
+    assert!(store.load(adam).await.unwrap().is_empty());
+    assert_eq!(exposed(&store.load(eve).await.unwrap()), ["A_KEY=x"]);
+    store.remove_all(adam).await.expect("remove all again");
+    store
+        .remove_all(user())
+        .await
+        .expect("remove all of a stranger");
+
+    store
+        .set(adam, &credential("C_KEY"), SecretString::from("fresh"))
+        .await
+        .expect("set after remove all");
+    assert_eq!(exposed(&store.load(adam).await.unwrap()), ["C_KEY=fresh"]);
 }

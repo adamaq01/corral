@@ -89,6 +89,15 @@ impl SecretStore for OpenBaoStore {
         self.update(user, |env| env.remove(name).is_some()).await
     }
 
+    async fn remove_all(&self, user: UserId) -> Result<()> {
+        let client = self.session.client().await?;
+        match kv2::delete_metadata(&*client, &self.mount, &self.path(user)).await {
+            Ok(()) => Ok(()),
+            Err(err) if status(&err) == Some(404) => Ok(()),
+            Err(err) => Err(openbao_error("delete", err)),
+        }
+    }
+
     async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
         Ok(self.load(user).await?.into_keys().collect())
     }

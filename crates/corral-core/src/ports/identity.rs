@@ -24,6 +24,12 @@ pub fn user_subject(provider: &str, subject: &str) -> String {
     format!("{provider}:{subject}")
 }
 
+/// The provider id and the provider's own subject that `user_subject` joined.
+#[must_use]
+pub fn split_user_subject(subject: &str) -> Option<(&str, &str)> {
+    subject.split_once(':')
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Method {

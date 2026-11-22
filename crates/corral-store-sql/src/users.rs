@@ -135,4 +135,16 @@ impl UserRepo for Store {
         .map_err(db_error)?;
         rows.into_iter().map(User::try_from).collect()
     }
+
+    async fn delete(&self, id: UserId) -> Result<bool> {
+        let deleted = on_pool!(self.pool, |pool| {
+            sqlx::query("delete from users where id = $1")
+                .bind(id.0)
+                .execute(pool)
+                .await
+                .map(|done| done.rows_affected())
+        })
+        .map_err(db_error)?;
+        Ok(deleted > 0)
+    }
 }
