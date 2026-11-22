@@ -24,7 +24,7 @@ impl SealedStore {
         let plaintext = open(&self.keyring, &aad(user, name), &Sealed::from_bytes(blob)?)?;
         String::from_utf8(plaintext)
             .map(SecretString::from)
-            .map_err(|_| Error::Secrets("sealed value is not UTF-8".into()))
+            .map_err(|_| Error::internal("sealed value", "not UTF-8"))
     }
 }
 
@@ -53,8 +53,8 @@ impl SecretStore for SealedStore {
             .into_iter()
             .map(|(name, blob)| match self.unseal(user, &name, &blob) {
                 Ok(value) => Ok((name, value)),
-                Err(Error::Secrets(reason)) => {
-                    Err(Error::Secrets(format!("credential {name}: {reason}")))
+                Err(error @ Error::Internal { .. }) => {
+                    Err(Error::internal(format!("credential {name}"), error))
                 }
                 Err(other) => Err(other),
             })

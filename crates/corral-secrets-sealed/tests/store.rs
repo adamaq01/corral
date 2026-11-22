@@ -80,7 +80,10 @@ async fn a_blob_moved_to_another_owner_or_name_does_not_open() {
 
     for owner in [adam, eve] {
         match store.load_all(owner).await {
-            Err(Error::Secrets(message)) => assert!(!message.contains("adam-secret"), "{message}"),
+            Err(error @ Error::Internal { .. }) => {
+                let message = error.to_string();
+                assert!(!message.contains("adam-secret"), "{message}");
+            }
             other => panic!("expected a secrets error, got {other:?}"),
         }
     }
@@ -115,7 +118,8 @@ async fn a_rotated_keyring_opens_old_values_and_seals_with_the_new_key() {
     assert_eq!(versions, [("NEW".to_owned(), 2), ("OLD".to_owned(), 1)]);
 
     match store(&blobs, keys(&[(1, 1)])).load_all(adam).await {
-        Err(Error::Secrets(message)) => {
+        Err(error @ Error::Internal { .. }) => {
+            let message = error.to_string();
             assert!(
                 message.contains("NEW") && message.contains("key version 2"),
                 "{message}"

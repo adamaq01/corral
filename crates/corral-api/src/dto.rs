@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxView, SshEndpoint};
 use corral_core::domain::{
-    CredentialName, Handle, LocalAccount, SandboxName, SandboxState, SshKey, SshUsername, User,
+    CredentialName, Handle, LocalAccount, Role, SandboxName, SandboxStatus, SshKey, SshUsername,
+    User,
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -42,7 +43,7 @@ pub(crate) struct CredentialValue {
 pub(crate) struct NewLocalAccount {
     pub username: String,
     pub password: SecretString,
-    pub role: String,
+    pub role: Role,
 }
 
 #[derive(Deserialize)]
@@ -60,7 +61,7 @@ pub(crate) struct Methods {
 pub(crate) struct Me {
     handle: Handle,
     email: Option<String>,
-    role: &'static str,
+    role: Role,
 }
 
 impl From<&User> for Me {
@@ -68,7 +69,7 @@ impl From<&User> for Me {
         Self {
             handle: user.handle.clone(),
             email: user.email.clone(),
-            role: user.role.as_str(),
+            role: user.role,
         }
     }
 }
@@ -142,8 +143,8 @@ pub(crate) struct SandboxDto {
     image: String,
     size: String,
     is_default: bool,
-    state: &'static str,
-    detail: Option<String>,
+    #[serde(flatten)]
+    status: SandboxStatus,
     ssh: SandboxSsh,
 }
 
@@ -162,20 +163,8 @@ impl SandboxDto {
             image: sandbox.image,
             size: sandbox.size,
             is_default: sandbox.is_default,
-            state: state_name(status.state),
-            detail: status.detail,
+            status,
         }
-    }
-}
-
-fn state_name(state: SandboxState) -> &'static str {
-    match state {
-        SandboxState::Starting => "starting",
-        SandboxState::Running => "running",
-        SandboxState::Sleeping => "sleeping",
-        SandboxState::Stopped => "stopped",
-        SandboxState::Failed => "failed",
-        SandboxState::Deleting => "deleting",
     }
 }
 
@@ -215,8 +204,8 @@ impl From<SshKey> for KeyDto {
         Self {
             id: key.id,
             label: key.label,
-            public_key: key.public_key,
-            fingerprint: key.fingerprint,
+            fingerprint: key.public_key.fingerprint().to_owned(),
+            public_key: key.public_key.as_str().to_owned(),
             created_at: key.created_at,
         }
     }
@@ -239,7 +228,7 @@ pub(crate) struct UserDto {
     id: Uuid,
     handle: Handle,
     email: Option<String>,
-    role: &'static str,
+    role: Role,
     enabled: bool,
     created_at: DateTime<Utc>,
 }
@@ -248,7 +237,7 @@ impl From<User> for UserDto {
     fn from(user: User) -> Self {
         Self {
             id: user.id.0,
-            role: user.role.as_str(),
+            role: user.role,
             handle: user.handle,
             email: user.email,
             enabled: user.enabled,
@@ -261,7 +250,7 @@ impl From<User> for UserDto {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LocalAccountDto {
     username: Handle,
-    role: &'static str,
+    role: Role,
     created_at: DateTime<Utc>,
 }
 
@@ -269,7 +258,7 @@ impl From<LocalAccount> for LocalAccountDto {
     fn from(account: LocalAccount) -> Self {
         Self {
             username: account.username,
-            role: account.role.as_str(),
+            role: account.role,
             created_at: account.created_at,
         }
     }

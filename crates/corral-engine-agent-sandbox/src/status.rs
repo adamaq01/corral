@@ -1,4 +1,4 @@
-use corral_core::domain::{SandboxState, SandboxStatus};
+use corral_core::domain::SandboxStatus;
 use k8s_openapi::api::core::v1::Pod;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
 
@@ -14,27 +14,25 @@ const FAILED_REASONS: [&str; 4] = [
 
 #[must_use]
 pub fn map(sandbox: &Sandbox, pod: Option<&Pod>) -> SandboxStatus {
-    let ready = current_condition(sandbox, READY);
-    let state = if sandbox.metadata.deletion_timestamp.is_some() {
-        SandboxState::Deleting
-    } else if sandbox.spec.operating_mode == OperatingMode::Suspended {
-        SandboxState::Sleeping
-    } else {
-        match ready {
-            Some(condition) if FAILED_REASONS.contains(&condition.reason.as_str()) => {
-                SandboxState::Failed
-            }
-            Some(condition) if condition.status == "True" && is_live(sandbox, pod) => {
-                SandboxState::Running
-            }
-            _ => SandboxState::Starting,
+    if sandbox.metadata.deletion_timestamp.is_some() {
+        return SandboxStatus::Deleting;
+    }
+    if sandbox.spec.operating_mode == OperatingMode::Suspended {
+        return SandboxStatus::Sleeping;
+    }
+    match current_condition(sandbox, READY) {
+        Some(condition) if FAILED_REASONS.contains(&condition.reason.as_str()) => {
+            let detail = if condition.message.is_empty() {
+                &condition.reason
+            } else {
+                &condition.message
+            };
+            SandboxStatus::Failed(detail.clone())
         }
-    };
-    SandboxStatus {
-        state,
-        detail: ready
-            .map(|condition| condition.message.clone())
-            .filter(|message| !message.is_empty()),
+        Some(condition) if condition.status == "True" && is_live(sandbox, pod) => {
+            SandboxStatus::Running
+        }
+        _ => SandboxStatus::Starting,
     }
 }
 
@@ -61,7 +59,7 @@ fn is_live(sandbox: &Sandbox, pod: Option<&Pod>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use corral_core::domain::SandboxState;
+    use corral_core::domain::SandboxStatus;
     use k8s_openapi::api::core::v1::Pod;
     use serde_json::{Value, json};
 
@@ -125,79 +123,80 @@ mod tests {
                 "deletion timestamp",
                 deleting,
                 Some(pod(UID)),
-                SandboxState::Deleting,
+                SandboxStatus::Deleting,
             ),
             (
                 "suspended",
                 sandbox("Suspended", 2, Some(("False", "SandboxSuspended", 2))),
                 None,
-                SandboxState::Sleeping,
+                SandboxStatus::Sleeping,
             ),
             (
                 "suspend not yet observed",
                 sandbox("Suspended", 2, Some(("True", "DependenciesReady", 1))),
                 Some(pod(UID)),
-                SandboxState::Sleeping,
+                SandboxStatus::Sleeping,
             ),
-            ("ready", ready(), Some(pod(UID)), SandboxState::Running),
+            ("ready", ready(), Some(pod(UID)), SandboxStatus::Running),
             (
                 "ready but pod terminating",
                 ready(),
                 Some(terminating),
-                SandboxState::Starting,
+                SandboxStatus::Starting,
             ),
-            ("ready but pod gone", ready(), None, SandboxState::Starting),
+            ("ready but pod gone", ready(), None, SandboxStatus::Starting),
             (
                 "ready but pod owned by another object",
                 ready(),
                 Some(pod("6f1c7a8e-0000-4000-8000-000000000002")),
-                SandboxState::Starting,
+                SandboxStatus::Starting,
             ),
             (
                 "pod failed",
                 sandbox("Running", 1, Some(("False", "PodFailed", 1))),
                 Some(pod(UID)),
-                SandboxState::Failed,
+                SandboxStatus::Failed("PodFailed message".to_owned()),
             ),
             (
                 "invalid configuration",
                 sandbox("Running", 1, Some(("False", "InvalidConfiguration", 1))),
                 None,
-                SandboxState::Failed,
+                SandboxStatus::Failed("InvalidConfiguration message".to_owned()),
             ),
             (
                 "pod not ready yet",
                 sandbox("Running", 1, Some(("False", "DependenciesNotReady", 1))),
                 Some(pod(UID)),
-                SandboxState::Starting,
+                SandboxStatus::Starting,
             ),
             (
                 "resume not yet observed",
                 sandbox("Running", 3, Some(("True", "DependenciesReady", 2))),
                 Some(pod(UID)),
-                SandboxState::Starting,
+                SandboxStatus::Starting,
             ),
             (
                 "no status yet",
                 sandbox("Running", 1, None),
                 None,
-                SandboxState::Starting,
+                SandboxStatus::Starting,
             ),
         ];
         for (case, sandbox, pod, expected) in cases {
             let sandbox: Sandbox = serde_json::from_value(sandbox).unwrap();
             let pod: Option<Pod> = pod.map(|pod| serde_json::from_value(pod).unwrap());
-            assert_eq!(map(&sandbox, pod.as_ref()).state, expected, "{case}");
+            assert_eq!(map(&sandbox, pod.as_ref()), expected, "{case}");
         }
     }
 
     #[test]
-    fn detail_is_the_current_ready_message() {
-        let waiting = sandbox("Running", 1, Some(("False", "DependenciesNotReady", 1)));
-        let sandbox: Sandbox = serde_json::from_value(waiting).unwrap();
+    fn a_failure_without_a_message_reports_its_reason() {
+        let mut failed = sandbox("Running", 1, Some(("False", "PodFailed", 1)));
+        failed["status"]["conditions"][0]["message"] = json!("");
+        let sandbox: Sandbox = serde_json::from_value(failed).unwrap();
         assert_eq!(
-            map(&sandbox, None).detail.as_deref(),
-            Some("DependenciesNotReady message")
+            map(&sandbox, None),
+            SandboxStatus::Failed("PodFailed".to_owned())
         );
     }
 }

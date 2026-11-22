@@ -69,8 +69,9 @@ struct BrokenVault;
 #[async_trait]
 impl SecretStore for BrokenVault {
     async fn put(&self, _: UserId, _: &CredentialName, _: SecretString) -> Result<()> {
-        Err(Error::Secrets(
-            "vault at 10.9.8.7 refused token s.internal".to_owned(),
+        Err(Error::internal(
+            "vault",
+            "vault at 10.9.8.7 refused token s.internal",
         ))
     }
 
@@ -711,7 +712,6 @@ async fn create_then_list_shows_the_ssh_username() {
         "size": "small",
         "isDefault": true,
         "state": "running",
-        "detail": null,
         "ssh": { "username": "adam+main", "host": "corral.example.com", "port": 48291 },
     });
     assert_eq!(created.json(), expected);

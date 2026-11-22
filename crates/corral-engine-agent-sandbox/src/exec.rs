@@ -19,7 +19,7 @@ pub async fn run(pods: &Api<Pod>, pod: &str, argv: &[&str]) -> Result<(i32, Stri
         reader
             .read_to_end(&mut stdout)
             .await
-            .map_err(|error| Error::Engine(format!("exec in {pod}: {error}")))?;
+            .map_err(|error| Error::internal(format!("exec in {pod}"), error))?;
     }
     let status = match process.take_status() {
         Some(status) => status.await,
@@ -28,9 +28,9 @@ pub async fn run(pods: &Api<Pod>, pod: &str, argv: &[&str]) -> Result<(i32, Stri
     process
         .join()
         .await
-        .map_err(|error| Error::Engine(format!("exec in {pod}: {error}")))?;
+        .map_err(|error| Error::internal(format!("exec in {pod}"), error))?;
     let code = exit_code(status.as_ref())
-        .map_err(|message| Error::Engine(format!("exec in {pod}: {message}")))?;
+        .map_err(|message| Error::internal(format!("exec in {pod}"), message))?;
     Ok((code, String::from_utf8_lossy(&stdout).into_owned()))
 }
 

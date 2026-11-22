@@ -1,7 +1,9 @@
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::Error;
 use corral_core::contract::repos;
-use corral_core::domain::{Handle, Role, Sandbox, SandboxId, SandboxName, SshKey, User, UserId};
+use corral_core::domain::{
+    Handle, Role, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
+};
 use corral_store_sqlite::SqliteStore;
 use sqlx::{Connection, SqliteConnection};
 use tempfile::TempDir;
@@ -82,13 +84,15 @@ async fn connect_creates_a_wal_database_that_enforces_foreign_keys() {
         id: Uuid::new_v4(),
         user_id: UserId(Uuid::new_v4()),
         label: "laptop".to_owned(),
-        public_key: "ssh-ed25519 AAAAorphan".to_owned(),
-        fingerprint: "SHA256:orphan".to_owned(),
+        public_key: SshPublicKey::parse(include_str!(
+            "../../corral-core/tests/fixtures/adam_ed25519.pub"
+        ))
+        .unwrap(),
         created_at: Utc::now(),
     };
     assert!(matches!(
         store.keys().insert(&orphan).await,
-        Err(Error::Store(_))
+        Err(Error::Internal { .. })
     ));
 
     SqliteStore::connect(&url(&dir))

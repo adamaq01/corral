@@ -19,7 +19,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::container::{self, Blueprint, MANAGED_BY, MANAGER};
-use crate::docker_error::{self, is_not_found};
+use crate::docker_error::is_not_found;
 use crate::docker_exec::DockerExec;
 use crate::host_key::HostKey;
 use crate::locks::{SandboxLock, SandboxLocks};
@@ -48,18 +48,20 @@ impl DockerEngine {
             ))
         })?;
         let docker = Docker::connect_with_defaults()
-            .map_err(|err| docker_error::engine("connect to Docker", &err))?;
+            .map_err(|err| Error::internal("connect to Docker", err))?;
         match docker.inspect_network(&config.network, None).await {
             Ok(_) => {}
             Err(err) if is_not_found(&err) => {
-                return Err(Error::Engine(format!(
-                    "Docker network {network:?} does not exist: create it with \
-                     `docker network create {network}` and attach only the SSH front door \
-                     to it, never Corral",
-                    network = config.network
-                )));
+                return Err(Error::internal(
+                    format!("Docker network {:?}", config.network),
+                    format!(
+                        "does not exist: create it with `docker network create {network}` and \
+                         attach only the SSH front door to it, never Corral",
+                        network = config.network
+                    ),
+                ));
             }
-            Err(err) => return Err(docker_error::engine("reach the Docker daemon", &err)),
+            Err(err) => return Err(Error::internal("reach the Docker daemon", err)),
         }
         Ok(Self {
             docker,
@@ -81,7 +83,7 @@ impl DockerEngine {
         self.docker
             .list_containers(Some(options))
             .await
-            .map_err(|err| docker_error::engine("list running sandboxes", &err))
+            .map_err(|err| Error::internal("list running sandboxes", err))
     }
 
     pub(crate) async fn stop_container(&self, id: &SandboxId) -> Result<()> {
@@ -89,7 +91,7 @@ impl DockerEngine {
         self.docker
             .stop_container(&name, None)
             .await
-            .map_err(|err| docker_error::engine(&format!("stop {name}"), &err))
+            .map_err(|err| Error::internal(format!("stop {name}"), err))
     }
 
     async fn observe(&self, id: &SandboxId) -> Result<SandboxStatus> {
@@ -104,7 +106,7 @@ impl DockerEngine {
         match self.docker.inspect_container(name, None).await {
             Ok(found) => Ok(Some(found)),
             Err(err) if is_not_found(&err) => Ok(None),
-            Err(err) => Err(docker_error::engine(&format!("inspect {name}"), &err)),
+            Err(err) => Err(Error::internal(format!("inspect {name}"), err)),
         }
     }
 
@@ -139,7 +141,7 @@ impl DockerEngine {
         self.docker
             .create_volume(blueprint.volume())
             .await
-            .map_err(|err| docker_error::engine("create home volume", &err))?;
+            .map_err(|err| Error::internal("create home volume", err))?;
         let id = blueprint.id();
         self.create_container(
             &container::name(id),
@@ -158,7 +160,7 @@ impl DockerEngine {
             .create_container(Some(options), body)
             .await
             .map(drop)
-            .map_err(|err| docker_error::engine(&format!("create {name}"), &err))
+            .map_err(|err| Error::internal(format!("create {name}"), err))
     }
 
     // The new container is created before the old one is removed, so the sandbox's blueprint and
@@ -177,15 +179,13 @@ impl DockerEngine {
         self.docker
             .rename_container(from, options)
             .await
-            .map_err(|err| docker_error::engine(&format!("rename {from} to {to}"), &err))
+            .map_err(|err| Error::internal(format!("rename {from} to {to}"), err))
     }
 
     async fn remove_container(&self, name: &str) -> Result<()> {
         let options = RemoveContainerOptionsBuilder::default().force(true).build();
         match self.docker.remove_container(name, Some(options)).await {
-            Err(err) if !is_not_found(&err) => {
-                Err(docker_error::engine(&format!("remove {name}"), &err))
-            }
+            Err(err) if !is_not_found(&err) => Err(Error::internal(format!("remove {name}"), err)),
             _ => Ok(()),
         }
     }
@@ -195,7 +195,7 @@ impl DockerEngine {
         self.docker
             .start_container(&name, None)
             .await
-            .map_err(|err| docker_error::engine(&format!("start {name}"), &err))?;
+            .map_err(|err| Error::internal(format!("start {name}"), err))?;
         self.last_active.touch(id, Utc::now());
         Ok(())
     }
@@ -220,7 +220,7 @@ impl DockerEngine {
         let accepting = async {
             loop {
                 let probe = exec.run(&SSHD_ACCEPTS).await.map_err(|err| {
-                    Error::Engine(format!("check sshd in sandbox {}: {err}", id.0))
+                    Error::internal(format!("check sshd in sandbox {}", id.0), err)
                 })?;
                 if probe.code == 0 {
                     return Ok(());
@@ -306,10 +306,9 @@ impl SandboxEngine for DockerEngine {
             .remove_volume(&volume, None::<RemoveVolumeOptions>)
             .await
         {
-            Err(err) if !is_not_found(&err) => Err(docker_error::engine(
-                &format!("remove volume {volume}"),
-                &err,
-            )),
+            Err(err) if !is_not_found(&err) => {
+                Err(Error::internal(format!("remove volume {volume}"), err))
+            }
             _ => Ok(()),
         }
     }

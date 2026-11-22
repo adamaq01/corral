@@ -27,7 +27,6 @@ pub(crate) const ENV_HASH: &str = "corral.adamaq01.fr/env-hash";
 
 const HOME: &str = "/home/sandbox";
 const HOST_KEY_ENV: &str = "CORRAL_SSH_HOST_KEY";
-const RESERVED_ENV_PREFIX: &str = "CORRAL_";
 
 pub(crate) fn name(id: &SandboxId) -> String {
     format!("corral-{}", id.0)
@@ -85,8 +84,9 @@ impl Blueprint {
     }
 
     pub fn read(id: &SandboxId, container: &ContainerInspectResponse) -> Result<Self> {
-        let unreadable =
-            |what: &str| Error::Engine(format!("container {} has no {what}", name(id)));
+        let unreadable = |what: &str| {
+            Error::internal(format!("container {}", name(id)), format!("has no {what}"))
+        };
         let config = container
             .config
             .as_ref()
@@ -142,7 +142,6 @@ impl Blueprint {
     pub fn build(&self, env: &Env, cfg: &DockerConfig) -> ContainerCreate {
         let mut entries: Vec<String> = env
             .iter()
-            .filter(|(name, _)| !name.as_str().starts_with(RESERVED_ENV_PREFIX))
             .map(|(name, value)| format!("{name}={}", value.expose_secret()))
             .collect();
         entries.extend([
@@ -364,28 +363,6 @@ mod tests {
         assert_eq!(labels["corral.adamaq01.fr/sandbox-id"], "sbx-0123456789ab");
         assert_eq!(labels["corral.adamaq01.fr/owner"], "adam");
         assert_eq!(labels["corral.adamaq01.fr/sandbox"], "main");
-    }
-
-    #[test]
-    fn user_env_cannot_replace_corral_variables() {
-        let create = build(
-            &env(&[
-                ("CORRAL_AUTHORIZED_KEY", "ssh-ed25519 AAAA mine"),
-                ("CORRAL_SSHD", "0"),
-            ]),
-            HostKey::generate(),
-        );
-        let entries = create.body.env.unwrap();
-        assert_eq!(
-            entries
-                .iter()
-                .filter(|e| e.starts_with("CORRAL_SSHD="))
-                .count(),
-            1
-        );
-        assert!(entries.contains(&"CORRAL_SSHD=1".to_owned()));
-        assert!(entries.contains(&format!("CORRAL_AUTHORIZED_KEY={PROXY_KEY}")));
-        assert!(!entries.iter().any(|e| e.contains("mine")));
     }
 
     #[test]

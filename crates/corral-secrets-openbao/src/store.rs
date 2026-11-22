@@ -68,14 +68,15 @@ impl OpenBaoStore {
                 if env.is_empty() {
                     kv2::delete_metadata(&*client, &self.mount, &path)
                         .await
-                        .map_err(|err| openbao_error("metadata delete", &err))?;
+                        .map_err(|err| openbao_error("metadata delete", err))?;
                 }
                 return Ok(());
             }
         }
-        Err(Error::Secrets(format!(
-            "openbao secret {path} changed under each of {WRITE_ATTEMPTS} write attempts"
-        )))
+        Err(Error::internal(
+            format!("openbao secret {path}"),
+            format!("changed under each of {WRITE_ATTEMPTS} write attempts"),
+        ))
     }
 }
 
@@ -115,7 +116,7 @@ async fn read(
     match api::exec_with_result(client, request).await {
         Ok(secret) => parse_env(secret.data).map(Some),
         Err(err) if status(&err) == Some(404) => Ok(None),
-        Err(err) => Err(openbao_error("read", &err)),
+        Err(err) => Err(openbao_error("read", err)),
     }
 }
 
@@ -123,7 +124,7 @@ async fn current_version(client: &VaultClient, mount: &str, path: &str) -> Resul
     match kv2::read_metadata(client, mount, path).await {
         Ok(metadata) => Ok(metadata.current_version),
         Err(err) if status(&err) == Some(404) => Ok(0),
-        Err(err) => Err(openbao_error("metadata read", &err)),
+        Err(err) => Err(openbao_error("metadata read", err)),
     }
 }
 
@@ -135,9 +136,10 @@ async fn write(
     version: u64,
 ) -> Result<bool> {
     let cas = u32::try_from(version).map_err(|_| {
-        Error::Secrets(format!(
-            "openbao secret {path} is at version {version}, beyond check-and-set range"
-        ))
+        Error::internal(
+            format!("openbao secret {path}"),
+            format!("at version {version}, beyond check-and-set range"),
+        )
     })?;
     // Set before the write, which then drops the previous version; set later, it lingers.
     kv2::set_metadata(
@@ -147,7 +149,7 @@ async fn write(
         Some(SetSecretMetadataRequest::builder().max_versions(1_u64)),
     )
     .await
-    .map_err(|err| openbao_error("metadata write", &err))?;
+    .map_err(|err| openbao_error("metadata write", err))?;
     let data: BTreeMap<&str, &str> = env
         .iter()
         .map(|(name, value)| (name.as_str(), value.expose_secret()))
@@ -159,25 +161,29 @@ async fn write(
         {
             Ok(false)
         }
-        Err(err) => Err(openbao_error("write", &err)),
+        Err(err) => Err(openbao_error("write", err)),
     }
 }
 
 fn parse_env(data: Value) -> Result<Env> {
     let Value::Object(entries) = data else {
-        return Err(Error::Secrets("openbao secret data is not a map".into()));
+        return Err(Error::internal("openbao secret", "data is not a map"));
     };
     entries
         .into_iter()
         .map(|(key, value)| {
             let name = CredentialName::parse(&key).map_err(|_| {
-                Error::Secrets(format!("openbao key {key:?} is not a credential name"))
+                Error::internal(
+                    "openbao secret",
+                    format!("key {key:?} is not a credential name"),
+                )
             })?;
             match value {
                 Value::String(value) => Ok((name, SecretString::from(value))),
-                _ => Err(Error::Secrets(format!(
-                    "openbao value of {name} is not a string"
-                ))),
+                _ => Err(Error::internal(
+                    "openbao secret",
+                    format!("value of {name} is not a string"),
+                )),
             }
         })
         .collect()

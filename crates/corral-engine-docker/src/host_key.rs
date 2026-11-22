@@ -15,7 +15,7 @@ impl HostKey {
     pub fn from_openssh(private_key: &str) -> Result<Self> {
         PrivateKey::from_openssh(private_key)
             .map(Self)
-            .map_err(|err| Error::Engine(format!("unreadable sandbox host key: {err}")))
+            .map_err(|err| Error::internal("unreadable sandbox host key", err))
     }
 
     #[must_use]

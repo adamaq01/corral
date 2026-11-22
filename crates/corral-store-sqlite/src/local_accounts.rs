@@ -1,11 +1,11 @@
 use async_trait::async_trait;
-use corral_core::domain::{Handle, LocalAccount, Role};
+use corral_core::domain::{Handle, LocalAccount};
 use corral_core::ports::LocalAccountRepo;
 use corral_core::{Error, Result};
 use sqlx::Row;
 use sqlx::sqlite::{SqlitePool, SqliteRow};
 
-use crate::decode::parsed;
+use crate::decode::{from_text, parsed, text};
 use crate::error::db_error;
 
 pub(crate) struct LocalAccounts {
@@ -16,7 +16,7 @@ fn from_row(row: &SqliteRow) -> sqlx::Result<LocalAccount> {
     Ok(LocalAccount {
         username: parsed(row, "username", Handle::parse)?,
         password_hash: row.try_get("password_hash")?,
-        role: parsed(row, "role", Role::parse)?,
+        role: parsed(row, "role", from_text)?,
         created_at: row.try_get("created_at")?,
     })
 }
@@ -42,7 +42,7 @@ impl LocalAccountRepo for LocalAccounts {
         )
         .bind(account.username.as_str())
         .bind(&account.password_hash)
-        .bind(account.role.as_str())
+        .bind(text(&account.role))
         .bind(account.created_at)
         .execute(&self.pool)
         .await
@@ -56,7 +56,7 @@ impl LocalAccountRepo for LocalAccounts {
              where username = ?",
         )
         .bind(&account.password_hash)
-        .bind(account.role.as_str())
+        .bind(text(&account.role))
         .bind(account.created_at)
         .bind(account.username.as_str())
         .execute(&self.pool)

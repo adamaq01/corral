@@ -12,7 +12,7 @@ impl PasswordHasher for Argon2Hasher {
         Argon2::default()
             .hash_password(password.expose_secret().as_bytes())
             .map(|hash| hash.to_string())
-            .map_err(|err| Error::Identity(format!("password hashing failed: {err}")))
+            .map_err(|err| Error::internal("password hashing", err))
     }
 
     fn verify(&self, password: &SecretString, hash: &str) -> bool {

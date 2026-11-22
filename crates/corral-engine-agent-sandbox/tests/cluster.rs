@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use corral_core::Error;
-use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName, SandboxState};
+use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName, SandboxStatus};
 use corral_core::ports::{
     Env, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
 };
@@ -82,8 +82,8 @@ impl Cluster {
         pod.metadata.uid
     }
 
-    async fn state(&self, id: &SandboxId) -> SandboxState {
-        self.engine.status(id).await.unwrap().state
+    async fn state(&self, id: &SandboxId) -> SandboxStatus {
+        self.engine.status(id).await.unwrap()
     }
 
     async fn wake(&self, id: &SandboxId, pairs: &[(&str, &str)]) {
@@ -93,7 +93,7 @@ impl Cluster {
             .await
             .unwrap();
         assert_eq!(readiness, Readiness::Ready);
-        assert_eq!(self.state(id).await, SandboxState::Running);
+        assert_eq!(self.state(id).await, SandboxStatus::Running);
     }
 
     async fn last_active(&self, id: &SandboxId) -> DateTime<Utc> {
@@ -199,7 +199,7 @@ async fn sessions_run_as_the_sandbox_user_with_credentials(cluster: &Cluster, id
     assert_eq!(cluster.exec(id, &["test", "-x", agent]).await.0, 0);
     assert!(matches!(
         exec::run(&cluster.pods, &id.0, &["corral-no-such-command"]).await,
-        Err(Error::Engine(_))
+        Err(Error::Internal { .. })
     ));
     let via_shell = ["sh", "-c", "exec \"$@\"", "sh", "corral-no-such-command"];
     assert_eq!(cluster.exec(id, &via_shell).await.0, 127);
@@ -209,14 +209,14 @@ async fn sleep_keeps_home_and_wake_applies_new_env(cluster: &Cluster, id: &Sandb
     let marker = ["sh", "-c", "echo kept > /home/sandbox/corral-test-marker"];
     assert_eq!(cluster.exec(id, &marker).await.0, 0);
     cluster.engine.stop(id).await.unwrap();
-    assert_eq!(cluster.state(id).await, SandboxState::Sleeping);
+    assert_eq!(cluster.state(id).await, SandboxStatus::Sleeping);
     wait_until("pod removed by suspend", GONE_WITHIN, || async {
         cluster.pod_uid(id).await.is_none()
     })
     .await;
     assert!(matches!(
         cluster.engine.ssh_target(id).await,
-        Err(Error::Engine(_))
+        Err(Error::Internal { .. })
     ));
 
     cluster.wake(id, &[("FOO_TOKEN", "two")]).await;
@@ -249,7 +249,7 @@ async fn capacity_is_enforced(cluster: &Cluster) {
         .ensure_running(&second, Env::new(), Duration::from_secs(1))
         .await;
     cluster.engine.delete(&second).await.unwrap();
-    assert_eq!(state, SandboxState::Sleeping);
+    assert_eq!(state, SandboxStatus::Sleeping);
     assert!(matches!(woke, Err(Error::LimitReached(_))), "{woke:?}");
 }
 
@@ -299,15 +299,15 @@ async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
     let started = tokio::time::Instant::now();
     wait_until("the idle sandbox to sleep", ASLEEP_WITHIN, || async {
         for id in busy {
-            assert_eq!(cluster.state(id).await, SandboxState::Running, "{}", id.0);
+            assert_eq!(cluster.state(id).await, SandboxStatus::Running, "{}", id.0);
         }
-        cluster.state(&idle).await == SandboxState::Sleeping
+        cluster.state(&idle).await == SandboxStatus::Sleeping
     })
     .await;
     eprintln!("idle sandbox asleep after {:?}", started.elapsed());
     tokio::time::sleep(2 * LIFECYCLE_INTERVAL).await;
     for (id, before) in busy.into_iter().zip(last_active) {
-        assert_eq!(cluster.state(id).await, SandboxState::Running, "{}", id.0);
+        assert_eq!(cluster.state(id).await, SandboxStatus::Running, "{}", id.0);
         assert!(cluster.last_active(id).await > before, "{}", id.0);
     }
 

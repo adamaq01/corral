@@ -25,7 +25,7 @@ impl KeyVerifier for RegisteredKeyVerifier {
         };
         Ok(self
             .keys
-            .by_public_key(key.as_str())
+            .by_public_key(&key)
             .await?
             .is_some_and(|registered| registered.user_id == user.id))
     }

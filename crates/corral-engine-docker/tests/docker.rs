@@ -3,7 +3,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use corral_core::Error;
-use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName, SandboxState};
+use corral_core::domain::{CredentialName, Handle, SandboxId, SandboxName, SandboxStatus};
 use corral_core::ports::{
     Env, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
 };
@@ -232,8 +232,8 @@ impl Drop for Lab {
     }
 }
 
-async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxState {
-    engine.status(id).await.unwrap().state
+async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxStatus {
+    engine.status(id).await.unwrap()
 }
 
 async fn wake(engine: &DockerEngine, id: &SandboxId, token: &str) {
@@ -262,7 +262,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     );
 
     wake(&engine, &id, "one").await;
-    assert_eq!(state(&engine, &id).await, SandboxState::Running);
+    assert_eq!(state(&engine, &id).await, SandboxStatus::Running);
     let target = engine.ssh_target(&id).await.unwrap();
     let SshTarget::SshServer {
         host,
@@ -283,7 +283,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     lab.ssh(host, "echo kept > ~/persist-check");
 
     engine.stop(&id).await.unwrap();
-    assert_eq!(state(&engine, &id).await, SandboxState::Sleeping);
+    assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
     // Left behind by a replace that was interrupted before it removed the old container.
     docker_ok(&["create", "--name", &format!("{name}-next"), &image()]);
 
@@ -315,7 +315,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.stop(&id).await.unwrap();
     // A replace interrupted after it removed the old container leaves only the staged one.
     docker_ok(&["rename", &name, &format!("{name}-next")]);
-    assert_eq!(state(&engine, &id).await, SandboxState::Sleeping);
+    assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
     wake(&engine, &id, "three").await;
     assert_eq!(
         lab.ssh(host, "printenv FOO_TOKEN; cat ~/persist-check"),
@@ -387,7 +387,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     let shutdown = CancellationToken::new();
     let lifecycle = engine.spawn_lifecycle(Duration::from_secs(1), shutdown.clone());
     let started = Instant::now();
-    while state(&engine, &idle).await != SandboxState::Sleeping {
+    while state(&engine, &idle).await != SandboxStatus::Sleeping {
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "the idle sandbox never slept"
@@ -397,12 +397,12 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     tokio::time::sleep(timeout + Duration::from_secs(3)).await;
     assert_eq!(
         state(&engine, &ssh).await,
-        SandboxState::Running,
+        SandboxStatus::Running,
         "an SSH session keeps it awake"
     );
     assert_eq!(
         state(&engine, &herdr).await,
-        SandboxState::Running,
+        SandboxStatus::Running,
         "a Herdr terminal keeps it awake"
     );
 
@@ -433,7 +433,7 @@ async fn connect_refuses_a_missing_network_or_a_bad_key() {
     })
     .await;
     assert!(
-        matches!(&refused, Err(Error::Engine(message)) if message.contains(&missing)),
+        matches!(&refused, Err(error @ Error::Internal { .. }) if error.to_string().contains(&missing)),
         "{:?}",
         refused.err()
     );

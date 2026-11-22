@@ -3,17 +3,14 @@ use bollard::query_parameters::CreateImageOptionsBuilder;
 use corral_core::{Error, Result};
 use futures_util::TryStreamExt;
 
-use crate::docker_error::{self, is_not_found};
+use crate::docker_error::is_not_found;
 
 pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<()> {
     match docker.inspect_image(reference).await {
         Ok(_) => return Ok(()),
         Err(err) if is_not_found(&err) => {}
         Err(err) => {
-            return Err(docker_error::engine(
-                &format!("inspect image {reference}"),
-                &err,
-            ));
+            return Err(Error::internal(format!("inspect image {reference}"), err));
         }
     }
     let options = CreateImageOptionsBuilder::default()
@@ -23,7 +20,7 @@ pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<(
         .create_image(Some(options), None, None)
         .try_collect::<Vec<_>>()
         .await
-        .map_err(|err| Error::Engine(format!("pull image {reference}: {err}")))?;
+        .map_err(|err| Error::internal(format!("pull image {reference}"), err))?;
     Ok(())
 }
 

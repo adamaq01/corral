@@ -1,9 +1,11 @@
+use ssh_key::PublicKey;
+use ssh_key::public::{Ed25519PublicKey, KeyData};
 use uuid::Uuid;
 
 use super::{at, credential, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
-    Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey, User, UserId,
+    Handle, LocalAccount, Role, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
 };
 use crate::ports::{
     CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, SecretBlobRepo, UserRepo,
@@ -413,10 +415,16 @@ fn new_key(user_id: UserId, created: i64) -> SshKey {
         id,
         user_id,
         label: unique("laptop"),
-        public_key: format!("ssh-ed25519 AAAA{}", id.simple()),
-        fingerprint: format!("SHA256:{}", id.simple()),
+        public_key: public_key(id),
         created_at: at(created),
     }
+}
+
+fn public_key(seed: Uuid) -> SshPublicKey {
+    let mut bytes = [0; 32];
+    bytes[..16].copy_from_slice(seed.as_bytes());
+    let key = PublicKey::new(KeyData::Ed25519(Ed25519PublicKey(bytes)), "");
+    SshPublicKey::parse(&key.to_openssh().expect("encodable key")).expect("valid key")
 }
 
 fn new_sandbox(owner: UserId, name: &str, is_default: bool, created: i64) -> Sandbox {

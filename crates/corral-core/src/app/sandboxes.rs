@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use super::{Catalog, Credentials, require_admin};
-use crate::domain::{Sandbox, SandboxName, SandboxState, SandboxStatus, User};
+use crate::domain::{Sandbox, SandboxName, SandboxStatus, User};
 use crate::ports::{Readiness, SandboxEngine, SandboxRepo, SandboxSpec, SshTarget};
 use crate::{Error, Result};
 
@@ -208,10 +208,7 @@ impl Sandboxes {
             .engine
             .status(&sandbox.id)
             .await
-            .unwrap_or_else(|_| SandboxStatus {
-                state: SandboxState::Failed,
-                detail: Some("engine status unavailable".to_owned()),
-            });
+            .unwrap_or_else(|_| SandboxStatus::Failed("engine status unavailable".to_owned()));
         SandboxView { sandbox, status }
     }
 }
@@ -225,7 +222,7 @@ mod tests {
     use secrecy::SecretString;
 
     use super::SandboxView;
-    use crate::domain::{Sandbox, SandboxId, SandboxName, SandboxState, SandboxStatus, UserId};
+    use crate::domain::{Sandbox, SandboxId, SandboxName, SandboxStatus, UserId};
     use crate::fakes::{EngineCall, MemorySandboxRepo};
     use crate::ports::{Readiness, SandboxEngine, SandboxRepo};
     use crate::testing::{
@@ -480,23 +477,20 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|view| (view.sandbox.name.to_string(), view.status.state))
+            .map(|view| (view.sandbox.name.to_string(), view.status))
             .collect();
         assert_eq!(
             states,
             [
-                ("main".to_owned(), SandboxState::Running),
-                ("dev".to_owned(), SandboxState::Sleeping)
+                ("main".to_owned(), SandboxStatus::Running),
+                ("dev".to_owned(), SandboxStatus::Sleeping)
             ]
         );
         assert_eq!(
             w.sandboxes.get(&adam, &dev.name).await.unwrap(),
             SandboxView {
                 sandbox: dev,
-                status: SandboxStatus {
-                    state: SandboxState::Sleeping,
-                    detail: None
-                },
+                status: SandboxStatus::Sleeping,
             }
         );
     }
@@ -512,10 +506,7 @@ mod tests {
         let engine_error = w.engine.status(&main.id).await.unwrap_err().to_string();
         assert!(engine_error.contains(&main.id.0), "{engine_error}");
 
-        let unavailable = SandboxStatus {
-            state: SandboxState::Failed,
-            detail: Some("engine status unavailable".to_owned()),
-        };
+        let unavailable = SandboxStatus::Failed("engine status unavailable".to_owned());
         let views = [
             vec![w.sandboxes.get(&adam, &main.name).await.unwrap()],
             w.sandboxes.list(&adam).await.unwrap(),

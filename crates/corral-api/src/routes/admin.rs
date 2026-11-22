@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use corral_core::Error;
-use corral_core::domain::{Role, UserId};
+use corral_core::domain::UserId;
 use uuid::Uuid;
 
 use super::local_accounts;
@@ -80,7 +80,10 @@ async fn sandboxes(
         .into_iter()
         .map(|view| {
             let owner = handles.get(&view.sandbox.owner).ok_or_else(|| {
-                Error::Store(format!("sandbox {} has no owner", view.sandbox.id.0))
+                Error::internal(
+                    "store",
+                    format!("sandbox {} has no owner", view.sandbox.id.0),
+                )
             })?;
             Ok(OwnedSandbox::new(view, owner, &state.catalog.ssh))
         })
@@ -103,9 +106,13 @@ async fn create_local_account(
     State(state): State<AppState>,
     JsonBody(account): JsonBody<NewLocalAccount>,
 ) -> Result<StatusCode, ApiError> {
-    let role = Role::parse(&account.role)?;
     local_accounts(&state)?
-        .create(Some(&admin), &account.username, account.password, role)
+        .create(
+            Some(&admin),
+            &account.username,
+            account.password,
+            account.role,
+        )
         .await?;
     Ok(StatusCode::CREATED)
 }

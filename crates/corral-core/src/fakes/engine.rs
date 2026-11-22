@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use super::lock;
-use crate::domain::{SandboxId, SandboxState, SandboxStatus};
+use crate::domain::{SandboxId, SandboxStatus};
 use crate::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use crate::{Error, Result};
 
@@ -39,7 +39,7 @@ struct State {
 }
 
 struct FakeSandbox {
-    state: SandboxState,
+    state: SandboxStatus,
     env: Env,
 }
 
@@ -90,7 +90,7 @@ impl SandboxEngine for FakeEngine {
         state.created += 1;
         let id = SandboxId(format!("fake-{}", state.created));
         let sandbox = FakeSandbox {
-            state: SandboxState::Running,
+            state: SandboxStatus::Running,
             env: spec.env.clone(),
         };
         state.sandboxes.insert(id.clone(), sandbox);
@@ -101,10 +101,7 @@ impl SandboxEngine for FakeEngine {
     async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
         let mut state = lock(&self.state);
         state.calls.push(EngineCall::Status(id.clone()));
-        Ok(SandboxStatus {
-            state: state.sandbox(id)?.state,
-            detail: None,
-        })
+        Ok(state.sandbox(id)?.state.clone())
     }
 
     async fn ensure_running(
@@ -123,8 +120,8 @@ impl SandboxEngine for FakeEngine {
         let sandbox = state.sandbox(id)?;
         sandbox.env = env;
         sandbox.state = match readiness {
-            Readiness::Ready => SandboxState::Running,
-            Readiness::StillWaking => SandboxState::Starting,
+            Readiness::Ready => SandboxStatus::Running,
+            Readiness::StillWaking => SandboxStatus::Starting,
         };
         Ok(readiness)
     }
@@ -132,7 +129,7 @@ impl SandboxEngine for FakeEngine {
     async fn stop(&self, id: &SandboxId) -> Result<()> {
         let mut state = lock(&self.state);
         state.calls.push(EngineCall::Stop(id.clone()));
-        state.sandbox(id)?.state = SandboxState::Sleeping;
+        state.sandbox(id)?.state = SandboxStatus::Sleeping;
         Ok(())
     }
 
@@ -144,7 +141,7 @@ impl SandboxEngine for FakeEngine {
         });
         let sandbox = state.sandbox(id)?;
         sandbox.env = env;
-        sandbox.state = SandboxState::Running;
+        sandbox.state = SandboxStatus::Running;
         Ok(())
     }
 
@@ -158,8 +155,11 @@ impl SandboxEngine for FakeEngine {
     async fn ssh_target(&self, id: &SandboxId) -> Result<SshTarget> {
         let mut state = lock(&self.state);
         state.calls.push(EngineCall::SshTarget(id.clone()));
-        if state.sandbox(id)?.state != SandboxState::Running {
-            return Err(Error::Engine(format!("sandbox {} is not running", id.0)));
+        if state.sandbox(id)?.state != SandboxStatus::Running {
+            return Err(Error::internal(
+                "fake engine",
+                format!("sandbox {} is not running", id.0),
+            ));
         }
         Ok(SshTarget::KubernetesPod {
             namespace: "fake".to_owned(),
@@ -176,7 +176,7 @@ mod tests {
 
     use super::{EngineCall, FakeEngine};
     use crate::Error;
-    use crate::domain::{CredentialName, Handle, SandboxName, SandboxState};
+    use crate::domain::{CredentialName, Handle, SandboxName, SandboxStatus};
     use crate::ports::{
         Env, IdlePolicy, Readiness, Resources, SandboxEngine, SandboxSpec, SshTarget,
     };
@@ -217,9 +217,9 @@ mod tests {
     async fn fake_engine_tracks_lifecycle() {
         let e = FakeEngine::default();
         let id = e.create(spec("adam", "main")).await.unwrap();
-        assert_eq!(e.status(&id).await.unwrap().state, SandboxState::Running);
+        assert_eq!(e.status(&id).await.unwrap(), SandboxStatus::Running);
         e.stop(&id).await.unwrap();
-        assert_eq!(e.status(&id).await.unwrap().state, SandboxState::Sleeping);
+        assert_eq!(e.status(&id).await.unwrap(), SandboxStatus::Sleeping);
         e.set_wake_result(Readiness::StillWaking);
         assert_eq!(
             e.ensure_running(&id, env(&[("K", "v2")]), Duration::from_secs(1))
@@ -245,13 +245,19 @@ mod tests {
             }
         );
         e.stop(&id).await.unwrap();
-        assert!(matches!(e.ssh_target(&id).await, Err(Error::Engine(_))));
+        assert!(matches!(
+            e.ssh_target(&id).await,
+            Err(Error::Internal { .. })
+        ));
         e.set_wake_result(Readiness::StillWaking);
         e.ensure_running(&id, Env::new(), Duration::from_secs(1))
             .await
             .unwrap();
-        assert_eq!(e.status(&id).await.unwrap().state, SandboxState::Starting);
-        assert!(matches!(e.ssh_target(&id).await, Err(Error::Engine(_))));
+        assert_eq!(e.status(&id).await.unwrap(), SandboxStatus::Starting);
+        assert!(matches!(
+            e.ssh_target(&id).await,
+            Err(Error::Internal { .. })
+        ));
         e.set_wake_result(Readiness::Ready);
         e.ensure_running(&id, Env::new(), Duration::from_secs(1))
             .await

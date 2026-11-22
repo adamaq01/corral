@@ -1,5 +1,5 @@
 use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum as DockerState};
-use corral_core::domain::{SandboxId, SandboxState, SandboxStatus};
+use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::{Error, Result};
 
 pub(crate) fn is_running(container: &ContainerInspectResponse) -> bool {
@@ -13,32 +13,30 @@ pub(crate) fn map(
     let container = container.ok_or_else(|| Error::NotFound(format!("sandbox {}", id.0)))?;
     let state = container.state.clone().unwrap_or_default();
     let error = state.error.filter(|error| !error.is_empty());
-    let (state, detail) = match state.status {
-        Some(DockerState::REMOVING) => (SandboxState::Deleting, None),
-        Some(DockerState::RUNNING) => (SandboxState::Running, None),
-        Some(DockerState::RESTARTING | DockerState::EMPTY) | None => (SandboxState::Starting, None),
-        Some(DockerState::DEAD) => (
-            SandboxState::Failed,
-            Some(error.unwrap_or_else(|| "the container is dead".to_owned())),
-        ),
+    Ok(match state.status {
+        Some(DockerState::REMOVING) => SandboxStatus::Deleting,
+        Some(DockerState::RUNNING) => SandboxStatus::Running,
+        Some(DockerState::RESTARTING | DockerState::EMPTY) | None => SandboxStatus::Starting,
+        Some(DockerState::DEAD) => {
+            SandboxStatus::Failed(error.unwrap_or_else(|| "the container is dead".to_owned()))
+        }
         Some(DockerState::EXITED | DockerState::CREATED | DockerState::PAUSED) => {
             if state.oom_killed == Some(true) {
-                (SandboxState::Failed, Some("ran out of memory".to_owned()))
+                SandboxStatus::Failed("ran out of memory".to_owned())
             } else if let Some(error) = error {
-                (SandboxState::Failed, Some(error))
+                SandboxStatus::Failed(error)
             } else {
-                (SandboxState::Sleeping, None)
+                SandboxStatus::Sleeping
             }
         }
-    };
-    Ok(SandboxStatus { state, detail })
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use bollard::models::{ContainerInspectResponse, ContainerState, ContainerStateStatusEnum};
     use corral_core::Error;
-    use corral_core::domain::{SandboxId, SandboxState};
+    use corral_core::domain::{SandboxId, SandboxStatus};
 
     use super::map;
 
@@ -62,41 +60,23 @@ mod tests {
     fn status_mapping() {
         use ContainerStateStatusEnum::{CREATED, DEAD, EXITED, REMOVING, RESTARTING, RUNNING};
         let id = SandboxId("sbx-0123456789ab".to_owned());
-        for (status, oom_killed, error, expected, detail) in [
-            (RUNNING, false, "", SandboxState::Running, None),
-            (RUNNING, true, "", SandboxState::Running, None),
-            (EXITED, false, "", SandboxState::Sleeping, None),
-            (CREATED, false, "", SandboxState::Sleeping, None),
-            (
-                EXITED,
-                true,
-                "",
-                SandboxState::Failed,
-                Some("ran out of memory"),
-            ),
-            (
-                CREATED,
-                false,
-                "no such image",
-                SandboxState::Failed,
-                Some("no such image"),
-            ),
-            (
-                DEAD,
-                false,
-                "",
-                SandboxState::Failed,
-                Some("the container is dead"),
-            ),
-            (RESTARTING, false, "", SandboxState::Starting, None),
-            (REMOVING, false, "", SandboxState::Deleting, None),
+        let failed = |detail: &str| SandboxStatus::Failed(detail.to_owned());
+        for (status, oom_killed, error, expected) in [
+            (RUNNING, false, "", SandboxStatus::Running),
+            (RUNNING, true, "", SandboxStatus::Running),
+            (EXITED, false, "", SandboxStatus::Sleeping),
+            (CREATED, false, "", SandboxStatus::Sleeping),
+            (EXITED, true, "", failed("ran out of memory")),
+            (CREATED, false, "no such image", failed("no such image")),
+            (DEAD, false, "", failed("the container is dead")),
+            (RESTARTING, false, "", SandboxStatus::Starting),
+            (REMOVING, false, "", SandboxStatus::Deleting),
         ] {
-            let mapped = map(&id, Some(&container(status, oom_killed, error))).unwrap();
             assert_eq!(
-                mapped.state, expected,
+                map(&id, Some(&container(status, oom_killed, error))).unwrap(),
+                expected,
                 "{status} oom={oom_killed} error={error:?}"
             );
-            assert_eq!(mapped.detail.as_deref(), detail, "{status}");
         }
         assert!(matches!(map(&id, None), Err(Error::NotFound(_))));
     }

@@ -8,9 +8,7 @@ use corral_core::app::{
     AccessPolicy, Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits,
     RegisteredKeyVerifier, Sandboxes, SizePreset, SshAccess, SshEndpoint,
 };
-use corral_core::domain::{
-    Principal, Sandbox, SandboxId, SandboxName, SandboxState, SandboxStatus, User,
-};
+use corral_core::domain::{Principal, Sandbox, SandboxId, SandboxName, SandboxStatus, User};
 use corral_core::fakes::{
     MemoryCredentialRepo, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
 };
@@ -189,10 +187,7 @@ impl SandboxEngine for StubEngine {
     }
 
     async fn status(&self, _id: &SandboxId) -> Result<SandboxStatus> {
-        Ok(SandboxStatus {
-            state: SandboxState::Running,
-            detail: None,
-        })
+        Ok(SandboxStatus::Running)
     }
 
     async fn ensure_running(

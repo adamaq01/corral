@@ -19,13 +19,11 @@ impl Keys {
     }
 
     pub async fn add(&self, owner: &User, label: &str, public_key: &str) -> Result<SshKey> {
-        let parsed = SshPublicKey::parse(public_key)?;
         let key = SshKey {
             id: Uuid::new_v4(),
             user_id: owner.id,
             label: label.to_owned(),
-            public_key: parsed.as_str().to_owned(),
-            fingerprint: parsed.fingerprint().to_owned(),
+            public_key: SshPublicKey::parse(public_key)?,
             created_at: Utc::now(),
         };
         self.keys.insert(&key).await?;
@@ -58,13 +56,12 @@ mod tests {
         let adam = w.member("adam").await;
         let eve = w.member("eve").await;
         let k = w.keys.add(&adam, "laptop", ADAM_KEY).await.unwrap();
-        assert!(!k.public_key.contains("adam@laptop"));
-        assert_eq!(k.public_key, algorithm_and_blob(ADAM_KEY));
-        assert_eq!(k.fingerprint, ADAM_FINGERPRINT);
+        assert_eq!(k.public_key.as_str(), algorithm_and_blob(ADAM_KEY));
+        assert_eq!(k.public_key.fingerprint(), ADAM_FINGERPRINT);
         assert_eq!((k.user_id, k.label.as_str()), (adam.id, "laptop"));
 
         assert!(matches!(
-            w.keys.add(&eve, "x", &k.public_key).await,
+            w.keys.add(&eve, "x", k.public_key.as_str()).await,
             Err(Error::Conflict(_))
         ));
         assert!(matches!(

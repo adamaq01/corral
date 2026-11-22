@@ -167,10 +167,13 @@ async fn malformed_secrets_fail_without_quoting_values() {
             .await
             .unwrap();
         match store.load_all(adam).await {
-            Err(Error::Secrets(message)) => assert!(
-                message.contains(culprit) && !message.contains("sk-quoted"),
-                "{message}"
-            ),
+            Err(error @ Error::Internal { .. }) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains(culprit) && !message.contains("sk-quoted"),
+                    "{message}"
+                );
+            }
             other => panic!("expected a secrets error, got {other:?}"),
         }
     }
@@ -187,7 +190,8 @@ async fn connect_rejects_a_bad_address_or_token() {
     ));
     config.address = "http://127.0.0.1:1".into();
     match OpenBaoStore::connect(config).await {
-        Err(Error::Secrets(message)) => {
+        Err(error @ Error::Internal { .. }) => {
+            let message = error.to_string();
             assert!(message.contains("Connection refused"), "{message}");
         }
         Err(other) => panic!("expected a secrets error, got {other:?}"),
@@ -196,10 +200,13 @@ async fn connect_rejects_a_bad_address_or_token() {
 
     let wrong = bao.config(OpenBaoAuth::Token(secret("s.wrong-token-value")));
     match OpenBaoStore::connect(wrong).await {
-        Err(Error::Secrets(message)) => assert!(
-            message.contains("403") && !message.contains("wrong-token-value"),
-            "{message}"
-        ),
+        Err(error @ Error::Internal { .. }) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("403") && !message.contains("wrong-token-value"),
+                "{message}"
+            );
+        }
         Err(other) => panic!("expected a secrets error, got {other:?}"),
         Ok(_) => panic!("connected with a wrong token"),
     }

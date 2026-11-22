@@ -5,6 +5,6 @@ pub(crate) fn db_error(err: sqlx::Error) -> Error {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
             Error::Conflict(db.message().to_owned())
         }
-        err => Error::Store(err.to_string()),
+        err => Error::internal("store", err),
     }
 }

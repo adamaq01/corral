@@ -24,7 +24,7 @@ impl Sealed {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let truncated = || Error::Secrets("sealed value is truncated".into());
+        let truncated = || Error::internal("sealed value", "truncated");
         let (&key_version, rest) = bytes.split_first().ok_or_else(truncated)?;
         let (nonce, ciphertext) = rest.split_first_chunk().ok_or_else(truncated)?;
         Ok(Self {
@@ -59,10 +59,13 @@ pub fn seal(keyring: &Keyring, aad: &[u8], plaintext: &[u8]) -> Sealed {
 
 pub fn open(keyring: &Keyring, aad: &[u8], sealed: &Sealed) -> Result<Vec<u8>> {
     let cipher = keyring.get(sealed.key_version).ok_or_else(|| {
-        Error::Secrets(format!(
-            "sealed with key version {}, which CORRAL_SECRETS_KEY does not hold",
-            sealed.key_version
-        ))
+        Error::internal(
+            "sealed value",
+            format!(
+                "sealed with key version {}, which CORRAL_SECRETS_KEY does not hold",
+                sealed.key_version
+            ),
+        )
     })?;
     cipher
         .decrypt(
@@ -72,7 +75,7 @@ pub fn open(keyring: &Keyring, aad: &[u8], sealed: &Sealed) -> Result<Vec<u8>> {
                 aad,
             },
         )
-        .map_err(|_| Error::Secrets("sealed value does not match its key, owner and name".into()))
+        .map_err(|_| Error::internal("sealed value", "does not match its key, owner and name"))
 }
 
 #[cfg(test)]
@@ -119,7 +122,7 @@ mod tests {
         assert_eq!((old.key_version, new.key_version), (1, 2));
         assert!(matches!(
             open(&keyring(&[(1, 1)]), b"u/A", &new),
-            Err(Error::Secrets(_))
+            Err(Error::Internal { .. })
         ));
     }
 
@@ -128,7 +131,7 @@ mod tests {
         let s = seal(&keyring(&[(1, 1)]), b"u/A", b"x");
         assert!(matches!(
             open(&keyring(&[(1, 9)]), b"u/A", &s),
-            Err(Error::Secrets(_))
+            Err(Error::Internal { .. })
         ));
     }
 
@@ -150,7 +153,7 @@ mod tests {
         for len in 0..bytes.len() {
             let opened =
                 Sealed::from_bytes(&bytes[..len]).and_then(|cut| open(&kr(), b"u/A", &cut));
-            assert!(matches!(opened, Err(Error::Secrets(_))), "{len}");
+            assert!(matches!(opened, Err(Error::Internal { .. })), "{len}");
         }
     }
 }

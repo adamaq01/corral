@@ -2,7 +2,9 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::Result;
-use crate::domain::{CredentialName, Handle, Sandbox, SandboxName, SshKey, User, UserId};
+use crate::domain::{
+    CredentialName, Handle, Sandbox, SandboxName, SshKey, SshPublicKey, User, UserId,
+};
 
 #[async_trait]
 pub trait UserRepo: Send + Sync {
@@ -19,7 +21,7 @@ pub trait KeyRepo: Send + Sync {
     async fn list(&self, user: UserId) -> Result<Vec<SshKey>>;
     async fn insert(&self, key: &SshKey) -> Result<()>;
     async fn delete(&self, user: UserId, id: Uuid) -> Result<bool>;
-    async fn by_public_key(&self, public_key: &str) -> Result<Option<SshKey>>;
+    async fn by_public_key(&self, public_key: &SshPublicKey) -> Result<Option<SshKey>>;
 }
 
 #[async_trait]

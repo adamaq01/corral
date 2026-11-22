@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use corral_activity::{ActivityProbe, Exec, HerdrProbe, IdleDecision, any_active, decide};
-use corral_core::domain::SandboxState;
+use corral_core::domain::SandboxStatus;
 use k8s_openapi::api::core::v1::Pod;
 use kube::api::{ListParams, Patch, PatchParams};
 use kube::{Api, ResourceExt};
@@ -68,7 +68,7 @@ impl Reaper {
     async fn tend(&self, sandbox: &Sandbox) -> kube::Result<()> {
         let name = sandbox.name_any();
         let pod = self.pods.get_opt(&name).await?;
-        if status::map(sandbox, pod.as_ref()).state != SandboxState::Running {
+        if status::map(sandbox, pod.as_ref()) != SandboxStatus::Running {
             return Ok(());
         }
         let now = Utc::now();

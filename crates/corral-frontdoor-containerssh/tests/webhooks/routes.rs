@@ -285,22 +285,22 @@ struct BrokenUsers;
 #[async_trait]
 impl UserRepo for BrokenUsers {
     async fn by_subject(&self, _subject: &str) -> Result<Option<User>> {
-        Err(Error::Store("down".to_owned()))
+        Err(Error::internal("store", "down"))
     }
     async fn by_handle(&self, _handle: &Handle) -> Result<Option<User>> {
-        Err(Error::Store("down".to_owned()))
+        Err(Error::internal("store", "down"))
     }
     async fn get(&self, _id: UserId) -> Result<Option<User>> {
-        Err(Error::Store("down".to_owned()))
+        Err(Error::internal("store", "down"))
     }
     async fn insert(&self, _user: &User) -> Result<()> {
-        Err(Error::Store("down".to_owned()))
+        Err(Error::internal("store", "down"))
     }
     async fn update(&self, _user: &User) -> Result<()> {
-        Err(Error::Store("down".to_owned()))
+        Err(Error::internal("store", "down"))
     }
     async fn list(&self) -> Result<Vec<User>> {
-        Err(Error::Store("down".to_owned()))
+        Err(Error::internal("store", "down"))
     }
 }
 

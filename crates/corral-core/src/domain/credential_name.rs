@@ -1,57 +1,34 @@
-use std::fmt;
-
-use serde::{Deserialize, Serialize};
-
 use crate::{Error, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct CredentialName(String);
+const MAX_LEN: usize = 64;
+const RESERVED_PREFIX: &str = "CORRAL_";
+// The sandbox entrypoint keeps these from SSH sessions while Kubernetes would still apply them,
+// so refusing them keeps both engines alike.
+const RESERVED: [&str; 12] = [
+    "HOME", "HOSTNAME", "LOGNAME", "MAIL", "OLDPWD", "PATH", "PWD", "SHELL", "SHLVL", "TERM",
+    "USER", "_",
+];
 
-impl CredentialName {
-    pub fn parse(value: &str) -> Result<Self> {
-        Self::try_from(value.to_owned())
-    }
+validated_string!(CredentialName, check);
 
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-fn is_credential_name(value: &str) -> bool {
+fn check(value: &str) -> Result<()> {
     let bytes = value.as_bytes();
-    matches!(bytes.first(), Some(b'A'..=b'Z' | b'_'))
-        && bytes.len() <= 64
+    let well_formed = matches!(bytes.first(), Some(b'A'..=b'Z' | b'_'))
+        && bytes.len() <= MAX_LEN
         && bytes
             .iter()
-            .all(|b| matches!(b, b'A'..=b'Z' | b'0'..=b'9' | b'_'))
-}
-
-impl fmt::Display for CredentialName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+            .all(|b| matches!(b, b'A'..=b'Z' | b'0'..=b'9' | b'_'));
+    if !well_formed {
+        return Err(Error::Invalid(format!(
+            "credential name {value:?} must match [A-Z_][A-Z0-9_]{{0,63}}"
+        )));
     }
-}
-
-impl TryFrom<String> for CredentialName {
-    type Error = Error;
-
-    fn try_from(value: String) -> Result<Self> {
-        if is_credential_name(&value) {
-            Ok(Self(value))
-        } else {
-            Err(Error::Invalid(format!(
-                "credential name {value:?} must match [A-Z_][A-Z0-9_]{{0,63}}"
-            )))
-        }
+    if value.starts_with(RESERVED_PREFIX) || RESERVED.contains(&value) {
+        return Err(Error::Invalid(format!(
+            "credential name {value:?} is reserved by the sandbox"
+        )));
     }
-}
-
-impl From<CredentialName> for String {
-    fn from(name: CredentialName) -> Self {
-        name.0
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -61,9 +38,15 @@ mod tests {
 
     #[test]
     fn credential_name_rules() {
-        assert!(CredentialName::parse("ANTHROPIC_API_KEY").is_ok());
-        assert!(CredentialName::parse("_X").is_ok());
-        assert!(CredentialName::parse(&"K".repeat(64)).is_ok());
+        for good in [
+            "ANTHROPIC_API_KEY",
+            "_X",
+            "CORRAL",
+            "PATHS",
+            &"K".repeat(64),
+        ] {
+            assert!(CredentialName::parse(good).is_ok(), "{good}");
+        }
         for bad in ["anthropic", "1KEY", "KEY-1", "", &"K".repeat(65)] {
             assert!(
                 matches!(CredentialName::parse(bad), Err(Error::Invalid(_))),
@@ -73,9 +56,34 @@ mod tests {
     }
 
     #[test]
+    fn names_the_sandbox_depends_on_are_reserved() {
+        for reserved in [
+            "CORRAL_SSHD",
+            "CORRAL_AUTHORIZED_KEY",
+            "CORRAL_",
+            "PATH",
+            "HOME",
+            "USER",
+            "SHELL",
+            "TERM",
+            "_",
+        ] {
+            match CredentialName::parse(reserved) {
+                Err(Error::Invalid(message)) => assert!(message.contains("reserved"), "{message}"),
+                other => panic!("{reserved}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn serde_uses_the_validated_string() {
         let name: CredentialName = serde_json::from_str(r#""GH_TOKEN""#).unwrap();
         assert_eq!(serde_json::to_string(&name).unwrap(), r#""GH_TOKEN""#);
-        assert!(serde_json::from_str::<CredentialName>(r#""gh_token""#).is_err());
+        for bad in [r#""gh_token""#, r#""PATH""#] {
+            assert!(
+                serde_json::from_str::<CredentialName>(bad).is_err(),
+                "{bad}"
+            );
+        }
     }
 }

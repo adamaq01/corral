@@ -7,6 +7,8 @@ edition.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 corral-core = { path = "../corral-core" }
+serde.workspace = true
+serde_json.workspace = true
 sqlx = { workspace = true, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio", "uuid"] }
 uuid.workspace = true
 

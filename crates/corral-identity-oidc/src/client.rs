@@ -1,4 +1,3 @@
-use std::error::Error as StdError;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,10 +12,10 @@ use openidconnect::core::{
 };
 use openidconnect::{
     AdditionalClaims, AuthorizationCode, ClaimsVerificationError, Client, ClientId, ClientSecret,
-    CsrfToken, DiscoveryError, EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet,
-    EndpointSet, HttpClientError, IdTokenClaims, IdTokenFields, IssuerUrl, Nonce,
-    PkceCodeChallenge, RedirectUrl, RequestTokenError, Scope, StandardErrorResponse,
-    StandardTokenResponse, TokenResponse, TokenUrl, reqwest,
+    CsrfToken, EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet, EndpointSet,
+    HttpClientError, IdTokenClaims, IdTokenFields, IssuerUrl, Nonce, PkceCodeChallenge,
+    RedirectUrl, RequestTokenError, Scope, StandardErrorResponse, StandardTokenResponse,
+    TokenResponse, TokenUrl, reqwest,
 };
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -83,22 +82,22 @@ pub struct OidcProvider {
 
 impl OidcProvider {
     pub async fn discover(config: OidcConfig) -> Result<Self> {
-        let issuer = IssuerUrl::new(config.issuer)
-            .map_err(|err| Error::Identity(format!("issuer url: {err}")))?;
+        let issuer =
+            IssuerUrl::new(config.issuer).map_err(|err| Error::internal("issuer url", err))?;
         let redirect_url = RedirectUrl::new(config.redirect_url)
-            .map_err(|err| Error::Identity(format!("redirect url: {err}")))?;
+            .map_err(|err| Error::internal("redirect url", err))?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(HTTP_TIMEOUT)
             .build()
-            .map_err(|err| Error::Identity(format!("http client: {}", chain(&err))))?;
+            .map_err(|err| Error::internal("http client", err))?;
         let metadata = CoreProviderMetadata::discover_async(issuer, &http)
             .await
-            .map_err(|err| discovery_error("discovery", &err))?;
+            .map_err(|err| Error::internal("discovery", err))?;
         let token_url = metadata
             .token_endpoint()
             .cloned()
-            .ok_or_else(|| Error::Identity("issuer has no token endpoint".to_owned()))?;
+            .ok_or_else(|| Error::internal("discovery", "issuer has no token endpoint"))?;
         Ok(Self {
             metadata,
             token_url,
@@ -124,7 +123,7 @@ impl OidcProvider {
     async fn current_keys(&self) -> Result<CoreJsonWebKeySet> {
         CoreJsonWebKeySet::fetch_async(self.metadata.jwks_uri(), &self.http)
             .await
-            .map_err(|err| discovery_error("jwks", &err))
+            .map_err(|err| Error::internal("jwks", err))
     }
 }
 
@@ -173,7 +172,7 @@ impl IdentityProvider for OidcProvider {
             .map_err(token_error)?;
         let id_token = tokens
             .id_token()
-            .ok_or_else(|| Error::Identity("token response has no id token".to_owned()))?;
+            .ok_or_else(|| Error::internal("token endpoint", "response has no id token"))?;
         let claims = id_token
             .claims(&client.id_token_verifier(), &pending.nonce)
             .map_err(claims_error)?;
@@ -184,7 +183,7 @@ impl IdentityProvider for OidcProvider {
 fn principal(claims: &Claims) -> Result<Principal> {
     let preferred_username = claims
         .preferred_username()
-        .ok_or_else(|| Error::Identity("id token has no preferred_username claim".to_owned()))?;
+        .ok_or_else(|| Error::internal("id token", "no preferred_username claim"))?;
     Ok(Principal {
         subject: claims.subject().as_str().to_owned(),
         preferred_username: preferred_username.as_str().to_owned(),
@@ -201,33 +200,16 @@ fn token_error(err: RequestTokenError<HttpError, TokenError>) -> Error {
             Error::Forbidden
         }
         RequestTokenError::ServerResponse(response) => {
-            Error::Identity(format!("token endpoint: {response}"))
+            Error::internal("token endpoint", response.to_string())
         }
-        RequestTokenError::Parse(..) => {
-            Error::Identity("token endpoint sent an unparsable response".to_owned())
-        }
-        other => Error::Identity(format!("token request: {}", chain(&other))),
+        RequestTokenError::Parse(..) => Error::internal("token endpoint", "unparsable response"),
+        other => Error::internal("token request", other),
     }
 }
 
 fn claims_error(err: ClaimsVerificationError) -> Error {
     match err {
         ClaimsVerificationError::InvalidNonce(_) => Error::Forbidden,
-        other => Error::Identity(format!("id token rejected: {}", chain(&other))),
+        other => Error::internal("id token rejected", other),
     }
-}
-
-fn discovery_error(stage: &str, err: &DiscoveryError<HttpError>) -> Error {
-    Error::Identity(format!("{stage}: {}", chain(err)))
-}
-
-fn chain(err: &dyn StdError) -> String {
-    let mut message = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        message.push_str(": ");
-        message.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    message
 }

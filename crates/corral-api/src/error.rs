@@ -48,9 +48,7 @@ impl From<Error> for ApiError {
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
             Error::LimitReached(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            Error::Engine(_) | Error::Store(_) | Error::Secrets(_) | Error::Identity(_) => {
-                return Self::internal(&error);
-            }
+            Error::Internal { .. } => return Self::internal(&error),
         };
         Self::new(status, error.to_string())
     }

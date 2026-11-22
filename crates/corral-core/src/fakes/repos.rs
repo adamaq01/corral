@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use super::lock;
 use crate::domain::{
-    CredentialName, Handle, LocalAccount, Sandbox, SandboxName, SshKey, User, UserId,
+    CredentialName, Handle, LocalAccount, Sandbox, SandboxName, SshKey, SshPublicKey, User, UserId,
 };
 use crate::ports::{CredentialRepo, KeyRepo, LocalAccountRepo, SandboxRepo, UserRepo};
 use crate::{Error, Result};
@@ -118,7 +118,10 @@ impl KeyRepo for MemoryKeyRepo {
             .iter()
             .any(|k| k.id == key.id || k.public_key == key.public_key)
         {
-            return Err(Error::Conflict(format!("key {}", key.fingerprint)));
+            return Err(Error::Conflict(format!(
+                "key {}",
+                key.public_key.fingerprint()
+            )));
         }
         keys.push(key.clone());
         Ok(())
@@ -131,8 +134,8 @@ impl KeyRepo for MemoryKeyRepo {
         Ok(keys.len() < before)
     }
 
-    async fn by_public_key(&self, public_key: &str) -> Result<Option<SshKey>> {
-        Ok(find(&self.keys, |k| k.public_key == public_key))
+    async fn by_public_key(&self, public_key: &SshPublicKey) -> Result<Option<SshKey>> {
+        Ok(find(&self.keys, |k| k.public_key == *public_key))
     }
 }
 

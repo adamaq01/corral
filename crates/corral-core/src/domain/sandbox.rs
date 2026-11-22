@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 
 use super::{SandboxName, UserId};
 
@@ -16,18 +17,31 @@ pub struct Sandbox {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SandboxState {
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "state", content = "detail", rename_all = "lowercase")]
+pub enum SandboxStatus {
     Starting,
     Running,
     Sleeping,
-    Stopped,
-    Failed,
+    Failed(String),
     Deleting,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SandboxStatus {
-    pub state: SandboxState,
-    pub detail: Option<String>,
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::SandboxStatus;
+
+    #[test]
+    fn status_serializes_its_state_and_any_failure_detail() {
+        assert_eq!(
+            serde_json::to_value(SandboxStatus::Running).unwrap(),
+            json!({ "state": "running" })
+        );
+        assert_eq!(
+            serde_json::to_value(SandboxStatus::Failed("ran out of memory".to_owned())).unwrap(),
+            json!({ "state": "failed", "detail": "ran out of memory" })
+        );
+    }
 }

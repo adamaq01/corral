@@ -1,19 +1,19 @@
-use std::fmt;
-
-use serde::{Deserialize, Serialize};
-
 use super::{SLUG_MAX_LEN, is_slug, is_slug_char};
 use crate::{Error, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct Handle(String);
+validated_string!(Handle, check);
+
+fn check(value: &str) -> Result<()> {
+    if is_slug(value) {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "handle {value:?} must match [a-z0-9-]{{1,32}}"
+        )))
+    }
+}
 
 impl Handle {
-    pub fn parse(value: &str) -> Result<Self> {
-        Self::try_from(value.to_owned())
-    }
-
     #[must_use]
     pub fn from_preferred_username(preferred: &str) -> Self {
         let mapped: String = preferred
@@ -37,37 +37,6 @@ impl Handle {
         let suffix = format!("-{n}");
         let base = &self.0[..self.0.len().min(SLUG_MAX_LEN - suffix.len())];
         Self(format!("{base}{suffix}"))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for Handle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for Handle {
-    type Error = Error;
-
-    fn try_from(value: String) -> Result<Self> {
-        if is_slug(&value) {
-            Ok(Self(value))
-        } else {
-            Err(Error::Invalid(format!(
-                "handle {value:?} must match [a-z0-9-]{{1,32}}"
-            )))
-        }
-    }
-}
-
-impl From<Handle> for String {
-    fn from(handle: Handle) -> Self {
-        handle.0
     }
 }
 

@@ -1,48 +1,15 @@
-use std::fmt;
-
-use serde::{Deserialize, Serialize};
-
 use super::is_slug;
 use crate::{Error, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct SandboxName(String);
+validated_string!(SandboxName, check);
 
-impl SandboxName {
-    pub fn parse(value: &str) -> Result<Self> {
-        Self::try_from(value.to_owned())
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for SandboxName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl TryFrom<String> for SandboxName {
-    type Error = Error;
-
-    fn try_from(value: String) -> Result<Self> {
-        if is_slug(&value) {
-            Ok(Self(value))
-        } else {
-            Err(Error::Invalid(format!(
-                "sandbox name {value:?} must match [a-z0-9-]{{1,32}}"
-            )))
-        }
-    }
-}
-
-impl From<SandboxName> for String {
-    fn from(name: SandboxName) -> Self {
-        name.0
+fn check(value: &str) -> Result<()> {
+    if is_slug(value) {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!(
+            "sandbox name {value:?} must match [a-z0-9-]{{1,32}}"
+        )))
     }
 }
 

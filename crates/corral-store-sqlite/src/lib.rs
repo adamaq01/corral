@@ -39,7 +39,7 @@ impl SqliteStore {
         sqlx::migrate!()
             .run(&pool)
             .await
-            .map_err(|err| Error::Store(err.to_string()))?;
+            .map_err(|err| Error::internal("store migration", err))?;
         Ok(Self { pool })
     }
 

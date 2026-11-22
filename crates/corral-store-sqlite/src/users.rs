@@ -1,11 +1,11 @@
 use async_trait::async_trait;
-use corral_core::domain::{Handle, Role, User, UserId};
+use corral_core::domain::{Handle, User, UserId};
 use corral_core::ports::UserRepo;
 use corral_core::{Error, Result};
 use sqlx::Row;
 use sqlx::sqlite::{SqlitePool, SqliteRow};
 
-use crate::decode::{parsed, uuid};
+use crate::decode::{from_text, parsed, text, uuid};
 use crate::error::db_error;
 
 pub(crate) struct Users {
@@ -18,7 +18,7 @@ fn from_row(row: &SqliteRow) -> sqlx::Result<User> {
         subject: row.try_get("subject")?,
         handle: parsed(row, "handle", Handle::parse)?,
         email: row.try_get("email")?,
-        role: parsed(row, "role", Role::parse)?,
+        role: parsed(row, "role", from_text)?,
         enabled: row.try_get("enabled")?,
         created_at: row.try_get("created_at")?,
     })
@@ -71,7 +71,7 @@ impl UserRepo for Users {
         .bind(&user.subject)
         .bind(user.handle.as_str())
         .bind(&user.email)
-        .bind(user.role.as_str())
+        .bind(text(&user.role))
         .bind(user.enabled)
         .bind(user.created_at)
         .execute(&self.pool)
@@ -88,7 +88,7 @@ impl UserRepo for Users {
         .bind(&user.subject)
         .bind(user.handle.as_str())
         .bind(&user.email)
-        .bind(user.role.as_str())
+        .bind(text(&user.role))
         .bind(user.enabled)
         .bind(user.created_at)
         .bind(user.id.0.hyphenated())

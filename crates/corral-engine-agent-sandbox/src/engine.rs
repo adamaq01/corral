@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::Utc;
-use corral_core::domain::{SandboxId, SandboxState, SandboxStatus};
+use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
@@ -167,7 +167,7 @@ impl SandboxEngine for AgentSandboxEngine {
         )
         .await?;
         loop {
-            if self.observe(id).await?.state == SandboxState::Running {
+            if self.observe(id).await? == SandboxStatus::Running {
                 return Ok(Readiness::Ready);
             }
             let remaining = deadline.saturating_sub(started.elapsed());
@@ -215,15 +215,15 @@ impl SandboxEngine for AgentSandboxEngine {
     }
 
     async fn ssh_target(&self, id: &SandboxId) -> Result<SshTarget> {
-        match self.observe(id).await?.state {
-            SandboxState::Running => Ok(SshTarget::KubernetesPod {
+        match self.observe(id).await? {
+            SandboxStatus::Running => Ok(SshTarget::KubernetesPod {
                 namespace: self.config.namespace.clone(),
                 pod: id.0.clone(),
             }),
-            state => Err(Error::Engine(format!(
-                "sandbox {} is {state:?}, not running",
-                id.0
-            ))),
+            status => Err(Error::internal(
+                format!("sandbox {}", id.0),
+                format!("is {status:?}, not running"),
+            )),
         }
     }
 }
