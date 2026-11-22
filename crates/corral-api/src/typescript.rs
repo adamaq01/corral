@@ -49,6 +49,15 @@ impl TypeScript {
         self
     }
 
+    /// A limit the API enforces, for forms to check before sending.
+    pub fn limit(&mut self, name: &str, docs: &str, value: usize) -> &mut Self {
+        self.declarations.insert(
+            name.to_owned(),
+            format!("/**\n * {docs}\n */\nexport const {name} = {value};"),
+        );
+        self
+    }
+
     /// One module declaring every type, by name.
     #[must_use]
     pub fn render(&self) -> String {

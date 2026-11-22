@@ -3,7 +3,7 @@ use argon2::password_hash::{PasswordHasher as _, PasswordVerifier as _};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretString};
 
-const MIN_PASSWORD_CHARS: usize = 12;
+pub(crate) const MIN_PASSWORD_CHARS: usize = 12;
 
 pub(crate) fn hash(password: &SecretString) -> Result<String> {
     if password.expose_secret().chars().count() < MIN_PASSWORD_CHARS {

@@ -1,0 +1,277 @@
+<script lang="ts">
+	import CircleCheckIcon from '@lucide/svelte/icons/circle-check';
+	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
+	import PlusIcon from '@lucide/svelte/icons/plus';
+	import UserCogIcon from '@lucide/svelte/icons/user-cog';
+	import { accounts } from '#lib/api/accounts.js';
+	import { MIN_PASSWORD_CHARS, type LocalAccount, type Role } from '#lib/api/generated/index.js';
+	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
+	import FormDialog from '#lib/components/form-dialog.svelte';
+	import LoadFailed from '#lib/components/load-failed.svelte';
+	import PageHeader from '#lib/components/page-header.svelte';
+	import TableSkeleton from '#lib/components/table-skeleton.svelte';
+	import Timestamp from '#lib/components/timestamp.svelte';
+	import * as Alert from '#lib/components/ui/alert/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
+	import * as Empty from '#lib/components/ui/empty/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
+	import * as RadioGroup from '#lib/components/ui/radio-group/index.js';
+	import * as Table from '#lib/components/ui/table/index.js';
+	import { Remote } from '#lib/remote.svelte.js';
+
+	/** The `accounts` URL of the provider that keeps them. */
+	let { url }: { url: string } = $props();
+
+	const roles: { value: Role; label: string; description: string }[] = [
+		{
+			value: 'member',
+			label: 'Member',
+			description: 'Manages their own sandboxes, SSH keys and credentials.'
+		},
+		{
+			value: 'admin',
+			label: 'Admin',
+			description: 'Also manages users and local accounts, and sees every sandbox.'
+		}
+	];
+
+	const created = 'hidden sm:table-cell';
+	const columns = ['', '', created, ''];
+
+	const api = $derived(accounts(url));
+	const list = new Remote(() => api.list());
+
+	let notice = $state<string | null>(null);
+
+	let creating = $state(false);
+	let username = $state('');
+	let password = $state('');
+	let role = $state<Role>('member');
+
+	let target = $state<LocalAccount | null>(null);
+	let resetting = $state(false);
+	let deleting = $state(false);
+	let newPassword = $state('');
+
+	function startCreating() {
+		notice = null;
+		username = '';
+		password = '';
+		role = 'member';
+		creating = true;
+	}
+
+	async function create() {
+		await api.create({ username, password, role });
+		await list.reload();
+		notice = `Created ${username}, who can sign in now.`;
+	}
+
+	function startResetting(account: LocalAccount) {
+		notice = null;
+		target = account;
+		newPassword = '';
+		resetting = true;
+	}
+
+	async function reset(account: LocalAccount) {
+		await api.setPassword(account.username, newPassword);
+		notice = `Reset the password of ${account.username}.`;
+	}
+
+	function startDeleting(account: LocalAccount) {
+		notice = null;
+		target = account;
+		deleting = true;
+	}
+
+	async function remove(account: LocalAccount) {
+		await api.remove(account.username);
+		list.update((all) => all.filter((each) => each.username !== account.username));
+		notice = `Deleted ${account.username}.`;
+	}
+</script>
+
+{#snippet newAccountButton()}
+	<Button onclick={startCreating}><PlusIcon />New account</Button>
+{/snippet}
+
+<div class="space-y-6">
+	<div class="flex flex-wrap items-end justify-between gap-4">
+		<PageHeader title="Local accounts" description="The accounts that sign in with a password." />
+		{#if list.current.state === 'ready' && list.current.value.length > 0}
+			{@render newAccountButton()}
+		{/if}
+	</div>
+
+	{#if notice}
+		<Alert.Root role="status">
+			<CircleCheckIcon />
+			<Alert.Description>{notice}</Alert.Description>
+		</Alert.Root>
+	{/if}
+
+	{#if list.current.state === 'failed'}
+		<LoadFailed
+			title="Local accounts could not be loaded"
+			error={list.current.error}
+			onretry={() => list.reload()}
+		/>
+	{:else if list.current.state === 'ready' && list.current.value.length === 0}
+		<Empty.Root class="border">
+			<Empty.Header>
+				<Empty.Media variant="icon"><UserCogIcon /></Empty.Media>
+				<Empty.Title>No local accounts</Empty.Title>
+				<Empty.Description>
+					Create one for each person who signs in with a username and password.
+				</Empty.Description>
+			</Empty.Header>
+			<Empty.Content>{@render newAccountButton()}</Empty.Content>
+		</Empty.Root>
+	{:else}
+		<div class="rounded-lg border">
+			<Table.Root aria-label="Local accounts" aria-busy={list.current.state === 'loading'}>
+				<Table.Header>
+					<Table.Row>
+						<Table.Head>Username</Table.Head>
+						<Table.Head>Role</Table.Head>
+						<Table.Head class={created}>Created</Table.Head>
+						<Table.Head><span class="sr-only">Actions</span></Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body>
+					{#if list.current.state === 'loading'}
+						<TableSkeleton {columns} />
+					{:else}
+						{#each list.current.value as account (account.username)}
+							<Table.Row>
+								<Table.Cell class="font-medium">{account.username}</Table.Cell>
+								<Table.Cell>{account.role === 'admin' ? 'Admin' : 'Member'}</Table.Cell>
+								<Table.Cell class={created}><Timestamp value={account.createdAt} /></Table.Cell>
+								<Table.Cell class="w-0 text-right">
+									<DropdownMenu.Root>
+										<DropdownMenu.Trigger>
+											{#snippet child({ props })}
+												<Button
+													variant="ghost"
+													size="icon"
+													aria-label="Actions for {account.username}"
+													{...props}
+												>
+													<EllipsisIcon />
+												</Button>
+											{/snippet}
+										</DropdownMenu.Trigger>
+										<DropdownMenu.Content align="end">
+											<DropdownMenu.Item onSelect={() => startResetting(account)}>
+												Reset password
+											</DropdownMenu.Item>
+											<DropdownMenu.Item
+												variant="destructive"
+												onSelect={() => startDeleting(account)}
+											>
+												Delete
+											</DropdownMenu.Item>
+										</DropdownMenu.Content>
+									</DropdownMenu.Root>
+								</Table.Cell>
+							</Table.Row>
+						{/each}
+					{/if}
+				</Table.Body>
+			</Table.Root>
+		</div>
+	{/if}
+</div>
+
+<FormDialog
+	bind:open={creating}
+	title="New local account"
+	description="The person signs in with this username and password."
+	submit="Create account"
+	onsubmit={create}
+>
+	<div class="grid gap-2">
+		<Label for="new-username">Username</Label>
+		<Input
+			id="new-username"
+			autocomplete="off"
+			autocapitalize="none"
+			spellcheck={false}
+			pattern={'[a-z0-9\\-]{1,32}'}
+			required
+			aria-describedby="new-username-hint"
+			bind:value={username}
+		/>
+		<p id="new-username-hint" class="text-xs text-muted-foreground">
+			Up to 32 lowercase letters, digits and dashes. It becomes their handle.
+		</p>
+	</div>
+	<div class="grid gap-2">
+		<Label for="new-password">Password</Label>
+		<Input
+			id="new-password"
+			type="password"
+			autocomplete="new-password"
+			minlength={MIN_PASSWORD_CHARS}
+			required
+			aria-describedby="new-password-hint"
+			bind:value={password}
+		/>
+		<p id="new-password-hint" class="text-xs text-muted-foreground">
+			At least {MIN_PASSWORD_CHARS} characters.
+		</p>
+	</div>
+	<fieldset class="grid gap-3">
+		<legend class="mb-3 text-sm font-medium">Role</legend>
+		<RadioGroup.Root bind:value={role} class="gap-3">
+			{#each roles as choice (choice.value)}
+				<div class="flex items-start gap-3">
+					<RadioGroup.Item value={choice.value} id="role-{choice.value}" class="mt-0.5" />
+					<Label for="role-{choice.value}" class="grid gap-1 font-normal">
+						<span class="font-medium">{choice.label}</span>
+						<span class="text-xs leading-snug text-muted-foreground">{choice.description}</span>
+					</Label>
+				</div>
+			{/each}
+		</RadioGroup.Root>
+	</fieldset>
+</FormDialog>
+
+{#if target}
+	{@const account = target}
+	<FormDialog
+		bind:open={resetting}
+		title="Reset the password of {account.username}"
+		description="They sign in with the new password from now on."
+		submit="Reset password"
+		onsubmit={() => reset(account)}
+	>
+		<div class="grid gap-2">
+			<Label for="reset-password">New password</Label>
+			<Input
+				id="reset-password"
+				type="password"
+				autocomplete="new-password"
+				minlength={MIN_PASSWORD_CHARS}
+				required
+				aria-describedby="reset-password-hint"
+				bind:value={newPassword}
+			/>
+			<p id="reset-password-hint" class="text-xs text-muted-foreground">
+				At least {MIN_PASSWORD_CHARS} characters.
+			</p>
+		</div>
+	</FormDialog>
+	<ConfirmDialog
+		bind:open={deleting}
+		title="Delete {account.username}?"
+		action="Delete account"
+		onconfirm={() => remove(account)}
+	>
+		This deletes the account and the user who signs in with it, with their sandboxes, SSH keys and
+		credentials. It cannot be undone.
+	</ConfirmDialog>
+{/if}

@@ -29,6 +29,11 @@ export type LocalAccount = { username: Handle, role: Role, createdAt: string, };
 
 export type LoginKind = "redirect" | "password";
 
+/**
+ * The fewest characters a local account's password may have.
+ */
+export const MIN_PASSWORD_CHARS = 12;
+
 export type Me = { handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, };
 
 export type NewAccount = { username: Handle, password: string, role: Role, };

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::LocalProvider;
+use crate::password::MIN_PASSWORD_CHARS;
 
 type Local = State<Arc<LocalProvider>>;
 
@@ -54,13 +55,18 @@ struct AccountDto {
 }
 
 impl LocalProvider {
-    /// The types its routes take and answer with.
+    /// The types its routes take and answer with, and the limits they enforce.
     pub fn typescript(types: &mut TypeScript) {
         types
             .add::<PasswordLogin>()
             .add::<NewAccount>()
             .add::<NewPassword>()
-            .add::<AccountDto>();
+            .add::<AccountDto>()
+            .limit(
+                "MIN_PASSWORD_CHARS",
+                "The fewest characters a local account's password may have.",
+                MIN_PASSWORD_CHARS,
+            );
     }
 
     /// `POST /login` with `{"username", "password"}`, and for admins the accounts under
