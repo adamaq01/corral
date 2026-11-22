@@ -5,8 +5,7 @@ use corral_core::ports::LocalAccountRepo;
 use corral_core::{Error, Result};
 
 use crate::Store;
-use crate::error::db_error;
-use crate::stored::{parsed, variant, variant_name};
+use corral_sql::{db_error, on_pool, parsed, variant, variant_name};
 
 #[derive(sqlx::FromRow)]
 struct LocalAccountRow {
@@ -32,7 +31,7 @@ impl TryFrom<LocalAccountRow> for LocalAccount {
 #[async_trait]
 impl LocalAccountRepo for Store {
     async fn get(&self, username: &Handle) -> Result<Option<LocalAccount>> {
-        let row: Option<LocalAccountRow> = on_pool!(self, |pool| {
+        let row: Option<LocalAccountRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select username, password_hash, role, created_at \
                  from local_accounts where username = $1",
@@ -46,7 +45,7 @@ impl LocalAccountRepo for Store {
     }
 
     async fn insert(&self, account: &LocalAccount) -> Result<()> {
-        on_pool!(self, |pool| {
+        on_pool!(self.pool, |pool| {
             sqlx::query(
                 "insert into local_accounts (username, password_hash, role, created_at) \
                  values ($1, $2, $3, $4)",
@@ -63,7 +62,7 @@ impl LocalAccountRepo for Store {
     }
 
     async fn update(&self, account: &LocalAccount) -> Result<()> {
-        let updated = on_pool!(self, |pool| {
+        let updated = on_pool!(self.pool, |pool| {
             sqlx::query(
                 "update local_accounts set password_hash = $1, role = $2, created_at = $3 \
                  where username = $4",
@@ -87,7 +86,7 @@ impl LocalAccountRepo for Store {
     }
 
     async fn delete(&self, username: &Handle) -> Result<bool> {
-        let deleted = on_pool!(self, |pool| {
+        let deleted = on_pool!(self.pool, |pool| {
             sqlx::query("delete from local_accounts where username = $1")
                 .bind(username.as_str())
                 .execute(pool)
@@ -99,7 +98,7 @@ impl LocalAccountRepo for Store {
     }
 
     async fn list(&self) -> Result<Vec<LocalAccount>> {
-        let rows: Vec<LocalAccountRow> = on_pool!(self, |pool| {
+        let rows: Vec<LocalAccountRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select username, password_hash, role, created_at \
                  from local_accounts order by username",

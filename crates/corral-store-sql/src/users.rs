@@ -6,8 +6,7 @@ use corral_core::{Error, Result};
 use uuid::Uuid;
 
 use crate::Store;
-use crate::error::db_error;
-use crate::stored::{parsed, variant, variant_name};
+use corral_sql::{db_error, on_pool, parsed, variant, variant_name};
 
 #[derive(sqlx::FromRow)]
 struct UserRow {
@@ -39,7 +38,7 @@ impl TryFrom<UserRow> for User {
 #[async_trait]
 impl UserRepo for Store {
     async fn by_subject(&self, subject: &str) -> Result<Option<User>> {
-        let row: Option<UserRow> = on_pool!(self, |pool| {
+        let row: Option<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, subject, handle, email, role, enabled, created_at \
                  from users where subject = $1",
@@ -53,7 +52,7 @@ impl UserRepo for Store {
     }
 
     async fn by_handle(&self, handle: &Handle) -> Result<Option<User>> {
-        let row: Option<UserRow> = on_pool!(self, |pool| {
+        let row: Option<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, subject, handle, email, role, enabled, created_at \
                  from users where handle = $1",
@@ -67,7 +66,7 @@ impl UserRepo for Store {
     }
 
     async fn get(&self, id: UserId) -> Result<Option<User>> {
-        let row: Option<UserRow> = on_pool!(self, |pool| {
+        let row: Option<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, subject, handle, email, role, enabled, created_at \
                  from users where id = $1",
@@ -81,7 +80,7 @@ impl UserRepo for Store {
     }
 
     async fn insert(&self, user: &User) -> Result<()> {
-        on_pool!(self, |pool| {
+        on_pool!(self.pool, |pool| {
             sqlx::query(
                 "insert into users (id, subject, handle, email, role, enabled, created_at) \
                  values ($1, $2, $3, $4, $5, $6, $7)",
@@ -101,7 +100,7 @@ impl UserRepo for Store {
     }
 
     async fn update(&self, user: &User) -> Result<()> {
-        let updated = on_pool!(self, |pool| {
+        let updated = on_pool!(self.pool, |pool| {
             sqlx::query(
                 "update users set subject = $1, handle = $2, email = $3, role = $4, \
                  enabled = $5, created_at = $6 where id = $7",
@@ -125,7 +124,7 @@ impl UserRepo for Store {
     }
 
     async fn list(&self) -> Result<Vec<User>> {
-        let rows: Vec<UserRow> = on_pool!(self, |pool| {
+        let rows: Vec<UserRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, subject, handle, email, role, enabled, created_at \
                  from users order by created_at, id",

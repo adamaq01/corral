@@ -6,8 +6,7 @@ use corral_core::{Error, Result};
 use uuid::Uuid;
 
 use crate::Store;
-use crate::error::db_error;
-use crate::stored::parsed;
+use corral_sql::{db_error, on_pool, parsed};
 
 #[derive(sqlx::FromRow)]
 struct KeyRow {
@@ -35,7 +34,7 @@ impl TryFrom<KeyRow> for SshKey {
 #[async_trait]
 impl KeyRepo for Store {
     async fn list(&self, user: UserId) -> Result<Vec<SshKey>> {
-        let rows: Vec<KeyRow> = on_pool!(self, |pool| {
+        let rows: Vec<KeyRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, user_id, label, public_key, created_at \
                  from ssh_keys where user_id = $1 order by created_at, id",
@@ -49,7 +48,7 @@ impl KeyRepo for Store {
     }
 
     async fn insert(&self, key: &SshKey) -> Result<()> {
-        on_pool!(self, |pool| {
+        on_pool!(self.pool, |pool| {
             sqlx::query(
                 "insert into ssh_keys (id, user_id, label, public_key, created_at) \
                  values ($1, $2, $3, $4, $5)",
@@ -67,7 +66,7 @@ impl KeyRepo for Store {
     }
 
     async fn delete(&self, user: UserId, id: Uuid) -> Result<bool> {
-        let deleted = on_pool!(self, |pool| {
+        let deleted = on_pool!(self.pool, |pool| {
             sqlx::query("delete from ssh_keys where user_id = $1 and id = $2")
                 .bind(user.0)
                 .bind(id)
@@ -80,7 +79,7 @@ impl KeyRepo for Store {
     }
 
     async fn by_public_key(&self, public_key: &SshPublicKey) -> Result<Option<SshKey>> {
-        let row: Option<KeyRow> = on_pool!(self, |pool| {
+        let row: Option<KeyRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, user_id, label, public_key, created_at \
                  from ssh_keys where public_key = $1",

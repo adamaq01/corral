@@ -12,6 +12,7 @@ use corral_engine_docker::DockerEngine;
 use corral_identity_local::LocalProvider;
 use corral_identity_oidc::OidcProvider;
 use corral_secrets_openbao::OpenBaoStore;
+use corral_sql::Pool;
 use corral_store_sql::{DatabaseSecretStore, Store};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -80,10 +81,10 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
 }
 
 pub async fn store(database_url: &str) -> Result<Arc<Store>> {
-    let store = Store::connect(database_url)
+    let pool = Pool::connect(database_url)
         .await
         .context("opening the database at DATABASE_URL")?;
-    Ok(Arc::new(store))
+    Ok(Arc::new(Store::open(pool).await?))
 }
 
 pub fn local_provider(config: &Config, store: &Arc<Store>) -> Result<Option<LocalProvider>> {

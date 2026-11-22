@@ -17,6 +17,7 @@ corral-frontdoor-containerssh = { path = "../corral-frontdoor-containerssh" }
 corral-identity-local = { path = "../corral-identity-local" }
 corral-identity-oidc = { path = "../corral-identity-oidc" }
 corral-secrets-openbao = { path = "../corral-secrets-openbao" }
+corral-sql = { path = "../corral-sql" }
 corral-store-sql = { path = "../corral-store-sql" }
 kube.workspace = true
 rpassword = "7.5.5"

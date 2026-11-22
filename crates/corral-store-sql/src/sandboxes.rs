@@ -6,8 +6,7 @@ use corral_core::{Error, Result};
 use uuid::Uuid;
 
 use crate::Store;
-use crate::error::db_error;
-use crate::stored::parsed;
+use corral_sql::{db_error, on_pool, parsed};
 
 #[derive(sqlx::FromRow)]
 struct SandboxRow {
@@ -37,7 +36,7 @@ impl TryFrom<SandboxRow> for Sandbox {
 #[async_trait]
 impl SandboxRepo for Store {
     async fn list(&self, owner: UserId) -> Result<Vec<Sandbox>> {
-        let rows: Vec<SandboxRow> = on_pool!(self, |pool| {
+        let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, owner, name, image, size, created_at \
                  from sandboxes where owner = $1 order by created_at, id",
@@ -51,7 +50,7 @@ impl SandboxRepo for Store {
     }
 
     async fn list_all(&self) -> Result<Vec<Sandbox>> {
-        let rows: Vec<SandboxRow> = on_pool!(self, |pool| {
+        let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, owner, name, image, size, created_at \
                  from sandboxes order by created_at, id",
@@ -64,7 +63,7 @@ impl SandboxRepo for Store {
     }
 
     async fn by_name(&self, owner: UserId, name: &SandboxName) -> Result<Option<Sandbox>> {
-        let row: Option<SandboxRow> = on_pool!(self, |pool| {
+        let row: Option<SandboxRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
                 "select id, owner, name, image, size, created_at \
                  from sandboxes where owner = $1 and name = $2",
@@ -80,7 +79,7 @@ impl SandboxRepo for Store {
 
     async fn insert(&self, sandbox: &Sandbox, max_per_owner: usize) -> Result<()> {
         let max = i64::try_from(max_per_owner).unwrap_or(i64::MAX);
-        let admitted = on_pool!(self, |pool| async {
+        let admitted = on_pool!(self.pool, |pool| async {
             let mut tx = pool.begin().await?;
             // Writing the owner's row first serializes inserts for one owner, so the count below
             // sees every committed sandbox of theirs.
@@ -122,7 +121,7 @@ impl SandboxRepo for Store {
     }
 
     async fn delete(&self, owner: UserId, name: &SandboxName) -> Result<bool> {
-        let deleted = on_pool!(self, |pool| {
+        let deleted = on_pool!(self.pool, |pool| {
             sqlx::query("delete from sandboxes where owner = $1 and name = $2")
                 .bind(owner.0)
                 .bind(name.as_str())
@@ -135,7 +134,7 @@ impl SandboxRepo for Store {
     }
 
     async fn default_id(&self, owner: UserId) -> Result<Option<SandboxId>> {
-        let picked: Option<Option<String>> = on_pool!(self, |pool| {
+        let picked: Option<Option<String>> = on_pool!(self.pool, |pool| {
             sqlx::query_scalar("select default_sandbox from users where id = $1")
                 .bind(owner.0)
                 .fetch_optional(pool)
@@ -146,7 +145,7 @@ impl SandboxRepo for Store {
     }
 
     async fn set_default(&self, owner: UserId, id: &SandboxId) -> Result<()> {
-        on_pool!(self, |pool| {
+        on_pool!(self.pool, |pool| {
             sqlx::query(
                 "update users set default_sandbox = $2 where id = $1 \
                  and exists (select 1 from sandboxes where id = $2 and owner = $1)",

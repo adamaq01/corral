@@ -1,0 +1,22 @@
+[package]
+name = "corral-sql"
+version.workspace = true
+edition.workspace = true
+
+[features]
+testing = ["dep:tempfile", "dep:testcontainers-modules"]
+
+[dependencies]
+corral-core = { path = "../corral-core" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["migrate", "postgres", "runtime-tokio", "sqlite"] }
+tempfile = { workspace = true, optional = true }
+testcontainers-modules = { version = "0.15.0", features = ["postgres"], optional = true }
+
+[dev-dependencies]
+corral-sql = { path = ".", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+
+[lints]
+workspace = true

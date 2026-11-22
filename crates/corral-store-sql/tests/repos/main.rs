@@ -3,69 +3,39 @@ mod secrets;
 use std::sync::Arc;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use corral_core::Error;
 use corral_core::contract::repos;
 use corral_core::domain::{
-    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey, SshPublicKey, User,
-    UserId,
+    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, User, UserId,
 };
-use corral_core::ports::{KeyRepo, SandboxRepo, UserRepo};
+use corral_core::ports::{SandboxRepo, UserRepo};
+use corral_sql::Pool;
+use corral_sql::testing::{PostgresServer, Sqlite};
 use corral_store_sql::Store;
-use sqlx::{Connection, SqliteConnection};
-use tempfile::TempDir;
-use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::ImageExt;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use uuid::Uuid;
 
 async fn meets_every_repo_contract(url: &str) {
-    Store::connect(url).await.expect("connect");
+    Store::open(Pool::connect(url).await.expect("connect"))
+        .await
+        .expect("open");
     let store = Arc::new(
-        Store::connect(url)
+        Store::open(Pool::connect(url).await.expect("reconnect"))
             .await
-            .expect("reconnect to a migrated database"),
+            .expect("reopen a migrated database"),
     );
     repos::every_repo(&*store, &*store, &*store, &*store).await;
     secrets::database_secret_store(&store, url).await;
 }
 
-fn sqlite_url(dir: &TempDir) -> String {
-    format!("sqlite://{}", dir.path().join("corral.db").display())
-}
-
 #[tokio::test]
 async fn sqlite_meets_every_repo_contract() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    meets_every_repo_contract(&sqlite_url(&dir)).await;
+    let sqlite = Sqlite::new();
+    meets_every_repo_contract(&sqlite.url()).await;
 }
 
 #[tokio::test]
 async fn postgres_meets_every_repo_contract() {
-    let postgres = Postgres::default()
-        .with_tag("19")
-        .start()
-        .await
-        .expect("start postgres");
-    let url = format!(
-        "postgres://postgres:postgres@{}:{}/postgres",
-        postgres.get_host().await.unwrap(),
-        postgres.get_host_port_ipv4(5432).await.unwrap()
-    );
-    meets_every_repo_contract(&url).await;
-}
-
-#[tokio::test]
-async fn connect_names_only_the_scheme_it_refuses() {
-    for unsupported in ["mysql://u:secret-pw@db/corral", "corral.db"] {
-        match Store::connect(unsupported).await {
-            Err(Error::Invalid(message)) => {
-                assert!(message.contains("sqlite: or postgres:"), "{message}");
-                assert!(!message.contains("secret-pw"), "{message}");
-            }
-            Err(other) => panic!("{unsupported}: {other:?}"),
-            Ok(_) => panic!("{unsupported}: connected"),
-        }
-    }
+    let postgres = PostgresServer::start().await;
+    meets_every_repo_contract(&postgres.url().await).await;
 }
 
 fn user() -> User {
@@ -81,38 +51,9 @@ fn user() -> User {
 }
 
 #[tokio::test]
-async fn sqlite_connect_creates_a_wal_database_that_enforces_foreign_keys() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let store = Store::connect(&sqlite_url(&dir)).await.expect("connect");
-    assert!(dir.path().join("corral.db").exists());
-
-    let mut raw = SqliteConnection::connect(&sqlite_url(&dir)).await.unwrap();
-    let mode: String = sqlx::query_scalar("pragma journal_mode")
-        .fetch_one(&mut raw)
-        .await
-        .unwrap();
-    assert_eq!(mode, "wal");
-
-    let orphan = SshKey {
-        id: Uuid::new_v4(),
-        user_id: UserId(Uuid::new_v4()),
-        label: "laptop".to_owned(),
-        public_key: SshPublicKey::parse(include_str!(
-            "../../../corral-core/tests/fixtures/adam_ed25519.pub"
-        ))
-        .unwrap(),
-        created_at: Utc::now(),
-    };
-    assert!(matches!(
-        KeyRepo::insert(&store, &orphan).await,
-        Err(Error::Internal { .. })
-    ));
-}
-
-#[tokio::test]
 async fn sqlite_sub_second_timestamps_round_trip_in_order() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let store = Store::connect(&sqlite_url(&dir)).await.expect("connect");
+    let sqlite = Sqlite::new();
+    let store = Store::open(sqlite.pool().await).await.expect("open");
     let owner = user();
     UserRepo::insert(&store, &owner).await.unwrap();
     let second = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
