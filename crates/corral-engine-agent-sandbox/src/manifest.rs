@@ -239,7 +239,6 @@ mod tests {
             service_account: "corral-sandbox".to_owned(),
             storage_class: "tns-csi-nvmeof".to_owned(),
             agent_image: "containerssh/agent:v0.11.0".to_owned(),
-            max_running: 6,
         }
     }
 

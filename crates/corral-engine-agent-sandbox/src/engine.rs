@@ -28,12 +28,13 @@ pub struct AgentSandboxEngine {
     claims: Api<PersistentVolumeClaim>,
     pub(crate) pods: Api<Pod>,
     pub(crate) config: AgentSandboxConfig,
+    max_running: usize,
     pub(crate) activity: ActivityLock,
 }
 
 impl AgentSandboxEngine {
     #[must_use]
-    pub fn new(client: Client, config: AgentSandboxConfig) -> Self {
+    pub fn new(client: Client, config: AgentSandboxConfig, max_running: usize) -> Self {
         let namespace = config.namespace.as_str();
         Self {
             sandboxes: Api::namespaced(client.clone(), namespace),
@@ -41,6 +42,7 @@ impl AgentSandboxEngine {
             claims: Api::namespaced(client.clone(), namespace),
             pods: Api::namespaced(client, namespace),
             config,
+            max_running,
             activity: ActivityLock::default(),
         }
     }
@@ -86,7 +88,7 @@ impl AgentSandboxEngine {
         if self.sandbox(id).await?.spec.operating_mode == OperatingMode::Running {
             return Ok(());
         }
-        let max = self.config.max_running;
+        let max = self.max_running;
         if self.running_count().await? >= max {
             return Err(Error::LimitReached(format!(
                 "at most {max} sandboxes may run at once"

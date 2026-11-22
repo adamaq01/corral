@@ -136,11 +136,13 @@ impl Lab {
     }
 
     async fn engine(&self, max_running: usize) -> Arc<DockerEngine> {
-        let engine = DockerEngine::connect(DockerConfig {
-            network: self.network.clone(),
-            proxy_public_key: self.proxy_public_key.clone().unwrap(),
+        let engine = DockerEngine::connect(
+            DockerConfig {
+                network: self.network.clone(),
+            },
+            self.proxy_public_key.clone().unwrap(),
             max_running,
-        })
+        )
         .await
         .unwrap();
         Arc::new(engine)
@@ -518,11 +520,13 @@ async fn connect_refuses_a_missing_network() {
             .public_key()
             .clone();
     let missing = format!("corral-test-docker-missing-{}", std::process::id());
-    let refused = DockerEngine::connect(DockerConfig {
-        network: missing.clone(),
-        proxy_public_key: key,
-        max_running: 1,
-    })
+    let refused = DockerEngine::connect(
+        DockerConfig {
+            network: missing.clone(),
+        },
+        key,
+        1,
+    )
     .await;
     assert!(
         matches!(&refused, Err(error @ Error::Internal { .. }) if error.to_string().contains(&missing)),

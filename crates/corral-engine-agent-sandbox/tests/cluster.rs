@@ -59,14 +59,13 @@ impl Cluster {
             storage_class: "standard".to_owned(),
             agent_image: std::env::var("CORRAL_AGENT_IMAGE")
                 .unwrap_or_else(|_| "containerssh/agent:v0.11.0".to_owned()),
-            max_running,
         };
         let sandbox = ApiResource::from_gvk_with_plural(
             &GroupVersionKind::gvk("agents.x-k8s.io", "v1beta1", "Sandbox"),
             "sandboxes",
         );
         Some(Self {
-            engine: Arc::new(AgentSandboxEngine::new(client.clone(), config)),
+            engine: Arc::new(AgentSandboxEngine::new(client.clone(), config, max_running)),
             sandboxes: Api::namespaced_with(client.clone(), &namespace, &sandbox),
             pods: Api::namespaced(client.clone(), &namespace),
             secrets: Api::namespaced(client.clone(), &namespace),

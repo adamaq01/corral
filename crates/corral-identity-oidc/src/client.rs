@@ -17,7 +17,7 @@ use openidconnect::{
     RedirectUrl, RequestTokenError, Scope, StandardErrorResponse, StandardTokenResponse,
     TokenResponse, TokenUrl, reqwest,
 };
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 use crate::OidcConfig;
@@ -85,11 +85,15 @@ pub struct OidcProvider {
 impl OidcProvider {
     pub const ID: &str = "oidc";
 
-    pub async fn discover(config: OidcConfig) -> Result<Self> {
+    pub async fn discover(
+        config: OidcConfig,
+        client_secret: &SecretString,
+        redirect_url: String,
+    ) -> Result<Self> {
         let issuer =
             IssuerUrl::new(config.issuer).map_err(|err| Error::internal("issuer url", err))?;
-        let redirect_url = RedirectUrl::new(config.redirect_url)
-            .map_err(|err| Error::internal("redirect url", err))?;
+        let redirect_url =
+            RedirectUrl::new(redirect_url).map_err(|err| Error::internal("redirect url", err))?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(HTTP_TIMEOUT)
@@ -106,7 +110,7 @@ impl OidcProvider {
             metadata,
             token_url,
             client_id: ClientId::new(config.client_id),
-            client_secret: ClientSecret::new(config.client_secret.expose_secret().to_owned()),
+            client_secret: ClientSecret::new(client_secret.expose_secret().to_owned()),
             redirect_url,
             scopes: config.scopes.into_iter().map(Scope::new).collect(),
             member_group: config.member_group,

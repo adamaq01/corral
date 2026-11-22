@@ -86,15 +86,19 @@ impl Issuer {
     }
 
     async fn provider(&self) -> OidcProvider {
-        OidcProvider::discover(OidcConfig {
-            issuer: self.server.uri(),
-            client_id: CLIENT_ID.to_owned(),
-            client_secret: SecretString::from(CLIENT_SECRET),
-            redirect_url: REDIRECT_URL.to_owned(),
-            scopes: OidcConfig::default_scopes(),
-            member_group: MEMBERS.to_owned(),
-            admin_group: ADMINS.to_owned(),
-        })
+        OidcProvider::discover(
+            OidcConfig {
+                issuer: self.server.uri(),
+                client_id: CLIENT_ID.to_owned(),
+                scopes: ["openid", "profile", "email", "groups"]
+                    .map(String::from)
+                    .into(),
+                member_group: MEMBERS.to_owned(),
+                admin_group: ADMINS.to_owned(),
+            },
+            &SecretString::from(CLIENT_SECRET),
+            REDIRECT_URL.to_owned(),
+        )
         .await
         .unwrap()
     }

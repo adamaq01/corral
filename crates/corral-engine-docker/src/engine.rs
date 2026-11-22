@@ -13,6 +13,7 @@ use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{Env, Readiness, SandboxEngine, SandboxSpec, SshTarget};
 use corral_core::{Error, Result};
+use ssh_key::PublicKey;
 use tracing::warn;
 
 use crate::container;
@@ -29,12 +30,18 @@ const SSHD_ACCEPTS: [&str; 3] = ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"];
 
 pub struct DockerEngine {
     pub(crate) docker: Docker,
-    pub(crate) config: DockerConfig,
+    config: DockerConfig,
+    proxy_public_key: PublicKey,
+    max_running: usize,
     pub(crate) activity: ActivityLock,
 }
 
 impl DockerEngine {
-    pub async fn connect(config: DockerConfig) -> Result<Self> {
+    pub async fn connect(
+        config: DockerConfig,
+        proxy_public_key: PublicKey,
+        max_running: usize,
+    ) -> Result<Self> {
         let docker = Docker::connect_with_defaults()
             .map_err(|err| Error::internal("connect to Docker", err))?;
         match docker.inspect_network(&config.network, None).await {
@@ -54,6 +61,8 @@ impl DockerEngine {
         Ok(Self {
             docker,
             config,
+            proxy_public_key,
+            max_running,
             activity: ActivityLock::default(),
         })
     }
@@ -90,14 +99,14 @@ impl DockerEngine {
 
     // Runs under a wake, which holds other wakes off until the container has started.
     async fn boot(&self, id: &SandboxId, env: &Env) -> Result<()> {
-        let max = self.config.max_running;
+        let max = self.max_running;
         if self.running_ids().await?.len() >= max {
             return Err(Error::LimitReached(format!(
                 "{max} sandboxes are already running"
             )));
         }
         let name = container::name(id);
-        let files = session_files::archive(&self.config.proxy_public_key, env);
+        let files = session_files::archive(&self.proxy_public_key, env);
         let at_root = UploadToContainerOptionsBuilder::default().path("/").build();
         self.docker
             .upload_to_container(&name, Some(at_root), body_full(files.into()))

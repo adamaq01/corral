@@ -45,7 +45,7 @@ impl Session {
 
 async fn log_in(address: &str, auth: &OpenBaoAuth) -> Result<Login> {
     match auth {
-        OpenBaoAuth::Token(token) => {
+        OpenBaoAuth::Token { token } => {
             let client = client(address, token.expose_secret())?;
             vaultrs::token::lookup_self(&client)
                 .await

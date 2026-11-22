@@ -196,7 +196,9 @@ async fn connect_rejects_a_bad_address_or_token() {
         Ok(_) => panic!("connected to a closed port"),
     }
 
-    let wrong = bao.config(OpenBaoAuth::Token(secret("s.wrong-token-value")));
+    let wrong = bao.config(OpenBaoAuth::Token {
+        token: secret("s.wrong-token-value"),
+    });
     match OpenBaoStore::connect(wrong).await {
         Err(error @ Error::Internal { .. }) => {
             let message = error.to_string();
@@ -216,7 +218,9 @@ fn config_debug_hides_the_token() {
         address: "http://bao:8200".into(),
         mount: MOUNT.into(),
         path_prefix: PREFIX.into(),
-        auth: OpenBaoAuth::Token(secret("s.very-secret")),
+        auth: OpenBaoAuth::Token {
+            token: secret("s.very-secret"),
+        },
     };
     let debug = format!("{config:?}");
     assert!(

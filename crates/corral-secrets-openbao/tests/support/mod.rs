@@ -56,6 +56,8 @@ impl OpenBao {
     }
 
     pub fn root_config(&self) -> OpenBaoConfig {
-        self.config(OpenBaoAuth::Token(SecretString::from(ROOT_TOKEN)))
+        self.config(OpenBaoAuth::Token {
+            token: SecretString::from(ROOT_TOKEN),
+        })
     }
 }

@@ -1,6 +1,6 @@
+mod adapters;
 mod cli;
 mod config;
-mod env;
 mod healthcheck;
 mod keys;
 mod local_account;

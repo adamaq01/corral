@@ -7,7 +7,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use corral_core::app::Catalog;
+use corral_engine_agent_sandbox::AgentSandboxConfig;
+use corral_engine_docker::DockerConfig;
 use corral_identity_oidc::OidcConfig;
+use corral_secrets_openbao::OpenBaoConfig;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -89,33 +92,12 @@ impl TryFrom<String> for BaseUrl {
 #[serde(deny_unknown_fields)]
 pub struct Identity {
     pub local: Option<Local>,
-    pub oidc: Option<Oidc>,
+    pub oidc: Option<OidcConfig>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Local {}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Oidc {
-    pub issuer: String,
-    pub client_id: String,
-    #[serde(default = "OidcConfig::default_scopes")]
-    pub scopes: Vec<String>,
-    #[serde(default = "member_group")]
-    pub member_group: String,
-    #[serde(default = "admin_group")]
-    pub admin_group: String,
-}
-
-fn member_group() -> String {
-    "corral-users".to_owned()
-}
-
-fn admin_group() -> String {
-    "corral-admins".to_owned()
-}
 
 // Variants without fields are written `{}`: a unit variant of a tagged enum accepts unknown keys.
 #[derive(Deserialize)]
@@ -123,7 +105,7 @@ fn admin_group() -> String {
 pub enum Secrets {
     Database {},
     #[serde(rename = "openbao")]
-    OpenBao(OpenBao),
+    OpenBao(OpenBaoConfig),
 }
 
 impl Default for Secrets {
@@ -133,64 +115,16 @@ impl Default for Secrets {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OpenBao {
-    pub address: String,
-    #[serde(default = "openbao_mount")]
-    pub mount: String,
-    #[serde(default = "corral")]
-    pub path_prefix: String,
-    pub auth: OpenBaoAuth,
-}
-
-fn openbao_mount() -> String {
-    "secret".to_owned()
-}
-
-fn corral() -> String {
-    "corral".to_owned()
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum OpenBaoAuth {
-    Kubernetes { role: String },
-    Token {},
-}
-
-#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Engine {
-    Docker(Docker),
-    AgentSandbox(AgentSandbox),
+    Docker(DockerConfig),
+    AgentSandbox(AgentSandboxConfig),
 }
 
 impl Default for Engine {
     fn default() -> Self {
-        Self::Docker(Docker {
-            network: sandbox_network(),
-        })
+        Self::Docker(DockerConfig::default())
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Docker {
-    #[serde(default = "sandbox_network")]
-    pub network: String,
-}
-
-fn sandbox_network() -> String {
-    "corral-sandboxes".to_owned()
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AgentSandbox {
-    pub namespace: String,
-    pub service_account: String,
-    pub storage_class: String,
-    pub agent_image: String,
 }
 
 /// When a sandbox with no activity is put to sleep, for every engine.
@@ -276,7 +210,9 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Engine, OpenBaoAuth, Secrets};
+    use corral_secrets_openbao::OpenBaoAuth;
+
+    use super::{Config, Engine, Secrets};
 
     const EXAMPLE: &str = include_str!("../config.example.toml");
     const COMPOSE: &str = include_str!("../../../deploy/compose/config.toml");
@@ -397,6 +333,8 @@ mod tests {
         assert!(message.contains("missing field `role`"), "{message}");
         let message = rejection(&openbao("kind = \"token\"\nrole = \"corral\""));
         assert!(message.contains("unknown field `role`"), "{message}");
+        let message = rejection(&openbao("kind = \"token\"\ntoken = \"s.in-the-file\""));
+        assert!(message.contains("unknown field `token`"), "{message}");
         let message = rejection(&format!("{MINIMAL}\n[secrets]\nkind = \"openbao\""));
         assert!(message.contains("missing field `address`"), "{message}");
         let message = rejection(&format!(
@@ -412,12 +350,17 @@ mod tests {
             (bao.mount.as_str(), bao.path_prefix.as_str()),
             ("secret", "corral")
         );
-        assert!(matches!(bao.auth, OpenBaoAuth::Kubernetes { role } if role == "corral"));
+        assert!(matches!(
+            bao.auth,
+            OpenBaoAuth::Kubernetes { role, jwt_path }
+                if role == "corral"
+                    && jwt_path.ends_with("kubernetes.io/serviceaccount/token")
+        ));
 
         let config = Config::parse(&openbao("kind = \"token\"")).unwrap();
         assert!(matches!(
             config.secrets,
-            Secrets::OpenBao(bao) if matches!(bao.auth, OpenBaoAuth::Token {})
+            Secrets::OpenBao(bao) if matches!(bao.auth, OpenBaoAuth::Token { .. })
         ));
     }
 
