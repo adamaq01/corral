@@ -4,10 +4,8 @@ mod routes;
 
 pub use lockout::LockoutPolicy;
 pub use routes::router;
-use secrecy::SecretString;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct FrontDoorConfig {
-    pub proxy_private_key: SecretString,
     pub lockout: LockoutPolicy,
 }

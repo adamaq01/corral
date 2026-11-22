@@ -23,7 +23,7 @@ rpassword = "7.5.5"
 secrecy.workspace = true
 serde.workspace = true
 serde_path_to_error = "0.1.20"
-ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
+ssh-key = { workspace = true, features = ["getrandom"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 tokio-util.workspace = true
 toml = "1.2.2"

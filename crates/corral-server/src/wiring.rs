@@ -19,7 +19,7 @@ use tower_http::services::ServeDir;
 
 use crate::config::{Config, Engine, EngineBackend, FrontDoor, OpenBaoLogin, Secrets};
 use crate::env;
-use crate::keys::{self, ProxyKey};
+use crate::keys;
 use crate::store;
 
 const SERVICE_ACCOUNT_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
@@ -32,11 +32,10 @@ pub struct App {
 
 pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> {
     let session_key = keys::session_key(&env::secret(keys::SESSION_KEY)?)?;
-    let proxy_key = ProxyKey::parse(&env::secret(keys::PROXY_PRIVATE_KEY)?)?;
     let store = store::connect().await?;
     let credentials = Credentials::new(secret_store(&config.secrets, &store).await?);
     let providers = providers(config, &store).await?;
-    let (engine, lifecycle) = engine(&config.engine, &proxy_key, shutdown).await?;
+    let (engine, lifecycle) = engine(&config.engine, shutdown).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
@@ -58,7 +57,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     };
     Ok(App {
         public: public_router(api),
-        internal: internal_router(config.frontdoor, access, proxy_key),
+        internal: internal_router(config.frontdoor, access),
         lifecycle,
     })
 }
@@ -120,15 +119,15 @@ async fn providers(config: &Config, store: &Arc<Store>) -> Result<Vec<Arc<dyn Id
 
 async fn engine(
     engine: &Engine,
-    proxy_key: &ProxyKey,
     shutdown: CancellationToken,
 ) -> Result<(Arc<dyn SandboxEngine>, JoinHandle<()>)> {
     match &engine.backend {
         EngineBackend::Docker { network } => {
+            let proxy_public_key = keys::proxy_public_key(&env::required(keys::PROXY_PUBLIC_KEY)?)?;
             let docker = Arc::new(
                 DockerEngine::connect(DockerConfig {
                     network: network.clone(),
-                    proxy_public_key: proxy_key.public_key.clone(),
+                    proxy_public_key,
                     max_running: engine.max_running,
                     idle_timeout: engine.idle_timeout,
                 })
@@ -166,12 +165,11 @@ fn public_router(api: ApiState) -> Router {
     }
 }
 
-fn internal_router(frontdoor: FrontDoor, access: SshAccess, proxy_key: ProxyKey) -> Router {
+fn internal_router(frontdoor: FrontDoor, access: SshAccess) -> Router {
     let router = match frontdoor {
         FrontDoor::ContainerSsh => corral_frontdoor_containerssh::router(
             Arc::new(access),
             FrontDoorConfig {
-                proxy_private_key: proxy_key.private_pem,
                 lockout: LockoutPolicy::default(),
             },
         ),

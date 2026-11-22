@@ -127,12 +127,14 @@ export COMPOSE_PROJECT_NAME=$project COMPOSE_FILE=compose.yaml:compose.e2e.yaml
 ok "copied deploy/compose to a private directory and set base_url and public_host"
 
 docker compose run --rm corral keys generate >.env 2>>"$log"
-expect "keys generate" "CORRAL_SESSION_KEY CORRAL_SECRETS_KEY CORRAL_PROXY_PRIVATE_KEY" \
-  "$(cut -d= -f1 .env | xargs)"
-ok "docker compose run --rm corral keys generate > .env wrote the three keys"
+expect "keys generate" "CORRAL_SESSION_KEY CORRAL_SECRETS_KEY" "$(cut -d= -f1 .env | xargs)"
+ok "docker compose run --rm corral keys generate > .env wrote the two keys"
 
-ssh-keygen -q -t ed25519 -N '' -C containerssh -f containerssh_host_key && chmod 644 containerssh_host_key
-ok "generated ContainerSSH's host key"
+for key in containerssh_host_key containerssh_proxy_key; do
+  ssh-keygen -q -t ed25519 -N '' -C containerssh -f "$key" && chmod 644 "$key"
+done
+echo "CORRAL_PROXY_PUBLIC_KEY=$(cat containerssh_proxy_key.pub)" >>.env
+ok "generated ContainerSSH's host and proxy keys, and gave Corral the proxy's public key"
 
 docker compose up -d --wait >>"$log" 2>&1
 ok "docker compose up -d --wait: corral and containerssh are healthy"

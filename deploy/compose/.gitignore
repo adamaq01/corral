@@ -1,3 +1,5 @@
 .env
 containerssh_host_key
 containerssh_host_key.pub
+containerssh_proxy_key
+containerssh_proxy_key.pub

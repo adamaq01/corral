@@ -44,7 +44,6 @@ pub enum LocalAccountCommand {
 
 #[derive(Subcommand)]
 pub enum KeysCommand {
-    /// Print fresh `CORRAL_SESSION_KEY`, `CORRAL_SECRETS_KEY` and `CORRAL_PROXY_PRIVATE_KEY`
-    /// lines for a .env file.
+    /// Print fresh `CORRAL_SESSION_KEY` and `CORRAL_SECRETS_KEY` lines for a .env file.
     Generate,
 }

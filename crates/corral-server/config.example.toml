@@ -2,7 +2,7 @@
 #
 # Secrets and the database come from the environment, never from this file:
 #   DATABASE_URL=postgres://corral:...@corral-db-rw:5432/corral
-#   CORRAL_SESSION_KEY, CORRAL_SECRETS_KEY, CORRAL_PROXY_PRIVATE_KEY (`corral-server keys generate`)
+#   CORRAL_SESSION_KEY, CORRAL_SECRETS_KEY (`corral-server keys generate`)
 #   CORRAL_OIDC_CLIENT_SECRET
 
 [http]

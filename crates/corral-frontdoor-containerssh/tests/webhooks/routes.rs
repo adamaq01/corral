@@ -12,19 +12,15 @@ use corral_core::fakes::MemoryKeyRepo;
 use corral_core::ports::{SshTarget, UserRepo};
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::{FrontDoorConfig, LockoutPolicy, router};
-use secrecy::SecretString;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::common::{
-    Member, NAMESPACE, World, generate_key, identity, private_pem, public_line, sandboxes,
-};
+use crate::common::{Member, NAMESPACE, World, generate_key, identity, public_line, sandboxes};
 
-fn app(access: Arc<SshAccess>, proxy_private_key: &str) -> Router {
+fn app(access: Arc<SshAccess>) -> Router {
     router(
         access,
         FrontDoorConfig {
-            proxy_private_key: SecretString::from(proxy_private_key),
             lockout: LockoutPolicy::default(),
         },
     )
@@ -104,7 +100,7 @@ async fn disable(world: &World, member: &Member) {
 #[tokio::test]
 async fn pubkey_accepts_the_owners_key() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     for username in ["adam", "adam+main"] {
         assert!(accepted(&app, username, &w.adam.public_key(), "1.2.3.4:50022").await);
     }
@@ -114,7 +110,7 @@ async fn pubkey_accepts_the_owners_key() {
 #[tokio::test]
 async fn pubkey_denies_with_200_and_false() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     let adam = w.adam.public_key();
     let eve = w.eve.public_key();
     let stranger = public_line(&generate_key());
@@ -140,7 +136,7 @@ async fn pubkey_denies_with_200_and_false() {
 #[tokio::test(start_paused = true)]
 async fn pubkey_locks_out_an_address_after_repeated_failures() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     let adam = w.adam.public_key();
     let stranger = public_line(&generate_key());
     for attempt in 0..10 {
@@ -163,7 +159,7 @@ async fn pubkey_locks_out_an_address_after_repeated_failures() {
 #[tokio::test]
 async fn pubkey_counts_a_connection_offering_many_keys_once() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     let unregistered: Vec<String> = (0..3).map(|_| public_line(&generate_key())).collect();
     for connection in 0..9 {
         let address = format!("1.2.3.4:{}", 50000 + connection);
@@ -180,7 +176,6 @@ async fn pubkey_lockout_policy_is_configurable() {
     let app = router(
         w.access.clone(),
         FrontDoorConfig {
-            proxy_private_key: SecretString::from("PROXY"),
             lockout: LockoutPolicy {
                 max_failed_connections: NonZeroUsize::new(2).unwrap(),
                 window: Duration::from_secs(60),
@@ -199,8 +194,7 @@ async fn pubkey_lockout_policy_is_configurable() {
 #[tokio::test]
 async fn config_answers_each_target_kind() {
     let w = World::new().await;
-    let proxy_key = private_pem(&generate_key());
-    let app = app(w.access.clone(), &proxy_key);
+    let app = app(w.access.clone());
     w.engine.set_target(
         &w.eve.main.id,
         SshTarget::SshServer {
@@ -229,7 +223,6 @@ async fn config_answers_each_target_kind() {
             "server": "corral-sbx-eve",
             "port": 22,
             "username": "sandbox",
-            "privateKey": proxy_key,
             "allowedHostKeyFingerprints": ["SHA256:abc"],
         }}})
     );
@@ -238,7 +231,7 @@ async fn config_answers_each_target_kind() {
 #[tokio::test]
 async fn config_routes_the_authenticated_username() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     let (status, body) = config(&app, "eve+main", "adam+main").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -250,7 +243,7 @@ async fn config_routes_the_authenticated_username() {
 #[tokio::test]
 async fn config_returns_503_while_waking() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     w.engine.answer_wakes_with(&[false]);
     assert_eq!(
         config(&app, "adam+main", "adam+main").await,
@@ -266,7 +259,7 @@ async fn config_returns_503_while_waking() {
 #[tokio::test]
 async fn config_refuses_unknown_disabled_or_missing_with_403() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     disable(&w, &w.eve).await;
     for username in ["nobody", "adam+missing", "eve", "eve+main", "ADAM", ""] {
         assert_eq!(
@@ -309,7 +302,7 @@ async fn store_errors_never_become_success() {
         Arc::new(MemoryKeyRepo::default()),
         sandboxes(Arc::new(BrokenUsers), w.engine.clone()),
     ));
-    let app = app(access, "PROXY");
+    let app = app(access);
     let adam = w.adam.public_key();
     for _ in 0..12 {
         assert_eq!(
@@ -326,7 +319,7 @@ async fn store_errors_never_become_success() {
 #[tokio::test]
 async fn every_response_is_json() {
     let w = World::new().await;
-    let app = app(w.access.clone(), "PROXY");
+    let app = app(w.access.clone());
     let missing_address = json!({"connectionId": "c", "username": "adam", "publicKey": "k"});
     let bad_address = json!({"remoteAddress": "nowhere", "connectionId": "c", "username": "adam", "publicKey": "k"});
     for (method, path, body, status) in [

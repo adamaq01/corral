@@ -10,7 +10,6 @@ use axum::{Json, Router};
 use corral_core::Error;
 use corral_core::app::SshAccess;
 use corral_core::ports::Readiness;
-use secrecy::{ExposeSecret, SecretString};
 use serde::Serialize;
 
 use crate::FrontDoorConfig;
@@ -19,14 +18,12 @@ use crate::lockout::Lockout;
 
 struct FrontDoor {
     access: Arc<SshAccess>,
-    proxy_private_key: SecretString,
     lockout: Lockout,
 }
 
 pub fn router(access: Arc<SshAccess>, settings: FrontDoorConfig) -> Router {
     let front_door = FrontDoor {
         access,
-        proxy_private_key: settings.proxy_private_key,
         lockout: Lockout::new(settings.lockout),
     };
     Router::new()
@@ -80,10 +77,7 @@ async fn config(
         .route(&request.authenticated_username)
         .await
     {
-        Ok(Readiness::Ready(target)) => answer(&ConfigResponse::for_target(
-            &target,
-            front_door.proxy_private_key.expose_secret(),
-        )),
+        Ok(Readiness::Ready(target)) => answer(&ConfigResponse::for_target(&target)),
         Ok(Readiness::Waking) => failure(StatusCode::SERVICE_UNAVAILABLE),
         Err(Error::Forbidden) => failure(StatusCode::FORBIDDEN),
         Err(error) => internal_error(&error),

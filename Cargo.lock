@@ -829,7 +829,6 @@ dependencies = [
  "async-trait",
  "axum",
  "corral-core",
- "secrecy",
  "serde",
  "serde_json",
  "ssh-key",

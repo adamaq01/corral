@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
         }
         Command::Healthcheck => healthcheck::run(&Config::load(&cli.config)?).await,
         Command::Keys(KeysCommand::Generate) => {
-            print!("{}", keys::generate()?);
+            print!("{}", keys::generate());
             Ok(())
         }
     }

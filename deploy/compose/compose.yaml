@@ -27,6 +27,7 @@ services:
     volumes:
       - ./containerssh.yaml:/etc/containerssh/config.yaml:ro
       - ./containerssh_host_key:/etc/containerssh/host_key:ro
+      - ./containerssh_proxy_key:/etc/containerssh/proxy_key:ro
     ports:
       - "48291:2222"
     networks:
@@ -40,8 +41,8 @@ services:
 
 networks:
   corral: {}
-  # Sandboxes join this network. Corral must never be on it: its internal listener answers with
-  # the key that opens every sandbox.
+  # Sandboxes join this network. Corral must never be on it: its internal listener is
+  # unauthenticated and wakes any sandbox it is asked about.
   corral-sandboxes:
     name: corral-sandboxes
 

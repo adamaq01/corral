@@ -15,6 +15,9 @@ configserver:
   # Must exceed [ssh] wake_deadline_secs in config.toml (20 by default), or a sandbox that takes
   # that long to wake is cut off before Corral answers.
   timeout: 30s
+# Corral's answers for Docker sandboxes are merged over this section and never carry the key.
+sshproxy:
+  privateKey: /etc/containerssh/proxy_key
 security:
   forwarding:
     forwardingMode: enable

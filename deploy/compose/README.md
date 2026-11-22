@@ -12,8 +12,8 @@ ssh -p 48291 <handle>+<sandbox>@<public_host>
 
 You need Docker with the Compose plugin, `ssh-keygen` and `curl`.
 
-1. Copy this directory to the host and keep it private, since `.env` will hold the keys that open
-   every sandbox and decrypt every stored credential:
+1. Copy this directory to the host and keep it private, since it will hold the key that opens
+   every sandbox and the key that decrypts every stored credential:
 
    ```sh
    cp -R deploy/compose /opt/corral && cd /opt/corral && chmod 700 .
@@ -28,11 +28,15 @@ You need Docker with the Compose plugin, `ssh-keygen` and `curl`.
    docker compose run --rm corral keys generate > .env
    ```
 
-4. Generate ContainerSSH's host key. ContainerSSH runs as uid 1022, so the key must be readable
-   by others; the private directory from step 1 keeps other host users out.
+4. Generate ContainerSSH's host key and the key it opens sandboxes with, and give Corral the
+   public half of the second, which every sandbox trusts. ContainerSSH runs as uid 1022, so both
+   keys must be readable by others; the private directory from step 1 keeps other host users out.
 
    ```sh
-   ssh-keygen -q -t ed25519 -N '' -C containerssh -f containerssh_host_key && chmod 644 containerssh_host_key
+   for key in containerssh_host_key containerssh_proxy_key; do
+     ssh-keygen -q -t ed25519 -N '' -C containerssh -f "$key" && chmod 644 "$key"
+   done
+   echo "CORRAL_PROXY_PUBLIC_KEY=$(cat containerssh_proxy_key.pub)" >> .env
    ```
 
    `ssh-keygen -lf containerssh_host_key.pub` prints the fingerprint users see on first connect.
@@ -87,9 +91,11 @@ unpacked), so that request can take a few minutes. Every `POST` and `PUT` needs
   the host. It runs as root inside its container because the socket's owner and group differ
   between hosts; a non-root user would not limit what the socket allows. The socket is never
   mounted into sandboxes.
+- Only ContainerSSH holds the private key that opens every sandbox (`containerssh_proxy_key`);
+  Corral keeps its public half, and its answers to ContainerSSH never carry the key.
 - Sandboxes and ContainerSSH share the `corral-sandboxes` network; Corral is never on it. Corral's
-  internal listener (port 8081) answers ContainerSSH with the private key that opens every
-  sandbox, so no sandbox can reach it.
+  internal listener (port 8081) is unauthenticated and wakes any sandbox it is asked about, so no
+  sandbox can reach it.
 - Every sandbox on `corral-sandboxes` can reach every other sandbox's ports. Users have
   passwordless sudo inside their own sandbox. Both are accepted for a group of trusted users.
 - Put the web API behind your existing HTTPS reverse proxy and use an `https://` `base_url`: the

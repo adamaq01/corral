@@ -6,7 +6,6 @@ edition.workspace = true
 [dependencies]
 axum.workspace = true
 corral-core = { path = "../corral-core" }
-secrecy.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true

@@ -67,12 +67,11 @@ struct SshProxy {
     server: String,
     port: u16,
     username: String,
-    private_key: String,
     allowed_host_key_fingerprints: [String; 1],
 }
 
 impl ConfigResponse {
-    pub fn for_target(target: &SshTarget, proxy_private_key: &str) -> Self {
+    pub fn for_target(target: &SshTarget) -> Self {
         match target {
             SshTarget::KubernetesPod { namespace, pod } => Self::pod(pod, namespace),
             SshTarget::SshServer {
@@ -80,13 +79,7 @@ impl ConfigResponse {
                 port,
                 username,
                 host_key_fingerprint,
-            } => Self::ssh_server(
-                host,
-                *port,
-                username,
-                proxy_private_key,
-                host_key_fingerprint,
-            ),
+            } => Self::ssh_server(host, *port, username, host_key_fingerprint),
         }
     }
 
@@ -107,20 +100,13 @@ impl ConfigResponse {
         }
     }
 
-    fn ssh_server(
-        server: &str,
-        port: u16,
-        username: &str,
-        private_key: &str,
-        host_key_fingerprint: &str,
-    ) -> Self {
+    fn ssh_server(server: &str, port: u16, username: &str, host_key_fingerprint: &str) -> Self {
         Self {
             config: Backend::SshProxy {
                 sshproxy: SshProxy {
                     server: server.to_owned(),
                     port,
                     username: username.to_owned(),
-                    private_key: private_key.to_owned(),
                     allowed_host_key_fingerprints: [host_key_fingerprint.to_owned()],
                 },
             },
@@ -157,10 +143,10 @@ mod tests {
 
     #[test]
     fn config_response_exact_json_for_ssh_server() {
-        let r = ConfigResponse::ssh_server("corral-sbx-1", 22, "sandbox", "KEY", "SHA256:abc");
+        let r = ConfigResponse::ssh_server("corral-sbx-1", 22, "sandbox", "SHA256:abc");
         assert_eq!(
             serde_json::to_string(&r).unwrap(),
-            r#"{"config":{"backend":"sshproxy","sshproxy":{"server":"corral-sbx-1","port":22,"username":"sandbox","privateKey":"KEY","allowedHostKeyFingerprints":["SHA256:abc"]}}}"#
+            r#"{"config":{"backend":"sshproxy","sshproxy":{"server":"corral-sbx-1","port":22,"username":"sandbox","allowedHostKeyFingerprints":["SHA256:abc"]}}}"#
         );
     }
 
