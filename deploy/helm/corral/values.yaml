@@ -59,6 +59,14 @@ identity:
     # identity.oidc.clientSecret is the client secret: either `existingSecret` and `key`, naming
     # a Secret in the release namespace, or `value`, which the chart stores in a Secret.
     clientSecret: {}
+    opkssh:
+      # identity.oidc.opkssh.enabled lets OIDC users who run `opkssh login` reach SSH without
+      # registering a key. It needs a public client at the issuer for opkssh, with PKCE.
+      enabled: false
+      # identity.oidc.opkssh.clientId is the issuer's client that `opkssh login` uses.
+      clientId: opkssh
+      # identity.oidc.opkssh.policy is how long a certificate lasts: 12h, 24h, 48h or 1week.
+      policy: 24h
 
 # keys.existingSecret names a Secret with CORRAL_SESSION_KEY and CORRAL_SECRETS_KEY, as printed by
 # `corral-server keys generate`. Empty: the chart generates both once and keeps them across

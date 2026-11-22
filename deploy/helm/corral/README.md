@@ -16,8 +16,9 @@ In the release namespace:
 - Corral: a Deployment of one replica, a Service for the web UI and API (port 8080), a ClusterIP
   Service `<release>-webhooks` for ContainerSSH's webhooks (port 8081), its config rendered from
   the values, and an optional Ingress or Gateway API HTTPRoute for `baseUrl`'s host.
-- ContainerSSH with its Kubernetes backend: public keys only, port forwarding on, and a webhook
-  timeout 10 seconds above the wake deadline. Its Service is a LoadBalancer by default.
+- ContainerSSH with its Kubernetes backend: public keys only, 10 seconds for Corral to answer
+  about a key, port forwarding on, and a config webhook timeout 10 seconds above the wake
+  deadline. Its Service is a LoadBalancer by default.
 - The database: SQLite on a PersistentVolumeClaim by default, an existing Postgres server, or a
   CloudNativePG `Cluster`.
 - Secrets: Corral's session and secrets keys and ContainerSSH's host key, generated once unless
@@ -99,7 +100,11 @@ with the path of the offending value. The required combinations:
 - At least one login method: with `identity.local.enabled: false`, `identity.oidc.enabled` must
   be true.
 - With OIDC on: `issuer`, `clientId` and `clientSecret`. Register `<baseUrl>/auth/oidc/callback`
-  as the redirect URI.
+  as the redirect URI. `identity.oidc.opkssh.enabled` also lets OIDC users reach SSH with
+  `opkssh login`, through the issuer's client `identity.oidc.opkssh.clientId`, for certificates
+  that last `identity.oidc.opkssh.policy`; [docs/opkssh.md](../../../docs/opkssh.md) has what the
+  issuer needs. The chart then mounts empty directories at `/etc/opk`, `/var/cache` and
+  `/var/log` for opkssh's files.
 - With `secretStore.kind: vault`: `address`, and a `role` for Kubernetes auth or a `token` for
   token auth. Kubernetes auth logs in with the ServiceAccount named after the release
   (`corral` for a release named corral), in the release namespace.

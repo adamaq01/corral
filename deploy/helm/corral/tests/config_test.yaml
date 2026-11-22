@@ -47,6 +47,31 @@ tests:
           path: data["config.toml"]
           pattern: 'identity\.local|s3cret'
 
+  - it: maps opkssh logins to [identity.oidc.opkssh] only when OIDC and opkssh are both on
+    set:
+      identity.oidc:
+        enabled: true
+        issuer: https://auth.example.com/oidc
+        clientId: corral
+        clientSecret: { value: s3cret }
+        opkssh: { enabled: true, policy: 12h }
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[identity\.oidc\.opkssh\]\s+client_id = "opkssh"\s+policy = "12h"'
+
+  - it: leaves opkssh out when it is off
+    set:
+      identity.oidc:
+        enabled: true
+        issuer: https://auth.example.com/oidc
+        clientId: corral
+        clientSecret: { value: s3cret }
+    asserts:
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: 'opkssh'
+
   - it: maps the Vault store with Kubernetes auth
     set:
       secretStore:

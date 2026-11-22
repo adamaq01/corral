@@ -90,6 +90,29 @@ The web UI runs on a JSON API at the same address (`/api` and `/auth`), which sc
 too. Every `POST` and `PUT` there needs `Content-Type: application/json`, including the ones
 without a body, such as `POST /api/sandboxes/main/stop`.
 
+## Single sign-on and opkssh
+
+To sign in with an OpenID Connect issuer such as VoidAuth instead of, or next to, local accounts,
+register `<base_url>/auth/oidc/callback` as a confidential client's redirect URI, add the client's
+secret to `.env` as `CORRAL_OIDC_CLIENT_SECRET`, and add to `config.toml`:
+
+```toml
+[identity.oidc]
+issuer = "https://auth.example.lan/oidc"
+client_id = "corral"
+member_group = "corral-users"
+admin_group = "corral-admins"
+
+[identity.oidc.opkssh]
+client_id = "opkssh"
+policy = "24h"
+```
+
+The `[identity.oidc.opkssh]` section lets people who signed in that way reach SSH with
+`opkssh login` instead of a registered key; [docs/opkssh.md](../../docs/opkssh.md) has what the
+issuer's `opkssh` client needs and what users install. For an issuer behind a private CA, mount
+the CA into the `corral` container and point `SSL_CERT_FILE` at it.
+
 ## Security
 
 - Corral mounts the Docker socket, which gives it control of the host's Docker, and so root on

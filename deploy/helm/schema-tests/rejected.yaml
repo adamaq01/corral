@@ -139,3 +139,9 @@ idle:
 sandboxes:
   namespace:
     name: Corral_Sandboxes
+---
+# expect: at '/identity/oidc/opkssh/policy': value must be one of '12h', '24h', '48h', '1week'
+identity:
+  oidc:
+    opkssh:
+      policy: oidc

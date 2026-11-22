@@ -89,7 +89,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.yaml"]
-          pattern: 'keyboardInteractive:\s+method: ""\s+password:\s+method: ""\s+publicKey:\s+method: webhook\s+webhook:\s+url: http://corral-webhooks:8081\n'
+          pattern: 'keyboardInteractive:\s+method: ""\s+password:\s+method: ""\s+publicKey:\s+method: webhook\s+webhook:\s+timeout: 10s\s+url: http://corral-webhooks:8081\n'
       - matchRegex:
           path: data["config.yaml"]
           pattern: 'backend: kubernetes\n'

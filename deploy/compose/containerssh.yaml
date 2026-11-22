@@ -10,6 +10,8 @@ auth:
     method: webhook
     webhook:
       url: http://corral:8081
+      # Corral gives `opkssh verify` 5 seconds for a certificate.
+      timeout: 10s
 configserver:
   url: http://corral:8081/config
   # Must exceed [ssh] wake_deadline_secs in config.toml (20 by default), or a sandbox that takes

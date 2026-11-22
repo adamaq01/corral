@@ -115,6 +115,27 @@
             },
             "clientSecret": {
               "$ref": "#/$defs/secretValue"
+            },
+            "opkssh": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "clientId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "policy": {
+                  "enum": [
+                    "12h",
+                    "24h",
+                    "48h",
+                    "1week"
+                  ]
+                }
+              }
             }
           },
           "if": {

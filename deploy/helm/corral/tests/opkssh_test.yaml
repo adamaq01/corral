@@ -1,0 +1,48 @@
+suite: opkssh logins
+templates:
+  - templates/deployment.yaml
+  - templates/configmap.yaml
+release:
+  name: corral
+  namespace: corral
+values:
+  - ../../examples/minimal.yaml
+tests:
+  - it: gives opkssh writable files, cache and log under the read-only root filesystem
+    set:
+      identity.oidc:
+        enabled: true
+        issuer: https://auth.example.com/oidc
+        clientId: corral
+        clientSecret: { value: s3cret }
+        opkssh: { enabled: true }
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+        template: templates/deployment.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: opkssh-files, mountPath: /etc/opk }
+        template: templates/deployment.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: opkssh-cache, mountPath: /var/cache }
+        template: templates/deployment.yaml
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: opkssh-log, mountPath: /var/log }
+        template: templates/deployment.yaml
+      - contains:
+          path: spec.template.spec.volumes
+          content: { name: opkssh-cache, emptyDir: {} }
+        template: templates/deployment.yaml
+
+  - it: mounts nothing for opkssh when OIDC is off, even with opkssh on
+    set:
+      identity.oidc.opkssh.enabled: true
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content: { name: opkssh-files, mountPath: /etc/opk }
+        template: templates/deployment.yaml

@@ -4,7 +4,7 @@
   "auth" (dict
     "password" (dict "method" "")
     "keyboardInteractive" (dict "method" "")
-    "publicKey" (dict "method" "webhook" "webhook" (dict "url" $webhook)))
+    "publicKey" (dict "method" "webhook" "webhook" (dict "url" $webhook "timeout" "10s")))
   "configserver" (dict
     "url" (printf "%s/config" $webhook)
     "timeout" (printf "%ds" (add .Values.ssh.wakeDeadlineSecs 10)))

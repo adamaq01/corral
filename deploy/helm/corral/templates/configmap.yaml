@@ -3,12 +3,16 @@
 {{- $_ := set $identity "local" dict }}
 {{- end }}
 {{- with .Values.identity.oidc }}{{ if .enabled }}
-{{- $_ := set $identity "oidc" (dict
+{{- $oidc := dict
   "issuer" .issuer
   "client_id" .clientId
   "scopes" .scopes
   "member_group" .memberGroup
-  "admin_group" .adminGroup) }}
+  "admin_group" .adminGroup }}
+{{- if .opkssh.enabled }}
+{{- $_ := set $oidc "opkssh" (dict "client_id" .opkssh.clientId "policy" .opkssh.policy) }}
+{{- end }}
+{{- $_ := set $identity "oidc" $oidc }}
 {{- end }}{{ end }}
 {{- $secrets := dict "kind" .Values.secretStore.kind }}
 {{- with .Values.secretStore.vault }}{{ if eq $.Values.secretStore.kind "vault" }}

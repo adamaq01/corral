@@ -83,3 +83,10 @@ in its own Secret or a reference to an existing Secret.
 helm.sh/resource-policy: keep
 {{- end }}
 {{- end }}
+
+{{/*
+"true" when OIDC and its opkssh logins are on, else empty.
+*/}}
+{{- define "corral.opkssh" -}}
+{{- if and .Values.identity.oidc.enabled .Values.identity.oidc.opkssh.enabled }}true{{ end }}
+{{- end }}
