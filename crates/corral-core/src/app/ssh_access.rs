@@ -2,37 +2,50 @@ use std::sync::Arc;
 
 use super::Sandboxes;
 use crate::domain::{Sandbox, SshPublicKey, SshUsername, User, UserStatus};
-use crate::ports::{KeyRepo, Readiness, UserRepo};
+use crate::ports::{IdentityProvider, KeyRepo, Readiness, UserRepo};
 use crate::{Error, Result};
 
 pub struct SshAccess {
     users: Arc<dyn UserRepo>,
     keys: Arc<dyn KeyRepo>,
     sandboxes: Sandboxes,
+    providers: Vec<Arc<dyn IdentityProvider>>,
 }
 
 impl SshAccess {
     #[must_use]
-    pub fn new(users: Arc<dyn UserRepo>, keys: Arc<dyn KeyRepo>, sandboxes: Sandboxes) -> Self {
+    pub fn new(
+        users: Arc<dyn UserRepo>,
+        keys: Arc<dyn KeyRepo>,
+        sandboxes: Sandboxes,
+        providers: Vec<Arc<dyn IdentityProvider>>,
+    ) -> Self {
         Self {
             users,
             keys,
             sandboxes,
+            providers,
         }
     }
 
+    /// Lets in a key the user registered, or a credential their identity provider vouches for.
     pub async fn authenticate(&self, username: &str, presented: &str) -> Result<bool> {
         let Some((user, _)) = self.locate(username).await? else {
             return Ok(false);
         };
-        let Ok(key) = SshPublicKey::parse(presented) else {
-            return Ok(false);
-        };
-        Ok(self
-            .keys
-            .by_public_key(&key)
-            .await?
-            .is_some_and(|registered| registered.user_id == user.id))
+        if let Ok(key) = SshPublicKey::parse(presented) {
+            return Ok(self
+                .keys
+                .by_public_key(&key)
+                .await?
+                .is_some_and(|registered| registered.user_id == user.id));
+        }
+        for provider in &self.providers {
+            if let Some(subject) = user.subject_at(provider.id()) {
+                return provider.vouches_for_ssh(subject, presented).await;
+            }
+        }
+        Ok(false)
     }
 
     pub async fn route(&self, username: &str) -> Result<Readiness> {
@@ -58,16 +71,20 @@ impl SshAccess {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
     use secrecy::SecretString;
 
     use crate::Error;
+    use crate::Result;
     use crate::domain::User;
     use crate::fakes::EngineCall;
     use crate::fakes::{
-        ADAM_CERT, ADAM_KEY, EVE_KEY, WAKE_DEADLINE, World, admin_proof, algorithm_and_blob,
-        credential, exposed,
+        ADAM_CERT, ADAM_KEY, EVE_KEY, RSA_KEY, WAKE_DEADLINE, World, admin_proof,
+        algorithm_and_blob, credential, exposed,
     };
-    use crate::ports::{Readiness, SshTarget};
+    use crate::ports::{IdentityProvider, Readiness, SshTarget};
 
     async fn adam_and_eve() -> (World, User, User) {
         let w = World::new();
@@ -110,6 +127,56 @@ mod tests {
                 !w.access.authenticate("adam", presented).await.unwrap(),
                 "{presented}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_credential_the_users_provider_vouches_for_lets_only_that_user_in() {
+        let (w, adam, _) = adam_and_eve().await;
+        w.provider.vouch("adam", ADAM_CERT);
+        assert!(w.access.authenticate("adam+main", ADAM_CERT).await.unwrap());
+        assert!(w.access.authenticate("adam", ADAM_CERT).await.unwrap());
+        assert!(!w.access.authenticate("eve+main", ADAM_CERT).await.unwrap());
+        assert!(!w.access.authenticate("nobody", ADAM_CERT).await.unwrap());
+        let root = w.admin("root").await;
+        w.accounts
+            .set_enabled(&admin_proof(&root), adam.id, false)
+            .await
+            .unwrap();
+        let asked = w.provider.asked();
+        assert!(!w.access.authenticate("adam+main", ADAM_CERT).await.unwrap());
+        assert_eq!(w.provider.asked(), asked);
+    }
+
+    #[tokio::test]
+    async fn providers_are_never_asked_about_plain_keys() {
+        let (w, ..) = adam_and_eve().await;
+        w.provider.vouch("adam", RSA_KEY);
+        assert!(!w.access.authenticate("adam", RSA_KEY).await.unwrap());
+        assert!(w.access.authenticate("adam", ADAM_KEY).await.unwrap());
+        assert_eq!(w.provider.asked(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_users_own_provider_is_the_only_one_asked() {
+        let other = Arc::new(OtherProvider);
+        let w = World::with_providers(vec![other]);
+        let adam = w.member("adam").await;
+        w.sandbox(&adam, "main").await;
+        assert!(!w.access.authenticate("adam", ADAM_CERT).await.unwrap());
+        assert_eq!(w.provider.asked(), 1);
+    }
+
+    struct OtherProvider;
+
+    #[async_trait]
+    impl IdentityProvider for OtherProvider {
+        fn id(&self) -> &'static str {
+            "other"
+        }
+
+        async fn vouches_for_ssh(&self, _subject: &str, _presented: &str) -> Result<bool> {
+            Ok(true)
         }
     }
 

@@ -25,4 +25,10 @@ pub trait IdentityProvider: Send + Sync {
     async fn forget(&self, _subject: &str) -> Result<()> {
         Ok(())
     }
+
+    /// Whether `presented`, an SSH key or certificate in `authorized_keys` form, proves that whoever
+    /// presents it is the subject. For providers whose people reach SSH without registering a key.
+    async fn vouches_for_ssh(&self, _subject: &str, _presented: &str) -> Result<bool> {
+        Ok(false)
+    }
 }

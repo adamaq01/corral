@@ -7,7 +7,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use corral_core::app::SshAccess;
 use corral_core::domain::{Handle, User, UserId};
-use corral_core::fakes::{FakeEngine, MemoryKeyRepo, admin_proof};
+use corral_core::fakes::{ADAM_CERT, FakeEngine, MemoryKeyRepo, admin_proof};
 use corral_core::ports::{SshTarget, UserRepo};
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::router;
@@ -91,6 +91,15 @@ async fn pubkey_accepts_the_owners_key() {
         assert!(accepted(&app, username, &w.adam.public_key(), "1.2.3.4:50022").await);
     }
     assert!(accepted(&app, "eve+main", &w.eve.public_key(), "1.2.3.4:50022").await);
+}
+
+#[tokio::test]
+async fn pubkey_accepts_a_certificate_the_owners_provider_vouches_for() {
+    let w = Fixture::new().await;
+    w.world.provider.vouch("adam", ADAM_CERT);
+    let app = w.router();
+    assert!(accepted(&app, "adam+main", ADAM_CERT, "1.2.3.4:50022").await);
+    assert!(!accepted(&app, "eve+main", ADAM_CERT, "1.2.3.4:50022").await);
 }
 
 #[tokio::test]
@@ -293,6 +302,7 @@ async fn store_errors_never_become_success() {
         Arc::new(BrokenUsers),
         Arc::new(MemoryKeyRepo::default()),
         w.world.sandboxes.clone(),
+        Vec::new(),
     ));
     let app = router(access);
     let adam = w.adam.public_key();

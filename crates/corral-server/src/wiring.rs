@@ -52,7 +52,12 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
         },
     );
-    let access = SshAccess::new(store.clone(), store.clone(), sandboxes.clone());
+    let access = SshAccess::new(
+        store.clone(),
+        store.clone(),
+        sandboxes.clone(),
+        providers.clone(),
+    );
     let api = Api {
         accounts: Accounts::new(
             store.clone(),

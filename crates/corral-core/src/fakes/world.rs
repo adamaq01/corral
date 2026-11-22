@@ -159,6 +159,7 @@ impl World {
             users.clone(),
             key_repo.clone(),
             sandboxes.clone(),
+            providers.clone(),
         ));
         Self {
             accounts: Accounts::new(
