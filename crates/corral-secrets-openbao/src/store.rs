@@ -64,12 +64,6 @@ impl OpenBaoStore {
                 return Ok(false);
             }
             if write(&client, &self.mount, &path, &env, version).await? {
-                // The empty write already proved no other writer raced this one.
-                if env.is_empty() {
-                    kv2::delete_metadata(&*client, &self.mount, &path)
-                        .await
-                        .map_err(|err| openbao_error("metadata delete", err))?;
-                }
                 return Ok(true);
             }
         }

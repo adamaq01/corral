@@ -116,9 +116,7 @@ async fn overwritten_and_deleted_values_leave_no_readable_history() {
     );
 
     store.remove(adam, &name("A_KEY")).await.unwrap();
-    assert_eq!(readable_versions(&bao, adam).await, []);
-    let metadata = kv2::read_metadata(&bao.root, MOUNT, &path(adam)).await;
-    assert!(metadata.is_err(), "{metadata:?}");
+    assert_eq!(readable_versions(&bao, adam).await, [BTreeMap::new()]);
     assert!(store.load(adam).await.unwrap().is_empty());
 
     store.set(adam, &name("C_KEY"), secret("c")).await.unwrap();
@@ -280,7 +278,7 @@ async fn enable_kubernetes_auth(bao: &OpenBao, review_port: u16, token_ttl: &str
     .unwrap();
     let policy = format!(
         r#"path "{MOUNT}/data/{PREFIX}/*" {{ capabilities = ["create", "read", "update"] }}
-path "{MOUNT}/metadata/{PREFIX}/*" {{ capabilities = ["read", "create", "update", "delete"] }}"#
+path "{MOUNT}/metadata/{PREFIX}/*" {{ capabilities = ["read", "create", "update"] }}"#
     );
     sys::policy::set(&bao.root, "corral", &policy)
         .await
