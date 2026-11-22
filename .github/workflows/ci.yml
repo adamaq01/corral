@@ -6,6 +6,10 @@ on:
     tags: ["*"]
   pull_request:
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -21,6 +25,11 @@ jobs:
       CORRAL_SERVER_IMAGE: corral-server:e2e
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
     steps:
+      # The runner's preinstalled SDKs leave too little disk for the images plus the test build.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - uses: docker/setup-buildx-action@v4
