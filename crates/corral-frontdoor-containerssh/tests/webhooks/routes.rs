@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
+use chrono::{DateTime, Utc};
 use corral_core::app::SshAccess;
 use corral_core::domain::{Handle, User, UserId};
 use corral_core::fakes::{ADAM_CERT, FakeEngine, MemoryKeyRepo, admin_proof};
@@ -313,6 +314,12 @@ impl UserRepo for BrokenUsers {
         Err(Error::internal("store", "down"))
     }
     async fn delete(&self, _id: UserId) -> Result<bool> {
+        Err(Error::internal("store", "down"))
+    }
+    async fn credentials_changed_at(&self, _id: UserId) -> Result<Option<DateTime<Utc>>> {
+        Err(Error::internal("store", "down"))
+    }
+    async fn record_credentials_change(&self, _id: UserId, _at: DateTime<Utc>) -> Result<()> {
         Err(Error::internal("store", "down"))
     }
 }

@@ -55,7 +55,11 @@ export type OpksshLogin = { issuer: string, clientId: string,
  */
 lifetimeHours: number, };
 
-export type OwnedSandbox = { owner: Owner, name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+export type OwnedSandbox = { owner: Owner, name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
+/**
+ * Runs without its owner's latest credential change, which a restart applies.
+ */
+staleCredentials: boolean, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
 
@@ -80,7 +84,11 @@ opkssh: string | null, };
 
 export type Role = "member" | "admin";
 
-export type Sandbox = { name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+export type Sandbox = { name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
+/**
+ * Runs without its owner's latest credential change, which a restart applies.
+ */
+staleCredentials: boolean, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type SandboxName = string;
 

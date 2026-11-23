@@ -13,6 +13,7 @@ use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 
 pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dyn SandboxRepo) {
     user_repo(users).await;
+    credential_change_times(users).await;
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
@@ -117,6 +118,34 @@ async fn user_repo(repo: &dyn UserRepo) {
         Err(Error::NotFound(_))
     ));
     assert_eq!(repo.get(absent.id).await.unwrap(), None);
+}
+
+async fn credential_change_times(repo: &dyn UserRepo) {
+    let adam = seed_user(repo, "adam").await;
+    let eve = seed_user(repo, "eve").await;
+    assert_eq!(repo.credentials_changed_at(adam.id).await.unwrap(), None);
+    repo.record_credentials_change(adam.id, at(5))
+        .await
+        .expect("record a credential change");
+    repo.record_credentials_change(adam.id, at(6))
+        .await
+        .expect("record a later credential change");
+    let ghost = UserId(Uuid::new_v4());
+    repo.record_credentials_change(ghost, at(6))
+        .await
+        .expect("record a change for nobody");
+    repo.update(&User {
+        email: None,
+        ..adam.clone()
+    })
+    .await
+    .expect("update the user");
+    assert_eq!(
+        repo.credentials_changed_at(adam.id).await.unwrap(),
+        Some(at(6))
+    );
+    assert_eq!(repo.credentials_changed_at(eve.id).await.unwrap(), None);
+    assert_eq!(repo.credentials_changed_at(ghost).await.unwrap(), None);
 }
 
 async fn key_repo(users: &dyn UserRepo, keys: &dyn KeyRepo) {
@@ -260,6 +289,30 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     );
     assert_eq!(sandboxes.default_id(eve.id).await.unwrap(), None);
 
+    sandboxes.record_start(&main.id, at(7)).await.unwrap();
+    sandboxes.record_start(&main.id, at(8)).await.unwrap();
+    sandboxes
+        .record_start(&SandboxId(unique("sbx")), at(8))
+        .await
+        .expect("record a start of nothing");
+    let main = Sandbox {
+        started_at: Some(at(8)),
+        ..main
+    };
+    assert_eq!(
+        sandboxes.by_name(adam.id, &main.name).await.unwrap(),
+        Some(main.clone())
+    );
+    assert_eq!(
+        sandboxes.list(adam.id).await.unwrap(),
+        vec![main.clone(), dev.clone()]
+    );
+    assert!(sandboxes.list_all().await.unwrap().contains(&main));
+    assert_eq!(
+        sandboxes.by_name(eve.id, &eves_main.name).await.unwrap(),
+        Some(eves_main.clone())
+    );
+
     assert!(!sandboxes.delete(eve.id, &dev.name).await.unwrap());
     assert!(sandboxes.delete(adam.id, &dev.name).await.unwrap());
     assert!(!sandboxes.delete(adam.id, &dev.name).await.unwrap());
@@ -394,5 +447,6 @@ fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         image: ImageKey::parse("default").unwrap(),
         size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
+        started_at: None,
     }
 }

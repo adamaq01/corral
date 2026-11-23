@@ -89,6 +89,7 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         image: ImageKey::parse("default").unwrap(),
         size: SizeKey::parse("small").unwrap(),
         created_at: second + offset,
+        started_at: None,
     })
     .collect();
 

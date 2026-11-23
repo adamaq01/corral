@@ -146,6 +146,7 @@ function sandbox(
 		isDefault,
 		ssh: { username: `${owner}+${name}`, host: 'corral.example.com', port: 2222 },
 		createdAt: days(age),
+		staleCredentials: false,
 		...status
 	};
 }

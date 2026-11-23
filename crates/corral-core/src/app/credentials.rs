@@ -1,20 +1,22 @@
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::domain::{CredentialName, UserId};
-use crate::ports::{CredentialMap, SecretStore};
+use crate::ports::{CredentialMap, SecretStore, UserRepo};
 use crate::{Error, Result};
 
 #[derive(Clone)]
 pub struct Credentials {
     store: Arc<dyn SecretStore>,
+    users: Arc<dyn UserRepo>,
 }
 
 impl Credentials {
     #[must_use]
-    pub fn new(store: Arc<dyn SecretStore>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<dyn SecretStore>, users: Arc<dyn UserRepo>) -> Self {
+        Self { store, users }
     }
 
     pub async fn set(
@@ -29,15 +31,26 @@ impl Credentials {
                  base64-encode multi-line values"
             )));
         }
-        self.store.set(user, name, value).await
+        self.store.set(user, name, value).await?;
+        self.changed(user).await
     }
 
     pub async fn remove(&self, user: UserId, name: &CredentialName) -> Result<()> {
         if self.store.remove(user, name).await? {
-            Ok(())
+            self.changed(user).await
         } else {
             Err(Error::NotFound(format!("credential {name}")))
         }
+    }
+
+    /// When the user last set or removed a credential, if ever.
+    pub async fn changed_at(&self, user: UserId) -> Result<Option<DateTime<Utc>>> {
+        self.users.credentials_changed_at(user).await
+    }
+
+    // Recorded after the store write, so a start that loaded the earlier values began before it.
+    async fn changed(&self, user: UserId) -> Result<()> {
+        self.users.record_credentials_change(user, Utc::now()).await
     }
 
     pub(crate) async fn remove_all(&self, user: UserId) -> Result<()> {

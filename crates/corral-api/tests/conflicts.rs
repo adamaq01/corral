@@ -17,7 +17,7 @@ use tower::ServiceExt;
 
 async fn app(databases: &Databases) -> Router {
     let store = Arc::new(Store::open(databases.pool().await).await.unwrap());
-    let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
+    let credentials = Credentials::new(Arc::new(MemorySecretStore::default()), store.clone());
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),

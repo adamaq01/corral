@@ -138,7 +138,7 @@ impl Setup {
         api.secure_cookies = self.secure;
         api.trust_forwarded_for = self.trust_forwarded_for;
         if let Some(secrets) = self.secrets {
-            api.credentials = Credentials::new(secrets);
+            api.credentials = Credentials::new(secrets, world.users.clone());
         }
         Corral {
             app: router(api, vec![stub()]),
@@ -582,6 +582,7 @@ async fn create_then_list_shows_the_ssh_username() {
         "state": "running",
         "ssh": { "username": "adam+main", "host": "corral.example.com", "port": 48291 },
         "createdAt": created["createdAt"],
+        "staleCredentials": false,
     });
     assert_eq!(created, expected);
     assert_eq!(adam.get("/api/sandboxes").await.json(), json!([expected]));
@@ -648,6 +649,29 @@ async fn sandbox_actions_reach_the_engine() {
         adam.get("/api/sandboxes/main").await.json()["isDefault"],
         true
     );
+}
+
+#[tokio::test]
+async fn a_running_sandbox_has_stale_credentials_from_a_change_until_it_restarts() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let main = "/api/sandboxes/main";
+    assert_eq!(adam.get(main).await.json()["staleCredentials"], false);
+
+    adam.call(
+        "PUT",
+        "/api/credentials/GH_TOKEN",
+        Some(json!({ "value": "ghp_1" })),
+    )
+    .await;
+    assert_eq!(adam.get(main).await.json()["staleCredentials"], true);
+    assert_eq!(
+        adam.get("/api/sandboxes").await.json()[0]["staleCredentials"],
+        true
+    );
+    adam.call("POST", "/api/sandboxes/main/restart", None).await;
+    assert_eq!(adam.get(main).await.json()["staleCredentials"], false);
 }
 
 #[tokio::test]

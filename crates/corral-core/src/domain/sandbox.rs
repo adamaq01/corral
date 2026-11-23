@@ -26,6 +26,8 @@ pub struct Sandbox {
     pub image: ImageKey,
     pub size: SizeKey,
     pub created_at: DateTime<Utc>,
+    /// When Corral last started it from stopped, so with its owner's credentials of that moment.
+    pub started_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]

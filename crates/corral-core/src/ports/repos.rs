@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::Result;
@@ -14,6 +15,10 @@ pub trait UserRepo: Send + Sync {
     async fn list(&self) -> Result<Vec<User>>;
     /// Whether the user existed.
     async fn delete(&self, id: UserId) -> Result<bool>;
+    /// When the user last set or removed a credential, if ever.
+    async fn credentials_changed_at(&self, id: UserId) -> Result<Option<DateTime<Utc>>>;
+    /// Does nothing unless the user exists.
+    async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()>;
 }
 
 #[async_trait]
@@ -37,4 +42,6 @@ pub trait SandboxRepo: Send + Sync {
     async fn default_id(&self, owner: UserId) -> Result<Option<SandboxId>>;
     /// Does nothing unless `id` is one of the owner's sandboxes.
     async fn set_default(&self, owner: UserId, id: &SandboxId) -> Result<()>;
+    /// Sets the sandbox's `started_at`. Does nothing unless the sandbox exists.
+    async fn record_start(&self, id: &SandboxId, at: DateTime<Utc>) -> Result<()>;
 }

@@ -107,6 +107,8 @@ pub(crate) struct SandboxDto {
     status: SandboxStatus,
     ssh: SandboxSsh,
     created_at: DateTime<Utc>,
+    /// Runs without its owner's latest credential change, which a restart applies.
+    stale_credentials: bool,
 }
 
 impl SandboxDto {
@@ -116,6 +118,7 @@ impl SandboxDto {
             owner,
             is_default,
             status,
+            stale_credentials,
         } = view;
         Self {
             ssh: SandboxSsh {
@@ -131,6 +134,7 @@ impl SandboxDto {
             is_default,
             status,
             created_at: sandbox.created_at,
+            stale_credentials,
         }
     }
 }

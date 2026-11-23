@@ -140,7 +140,7 @@ impl World {
         let mut providers: Vec<Arc<dyn IdentityProvider>> = vec![provider.clone()];
         providers.extend(others);
         let users = Arc::new(MemoryUserRepo::default());
-        let credentials = Credentials::new(Arc::new(MemorySecretStore::default()));
+        let credentials = Credentials::new(Arc::new(MemorySecretStore::default()), users.clone());
         let engine = Arc::new(FakeEngine::default());
         let limits = Limits {
             max_sandboxes_per_user: MAX_SANDBOXES,

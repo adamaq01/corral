@@ -18,6 +18,7 @@ const sandbox: Sandbox = {
 	isDefault: true,
 	ssh: { username: 'bob+main', host: lan, port: 2222 },
 	createdAt: '2026-11-02T09:30:00Z',
+	staleCredentials: false,
 	state: 'running'
 };
 

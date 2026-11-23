@@ -38,7 +38,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     } = Adapters::resolve(config)?;
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
-    let credentials = Credentials::new(secret_store(secrets, &pool).await?);
+    let credentials = Credentials::new(secret_store(secrets, &pool).await?, store.clone());
     let (providers, provider_routes) = providers(config, oidc, &pool).await?;
     let (engine, lifecycle) = start_engine(config, engine, shutdown).await?;
     let sandboxes = Sandboxes::new(

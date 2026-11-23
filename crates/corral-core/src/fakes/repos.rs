@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::lock;
@@ -12,6 +13,7 @@ use crate::{Error, Result};
 #[derive(Default)]
 pub struct MemoryUserRepo {
     users: Mutex<Vec<User>>,
+    credential_changes: Mutex<BTreeMap<UserId, DateTime<Utc>>>,
 }
 
 #[derive(Default)]
@@ -99,7 +101,19 @@ impl UserRepo for MemoryUserRepo {
         let mut users = lock(&self.users);
         let before = users.len();
         users.retain(|u| u.id != id);
+        lock(&self.credential_changes).remove(&id);
         Ok(users.len() < before)
+    }
+
+    async fn credentials_changed_at(&self, id: UserId) -> Result<Option<DateTime<Utc>>> {
+        Ok(lock(&self.credential_changes).get(&id).copied())
+    }
+
+    async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()> {
+        if lock(&self.users).iter().any(|u| u.id == id) {
+            lock(&self.credential_changes).insert(id, at);
+        }
+        Ok(())
     }
 }
 
@@ -203,6 +217,13 @@ impl SandboxRepo for MemorySandboxRepo {
             .any(|s| s.owner == owner && s.id == *id);
         if theirs {
             lock(&self.defaults).insert(owner, id.clone());
+        }
+        Ok(())
+    }
+
+    async fn record_start(&self, id: &SandboxId, at: DateTime<Utc>) -> Result<()> {
+        if let Some(sandbox) = lock(&self.sandboxes).iter_mut().find(|s| s.id == *id) {
+            sandbox.started_at = Some(at);
         }
         Ok(())
     }
