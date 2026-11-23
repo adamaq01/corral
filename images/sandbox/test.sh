@@ -56,7 +56,9 @@ out=$(docker exec "$client" corral help | head -n 1)
 check "corral is on PATH" "corral acts on the Corral sandbox it runs in." "$out"
 
 out=$(docker exec "$client" ldd /usr/local/bin/corral 2>&1 || true)
-[[ "$out" == *"not a dynamic executable"* ]] || fail "corral is not a static binary: $out"
+# glibc's ldd says "statically linked" for a static PIE and "not a dynamic executable" otherwise.
+[[ "$out" == *"not a dynamic executable"* || "$out" == *"statically linked"* ]] ||
+  fail "corral is not a static binary: $out"
 echo "ok - corral is a static binary"
 
 out=$(docker exec "$client" sh -c 'corral status 2>&1; echo "exit $?"')
