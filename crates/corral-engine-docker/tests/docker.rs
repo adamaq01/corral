@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::num::NonZeroU64;
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -152,8 +153,12 @@ impl Lab {
     }
 
     async fn create(&self, engine: &DockerEngine, name: &str) -> SandboxId {
+        self.create_from(engine, &spec(name)).await
+    }
+
+    async fn create_from(&self, engine: &DockerEngine, spec: &SandboxSpec) -> SandboxId {
         let id = SandboxId::generate();
-        engine.create(&id, &spec(name)).await.unwrap();
+        engine.create(&id, spec).await.unwrap();
         self.sandboxes
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -243,7 +248,7 @@ impl Drop for Lab {
             .iter()
         {
             let name = container_name(id);
-            docker(&["rm", "--force", &name]);
+            docker(&["rm", "--force", &name, &format!("{name}-next")]);
             docker(&["volume", "rm", &format!("corral-home-{}", id.0)]);
         }
         docker(&["rm", "--force", &self.client]);
@@ -483,6 +488,197 @@ async fn home_files_are_written_at_each_start_from_stopped() {
         ),
         "700\n0 0600 .config/corral/sandbox.json"
     );
+}
+
+/// Image tags a test makes, removed when it drops. Declared before the lab, it drops after the
+/// containers that use them.
+#[derive(Default)]
+struct Tags(Mutex<Vec<String>>);
+
+impl Tags {
+    fn named(test: &str, suffix: &str) -> String {
+        format!("corral-test-docker-{test}-{}:{suffix}", std::process::id())
+    }
+
+    /// Points `tag` at the image `reference` names.
+    fn tag(&self, reference: &str, tag: &str) {
+        docker_ok(&["tag", reference, tag]);
+        let mut tags = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if !tags.iter().any(|known| known == tag) {
+            tags.push(tag.to_owned());
+        }
+    }
+
+    /// The sandbox image under a new ID, tagged `tag`; returns that ID.
+    fn variant(&self, tag: &str) -> String {
+        let source = docker_ok(&["create", &image()]);
+        docker_ok(&[
+            "commit",
+            "--change",
+            "LABEL corral.test=variant",
+            &source,
+            tag,
+        ]);
+        docker_ok(&["rm", &source]);
+        self.tag(tag, tag);
+        image_id(tag)
+    }
+}
+
+impl Drop for Tags {
+    fn drop(&mut self) {
+        for tag in self.0.get_mut().unwrap_or_else(PoisonError::into_inner) {
+            docker(&["rmi", tag]);
+        }
+    }
+}
+
+fn image_id(reference: &str) -> String {
+    docker_ok(&["image", "inspect", "--format", "{{.Id}}", reference])
+}
+
+fn inspect(container: &str, format: &str) -> String {
+    docker_ok(&["inspect", "--format", format, container])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_host_key() {
+    let tags = Tags::default();
+    let Some(lab) = Lab::open("converge") else {
+        return;
+    };
+    let engine = lab.engine(10).await;
+    let (current, newer) = (
+        Tags::named("converge", "current"),
+        Tags::named("converge", "newer"),
+    );
+    tags.tag(&image(), &current);
+    let newer_id = tags.variant(&newer);
+    let spec = SandboxSpec {
+        image: current.clone(),
+        ..spec("main")
+    };
+    let id = lab.create_from(&engine, &spec).await;
+    let name = container_name(&id);
+    let target = wake(&engine, &id, CredentialMap::new()).await;
+    lab.pin_host_key(&target);
+    lab.ssh(&name, "echo kept > ~/kept");
+    engine.stop(&id).await.unwrap();
+
+    // What an engine from before this one made: no definition label, and an env var it dropped.
+    let env: Vec<String> = serde_json::from_str(&inspect(&name, "{{json .Config.Env}}")).unwrap();
+    let host_key = env
+        .iter()
+        .find(|entry| entry.starts_with("CORRAL_SSH_HOST_KEY="))
+        .unwrap();
+    let labels: BTreeMap<String, String> =
+        serde_json::from_str(&inspect(&name, "{{json .Config.Labels}}")).unwrap();
+    let volume = format!(
+        "type=volume,source=corral-home-{},target=/home/sandbox",
+        id.0
+    );
+    let mut old = vec![
+        "create".to_owned(),
+        format!("--name={name}"),
+        format!("--network={}", lab.network),
+        format!("--mount={volume}"),
+        "--env=CORRAL_SSHD=1".to_owned(),
+        "--env=CORRAL_RETIRED=1".to_owned(),
+        format!("--env={host_key}"),
+        "--cpus=1".to_owned(),
+        "--memory=1g".to_owned(),
+    ];
+    old.extend(
+        labels
+            .iter()
+            .filter(|(key, _)| key.as_str() != "corral.adamaq01.fr/definition")
+            .map(|(key, value)| format!("--label={key}={value}")),
+    );
+    old.push(current.clone());
+    docker_ok(&["rm", &name]);
+    docker_ok(&old.iter().map(String::as_str).collect::<Vec<_>>());
+
+    let (again, booted) = wake_with(&engine, &id, Boot::default()).await;
+    assert!(booted);
+    assert_eq!(again, target, "the same name and host key");
+    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    let env = inspect(&name, "{{json .Config.Env}}");
+    assert!(!env.contains("CORRAL_RETIRED"), "{env}");
+    let remade = inspect(&name, "{{.Id}}");
+
+    tags.tag(&newer, &current);
+    let (_, booted) = wake_with(&engine, &id, Boot::default()).await;
+    assert!(!booted);
+    assert_eq!(
+        inspect(&name, "{{.Id}}"),
+        remade,
+        "a running sandbox is left as it is"
+    );
+
+    engine.stop(&id).await.unwrap();
+    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
+    assert_eq!(
+        inspect(&name, "{{.Image}}"),
+        newer_id,
+        "the next start takes the image its reference names now"
+    );
+    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    let remade = inspect(&name, "{{.Id}}");
+
+    engine.stop(&id).await.unwrap();
+    wake(&engine, &id, CredentialMap::new()).await;
+    assert_eq!(
+        inspect(&name, "{{.Id}}"),
+        remade,
+        "a container that is up to date is kept"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remake_cut_short_finishes_at_the_next_start() {
+    let tags = Tags::default();
+    let Some(lab) = Lab::open("remake") else {
+        return;
+    };
+    let engine = lab.engine(10).await;
+    let (current, newer) = (
+        Tags::named("remake", "current"),
+        Tags::named("remake", "newer"),
+    );
+    tags.tag(&image(), &current);
+    let newer_id = tags.variant(&newer);
+    let spec = SandboxSpec {
+        image: current.clone(),
+        ..spec("main")
+    };
+    let id = lab.create_from(&engine, &spec).await;
+    let name = container_name(&id);
+    let replacement = format!("{name}-next");
+    let target = wake(&engine, &id, CredentialMap::new()).await;
+    lab.pin_host_key(&target);
+    lab.ssh(&name, "echo kept > ~/kept");
+    engine.stop(&id).await.unwrap();
+
+    // Cut short before the old container went: its replacement is left over.
+    tags.tag(&newer, &current);
+    docker_ok(&["create", "--name", &replacement, &image()]);
+    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
+    assert_eq!(inspect(&name, "{{.Image}}"), newer_id);
+    assert!(!exists("container", &replacement));
+    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+
+    // Cut short after: the complete replacement is all there is.
+    engine.stop(&id).await.unwrap();
+    docker_ok(&["rename", &name, &replacement]);
+    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
+    assert!(!exists("container", &replacement));
+    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+
+    engine.stop(&id).await.unwrap();
+    docker_ok(&["create", "--name", &replacement, &image()]);
+    engine.delete(&id).await.unwrap();
+    assert!(!exists("container", &name));
+    assert!(!exists("container", &replacement));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

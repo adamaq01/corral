@@ -5,9 +5,10 @@ use futures_util::TryStreamExt;
 
 use crate::docker_error::is_not_found;
 
-pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<()> {
+/// The ID of the image `reference` names, pulled first if the daemon does not have it.
+pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<String> {
     match docker.inspect_image(reference).await {
-        Ok(_) => return Ok(()),
+        Ok(found) => return id_of(reference, found.id),
         Err(err) if is_not_found(&err) => {}
         Err(err) => {
             return Err(Error::internal(format!("inspect image {reference}"), err));
@@ -21,7 +22,15 @@ pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<(
         .try_collect::<Vec<_>>()
         .await
         .map_err(|err| Error::internal(format!("pull image {reference}"), err))?;
-    Ok(())
+    let pulled = docker
+        .inspect_image(reference)
+        .await
+        .map_err(|err| Error::internal(format!("inspect image {reference}"), err))?;
+    id_of(reference, pulled.id)
+}
+
+fn id_of(reference: &str, id: Option<String>) -> Result<String> {
+    id.ok_or_else(|| Error::internal(format!("image {reference}"), "has no ID"))
 }
 
 // The API pulls every tag of an image named without a tag or digest.

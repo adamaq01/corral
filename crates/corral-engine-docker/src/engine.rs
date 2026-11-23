@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use bollard::models::ContainerInspectResponse;
+use bollard::models::{ContainerCreateBody, ContainerInspectResponse};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
-    RemoveVolumeOptions, UploadToContainerOptionsBuilder,
+    RemoveVolumeOptions, RenameContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
 use bollard::{Docker, body_full};
 use corral_activity::{ActivityLock, Exec};
@@ -91,22 +91,94 @@ impl DockerEngine {
     }
 
     async fn inspect(&self, id: &SandboxId) -> Result<Option<ContainerInspectResponse>> {
-        let name = container::name(id);
-        match self.docker.inspect_container(&name, None).await {
+        self.inspect_named(&container::name(id)).await
+    }
+
+    async fn inspect_named(&self, name: &str) -> Result<Option<ContainerInspectResponse>> {
+        match self.docker.inspect_container(name, None).await {
             Ok(found) => Ok(Some(found)),
             Err(err) if is_not_found(&err) => Ok(None),
             Err(err) => Err(Error::internal(format!("inspect {name}"), err)),
         }
     }
 
+    /// Finishes a recreate that stopped after removing the old container: its replacement is
+    /// complete, and only lacks the sandbox's name.
+    async fn settled(&self, id: &SandboxId) -> Result<Option<ContainerInspectResponse>> {
+        if let Some(found) = self.inspect(id).await? {
+            return Ok(Some(found));
+        }
+        let replacement = container::replacement_name(id);
+        if self.inspect_named(&replacement).await?.is_none() {
+            return Ok(None);
+        }
+        self.rename(&replacement, &container::name(id)).await?;
+        self.inspect(id).await
+    }
+
+    /// Recreates a stopped container that is not what `create` would make today, keeping its
+    /// home volume and host key. The replacement is complete before the old container goes.
+    async fn converge(
+        &self,
+        id: &SandboxId,
+        current: ContainerInspectResponse,
+    ) -> Result<ContainerInspectResponse> {
+        let definition = container::Definition::recorded(id, &current)?;
+        let image_id = image::ensure_present(&self.docker, &definition.image).await?;
+        let body = container::body(id, &definition, &self.config.network);
+        if container::is_made_from(&current, &body, &image_id) {
+            return Ok(current);
+        }
+        let (name, replacement) = (container::name(id), container::replacement_name(id));
+        self.remove(&replacement, true).await?;
+        self.create_container(&replacement, body).await?;
+        self.remove(&name, false).await?;
+        self.rename(&replacement, &name).await?;
+        self.inspect(id).await?.ok_or_else(|| missing(id))
+    }
+
+    async fn create_container(&self, name: &str, body: ContainerCreateBody) -> Result<()> {
+        let options = CreateContainerOptionsBuilder::default().name(name).build();
+        self.docker
+            .create_container(Some(options), body)
+            .await
+            .map(drop)
+            .map_err(|err| Error::internal(format!("create {name}"), err))
+    }
+
+    /// Without `force`, refuses a running container.
+    async fn remove(&self, name: &str, force: bool) -> Result<()> {
+        let options = RemoveContainerOptionsBuilder::default()
+            .force(force)
+            .build();
+        match self.docker.remove_container(name, Some(options)).await {
+            Err(err) if !is_not_found(&err) => Err(Error::internal(format!("remove {name}"), err)),
+            _ => Ok(()),
+        }
+    }
+
+    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+        let options = RenameContainerOptionsBuilder::default().name(to).build();
+        self.docker
+            .rename_container(from, options)
+            .await
+            .map_err(|err| Error::internal(format!("rename {from} to {to}"), err))
+    }
+
     // Runs under a wake, which holds other wakes off until the container has started.
-    async fn boot(&self, id: &SandboxId, boot: &Boot) -> Result<()> {
+    async fn boot(
+        &self,
+        id: &SandboxId,
+        current: ContainerInspectResponse,
+        boot: &Boot,
+    ) -> Result<ContainerInspectResponse> {
         let max = self.max_running;
         if self.running_ids().await?.len() >= max {
             return Err(Error::LimitReached(format!(
                 "{max} sandboxes are already running"
             )));
         }
+        let current = self.converge(id, current).await?;
         let name = container::name(id);
         let files = session_files::archive(&self.proxy_public_key, boot);
         let at_root = UploadToContainerOptionsBuilder::default().path("/").build();
@@ -117,7 +189,8 @@ impl DockerEngine {
         self.docker
             .start_container(&name, None)
             .await
-            .map_err(|err| Error::internal(format!("start {name}"), err))
+            .map_err(|err| Error::internal(format!("start {name}"), err))?;
+        Ok(current)
     }
 
     async fn wait_for_sshd(&self, id: &SandboxId, patience: Duration) -> Result<bool> {
@@ -147,29 +220,24 @@ impl SandboxEngine for DockerEngine {
         if self.inspect(id).await?.is_some() {
             return Ok(());
         }
-        let body = container::body(id, spec, &self.config.network, &HostKey::generate())?;
+        let definition = container::Definition::new(id, spec, HostKey::generate())?;
         image::ensure_present(&self.docker, &spec.image).await?;
         self.docker
             .create_volume(container::volume(id, spec))
             .await
             .map_err(|err| Error::internal("create home volume", err))?;
-        let name = container::name(id);
-        let options = CreateContainerOptionsBuilder::default().name(&name).build();
-        self.docker
-            .create_container(Some(options), body)
-            .await
-            .map(drop)
-            .map_err(|err| Error::internal(format!("create {name}"), err))
+        let body = container::body(id, &definition, &self.config.network);
+        self.create_container(&container::name(id), body).await
     }
 
     async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
         let called = Instant::now();
         let (target, booted) = {
             let _waking = self.activity.wake(id).await;
-            let current = self.inspect(id).await?.ok_or_else(|| missing(id))?;
+            let mut current = self.settled(id).await?.ok_or_else(|| missing(id))?;
             let booted = !status::is_running(&current);
             if booted {
-                self.boot(id, &boot).await?;
+                current = Box::pin(self.boot(id, current, &boot)).await?;
             }
             let target = SshTarget::SshServer {
                 host_key_fingerprint: container::host_key_fingerprint(id, &current)?,
@@ -197,13 +265,8 @@ impl SandboxEngine for DockerEngine {
     }
 
     async fn delete(&self, id: &SandboxId) -> Result<()> {
-        let name = container::name(id);
-        let options = RemoveContainerOptionsBuilder::default().force(true).build();
-        match self.docker.remove_container(&name, Some(options)).await {
-            Err(err) if !is_not_found(&err) => {
-                return Err(Error::internal(format!("remove {name}"), err));
-            }
-            _ => {}
+        for name in [container::name(id), container::replacement_name(id)] {
+            self.remove(&name, true).await?;
         }
         let volume = container::volume_name(id);
         match self

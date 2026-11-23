@@ -12,6 +12,8 @@ corral-core = { path = "../corral-core" }
 futures-util = "0.3.34"
 secrecy.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.1"
 ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
 tar = "0.4.46"
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }

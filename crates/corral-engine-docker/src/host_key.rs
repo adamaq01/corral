@@ -11,6 +11,10 @@ impl HostKey {
         Self(PrivateKey::random(&mut OsRng, Algorithm::Ed25519).expect("ed25519 is enabled"))
     }
 
+    pub fn from_openssh(private: &str) -> ssh_key::Result<Self> {
+        PrivateKey::from_openssh(private).map(Self)
+    }
+
     #[must_use]
     pub fn private_openssh(&self) -> String {
         self.0
