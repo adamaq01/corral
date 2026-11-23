@@ -2,7 +2,8 @@
 # Installs the chart into the kind cluster of crates/corral-engine-agent-sandbox/tests/kind/up.sh,
 # which this script creates when it is missing, and walks a user and an operator through it.
 # CORRAL_SERVER_IMAGE names a prebuilt server image (corral-server:e2e by default);
-# CORRAL_SANDBOX_IMAGE a sandbox image (corral-sandbox:dev by default, built when missing).
+# CORRAL_SANDBOX_IMAGE a sandbox image (corral-sandbox:dev by default, built when missing);
+# CORRAL_OVERLAY_IMAGE the overlay image (corral-overlay:dev by default).
 # CORRAL_E2E_SKIP_NETWORK_POLICY=1 skips the NetworkPolicy check, for a cluster whose network
 # plugin does not enforce policies.
 set -euo pipefail
@@ -20,6 +21,7 @@ forward_port=18000
 base=http://127.0.0.1:$http_port
 server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
 export CORRAL_SANDBOX_IMAGE=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
+export CORRAL_OVERLAY_IMAGE=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
 containerssh_image=$(awk '/^containerssh:/ { s = 1 } s && $1 == "repository:" { r = $2 } s && $1 == "tag:" { print r ":" $2; exit }' "$chart/values.yaml")
 
 passed=0
@@ -115,6 +117,9 @@ image:
 sandboxes:
   namespace:
     name: $sandboxes
+  overlayImage:
+    repository: ${CORRAL_OVERLAY_IMAGE%:*}
+    tag: ${CORRAL_OVERLAY_IMAGE##*:}
 catalog:
   images:
     - key: dev

@@ -78,7 +78,11 @@ RUN curl -fsSL -o openssh.tar.gz \
  && install -D -m 0755 sshd /out$P/sbin/sshd \
  && install -D -m 0755 -t /out$P/libexec sshd-session sshd-auth sftp-server
 
-RUN curl -fsSL -o bash.tar.gz "https://ftp.gnu.org/gnu/bash/bash-$BASH_VERSION.tar.gz" \
+# ftp.gnu.org often refuses connections from CI runners; the checksum makes any mirror safe.
+RUN for url in "https://ftpmirror.gnu.org/bash/bash-$BASH_VERSION.tar.gz" \
+      "https://ftp.gnu.org/gnu/bash/bash-$BASH_VERSION.tar.gz"; do \
+      curl -fsSL --retry 3 --connect-timeout 30 -o bash.tar.gz "$url" && break; \
+    done \
  && echo "$BASH_SHA256  bash.tar.gz" | sha256sum -c - \
  && tar -xzf bash.tar.gz && cd "bash-$BASH_VERSION" \
  && ./configure --enable-static-link --without-bash-malloc --disable-nls >/dev/null \
