@@ -11,6 +11,11 @@ http_port=18080
 ssh_port=48292
 forward_port=18000
 base=http://127.0.0.1:$http_port
+# Sandboxes reach the API through the host, at their network's gateway, as they would through
+# the host's LAN address in a real install.
+sandbox_subnet=172.30.243.0/24
+sandbox_gateway=172.30.243.1
+sandbox_api_port=18081
 
 started=$SECONDS
 passed=0
@@ -81,14 +86,15 @@ if [[ -z "${CORRAL_SERVER_IMAGE:-}" ]]; then
   docker build --file "$repo/images/server/Dockerfile" --tag "$server_image" "$repo" >>"$log" 2>&1
 fi
 if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
-  docker build --tag "$sandbox_image" "$repo/images/sandbox" >>"$log" 2>&1
+  docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo" >>"$log" 2>&1
 fi
 ok "images: server $server_image, sandbox $sandbox_image"
 
 cp -R "$repo/deploy/compose/." "$work/"
 cd "$work"
 chmod 700 .
-sed -e "s|^base_url = .*|base_url = \"$base\"|" -e 's|^public_host = .*|public_host = "127.0.0.1"|' \
+sed -e "s|^base_url = .*|base_url = \"$base\"\nsandbox_base_url = \"http://$sandbox_gateway:$sandbox_api_port\"|" \
+  -e 's|^public_host = .*|public_host = "127.0.0.1"|' \
   "$repo/deploy/compose/config.toml" >config.toml
 cat >>config.toml <<EOF
 public_port = $ssh_port
@@ -114,12 +120,17 @@ services:
     image: $server_image
     ports: !override
       - "127.0.0.1:$http_port:8080"
+      - "$sandbox_gateway:$sandbox_api_port:8080"
   containerssh:
     ports: !override
       - "127.0.0.1:$ssh_port:2222"
 networks:
   corral-sandboxes:
     name: $sandbox_network
+    ipam:
+      config:
+        - subnet: $sandbox_subnet
+          gateway: $sandbox_gateway
 EOF
 export COMPOSE_PROJECT_NAME=$project COMPOSE_FILE=compose.yaml:compose.e2e.yaml
 ok "copied deploy/compose to a private directory and set base_url and public_host"
@@ -345,6 +356,72 @@ expect "ssh after the restart" sandbox "$(as adam main.adam "id -un")"
 api adam POST api/sandboxes/main/restart >/dev/null
 expect "the credential after an API restart" "$token" "$(as adam main.adam 'printenv E2E_TOKEN')"
 ok "after docker compose restart corral, the user, key, sandbox and credential persist"
+
+started_at() {
+  docker inspect --format '{{.State.StartedAt}}' "$adam_container"
+}
+
+until_state() {
+  local waited=0
+  while [[ "$(api adam GET api/sandboxes/main | jq -r .state)" != "$1" ]]; do
+    ((waited < 60)) || fail "main was not $1 after 60s"
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+out=$(as adam main.adam 'corral status')
+[[ "$out" == *"Sandbox  main.adam"*"State    running"* ]] || fail "corral status: $out"
+ok "corral status inside main shows main.adam running"
+
+before=$(started_at)
+out=$(as adam main.adam 'corral restart' 2>&1 || true)
+[[ "$out" == "Corral accepted the restart of main."* ]] || fail "corral restart: $out"
+waited=0
+while [[ "$(started_at)" == "$before" || "$(api adam GET api/sandboxes/main | jq -r .state)" != running ]]; do
+  ((waited < 60)) || fail "main did not come back within 60s of corral restart"
+  sleep 1
+  waited=$((waited + 1))
+done
+expect "ssh after corral restart" "sandbox $token" "$(as adam main.adam 'echo "$(id -un) $E2E_TOKEN"')"
+ok "corral restart inside main was accepted, and main came back (${waited}s)"
+
+out=$(as adam main.adam 'corral stop' 2>&1 || true)
+[[ "$out" == "Corral accepted the stop of main."* ]] || fail "corral stop: $out"
+until_state sleeping
+expect "container after corral stop" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
+ok "corral stop inside main was accepted, and main went to sleep"
+
+out=$(as adam main.adam 'corral delete 2>&1; echo "exit $?"')
+[[ "$out" == *"To go ahead, run: corral delete --confirm main"*"exit 1" ]] || fail "corral delete: $out"
+out=$(as adam main.adam 'corral delete --confirm main 2>&1; echo "exit $?"')
+[[ "$out" == *"deleting a sandbox from inside it is off"*"exit 1" ]] \
+  || fail "corral delete --confirm while off: $out"
+expect "deleteAt while off" null "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
+ok "corral delete asks for --confirm, then is refused while adam's profile has it off"
+
+api adam PUT api/me/delete-from-inside '{"enabled":true}' >/dev/null
+out=$(as adam main.adam 'corral delete --confirm main' 2>&1 || true)
+[[ "$out" == "main stops now and is deleted at "*"cancel the deletion on its page: $base/sandboxes/main" ]] \
+  || fail "corral delete --confirm main: $out"
+until_state sleeping
+delete_at=$(api adam GET api/sandboxes/main | jq -r .deleteAt)
+[[ "$delete_at" != null ]] || fail "no deleteAt after corral delete"
+if output=$(as adam main.adam true 2>&1); then
+  fail "ssh woke main while its deletion was scheduled"
+fi
+[[ "$output" == *"closed by remote host"* ]] || fail "ssh to a scheduled main: unexpected error: $output"
+expect "container while scheduled" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
+ok "with it on, corral delete --confirm main stopped main and scheduled its deletion for $delete_at"
+
+docker compose restart corral >>"$log" 2>&1
+docker compose up -d --wait >>"$log" 2>&1
+login adam "$admin_password"
+expect "deleteAt after a restart of corral" "$delete_at" "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
+expect "cancel the deletion" 204 "$(http_status adam DELETE api/sandboxes/main/deletion)"
+expect "deleteAt after the cancel" null "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
+expect "ssh after the cancel" "sandbox adam" "$(as adam main.adam 'echo "$(id -un) $(cat ~/owner)"')"
+ok "the schedule outlived a restart of corral; cancelling it through the API kept main and its home"
 
 docker compose restart containerssh >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1

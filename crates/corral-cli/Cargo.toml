@@ -1,0 +1,16 @@
+[package]
+name = "corral-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "corral"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+
+[lints]
+workspace = true

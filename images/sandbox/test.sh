@@ -3,6 +3,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo=$(cd "$here/../.." && pwd)
 image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
 prefix=corral-sandbox-test
 network=$prefix
@@ -32,7 +33,7 @@ check() {
 }
 
 if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
-  docker build --quiet --tag "$image" "$here" >/dev/null
+  docker build --quiet --file "$here/Dockerfile" --tag "$image" "$repo" >/dev/null
   echo "built $image"
 fi
 
@@ -50,6 +51,18 @@ for tool in herdr-core hc claude codex python3; do
   [[ "$out" =~ [0-9]+\.[0-9]+\.[0-9]+ ]] || fail "$tool --version printed no version: $out"
   echo "ok - $tool --version: $out"
 done
+
+out=$(docker exec "$client" corral help | head -n 1)
+check "corral is on PATH" "corral acts on the Corral sandbox it runs in." "$out"
+
+out=$(docker exec "$client" ldd /usr/local/bin/corral 2>&1 || true)
+[[ "$out" == *"not a dynamic executable"* ]] || fail "corral is not a static binary: $out"
+echo "ok - corral is a static binary"
+
+out=$(docker exec "$client" sh -c 'corral status 2>&1; echo "exit $?"')
+[[ "$out" == "corral: cannot read /home/sandbox/.config/corral/sandbox.json"*"exit 1" ]] \
+  || fail "corral status without the sandbox file: $out"
+echo "ok - corral status without the sandbox file says which file it needs"
 
 out=$(docker exec "$client" sh -c 'echo "$SHELL"')
 check "a session without sshd, as on Kubernetes, has the login shell in SHELL" /bin/bash "$out"

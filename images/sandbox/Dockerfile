@@ -1,3 +1,37 @@
+# syntax=docker/dockerfile:1
+# Built from the repository root: docker build --file images/sandbox/Dockerfile .
+
+# The corral command, a static musl binary. The stage runs on the build host and cross-compiles,
+# so a multi-platform build never runs rustc under emulation.
+FROM --platform=$BUILDPLATFORM rust:1.100.0-slim-trixie AS corral-command
+ARG TARGETARCH
+# The glibc cross compilers build ring's C code and link for musl, with the musl libc and start
+# files rustc brings.
+ENV CC_x86_64_unknown_linux_musl=x86_64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-gnu-gcc \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc
+RUN case "$TARGETARCH" in \
+      amd64) echo x86_64-unknown-linux-musl > /rust-target; gcc=gcc-x86-64-linux-gnu ;; \
+      arm64) echo aarch64-unknown-linux-musl > /rust-target; gcc=gcc-aarch64-linux-gnu ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && if [ "$(dpkg --print-architecture)" != "$TARGETARCH" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends "$gcc" "libc6-dev-$TARGETARCH-cross" \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+WORKDIR /src
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+RUN rustup target add "$(cat /rust-target)"
+COPY crates crates
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corral-cargo-registry,sharing=locked \
+    --mount=type=cache,target=/src/target,id=corral-command-target,sharing=locked \
+    target="$(cat /rust-target)" \
+ && cargo build --release --locked --package corral-cli --target "$target" \
+      --config profile.release.strip=true \
+ && cp "target/$target/release/corral" /corral
+
 FROM ubuntu:24.04
 
 ARG TARGETARCH
@@ -50,11 +84,12 @@ RUN set -eu; \
     npm cache clean --force; \
     rm -rf /tmp/* /root/.npm
 
-COPY motd /etc/motd
-COPY corral-motd.sh /etc/profile.d/
-COPY sshd_config /etc/ssh/sshd_config
-COPY --chmod=0440 sudoers /etc/sudoers.d/sandbox
-COPY --chmod=0755 corral-home-init corral-entrypoint /usr/local/bin/
+COPY images/sandbox/motd /etc/motd
+COPY images/sandbox/corral-motd.sh /etc/profile.d/
+COPY images/sandbox/sshd_config /etc/ssh/sshd_config
+COPY --chmod=0440 images/sandbox/sudoers /etc/sudoers.d/sandbox
+COPY --chmod=0755 images/sandbox/corral-home-init images/sandbox/corral-entrypoint /usr/local/bin/
+COPY --from=corral-command /corral /usr/local/bin/corral
 
 USER 1000
 WORKDIR /home/sandbox

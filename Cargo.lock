@@ -777,6 +777,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "corral-cli"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "corral-core"
 version = "0.1.0"
 dependencies = [
@@ -5402,6 +5411,7 @@ dependencies = [
  "rustls-pki-types",
  "ureq-proto",
  "utf8-zero",
+ "webpki-roots",
 ]
 
 [[package]]

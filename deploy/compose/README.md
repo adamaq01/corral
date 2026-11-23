@@ -97,6 +97,23 @@ block, and wakes, stops, restarts or deletes the sandbox.
   terminal at work (`timeout_secs` under `[idle]`), and wakes on the next SSH login. Sleep keeps
   the container, so its files survive until the sandbox is deleted.
 
+### From inside a sandbox
+
+The `corral` command acts on the sandbox it runs in:
+
+- `corral status` shows the sandbox and its state.
+- `corral restart` and `corral stop` restart or stop it. Corral accepts the request and does it
+  next, so the session that asked ends as the sandbox stops.
+- `corral delete --confirm <sandbox>` stops the sandbox at once and deletes it, with its home, 10
+  minutes later. It is refused until you turn it on in your **Profile**. Until the deletion, the
+  sandbox stays stopped and its page offers **Cancel deletion**.
+
+At every start Corral writes `~/.config/corral/sandbox.json`, readable only by the sandbox user,
+with a token that works for that sandbox alone while it runs. The command calls Corral's API at
+`base_url`, so sandboxes must reach that address: with the default port mapping, the host's LAN
+name or address does. Set `sandbox_base_url` under `[http]` when sandboxes reach Corral at another
+address.
+
 The web UI runs on a JSON API at the same address (`/api` and `/auth`), which scripts can call
 too. Every `POST` and `PUT` there needs `Content-Type: application/json`, including the ones
 without a body, such as `POST /api/sandboxes/main/stop`.

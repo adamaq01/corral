@@ -42,7 +42,7 @@ jobs:
           cache-from: type=gha,scope=corral
       - uses: docker/build-push-action@v7
         with:
-          context: images/sandbox
+          context: .
           file: images/sandbox/Dockerfile
           load: true
           tags: corral-sandbox:e2e
@@ -94,7 +94,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
-          context: images/sandbox
+          context: .
           file: images/sandbox/Dockerfile
           load: true
           tags: corral-sandbox:e2e
@@ -155,7 +155,7 @@ jobs:
           cache-from: type=gha,scope=corral
       - uses: docker/build-push-action@v7
         with:
-          context: images/sandbox
+          context: .
           file: images/sandbox/Dockerfile
           load: true
           tags: corral-sandbox:e2e
@@ -184,7 +184,7 @@ jobs:
             context: .
             file: images/server/Dockerfile
           - name: corral-sandbox
-            context: images/sandbox
+            context: .
             file: images/sandbox/Dockerfile
     steps:
       - uses: actions/checkout@v7

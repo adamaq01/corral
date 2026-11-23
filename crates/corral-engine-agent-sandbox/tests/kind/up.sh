@@ -44,7 +44,7 @@ automountServiceAccountToken: false
 EOF
 
 if ! docker image inspect "$sandbox_image" >/dev/null 2>&1; then
-  docker build --tag "$sandbox_image" "$repo/images/sandbox"
+  docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo"
 fi
 sandbox_image_id=$(docker image inspect --format '{{.Id}}' "$sandbox_image")
 if ! docker exec "$node" ctr --namespace=k8s.io images ls | grep -F "$sandbox_image_id" >/dev/null; then

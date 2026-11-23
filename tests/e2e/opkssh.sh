@@ -93,7 +93,7 @@ if [[ -z "${CORRAL_SERVER_IMAGE:-}" ]]; then
   docker build --file "$repo/images/server/Dockerfile" --tag "$server_image" "$repo" >>"$log" 2>&1
 fi
 if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
-  docker build --tag "$sandbox_image" "$repo/images/sandbox" >>"$log" 2>&1
+  docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo" >>"$log" 2>&1
 fi
 docker pull --quiet "$voidauth_image" >>"$log"
 ok "images: server $server_image, sandbox $sandbox_image, issuer $voidauth_image"
