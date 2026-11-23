@@ -51,6 +51,19 @@ for tool in herdr-core hc claude codex python3; do
   echo "ok - $tool --version: $out"
 done
 
+out=$(docker exec "$client" sh -c 'echo "$SHELL"')
+check "a session without sshd, as on Kubernetes, has the login shell in SHELL" /bin/bash "$out"
+
+motd_lines() {
+  grep -c 'This is a Corral sandbox' || true
+}
+
+out=$(docker exec "$client" bash -lic true 2>/dev/null | motd_lines)
+check "an interactive login shell prints the motd once" 1 "$out"
+
+out=$(docker exec "$client" bash -lc 'echo only this')
+check "a non-interactive login shell prints only its output" "only this" "$out"
+
 docker exec "$client" mkdir -m 700 /home/sandbox/.ssh
 docker exec "$client" ssh-keygen -q -t ed25519 -N '' -C proxy -f /home/sandbox/.ssh/proxy_key
 docker exec "$client" ssh-keygen -q -t ed25519 -N '' -C host -f /tmp/host_key
@@ -58,11 +71,12 @@ host_key=$(docker exec "$client" cat /tmp/host_key)
 host_pub=$(docker exec "$client" cat /tmp/host_key.pub)
 echo "$server $host_pub" | docker exec --interactive "$client" tee /home/sandbox/.ssh/known_hosts >/dev/null
 
+ssh_options=(-i /home/sandbox/.ssh/proxy_key
+  -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes
+  -o UserKnownHostsFile=/home/sandbox/.ssh/known_hosts -o GlobalKnownHostsFile=/dev/null)
+
 ssh_run() {
-  docker exec "$client" ssh -i /home/sandbox/.ssh/proxy_key \
-    -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-    -o UserKnownHostsFile=/home/sandbox/.ssh/known_hosts -o GlobalKnownHostsFile=/dev/null \
-    "sandbox@$server" "$@"
+  docker exec "$client" ssh "${ssh_options[@]}" "sandbox@$server" "$@"
 }
 
 # Stands in for the engine, which writes these files into the stopped container before each start.
@@ -104,6 +118,13 @@ check "the written SetEnv reaches the ssh session" bar "$out"
 
 out=$(ssh_run 'printenv CORRAL_SSH_HOST_KEY; env | grep ^CORRAL_; true')
 check "no CORRAL_ variable reaches the ssh session" "" "$out"
+
+out=$(ssh_run 'echo "$SHELL"')
+check "an ssh command has the login shell in SHELL" /bin/bash "$out"
+
+out=$(echo exit | docker exec --interactive "$client" ssh -tt "${ssh_options[@]}" "sandbox@$server" 2>/dev/null \
+  | motd_lines)
+check "an interactive ssh login prints the motd once" 1 "$out"
 
 out=$(ssh_run 'test -e ~/.ssh/authorized_keys && echo present || echo absent')
 check "home has no authorized_keys" absent "$out"

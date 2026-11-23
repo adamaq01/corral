@@ -13,6 +13,8 @@ ARG CLAUDE_CODE_VERSION=2.1.330
 ARG CODEX_VERSION=0.171.0
 
 ENV LANG=C.UTF-8
+# The user's login shell, which sshd sets but a Kubernetes exec does not.
+ENV SHELL=/bin/bash
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -25,7 +27,8 @@ RUN userdel --remove ubuntu \
  && install -d -o 1000 -g 1000 -m 0750 /home/sandbox \
  && mkdir -p /etc/corral \
  && cp -R /etc/skel /etc/corral/skel \
- && rm -rf /etc/update-motd.d /etc/legal
+ && rm -rf /etc/update-motd.d /etc/legal \
+ && sed -i '/pam_motd/d' /etc/pam.d/sshd
 
 RUN set -eu; \
     case "$TARGETARCH" in \
@@ -48,6 +51,7 @@ RUN set -eu; \
     rm -rf /tmp/* /root/.npm
 
 COPY motd /etc/motd
+COPY corral-motd.sh /etc/profile.d/
 COPY sshd_config /etc/ssh/sshd_config
 COPY --chmod=0440 sudoers /etc/sudoers.d/sandbox
 COPY --chmod=0755 corral-home-init corral-entrypoint /usr/local/bin/

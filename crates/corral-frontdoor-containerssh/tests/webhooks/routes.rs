@@ -224,6 +224,7 @@ async fn config_answers_each_target_kind() {
         json!({"config": {"backend": "kubernetes", "kubernetes": {"pod": {
             "metadata": {"name": w.adam.main.id.0, "namespace": FakeEngine::NAMESPACE},
             "mode": "persistent",
+            "shellCommand": ["/bin/bash", "-l"],
         }}}})
     );
 

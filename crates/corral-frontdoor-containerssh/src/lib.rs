@@ -116,12 +116,14 @@ async fn config(
 
 fn backend(target: &SshTarget) -> Value {
     match target {
-        // Without persistent mode ContainerSSH reads metadata.name as the pod to create.
+        // Without persistent mode ContainerSSH reads metadata.name as the pod to create. Its
+        // default shell is a plain /bin/bash, which reads no profile, unlike an sshd login.
         SshTarget::KubernetesPod { namespace, pod } => json!({
             "backend": "kubernetes",
             "kubernetes": {"pod": {
                 "metadata": {"name": pod, "namespace": namespace},
                 "mode": "persistent",
+                "shellCommand": ["/bin/bash", "-l"],
             }},
         }),
         // ContainerSSH merges this over its own config, which holds the privateKey.
