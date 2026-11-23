@@ -22,7 +22,10 @@ services:
       retries: 3
 
   containerssh:
-    image: containerssh/containerssh:v0.6.1
+    # https://github.com/adamaq01/ContainerSSH: ContainerSSH's main branch with two fixes not yet
+    # released upstream, for one-shot commands losing output and for stray bytes in Kubernetes
+    # terminals.
+    image: ghcr.io/adamaq01/containerssh:7d65536@sha256:c53d09697e5605b7515606e7bb4c1284abc4c53eadd6e89b327166f344859c8f
     restart: unless-stopped
     volumes:
       - ./containerssh.yaml:/etc/containerssh/config.yaml:ro

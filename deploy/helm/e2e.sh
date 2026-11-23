@@ -20,7 +20,7 @@ forward_port=18000
 base=http://127.0.0.1:$http_port
 server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
 export CORRAL_SANDBOX_IMAGE=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
-containerssh_image=containerssh/containerssh:$(awk '/^containerssh:/ { s = 1 } s && $1 == "tag:" { print $2; exit }' "$chart/values.yaml")
+containerssh_image=$(awk '/^containerssh:/ { s = 1 } s && $1 == "repository:" { r = $2 } s && $1 == "tag:" { print r ":" $2; exit }' "$chart/values.yaml")
 
 passed=0
 work=

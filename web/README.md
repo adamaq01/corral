@@ -29,9 +29,9 @@ npm run test:e2e  # Playwright
 
 The Playwright suite builds the UI and the corral-server binary (set `CORRAL_SERVER_BIN` to use a
 built one), then runs the server on SQLite in a temporary directory with local accounts and the
-Docker engine on a network of its own. ContainerSSH (`containerssh/containerssh:v0.6.1`) joins that
-network as the SSH front door, with the Compose install's `containerssh.yaml`, so tests SSH into
-the sandboxes they create. The suite removes the containers, volumes and network afterwards.
+Docker engine on a network of its own. ContainerSSH (`ghcr.io/adamaq01/containerssh:7d65536`,
+the Compose install's image) joins that network as the SSH front door, with the Compose
+install's `containerssh.yaml`, so tests SSH into the sandboxes they create. The suite removes the containers, volumes and network afterwards.
 Sandboxes use `corral-sandbox:dev` unless `CORRAL_SANDBOX_IMAGE` names another image. A failed test
 keeps its trace in `test-results/`, next to `corral-server.log` and `containerssh.log`.
 

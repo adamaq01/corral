@@ -12,6 +12,10 @@ A bare `<handle>` reaches the user's default sandbox. A sandbox name the user ha
 makes that sandbox, from the image and size set in their profile, then opens it, unless they
 already have as many as `max_sandboxes_per_user` under `[limits]` allows (5 by default).
 
+The ContainerSSH image is [a build](https://github.com/adamaq01/ContainerSSH) of ContainerSSH's
+main branch with two fixes not yet released upstream: one-shot commands (`ssh -n <command>`) keep
+all their output, and Kubernetes terminals get no stray bytes and end when the connection drops.
+
 ## Install
 
 You need Docker with the Compose plugin and `ssh-keygen`.
@@ -139,7 +143,7 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
   the proxy. Over plain HTTP on a LAN the UI works too, copy buttons included.
 - ContainerSSH accepts public keys only, and Corral locks out a source address (for IPv6, its
   /64) after 10 failed connections in 5 minutes. ContainerSSH's audit log is off.
-- ContainerSSH 0.6.1 does not speak the PROXY protocol, so behind a TCP tunnel or proxy (such
+- ContainerSSH does not speak the PROXY protocol, so behind a TCP tunnel or proxy (such
   as a rathole client container) every client shares the relay's address and one lockout. Put
   the relay and ContainerSSH on a Docker network of their own with a fixed `ipam` subnet, and
   list that subnet in `config.toml`; connections from it are then never locked out by address:
@@ -152,20 +156,6 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
 
   Keys cannot be guessed, so nothing replaces the lockout for those connections. The chart's
   [README](../helm/corral/README.md#lockout-behind-a-tunnel) has a rathole example.
-
-## Known limitation: one-shot commands
-
-ContainerSSH 0.6.1 relays sessions to Docker sandboxes with its `sshproxy` backend, which can cut
-off a command that prints and then exits (`ssh main.<name>@<public_host> <command>`):
-
-- It ends the session as soon as the client's input ends, so `ssh -n` or `< /dev/null` usually
-  kills the command before it prints.
-- It can close the session before relaying the last of the output. Measured on one host: 11 of
-  100 `id -un` runs printed nothing, and 14 of 30 runs printing 200 kB came back short. A
-  command that ends with a short pause (`<command>; sleep 0.1`) lost nothing in 100 runs.
-
-Interactive shells, Herdr and `ssh -L` port forwards are not affected: none of them lost data in
-the same tests.
 
 ## Operating it
 

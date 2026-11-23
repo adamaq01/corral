@@ -95,7 +95,7 @@ async fn containerssh(
         .as_object_mut()
         .unwrap()
         .extend(extra.as_object().unwrap().clone());
-    let mut request = GenericImage::new("containerssh/containerssh", "v0.6.1")
+    let mut request = GenericImage::new("ghcr.io/adamaq01/containerssh", "7d65536")
         .with_exposed_port(2222.tcp())
         .with_wait_for(WaitFor::message_on_either_std("SSH_AVAILABLE"))
         .with_host(GATEWAY, Host::HostGateway)

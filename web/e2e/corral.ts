@@ -20,7 +20,8 @@ import { session, type Account, type Role } from './fixtures';
 const web = resolve(import.meta.dirname, '..');
 const repo = resolve(web, '..');
 
-const CONTAINERSSH_IMAGE = 'containerssh/containerssh:v0.6.1';
+const CONTAINERSSH_IMAGE =
+	'ghcr.io/adamaq01/containerssh:7d65536@sha256:c53d09697e5605b7515606e7bb4c1284abc4c53eadd6e89b327166f344859c8f';
 
 /**
  * Builds the UI and runs the real corral-server on it: SQLite in a temporary directory, local

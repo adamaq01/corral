@@ -13,6 +13,10 @@ A bare `<handle>` reaches the user's default sandbox. A sandbox name the user ha
 makes that sandbox, from the image and size set in their profile, then opens it, unless they
 already have as many as `limits.maxSandboxesPerUser` allows (5 by default).
 
+The ContainerSSH image is [a build](https://github.com/adamaq01/ContainerSSH) of ContainerSSH's
+main branch with two fixes not yet released upstream: one-shot commands (`ssh -n <command>`) keep
+all their output, and Kubernetes terminals get no stray bytes and end when the connection drops.
+
 ## What it installs
 
 In the release namespace:
@@ -241,8 +245,8 @@ latter.
 ## Lockout behind a tunnel
 
 Corral locks out a source address after 10 failed SSH connections in 5 minutes. ContainerSSH
-0.6.1 does not speak the PROXY protocol, so a connection relayed by a TCP tunnel or proxy reaches
-it from the relay's address. Every client behind the relay then shares one lockout, and 10
+does not speak the PROXY protocol, so a connection relayed by a TCP tunnel or proxy reaches it
+from the relay's address. Every client behind the relay then shares one lockout, and 10
 failures by anyone lock everyone out for 5 minutes.
 
 `containerssh.lockoutExemptNetworks` lists the networks such relays connect from, in CIDR

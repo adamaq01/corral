@@ -214,10 +214,13 @@ affinity: {}
 
 containerssh:
   image:
-    # containerssh.image.repository is the ContainerSSH image.
-    repository: containerssh/containerssh
+    # containerssh.image.repository is the ContainerSSH image. The default is
+    # https://github.com/adamaq01/ContainerSSH, ContainerSSH's main branch with two fixes not yet
+    # released upstream, for one-shot commands losing output and for stray bytes in Kubernetes
+    # terminals.
+    repository: ghcr.io/adamaq01/containerssh
     # containerssh.image.tag is the ContainerSSH version.
-    tag: v0.6.1
+    tag: 7d65536
     # containerssh.image.pullPolicy is the ContainerSSH container's pull policy.
     pullPolicy: IfNotPresent
   # containerssh.replicas is the number of ContainerSSH pods.
