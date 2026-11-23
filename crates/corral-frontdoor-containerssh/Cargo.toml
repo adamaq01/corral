@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 axum.workspace = true
 corral-core = { path = "../corral-core" }
+ipnet = "2.12.2"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["time"] }

@@ -221,6 +221,10 @@ containerssh:
   # `helm uninstall` leaves it behind, so known_hosts entries stay valid.
   hostKey:
     existingSecret: ""
+  # containerssh.lockoutExemptNetworks are networks, in CIDR notation, whose SSH connections are
+  # never locked out by address, because every client behind them shares it: the pods of a
+  # tunnel such as rathole, or a proxy. See "Lockout behind a tunnel" in the README.
+  lockoutExemptNetworks: []
   service:
     # containerssh.service.type is LoadBalancer, NodePort or ClusterIP.
     type: LoadBalancer

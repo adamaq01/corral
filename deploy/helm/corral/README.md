@@ -157,7 +157,61 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
 - Behind an Ingress controller or Gateway, set `trustForwardedFor: true` so password-login limits
   count each client, not the proxy.
 - `containerssh.service.externalTrafficPolicy: Local` keeps clients' addresses, so Corral's
-  lockout after 10 failed SSH logins in 5 minutes applies per client.
+  lockout after 10 failed SSH connections in 5 minutes applies per client (per /64 for IPv6).
+
+## Lockout behind a tunnel
+
+Corral locks out a source address after 10 failed SSH connections in 5 minutes. ContainerSSH
+0.6.1 does not speak the PROXY protocol, so a connection relayed by a TCP tunnel or proxy reaches
+it from the relay's address. Every client behind the relay then shares one lockout, and 10
+failures by anyone lock everyone out for 5 minutes.
+
+`containerssh.lockoutExemptNetworks` lists the networks such relays connect from, in CIDR
+notation. Connections from them are never locked out; connections from anywhere else still
+are. Set it when public SSH reaches ContainerSSH through a tunnel such as rathole, frp or an SSH
+reverse tunnel, or through a TCP proxy, and leave it empty when clients connect directly.
+
+Nothing replaces the lockout for exempt connections. ContainerSSH accepts public keys and
+certificates only, which cannot be guessed, and tries at most 6 keys on each connection. A
+lockout per account would let anyone lock a user out by failing as them, so there is none.
+
+For example, a rathole server on a public host forwards port 48291 to a rathole client in the
+cluster, which connects to the ContainerSSH Service. The server's `server.toml`:
+
+```toml
+[server]
+bind_addr = "0.0.0.0:2333"
+
+[server.services.corral-ssh]
+token = "<a long random secret>"
+bind_addr = "0.0.0.0:48291"
+```
+
+The client's `client.toml`, run in a pod in the cluster:
+
+```toml
+[client]
+remote_addr = "tunnel.example.com:2333"
+
+[client.services.corral-ssh]
+token = "<the same secret>"
+local_addr = "corral-containerssh.corral.svc.cluster.local:48291"
+```
+
+The client connects from its pod's address, which changes when the pod is replaced, so exempt
+the pod network it runs in, here k3s's default:
+
+```yaml
+ssh:
+  publicHost: tunnel.example.com
+containerssh:
+  lockoutExemptNetworks: [10.42.0.0/16]
+```
+
+LAN clients reaching the MetalLB address with `externalTrafficPolicy: Local` keep their own
+addresses and stay locked out individually, as long as the LAN is outside the exempt networks.
+Every pod in an exempt network is exempt too, sandboxes included; a narrower network, such as
+the pod CIDR of the one node the client is pinned to, exempts less.
 
 ## Tests
 

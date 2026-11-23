@@ -145,3 +145,19 @@ identity:
   oidc:
     opkssh:
       policy: oidc
+---
+# expect: at '/containerssh/lockoutExemptNetworks/0': '10.42.0.0' does not match pattern
+containerssh:
+  lockoutExemptNetworks: [10.42.0.0]
+---
+# expect: at '/containerssh/lockoutExemptNetworks/1': '10.42.0.0/33' does not match pattern
+containerssh:
+  lockoutExemptNetworks: [fd00:42::/48, 10.42.0.0/33]
+---
+# expect: at '/containerssh/lockoutExemptNetworks/0': 'fd00::/129' does not match pattern
+containerssh:
+  lockoutExemptNetworks: [fd00::/129]
+---
+# expect: at '/containerssh/lockoutExemptNetworks': got string, want array
+containerssh:
+  lockoutExemptNetworks: 10.42.0.0/16

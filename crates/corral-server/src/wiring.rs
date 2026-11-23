@@ -81,8 +81,10 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     if let Some(ui) = Ui::find(config.http.ui_dir.as_deref())? {
         public = public.fallback_service(ui.router());
     }
-    let internal = match config.frontdoor {
-        FrontDoor::ContainerSsh {} => corral_frontdoor_containerssh::router(Arc::new(access)),
+    let internal = match &config.frontdoor {
+        FrontDoor::ContainerSsh(containerssh) => {
+            corral_frontdoor_containerssh::router(Arc::new(access), containerssh.clone())
+        }
     };
     Ok(App {
         public,

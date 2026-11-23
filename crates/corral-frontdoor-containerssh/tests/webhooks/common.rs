@@ -1,7 +1,7 @@
 use axum::Router;
 use corral_core::domain::{Sandbox, SandboxId, User};
 use corral_core::fakes::{EngineCall, World};
-use corral_frontdoor_containerssh::router;
+use corral_frontdoor_containerssh::{ContainerSshConfig, router};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 
@@ -33,7 +33,11 @@ impl Fixture {
     }
 
     pub fn router(&self) -> Router {
-        router(self.world.access.clone())
+        self.router_with(ContainerSshConfig::default())
+    }
+
+    pub fn router_with(&self, config: ContainerSshConfig) -> Router {
+        router(self.world.access.clone(), config)
     }
 
     pub fn starts(&self, id: &SandboxId) -> usize {

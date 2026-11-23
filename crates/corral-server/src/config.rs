@@ -9,6 +9,7 @@ use anyhow::{Context, Result, ensure};
 use corral_core::app::Catalog;
 use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
+use corral_frontdoor_containerssh::ContainerSshConfig;
 use corral_identity_oidc::OidcConfig;
 use corral_secrets_vault::VaultConfig;
 use serde::Deserialize;
@@ -150,12 +151,12 @@ impl Default for Idle {
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum FrontDoor {
     #[serde(rename = "containerssh")]
-    ContainerSsh {},
+    ContainerSsh(ContainerSshConfig),
 }
 
 impl Default for FrontDoor {
     fn default() -> Self {
-        Self::ContainerSsh {}
+        Self::ContainerSsh(ContainerSshConfig::default())
     }
 }
 
@@ -215,7 +216,7 @@ mod tests {
     use corral_identity_oidc::ExpiryPolicy;
     use corral_secrets_vault::VaultAuth;
 
-    use super::{Config, Engine, Secrets};
+    use super::{Config, Engine, FrontDoor, Secrets};
 
     const EXAMPLE: &str = include_str!("../config.example.toml");
     const COMPOSE: &str = include_str!("../../../deploy/compose/config.toml");
@@ -285,6 +286,8 @@ mod tests {
             ("opkssh", ExpiryPolicy::Hours24)
         );
         assert!(config.identity.local.is_none());
+        let FrontDoor::ContainerSsh(containerssh) = &config.frontdoor;
+        assert_eq!(containerssh.lockout_exempt_networks.len(), 1);
         let Engine::AgentSandbox(agent) = config.engine else {
             panic!("the example runs on agent-sandbox");
         };
@@ -425,6 +428,41 @@ mod tests {
         .unwrap();
         assert_eq!(config.catalog.image(None).unwrap().key.as_str(), "debian");
         assert_eq!(config.catalog.size(None).unwrap().key.as_str(), "small");
+    }
+
+    #[test]
+    fn the_front_door_takes_lockout_exempt_networks_in_cidr_notation() {
+        let frontdoor = |networks: &str| {
+            format!(
+                "{MINIMAL}\n[frontdoor]\nkind = \"containerssh\"\n\
+                 lockout_exempt_networks = {networks}"
+            )
+        };
+        let FrontDoor::ContainerSsh(containerssh) = Config::parse(MINIMAL).unwrap().frontdoor;
+        assert!(containerssh.lockout_exempt_networks.is_empty());
+        let config = Config::parse(&frontdoor(r#"["10.42.0.0/16", "fd00:42::/48"]"#)).unwrap();
+        let FrontDoor::ContainerSsh(containerssh) = config.frontdoor;
+        assert_eq!(containerssh.lockout_exempt_networks.len(), 2);
+
+        for (networks, expected) in [
+            (
+                r#"["10.42.0.0"]"#,
+                r#""10.42.0.0" is not a network in CIDR notation"#,
+            ),
+            (r#"["10.42.0.0/33"]"#, r#""10.42.0.0/33" is not a network"#),
+            (r#"["10.42.0.0/16", "pods"]"#, r#""pods" is not a network"#),
+            (r#""10.42.0.0/16""#, "expected a sequence"),
+        ] {
+            let message = rejection(&frontdoor(networks));
+            assert!(message.contains(expected), "{networks}: {message}");
+        }
+        let message = rejection(&format!(
+            "{MINIMAL}\n[frontdoor]\nkind = \"containerssh\"\nlockout_exempt_network = []"
+        ));
+        assert!(
+            message.contains("unknown field `lockout_exempt_network`"),
+            "{message}"
+        );
     }
 
     #[test]

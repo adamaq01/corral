@@ -10,7 +10,7 @@ use corral_core::domain::{Handle, User, UserId};
 use corral_core::fakes::{ADAM_CERT, FakeEngine, MemoryKeyRepo, admin_proof};
 use corral_core::ports::{SshTarget, UserRepo};
 use corral_core::{Error, Result};
-use corral_frontdoor_containerssh::router;
+use corral_frontdoor_containerssh::{Cidr, ContainerSshConfig, router};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -181,6 +181,28 @@ async fn pubkey_locks_out_rotating_addresses_in_one_ipv6_64_together() {
 }
 
 #[tokio::test]
+async fn pubkey_never_locks_out_an_exempt_network_and_still_locks_out_others() {
+    let w = Fixture::new().await;
+    let app = w.router_with(ContainerSshConfig {
+        lockout_exempt_networks: vec![Cidr::try_from("10.42.0.0/16".to_owned()).unwrap()],
+    });
+    let adam = w.adam.public_key();
+    let stranger = public_line(&generate_key());
+    for attempt in 0..30 {
+        for host in ["10.42.0.7", "10.42.3.9", "10.43.0.1"] {
+            let address = format!("{host}:{}", 50000 + attempt);
+            let connection = format!("{host}-{attempt}");
+            let (_, body) = pubkey(&app, "adam", &stranger, &address, &connection).await;
+            assert_eq!(body["success"], false);
+        }
+    }
+    assert!(accepted(&app, "adam", &adam, "10.42.0.7:40000").await);
+    assert!(accepted(&app, "eve", &w.eve.public_key(), "[::ffff:10.42.3.9]:40000").await);
+    assert!(!accepted(&app, "adam", &adam, "10.43.0.1:40000").await);
+    assert!(accepted(&app, "adam", &adam, "1.2.3.4:40000").await);
+}
+
+#[tokio::test]
 async fn config_answers_each_target_kind() {
     let w = Fixture::new().await;
     let app = w.router();
@@ -304,7 +326,7 @@ async fn store_errors_never_become_success() {
         w.world.sandboxes.clone(),
         Vec::new(),
     ));
-    let app = router(access);
+    let app = router(access, ContainerSshConfig::default());
     let adam = w.adam.public_key();
     for _ in 0..12 {
         assert_eq!(

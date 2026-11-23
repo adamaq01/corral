@@ -121,3 +121,20 @@ tests:
       - matchRegex:
           path: data["config.toml"]
           pattern: 'max_running = 10\n'
+
+  - it: locks out every network by default
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[frontdoor\]\s+kind = "containerssh"\s+\['
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: lockout_exempt_networks
+
+  - it: maps lockout-exempt networks to the [frontdoor] section
+    set:
+      containerssh.lockoutExemptNetworks: [10.42.0.0/16, fd00:42::/48]
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[frontdoor\]\s+kind = "containerssh"\s+lockout_exempt_networks = \["10\.42\.0\.0/16", "fd00:42::/48"\]\n'

@@ -1,3 +1,5 @@
+mod config;
+
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -15,11 +17,14 @@ use corral_core::ports::{Readiness, SshTarget};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+pub use config::{Cidr, ContainerSshConfig};
+
 const MAX_FAILED_CONNECTIONS: NonZeroUsize = NonZeroUsize::new(10).unwrap();
 const LOCKOUT_WINDOW: Duration = Duration::from_mins(5);
 
 struct FrontDoor {
     access: Arc<SshAccess>,
+    settings: ContainerSshConfig,
     failures: FailureWindow<Network>,
 }
 
@@ -38,9 +43,10 @@ struct ConfigRequest {
     authenticated_username: String,
 }
 
-pub fn router(access: Arc<SshAccess>) -> Router {
+pub fn router(access: Arc<SshAccess>, settings: ContainerSshConfig) -> Router {
     let front_door = FrontDoor {
         access,
+        settings,
         failures: FailureWindow::new(MAX_FAILED_CONNECTIONS, LOCKOUT_WINDOW),
     };
     Router::new()
@@ -63,11 +69,10 @@ async fn pubkey(
     };
     // tokio's clock, so paused-time tests can move past the window.
     let now = tokio::time::Instant::now().into_std();
-    let attempt = front_door.failures.admit(
-        &[Network::from(source.ip())],
-        Some(&request.connection_id),
-        now,
-    );
+    let network = front_door.settings.lockout_network(source.ip());
+    let attempt = front_door
+        .failures
+        .admit(network.as_slice(), Some(&request.connection_id), now);
     let accepted = match attempt {
         None => false,
         Some(attempt) => match front_door

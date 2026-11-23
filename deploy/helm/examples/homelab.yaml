@@ -1,5 +1,6 @@
 # OIDC login, a CloudNativePG database, credentials in OpenBao with Kubernetes auth, the web UI
-# behind a Gateway, and ContainerSSH on a MetalLB address.
+# behind a Gateway, and ContainerSSH on a MetalLB address for the LAN and behind a rathole tunnel
+# from the pod network for the internet.
 baseUrl: https://corral.example.com
 trustForwardedFor: true
 ssh:
@@ -59,6 +60,7 @@ httpRoute:
     - name: public
       namespace: gateway
 containerssh:
+  lockoutExemptNetworks: [10.42.0.0/16]
   service:
     annotations:
       metallb.io/loadBalancerIPs: 192.168.1.40

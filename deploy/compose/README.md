@@ -132,6 +132,19 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
   the proxy. Over plain HTTP on a LAN the UI works too, copy buttons included.
 - ContainerSSH accepts public keys only, and Corral locks out a source address (for IPv6, its
   /64) after 10 failed connections in 5 minutes. ContainerSSH's audit log is off.
+- ContainerSSH 0.6.1 does not speak the PROXY protocol, so behind a TCP tunnel or proxy (such
+  as a rathole client container) every client shares the relay's address and one lockout. Put
+  the relay and ContainerSSH on a Docker network of their own with a fixed `ipam` subnet, and
+  list that subnet in `config.toml`; connections from it are then never locked out by address:
+
+  ```toml
+  [frontdoor]
+  kind = "containerssh"
+  lockout_exempt_networks = ["172.30.0.0/24"]
+  ```
+
+  Keys cannot be guessed, so nothing replaces the lockout for those connections. The chart's
+  [README](../helm/corral/README.md#lockout-behind-a-tunnel) has a rathole example.
 
 ## Known limitation: one-shot commands
 

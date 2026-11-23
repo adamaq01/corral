@@ -45,6 +45,10 @@
   "memory_limit" .memoryLimit
   "home_size" .homeSize) }}
 {{- end }}
+{{- $frontdoor := dict "kind" "containerssh" }}
+{{- with .Values.containerssh.lockoutExemptNetworks }}
+{{- $_ := set $frontdoor "lockout_exempt_networks" . }}
+{{- end }}
 {{- $catalog := dict }}
 {{- with $images }}{{ $_ := set $catalog "images" . }}{{ end }}
 {{- with $sizes }}{{ $_ := set $catalog "sizes" . }}{{ end }}
@@ -54,7 +58,7 @@
   "secrets" $secrets
   "engine" $engine
   "idle" (dict "timeout_secs" (int .Values.idle.timeoutSecs) "probe_interval_secs" (int .Values.idle.probeIntervalSecs))
-  "frontdoor" (dict "kind" "containerssh")
+  "frontdoor" $frontdoor
   "ssh" (dict "public_host" .Values.ssh.publicHost "public_port" (int .Values.ssh.publicPort) "wake_deadline_secs" (int .Values.ssh.wakeDeadlineSecs))
   "limits" (dict "max_sandboxes_per_user" (int .Values.limits.maxSandboxesPerUser) "max_running" (int .Values.limits.maxRunning)) }}
 {{- with $catalog }}{{ $_ := set $config "catalog" . }}{{ end }}

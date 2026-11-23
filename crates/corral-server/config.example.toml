@@ -43,6 +43,9 @@ probe_interval_secs = 60
 
 [frontdoor]
 kind = "containerssh"
+# Public SSH arrives through a rathole client pod, so every public client shares its address.
+# Connections from the pod network are never locked out by address.
+lockout_exempt_networks = ["10.42.0.0/16"]
 
 [ssh]
 public_host = "corral.adamaq01.fr"
