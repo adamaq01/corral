@@ -19,7 +19,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 const WAKE: Duration = Duration::from_secs(60);
-const KNOWN_HOSTS: &str = "/home/sandbox/.ssh/known_hosts";
+const KNOWN_HOSTS: &str = "/root/.ssh/known_hosts";
 
 fn image() -> String {
     std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned())
@@ -136,7 +136,10 @@ impl Lab {
             &lab.client,
             "--network",
             &lab.network,
+            "--entrypoint",
+            "sleep",
             &image,
+            "infinity",
         ]);
         lab.client_sh(
             "mkdir -p -m 700 ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/proxy_key",
@@ -220,7 +223,7 @@ impl Lab {
         [
             "ssh",
             "-i",
-            "/home/sandbox/.ssh/proxy_key",
+            "/root/.ssh/proxy_key",
             "-o",
             "BatchMode=yes",
             "-o",

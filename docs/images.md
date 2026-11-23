@@ -5,6 +5,9 @@ Nothing in the image needs to know about Corral. What makes it a Corral sandbox 
 Corral overlay, `ghcr.io/adamaq01/corral-overlay`, which every sandbox mounts read-only at
 `/opt/corral`. No image is built for this: the overlay is mounted when the sandbox starts.
 
+The catalog's default image, `ghcr.io/adamaq01/corral-sandbox`, is Ubuntu 24.04 with Node.js,
+Claude Code, Codex, Python 3, git, curl and build tools, and nothing of Corral's own.
+
 ## What the overlay brings
 
 Every binary in the overlay is static, so it runs whatever libc the image has, or none:

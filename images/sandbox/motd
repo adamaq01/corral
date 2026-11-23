@@ -1,7 +1,0 @@
-
-This is a Corral sandbox. It sleeps when idle and wakes when you connect.
-
-Only /home/sandbox survives sleep. Packages you install and files you change
-anywhere else may be gone after the next wake, so keep your code, tools and
-settings in your home directory.
-
