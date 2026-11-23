@@ -47,6 +47,54 @@ pub fn home_secret_name(id: &SandboxId) -> String {
     format!("{}-home", id.0)
 }
 
+/// What a pod template takes from its sandbox's spec. The rest comes from the engine as it is
+/// when the template is made.
+pub struct Workload {
+    labels: BTreeMap<String, String>,
+    image: String,
+    resources: ResourceRequirements,
+}
+
+impl Workload {
+    #[must_use]
+    pub fn new(id: &SandboxId, spec: &SandboxSpec) -> Self {
+        Self {
+            labels: labels::of(id, spec),
+            image: spec.image.clone(),
+            resources: resources(&spec.resources),
+        }
+    }
+
+    /// The workload `sandbox`'s pod template was made for, read back from it.
+    pub fn recorded(sandbox: &Sandbox) -> Result<Self> {
+        let unreadable = |what: &str| {
+            Error::internal(
+                format!("Sandbox {}", sandbox.metadata.name.as_deref().unwrap_or("")),
+                format!("has no {what} in its pod template"),
+            )
+        };
+        let template = &sandbox.spec.pod_template;
+        let container = template
+            .spec
+            .iter()
+            .flat_map(|pod| &pod.containers)
+            .find(|container| container.name == CONTAINER)
+            .ok_or_else(|| unreadable(&format!("container {CONTAINER}")))?;
+        Ok(Self {
+            labels: template
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.labels.clone())
+                .ok_or_else(|| unreadable("labels"))?,
+            image: container.image.clone().ok_or_else(|| unreadable("image"))?,
+            resources: container
+                .resources
+                .clone()
+                .ok_or_else(|| unreadable("resources"))?,
+        })
+    }
+}
+
 #[must_use]
 pub fn build(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Sandbox {
     let labels = labels::of(id, spec);
@@ -60,16 +108,25 @@ pub fn build(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Sa
         spec: crd::SandboxSpec {
             operating_mode: OperatingMode::Suspended,
             failed_pod_policy: Some(FailedPodPolicy::Recreate),
-            pod_template: PodTemplateSpec {
-                metadata: Some(ObjectMeta {
-                    labels: Some(labels.clone()),
-                    ..ObjectMeta::default()
-                }),
-                spec: Some(pod_spec(id, spec, cfg)),
-            },
+            pod_template: pod_template(id, &Workload::new(id, spec), cfg),
             volume_claim_templates: vec![home_claim(&spec.resources, cfg, labels)],
         },
         status: None,
+    }
+}
+
+#[must_use]
+pub fn pod_template(
+    id: &SandboxId,
+    workload: &Workload,
+    cfg: &AgentSandboxConfig,
+) -> PodTemplateSpec {
+    PodTemplateSpec {
+        metadata: Some(ObjectMeta {
+            labels: Some(workload.labels.clone()),
+            ..ObjectMeta::default()
+        }),
+        spec: Some(pod_spec(id, workload, cfg)),
     }
 }
 
@@ -132,7 +189,7 @@ fn secret(
     }
 }
 
-fn pod_spec(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> PodSpec {
+fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> PodSpec {
     PodSpec {
         service_account_name: Some(cfg.service_account.clone()),
         automount_service_account_token: Some(false),
@@ -144,7 +201,7 @@ fn pod_spec(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Pod
         }),
         init_containers: Some(vec![Container {
             name: "home-init".to_owned(),
-            image: Some(spec.image.clone()),
+            image: Some(workload.image.clone()),
             command: Some(vec![HOME_INIT.to_owned()]),
             volume_mounts: Some(vec![
                 home_mount(),
@@ -159,7 +216,7 @@ fn pod_spec(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Pod
         }]),
         containers: vec![Container {
             name: CONTAINER.to_owned(),
-            image: Some(spec.image.clone()),
+            image: Some(workload.image.clone()),
             env_from: Some(vec![EnvFromSource {
                 secret_ref: Some(SecretEnvSource {
                     name: secret_name(id),
@@ -167,7 +224,7 @@ fn pod_spec(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Pod
                 }),
                 ..EnvFromSource::default()
             }]),
-            resources: Some(resources(&spec.resources)),
+            resources: Some(workload.resources.clone()),
             security_context: Some(SecurityContext {
                 allow_privilege_escalation: Some(true),
                 ..SecurityContext::default()
@@ -274,7 +331,7 @@ mod tests {
     use secrecy::{SecretSlice, SecretString};
     use serde_json::{Value, json};
 
-    use super::{build, env_secret, home_secret};
+    use super::{Workload, build, env_secret, home_secret, pod_template};
     use crate::AgentSandboxConfig;
 
     fn spec() -> SandboxSpec {
@@ -406,6 +463,31 @@ mod tests {
                 },
             }])
         );
+    }
+
+    #[test]
+    fn a_sandbox_reads_back_as_the_workload_its_pod_template_was_made_for() {
+        let id = SandboxId("sbx-0123456789ab".to_owned());
+        let sandbox = build(&id, &spec(), &cfg());
+
+        let recorded = Workload::recorded(&sandbox).unwrap();
+        assert_eq!(
+            serde_json::to_value(pod_template(&id, &recorded, &cfg())).unwrap(),
+            serde_json::to_value(&sandbox.spec.pod_template).unwrap()
+        );
+
+        let mut bare = sandbox;
+        bare.spec
+            .pod_template
+            .spec
+            .as_mut()
+            .unwrap()
+            .containers
+            .clear();
+        assert!(matches!(
+            Workload::recorded(&bare),
+            Err(Error::Internal { .. })
+        ));
     }
 
     #[test]

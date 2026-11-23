@@ -19,7 +19,7 @@ use crate::AgentSandboxConfig;
 use crate::crd::{OperatingMode, Sandbox};
 use crate::error::kube_error;
 use crate::inspection::{self, Observed};
-use crate::manifest;
+use crate::manifest::{self, Workload};
 use crate::status;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -97,10 +97,12 @@ impl AgentSandboxEngine {
             .count())
     }
 
-    /// Whether it resumed the sandbox, which was suspended.
+    /// Whether it resumed the sandbox, which was suspended, with the pod template Corral would
+    /// make for it today.
     async fn resume(&self, id: &SandboxId, boot: &Boot) -> Result<bool> {
         let _waking = self.activity.wake(id).await;
-        if self.sandbox(id).await?.spec.operating_mode == OperatingMode::Running {
+        let sandbox = self.sandbox(id).await?;
+        if sandbox.spec.operating_mode == OperatingMode::Running {
             return Ok(false);
         }
         let max = self.max_running;
@@ -110,11 +112,18 @@ impl AgentSandboxEngine {
             )));
         }
         self.write_boot(id, boot).await?;
-        self.merge_patch(
-            id,
-            json!({"spec": {"operatingMode": OperatingMode::Running}}),
-        )
-        .await?;
+        let template = manifest::pod_template(id, &Workload::recorded(&sandbox)?, &self.config);
+        // A replace drops what the template no longer has, which a merge patch would keep; one
+        // patch for both means a resume never starts a pod from the old template.
+        let resume: json_patch::Patch = serde_json::from_value(json!([
+            {"op": "replace", "path": "/spec/podTemplate", "value": template},
+            {"op": "replace", "path": "/spec/operatingMode", "value": OperatingMode::Running},
+        ]))
+        .expect("a well-formed JSON patch");
+        self.sandboxes
+            .patch(&id.0, &PatchParams::default(), &Patch::Json::<()>(resume))
+            .await
+            .map_err(kube_error)?;
         Ok(true)
     }
 

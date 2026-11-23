@@ -16,8 +16,8 @@ use corral_core::ports::{
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
-    ApiResource, AttachParams, AttachedProcess, DynamicObject, GroupVersionKind, ListParams, Patch,
-    PatchParams,
+    ApiResource, AttachParams, AttachedProcess, DeleteParams, DynamicObject, GroupVersionKind,
+    ListParams, Patch, PatchParams,
 };
 use kube::{Api, Client};
 use secrecy::{SecretSlice, SecretString};
@@ -398,6 +398,79 @@ async fn concurrent_starts_never_exceed_max_running(cluster: &Cluster) {
         true
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_from_stopped_replaces_an_outdated_pod_template() {
+    let _namespace = NAMESPACE.lock().await;
+    let Some(cluster) = Cluster::connect(1).await else {
+        return;
+    };
+    let cluster = Arc::new(cluster);
+    let id = cluster.create("outdated").await;
+    let scenario = tokio::spawn(outdated(cluster.clone(), id.clone())).await;
+    cluster.engine.delete(&id).await.unwrap();
+    if let Err(failure) = scenario {
+        std::panic::resume_unwind(failure.into_panic());
+    }
+    wait_until("the outdated sandbox removed", GONE_WITHIN, || async {
+        cluster.sandboxes.get_opt(&id.0).await.unwrap().is_none()
+    })
+    .await;
+}
+
+async fn outdated(cluster: Arc<Cluster>, id: SandboxId) {
+    cluster.wake(&id, &[("FOO_TOKEN", "one")]).await;
+    let marker = ["sh", "-c", "echo kept > /home/sandbox/corral-test-marker"];
+    assert_eq!(cluster.exec(&id, &marker).await.0, 0);
+    cluster.engine.stop(&id).await.unwrap();
+
+    // What Corral made before it wrote home files: no home-init, no home Secret, and an env var
+    // it has since dropped.
+    let sandbox = cluster.sandboxes.get(&id.0).await.unwrap();
+    let mut template = sandbox.data["spec"]["podTemplate"].clone();
+    let pod = &mut template["spec"];
+    pod.as_object_mut().unwrap().remove("initContainers");
+    pod["volumes"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|volume| volume["name"] != "home-files");
+    pod["containers"][0]["env"] = json!([{"name": "CORRAL_RETIRED", "value": "1"}]);
+    let outdate: json_patch::Patch = serde_json::from_value(json!([
+        {"op": "replace", "path": "/spec/podTemplate", "value": template},
+    ]))
+    .unwrap();
+    cluster
+        .sandboxes
+        .patch(&id.0, &PatchParams::default(), &Patch::Json::<()>(outdate))
+        .await
+        .unwrap();
+    cluster
+        .secrets
+        .delete(&format!("{}-home", id.0), &DeleteParams::default())
+        .await
+        .unwrap();
+
+    cluster.wake(&id, &[("FOO_TOKEN", "two")]).await;
+    assert_eq!(cluster.home_marker(&id).await, "kept\n");
+    assert_eq!(
+        home_file(&cluster, &id).await,
+        "two",
+        "the home files arrive through the home-init the template has now"
+    );
+    assert_ne!(
+        cluster.exec(&id, &["printenv", "CORRAL_RETIRED"]).await.0,
+        0,
+        "what the template no longer has is gone"
+    );
+
+    let running = cluster.pod_uid(&id).await;
+    cluster.wake(&id, &[("FOO_TOKEN", "three")]).await;
+    assert_eq!(
+        cluster.pod_uid(&id).await,
+        running,
+        "a running sandbox is left as it is"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
