@@ -57,6 +57,11 @@ impl AgentSandboxEngine {
         Ok(status::map(&sandbox, pod.as_ref()))
     }
 
+    async fn pod_uid(&self, id: &SandboxId) -> Result<Option<String>> {
+        let pod = self.pods.get_opt(&id.0).await.map_err(kube_error)?;
+        Ok(pod.and_then(|pod| pod.metadata.uid))
+    }
+
     async fn write_env(&self, id: &SandboxId, env: &CredentialMap) -> Result<()> {
         let secret = manifest::env_secret(id, env, &self.config.namespace);
         self.secrets
@@ -149,19 +154,16 @@ impl SandboxEngine for AgentSandboxEngine {
     }
 
     async fn stop(&self, id: &SandboxId) -> Result<()> {
+        // A wake during the stop, such as a client reconnecting, brings up a new pod under the
+        // same name, so the stop waits only for the pod that ran before it.
+        let running = self.pod_uid(id).await?;
         self.merge_patch(
             id,
             json!({"spec": {"operatingMode": OperatingMode::Suspended}}),
         )
         .await?;
         let started = Instant::now();
-        while self
-            .pods
-            .get_opt(&id.0)
-            .await
-            .map_err(kube_error)?
-            .is_some()
-        {
+        while running.is_some() && self.pod_uid(id).await? == running {
             if started.elapsed() > STOP_PATIENCE {
                 return Err(Error::internal(
                     format!("stop sandbox {}", id.0),

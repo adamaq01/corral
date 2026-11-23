@@ -13,10 +13,12 @@ use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, S
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
-    ApiResource, AttachParams, AttachedProcess, DynamicObject, GroupVersionKind, ListParams,
+    ApiResource, AttachParams, AttachedProcess, DynamicObject, GroupVersionKind, ListParams, Patch,
+    PatchParams,
 };
 use kube::{Api, Client};
 use secrecy::SecretString;
+use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{Barrier, Mutex};
 use tokio::task::JoinSet;
@@ -96,6 +98,14 @@ impl Cluster {
         pod.metadata.uid
     }
 
+    async fn set_pod_finalizers(&self, id: &SandboxId, finalizers: Value) {
+        let patch = json!({"metadata": {"finalizers": finalizers}});
+        self.pods
+            .patch(&id.0, &PatchParams::default(), &Patch::Merge(patch))
+            .await
+            .unwrap();
+    }
+
     async fn state(&self, id: &SandboxId) -> SandboxStatus {
         self.engine.status(id).await.unwrap()
     }
@@ -172,6 +182,7 @@ async fn lifecycle(cluster: Arc<Cluster>, id: SandboxId) {
     sessions_run_as_the_sandbox_user_with_credentials(&cluster, &id).await;
     sleep_keeps_home_and_wake_applies_new_env(&cluster, &id).await;
     stop_then_start_applies_new_env(&cluster, &id).await;
+    a_wake_while_stopping_lets_the_stop_finish(&cluster, &id).await;
 }
 
 async fn backing_objects_are_owned_by_the_sandbox(cluster: &Cluster, id: &SandboxId) {
@@ -243,6 +254,50 @@ async fn stop_then_start_applies_new_env(cluster: &Cluster, id: &SandboxId) {
         (0, "three\n".to_owned())
     );
     assert_eq!(cluster.home_marker(id).await, "kept\n");
+}
+
+// An SSH client that reconnects as soon as its session drops, as Herdr does, wakes the sandbox
+// again while a restart is still stopping it. The finalizer holds the old pod in Terminating, as a
+// slow volume detach does, so the wake lands before it is gone.
+async fn a_wake_while_stopping_lets_the_stop_finish(cluster: &Cluster, id: &SandboxId) {
+    let before = cluster.pod_uid(id).await.unwrap();
+    cluster
+        .set_pod_finalizers(id, json!(["corral.test/hold"]))
+        .await;
+    let stopping = {
+        let engine = cluster.engine.clone();
+        let id = id.clone();
+        tokio::spawn(async move { engine.stop(&id).await })
+    };
+    wait_until("the pod to start terminating", GONE_WITHIN, || async {
+        let pod = cluster.pods.get(&id.0).await.unwrap();
+        pod.metadata.deletion_timestamp.is_some()
+    })
+    .await;
+    let waking = {
+        let engine = cluster.engine.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            engine
+                .start(&id, env(&[("FOO_TOKEN", "four")]), READY_WITHIN)
+                .await
+        })
+    };
+    wait_until("the wake to resume the sandbox", GONE_WITHIN, || async {
+        let sandbox = cluster.sandboxes.get(&id.0).await.unwrap();
+        sandbox.data["spec"]["operatingMode"] == "Running"
+    })
+    .await;
+    cluster.set_pod_finalizers(id, Value::Null).await;
+
+    assert!(matches!(waking.await.unwrap(), Ok(Readiness::Ready(_))));
+    stopping.await.unwrap().unwrap();
+    assert_ne!(cluster.pod_uid(id).await.unwrap(), before);
+    assert_eq!(cluster.state(id).await, SandboxStatus::Running);
+    assert_eq!(
+        cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
+        (0, "four\n".to_owned())
+    );
 }
 
 // Runs while every other sandbox in the namespace sleeps, with max_running = 1.
