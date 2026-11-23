@@ -85,6 +85,7 @@ class Run {
 		execFileSync('npm', ['run', 'build'], { cwd: web, stdio: 'inherit' });
 		const binary = serverBinary();
 		const config = join(this.dir, 'config.toml');
+		const sandboxImage = process.env.CORRAL_SANDBOX_IMAGE ?? 'corral-sandbox:dev';
 		writeFileSync(
 			config,
 			`[http]
@@ -106,7 +107,30 @@ network = "${this.network}"
 [[catalog.images]]
 key = "dev"
 label = "Local build"
-reference = "${process.env.CORRAL_SANDBOX_IMAGE ?? 'corral-sandbox:dev'}"
+reference = "${sandboxImage}"
+
+[[catalog.images]]
+key = "dev-again"
+label = "Local build, again"
+reference = "${sandboxImage}"
+
+[[catalog.sizes]]
+key = "small"
+label = "Small"
+cpu_request = "500m"
+cpu_limit = "2"
+memory_request = "1Gi"
+memory_limit = "4Gi"
+home_size = "10Gi"
+
+[[catalog.sizes]]
+key = "roomy"
+label = "Roomy"
+cpu_request = "500m"
+cpu_limit = "3"
+memory_request = "1Gi"
+memory_limit = "6Gi"
+home_size = "20Gi"
 `
 		);
 		const env = {

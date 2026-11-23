@@ -9,7 +9,7 @@ use crate::dto::{
 use crate::error::ErrorBody;
 use crate::provider::ProviderListing;
 use corral_core::app::CreateSandbox;
-use corral_core::domain::SandboxStatus;
+use corral_core::domain::{SandboxDefaults, SandboxStatus};
 
 /// TypeScript declarations of the types the API takes and answers with, and of every type they
 /// use, for the web UI.
@@ -30,6 +30,7 @@ impl TypeScript {
             .add::<Me>()
             .add::<CatalogDto>()
             .add::<CreateSandbox>()
+            .add::<SandboxDefaults>()
             .add::<SandboxDto>()
             .add::<SandboxStatus>()
             .add::<Wake>()

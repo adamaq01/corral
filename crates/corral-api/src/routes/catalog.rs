@@ -4,16 +4,21 @@ use axum::{Json, Router};
 
 use crate::auth::CurrentUser;
 use crate::dto::CatalogDto;
+use crate::error::ApiError;
 use crate::state::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new().route("/api/catalog", get(catalog))
 }
 
-async fn catalog(_: CurrentUser, State(state): State<AppState>) -> Json<CatalogDto> {
-    Json(CatalogDto::new(
+async fn catalog(
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+) -> Result<Json<CatalogDto>, ApiError> {
+    Ok(Json(CatalogDto::new(
         state.sandboxes.catalog(),
+        state.sandboxes.defaults(&user).await?,
         state.sandboxes.max_per_user(),
         &state.ssh,
-    ))
+    )))
 }

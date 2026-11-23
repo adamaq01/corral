@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxView};
 use corral_core::domain::{
-    CredentialName, Handle, ImageKey, PictureUrl, Role, SandboxName, SandboxStatus, SizeKey,
-    SshKey, SshUsername, User, UserStatus,
+    CredentialName, Handle, ImageKey, PictureUrl, Role, SandboxDefaults, SandboxName,
+    SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus,
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -55,14 +55,21 @@ pub(crate) struct Choice {
 pub(crate) struct CatalogDto {
     images: Vec<Choice>,
     sizes: Vec<Choice>,
-    default_image: String,
-    default_size: String,
+    /// The signed-in user's default image.
+    default_image: ImageKey,
+    /// The signed-in user's default size.
+    default_size: SizeKey,
     max_sandboxes: usize,
     ssh: SshEndpoint,
 }
 
 impl CatalogDto {
-    pub(crate) fn new(catalog: &Catalog, max_sandboxes: usize, ssh: &SshEndpoint) -> Self {
+    pub(crate) fn new(
+        catalog: &Catalog,
+        defaults: SandboxDefaults,
+        max_sandboxes: usize,
+        ssh: &SshEndpoint,
+    ) -> Self {
         let choice = |key: &str, label: &str| Choice {
             key: key.to_owned(),
             label: label.to_owned(),
@@ -78,8 +85,8 @@ impl CatalogDto {
             .map(|size| choice(size.key.as_str(), &size.label))
             .collect();
         Self {
-            default_image: images[0].key.clone(),
-            default_size: sizes[0].key.clone(),
+            default_image: defaults.image,
+            default_size: defaults.size,
             images,
             sizes,
             max_sandboxes,

@@ -7,7 +7,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use chrono::{DateTime, Utc};
 use corral_core::app::SshAccess;
-use corral_core::domain::{Handle, User, UserId};
+use corral_core::domain::{Handle, SandboxDefaults, User, UserId};
 use corral_core::fakes::{ADAM_CERT, FakeEngine, MemoryKeyRepo, admin_proof};
 use corral_core::ports::{SshTarget, UserRepo};
 use corral_core::{Error, Result};
@@ -321,6 +321,12 @@ impl UserRepo for BrokenUsers {
         Err(Error::internal("store", "down"))
     }
     async fn record_credentials_change(&self, _id: UserId, _at: DateTime<Utc>) -> Result<()> {
+        Err(Error::internal("store", "down"))
+    }
+    async fn sandbox_defaults(&self, _id: UserId) -> Result<Option<SandboxDefaults>> {
+        Err(Error::internal("store", "down"))
+    }
+    async fn set_sandbox_defaults(&self, _id: UserId, _defaults: &SandboxDefaults) -> Result<()> {
         Err(Error::internal("store", "down"))
     }
 }

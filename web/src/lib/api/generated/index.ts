@@ -1,12 +1,20 @@
 // Generated from the Rust API types by ts-rs. Do not edit: regenerate with
 // CORRAL_WRITE_TYPES=1 cargo test -p corral-server web_types
 
-export type Catalog = { images: Array<Choice>, sizes: Array<Choice>, defaultImage: string, defaultSize: string, maxSandboxes: number, ssh: SshEndpoint, };
+export type Catalog = { images: Array<Choice>, sizes: Array<Choice>,
+/**
+ * The signed-in user's default image.
+ */
+defaultImage: ImageKey,
+/**
+ * The signed-in user's default size.
+ */
+defaultSize: SizeKey, maxSandboxes: number, ssh: SshEndpoint, };
 
 export type Choice = { key: string, label: string, };
 
 /**
- * Without an image or a size, the catalog's first.
+ * Without an image or a size, the owner's default.
  */
 export type CreateSandbox = { name: SandboxName, image?: ImageKey, size?: SizeKey, };
 
@@ -89,6 +97,11 @@ export type Sandbox = { name: SandboxName, image: ImageKey, size: SizeKey, isDef
  * Runs without its owner's latest credential change, which a restart applies.
  */
 staleCredentials: boolean, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+
+/**
+ * The image and size a user's new sandbox gets when its creation names none.
+ */
+export type SandboxDefaults = { image: ImageKey, size: SizeKey, };
 
 export type SandboxName = string;
 

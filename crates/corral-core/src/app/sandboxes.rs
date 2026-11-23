@@ -9,7 +9,8 @@ use ts_rs::TS;
 
 use super::{Catalog, Credentials};
 use crate::domain::{
-    Admin, ImageKey, Sandbox, SandboxId, SandboxName, SandboxStatus, SizeKey, User, UserId,
+    Admin, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName, SandboxStatus, SizeKey,
+    User, UserId,
 };
 use crate::ports::{Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
 use crate::{Error, Result};
@@ -20,7 +21,7 @@ pub struct Limits {
     pub wake_deadline: Duration,
 }
 
-/// Without an image or a size, the catalog's first.
+/// Without an image or a size, the owner's default.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, TS)]
 pub struct CreateSandbox {
     pub name: SandboxName,
@@ -80,9 +81,37 @@ impl Sandboxes {
         self.limits.max_sandboxes_per_user
     }
 
+    /// The owner's picks, or the catalog's first in place of one it no longer offers or they never
+    /// made.
+    pub async fn defaults(&self, owner: &User) -> Result<SandboxDefaults> {
+        let picked = self.users.sandbox_defaults(owner.id).await?;
+        let image = picked
+            .as_ref()
+            .and_then(|picked| self.catalog.image(Some(&picked.image)).ok());
+        let size = picked
+            .as_ref()
+            .and_then(|picked| self.catalog.size(Some(&picked.size)).ok());
+        Ok(SandboxDefaults {
+            image: image.unwrap_or(self.catalog.image(None)?).key.clone(),
+            size: size.unwrap_or(self.catalog.size(None)?).key.clone(),
+        })
+    }
+
+    /// Refuses an image or a size the catalog does not offer.
+    pub async fn set_defaults(&self, owner: &User, defaults: &SandboxDefaults) -> Result<()> {
+        self.catalog.image(Some(&defaults.image))?;
+        self.catalog.size(Some(&defaults.size))?;
+        self.users.set_sandbox_defaults(owner.id, defaults).await
+    }
+
     pub async fn create(&self, owner: &User, request: CreateSandbox) -> Result<SandboxView> {
-        let image = self.catalog.image(request.image.as_ref())?;
-        let size = self.catalog.size(request.size.as_ref())?;
+        let defaults = self.defaults(owner).await?;
+        let image = self
+            .catalog
+            .image(Some(request.image.as_ref().unwrap_or(&defaults.image)))?;
+        let size = self
+            .catalog
+            .size(Some(request.size.as_ref().unwrap_or(&defaults.size)))?;
         let mut sandbox = Sandbox {
             id: SandboxId::generate(),
             owner: owner.id,
@@ -303,9 +332,9 @@ mod tests {
     use crate::fakes::EngineCall;
     use crate::fakes::{
         MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, catalog, credential, default_names,
-        exposed, request, sandbox_name,
+        defaults, exposed, request, sandbox_name,
     };
-    use crate::ports::{Readiness, SandboxEngine, SshTarget};
+    use crate::ports::{Readiness, SandboxEngine, SshTarget, UserRepo};
 
     #[tokio::test]
     async fn create_provisions_from_the_catalog_then_starts_without_waiting() {
@@ -691,6 +720,57 @@ mod tests {
                 (spare, "adam".to_owned(), true),
                 (roots, "root".to_owned(), true)
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_takes_the_owners_defaults_for_what_it_leaves_out() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let eve = w.member("eve").await;
+        w.sandboxes
+            .set_defaults(&adam, &defaults("tools", "large"))
+            .await
+            .unwrap();
+        let made = async |owner, name, image, size| {
+            let view = w
+                .sandboxes
+                .create(owner, request(name, image, size))
+                .await
+                .unwrap();
+            format!("{} {}", view.sandbox.image, view.sandbox.size)
+        };
+        assert_eq!(made(&adam, "a", None, None).await, "tools large");
+        assert_eq!(made(&adam, "b", Some("base"), None).await, "base large");
+        assert_eq!(made(&adam, "c", None, Some("small")).await, "tools small");
+        assert_eq!(made(&eve, "a", None, None).await, "base small");
+    }
+
+    #[tokio::test]
+    async fn defaults_are_the_catalogs_first_until_picked_and_once_no_longer_offered() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        assert_eq!(
+            w.sandboxes.defaults(&adam).await.unwrap(),
+            defaults("base", "small")
+        );
+        for unknown in [defaults("gone", "large"), defaults("tools", "gone")] {
+            assert!(matches!(
+                w.sandboxes.set_defaults(&adam, &unknown).await,
+                Err(Error::Invalid(_))
+            ));
+        }
+        assert_eq!(
+            w.sandboxes.defaults(&adam).await.unwrap(),
+            defaults("base", "small")
+        );
+        w.users
+            .set_sandbox_defaults(adam.id, &defaults("retired", "large"))
+            .await
+            .unwrap();
+        assert_eq!(
+            w.sandboxes.defaults(&adam).await.unwrap(),
+            defaults("base", "large")
         );
     }
 }

@@ -6,14 +6,15 @@ use uuid::Uuid;
 use super::{at, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
-    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, SshKey, SshPublicKey, User,
-    UserId, UserStatus,
+    Handle, ImageKey, Role, Sandbox, SandboxDefaults, SandboxId, SandboxName, SizeKey, SshKey,
+    SshPublicKey, User, UserId, UserStatus,
 };
 use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 
 pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dyn SandboxRepo) {
     user_repo(users).await;
     credential_change_times(users).await;
+    sandbox_defaults(users).await;
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
@@ -146,6 +147,32 @@ async fn credential_change_times(repo: &dyn UserRepo) {
     );
     assert_eq!(repo.credentials_changed_at(eve.id).await.unwrap(), None);
     assert_eq!(repo.credentials_changed_at(ghost).await.unwrap(), None);
+}
+
+async fn sandbox_defaults(repo: &dyn UserRepo) {
+    let adam = seed_user(repo, "adam").await;
+    let eve = seed_user(repo, "eve").await;
+    assert_eq!(repo.sandbox_defaults(adam.id).await.unwrap(), None);
+    let picked = defaults("tools", "large");
+    repo.set_sandbox_defaults(adam.id, &defaults("base", "small"))
+        .await
+        .expect("set defaults");
+    repo.set_sandbox_defaults(adam.id, &picked)
+        .await
+        .expect("change defaults");
+    let ghost = UserId(Uuid::new_v4());
+    repo.set_sandbox_defaults(ghost, &picked)
+        .await
+        .expect("set defaults for nobody");
+    repo.update(&User {
+        email: None,
+        ..adam.clone()
+    })
+    .await
+    .expect("update the user");
+    assert_eq!(repo.sandbox_defaults(adam.id).await.unwrap(), Some(picked));
+    assert_eq!(repo.sandbox_defaults(eve.id).await.unwrap(), None);
+    assert_eq!(repo.sandbox_defaults(ghost).await.unwrap(), None);
 }
 
 async fn key_repo(users: &dyn UserRepo, keys: &dyn KeyRepo) {
@@ -374,6 +401,10 @@ pub async fn deleting_a_user_leaves_nothing_of_them(
         .set_default(gone.id, &theirs[1].id)
         .await
         .expect("set default");
+    users
+        .set_sandbox_defaults(gone.id, &defaults("tools", "large"))
+        .await
+        .expect("set sandbox defaults");
 
     for sandbox in &theirs {
         assert!(sandboxes.delete(gone.id, &sandbox.name).await.unwrap());
@@ -410,6 +441,7 @@ pub async fn deleting_a_user_leaves_nothing_of_them(
     .await
     .expect("reuse the key");
     assert_eq!(sandboxes.list(again.id).await.unwrap(), []);
+    assert_eq!(users.sandbox_defaults(again.id).await.unwrap(), None);
     gone
 }
 
@@ -419,6 +451,13 @@ fn handle(value: &str) -> Handle {
 
 fn sandbox_name(value: &str) -> SandboxName {
     SandboxName::parse(value).expect("valid sandbox name")
+}
+
+fn defaults(image: &str, size: &str) -> SandboxDefaults {
+    SandboxDefaults {
+        image: ImageKey::parse(image).unwrap(),
+        size: SizeKey::parse(size).unwrap(),
+    }
 }
 
 fn new_key(user_id: UserId, created: i64) -> SshKey {

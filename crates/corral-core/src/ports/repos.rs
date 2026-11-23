@@ -3,7 +3,9 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::Result;
-use crate::domain::{Handle, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId};
+use crate::domain::{
+    Handle, Sandbox, SandboxDefaults, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
+};
 
 #[async_trait]
 pub trait UserRepo: Send + Sync {
@@ -19,6 +21,10 @@ pub trait UserRepo: Send + Sync {
     async fn credentials_changed_at(&self, id: UserId) -> Result<Option<DateTime<Utc>>>;
     /// Does nothing unless the user exists.
     async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()>;
+    /// The defaults the user picked, if they ever did.
+    async fn sandbox_defaults(&self, id: UserId) -> Result<Option<SandboxDefaults>>;
+    /// Does nothing unless the user exists.
+    async fn set_sandbox_defaults(&self, id: UserId, defaults: &SandboxDefaults) -> Result<()>;
 }
 
 #[async_trait]

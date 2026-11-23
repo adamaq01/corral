@@ -475,6 +475,7 @@ async fn admins_delete_identities_through_their_provider() {
 const API_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/me"),
     ("DELETE", "/api/me"),
+    ("PUT", "/api/me/sandbox-defaults"),
     ("GET", "/api/catalog"),
     ("GET", "/api/sandboxes"),
     ("POST", "/api/sandboxes"),
@@ -599,6 +600,47 @@ async fn create_then_list_shows_the_ssh_username() {
             "ssh": { "host": "corral.example.com", "port": 48291 },
         })
     );
+}
+
+#[tokio::test]
+async fn a_users_sandbox_defaults_preselect_and_fill_in_new_sandboxes() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    let mut eve = corral.signed_in("eve", Role::Member).await;
+    let defaults_of = async |browser: &mut Browser| {
+        let catalog = browser.get("/api/catalog").await.json();
+        json!([catalog["defaultImage"], catalog["defaultSize"]])
+    };
+    assert_eq!(defaults_of(&mut adam).await, json!(["base", "small"]));
+
+    let set = adam
+        .call(
+            "PUT",
+            "/api/me/sandbox-defaults",
+            Some(json!({ "image": "tools", "size": "large" })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::NO_CONTENT, "{}", set.text());
+    assert_eq!(defaults_of(&mut adam).await, json!(["tools", "large"]));
+    assert_eq!(defaults_of(&mut eve).await, json!(["base", "small"]));
+    let created = adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let created = created.json();
+    assert_eq!(
+        json!([created["image"], created["size"]]),
+        json!(["tools", "large"])
+    );
+
+    for refused in [
+        json!({ "image": "nope", "size": "large" }),
+        json!({ "image": "tools", "size": "nope" }),
+        json!({ "image": "tools" }),
+    ] {
+        let reply = adam
+            .call("PUT", "/api/me/sandbox-defaults", Some(refused.clone()))
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{refused}");
+    }
+    assert_eq!(defaults_of(&mut adam).await, json!(["tools", "large"]));
 }
 
 #[tokio::test]
@@ -807,6 +849,14 @@ async fn owning_everything(corral: &Corral, handle: &str) -> Browser {
         )
         .await;
     assert_eq!(credential.status, StatusCode::NO_CONTENT);
+    let defaults = browser
+        .call(
+            "PUT",
+            "/api/me/sandbox-defaults",
+            Some(json!({ "image": "tools", "size": "large" })),
+        )
+        .await;
+    assert_eq!(defaults.status, StatusCode::NO_CONTENT);
     browser
 }
 
@@ -822,6 +872,11 @@ async fn owns_nothing_after_signing_up_again(corral: &Corral, handle: &str) {
     for listing in ["/api/sandboxes", "/api/keys", "/api/credentials"] {
         assert_eq!(again.get(listing).await.json(), json!([]), "{listing}");
     }
+    let catalog = again.get("/api/catalog").await.json();
+    assert_eq!(
+        (&catalog["defaultImage"], &catalog["defaultSize"]),
+        (&json!("base"), &json!("small"))
+    );
 }
 
 #[tokio::test]

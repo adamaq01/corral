@@ -12,8 +12,8 @@ use crate::app::{
     Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{
-    Admin, Allocation, CredentialName, ImageKey, Resources, Role, Sandbox, SandboxName, SizeKey,
-    User,
+    Admin, Allocation, CredentialName, ImageKey, Resources, Role, Sandbox, SandboxDefaults,
+    SandboxName, SizeKey, User,
 };
 use crate::ports::{CredentialMap, Identity, IdentityProvider};
 
@@ -65,6 +65,14 @@ pub fn request(name: &str, image: Option<&str>, size: Option<&str>) -> CreateSan
         name: sandbox_name(name),
         image: image.map(|key| ImageKey::parse(key).unwrap()),
         size: size.map(|key| SizeKey::parse(key).unwrap()),
+    }
+}
+
+#[must_use]
+pub fn defaults(image: &str, size: &str) -> SandboxDefaults {
+    SandboxDefaults {
+        image: ImageKey::parse(image).unwrap(),
+        size: SizeKey::parse(size).unwrap(),
     }
 }
 

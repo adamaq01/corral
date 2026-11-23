@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use corral_core::domain::{Handle, PictureUrl, User, UserId};
+use corral_core::domain::{Handle, ImageKey, PictureUrl, SandboxDefaults, SizeKey, User, UserId};
 use corral_core::ports::UserRepo;
 use corral_core::{Error, Result};
 use uuid::Uuid;
@@ -172,6 +172,36 @@ impl UserRepo for Store {
             sqlx::query("update users set credentials_changed_at = $2 where id = $1")
                 .bind(id.0)
                 .bind(at)
+                .execute(pool)
+                .await
+                .map(drop)
+        })
+        .map_err(db_error)
+    }
+
+    async fn sandbox_defaults(&self, id: UserId) -> Result<Option<SandboxDefaults>> {
+        let row: Option<(Option<String>, Option<String>)> = on_pool!(self.pool, |pool| {
+            sqlx::query_as("select default_image, default_size from users where id = $1")
+                .bind(id.0)
+                .fetch_optional(pool)
+                .await
+        })
+        .map_err(db_error)?;
+        let Some((Some(image), Some(size))) = row else {
+            return Ok(None);
+        };
+        Ok(Some(SandboxDefaults {
+            image: parsed("default_image", ImageKey::parse(&image))?,
+            size: parsed("default_size", SizeKey::parse(&size))?,
+        }))
+    }
+
+    async fn set_sandbox_defaults(&self, id: UserId, defaults: &SandboxDefaults) -> Result<()> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query("update users set default_image = $2, default_size = $3 where id = $1")
+                .bind(id.0)
+                .bind(defaults.image.as_str())
+                .bind(defaults.size.as_str())
                 .execute(pool)
                 .await
                 .map(drop)

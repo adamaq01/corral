@@ -204,7 +204,7 @@ inEveryView((look) => {
 	});
 
 	test('profile', async ({ page }) => {
-		await serve(page, { '/api/me': me({ picture }) });
+		await serve(page, { '/api/me': me({ picture }), '/api/catalog': catalog });
 		await page.goto('/profile');
 		await page.getByRole('heading', { name: 'bob' }).waitFor();
 		await page.waitForFunction(() =>
@@ -218,7 +218,7 @@ inEveryView((look) => {
 	});
 
 	test('profile, with initials', async ({ page }) => {
-		await serve(page, { '/api/me': me({ email: null }) });
+		await serve(page, { '/api/me': me({ email: null }), '/api/catalog': catalog });
 		await page.goto('/profile');
 		await page.getByRole('heading', { name: 'bob' }).waitFor();
 		await look(page, 'profile-initials');

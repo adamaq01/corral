@@ -6,7 +6,9 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::lock;
-use crate::domain::{Handle, Sandbox, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId};
+use crate::domain::{
+    Handle, Sandbox, SandboxDefaults, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
+};
 use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 use crate::{Error, Result};
 
@@ -14,6 +16,7 @@ use crate::{Error, Result};
 pub struct MemoryUserRepo {
     users: Mutex<Vec<User>>,
     credential_changes: Mutex<BTreeMap<UserId, DateTime<Utc>>>,
+    sandbox_defaults: Mutex<BTreeMap<UserId, SandboxDefaults>>,
 }
 
 #[derive(Default)]
@@ -102,6 +105,7 @@ impl UserRepo for MemoryUserRepo {
         let before = users.len();
         users.retain(|u| u.id != id);
         lock(&self.credential_changes).remove(&id);
+        lock(&self.sandbox_defaults).remove(&id);
         Ok(users.len() < before)
     }
 
@@ -112,6 +116,17 @@ impl UserRepo for MemoryUserRepo {
     async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()> {
         if lock(&self.users).iter().any(|u| u.id == id) {
             lock(&self.credential_changes).insert(id, at);
+        }
+        Ok(())
+    }
+
+    async fn sandbox_defaults(&self, id: UserId) -> Result<Option<SandboxDefaults>> {
+        Ok(lock(&self.sandbox_defaults).get(&id).cloned())
+    }
+
+    async fn set_sandbox_defaults(&self, id: UserId, defaults: &SandboxDefaults) -> Result<()> {
+        if lock(&self.users).iter().any(|u| u.id == id) {
+            lock(&self.sandbox_defaults).insert(id, defaults.clone());
         }
         Ok(())
     }
