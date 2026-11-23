@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use uuid::Uuid;
 
-use super::{Credentials, Sandboxes};
+use super::{Environment, Sandboxes};
 use crate::domain::{Admin, Handle, Role, User, UserId, UserStatus};
 use crate::ports::{Identity, IdentityProvider, KeyRepo, UserRepo};
 use crate::{Error, Result};
@@ -13,7 +13,7 @@ pub struct Accounts {
     users: Arc<dyn UserRepo>,
     keys: Arc<dyn KeyRepo>,
     sandboxes: Sandboxes,
-    credentials: Credentials,
+    environment: Environment,
     providers: Vec<Arc<dyn IdentityProvider>>,
 }
 
@@ -23,14 +23,14 @@ impl Accounts {
         users: Arc<dyn UserRepo>,
         keys: Arc<dyn KeyRepo>,
         sandboxes: Sandboxes,
-        credentials: Credentials,
+        environment: Environment,
         providers: Vec<Arc<dyn IdentityProvider>>,
     ) -> Self {
         Self {
             users,
             keys,
             sandboxes,
-            credentials,
+            environment,
             providers,
         }
     }
@@ -140,7 +140,7 @@ impl Accounts {
         for key in self.keys.list(user.id).await? {
             self.keys.delete(user.id, key.id).await?;
         }
-        self.credentials.remove_all(user.id).await?;
+        self.environment.remove_all(user.id).await?;
         if let Some((provider, subject)) = user.subject.split_once(':')
             && let Some(provider) = self.provider(provider)
         {
@@ -198,17 +198,15 @@ fn inactive(user: &User) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use secrecy::SecretString;
     use uuid::Uuid;
 
     use crate::Error;
     use crate::domain::{PictureUrl, Role, User, UserId, UserStatus};
-    use crate::fakes::{ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, credential, identity};
+    use crate::fakes::{
+        ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, bytes, file, identity, sandbox_name,
+        variable,
+    };
     use crate::ports::{Identity, SandboxEngine, UserRepo};
-
-    fn secret(value: &str) -> SecretString {
-        SecretString::from(value)
-    }
 
     #[tokio::test]
     async fn login_requires_a_role() {
@@ -401,11 +399,18 @@ mod tests {
 
     async fn owning_everything(w: &World, handle: &str, key: &str) -> User {
         let user = w.member(handle).await;
+        w.entry(&user, variable("A_KEY"), "value", true).await;
+        w.entry(&user, file(".ssh/id"), "key", true).await;
         w.sandbox(&user, "main").await;
         w.sandbox(&user, "dev").await;
         w.keys.add(&user, "laptop", key).await.unwrap();
-        w.credentials
-            .set(user.id, &credential("A_KEY"), secret("value"))
+        let main = sandbox_name("main");
+        let id = w.environment.of_sandbox(&user, &main).await.unwrap()[0]
+            .view
+            .entry
+            .id;
+        w.environment
+            .set_override(&user, &main, id, Some(bytes("main only")))
             .await
             .unwrap();
         user
@@ -416,8 +421,7 @@ mod tests {
         assert_eq!(w.users.by_handle(&user.handle).await.unwrap(), None);
         assert_eq!(w.sandboxes.list(user).await.unwrap(), []);
         assert_eq!(w.keys.list(user).await.unwrap(), []);
-        assert_eq!(w.credentials.names(user.id).await.unwrap(), []);
-        assert!(w.credentials.load(user.id).await.unwrap().is_empty());
+        assert_eq!(w.environment.list(user).await.unwrap(), []);
     }
 
     #[tokio::test]
@@ -457,7 +461,8 @@ mod tests {
 
         assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 2);
         assert_eq!(w.keys.list(&adam).await.unwrap().len(), 1);
-        assert_eq!(w.credentials.names(adam.id).await.unwrap().len(), 1);
+        assert_eq!(w.environment.list(&adam).await.unwrap().len(), 2);
+        assert_eq!(w.secrets.count(), 3, "only adam's values are left");
         assert!(w.accounts.require_active(adam.id).await.is_ok());
     }
 

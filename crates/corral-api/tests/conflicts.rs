@@ -8,7 +8,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use corral_api::testing::trusting_provider;
 use corral_api::{Api, Key, SshEndpoint, router};
-use corral_core::app::{Accounts, Credentials, Keys, Limits, Sandboxes};
+use corral_core::app::{Accounts, Environment, Keys, Limits, Sandboxes};
 use corral_core::fakes::{
     ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, MemorySecretStore, catalog, links,
 };
@@ -19,29 +19,33 @@ use tower::ServiceExt;
 
 async fn app(databases: &Databases) -> Router {
     let store = Arc::new(Store::open(databases.pool().await).await.unwrap());
-    let credentials = Credentials::new(Arc::new(MemorySecretStore::default()), store.clone());
+    let environment = Environment::new(
+        store.clone(),
+        Arc::new(MemorySecretStore::default()),
+        store.clone(),
+        links(),
+    );
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
         Arc::new(FakeEngine::default()),
-        credentials.clone(),
+        environment.clone(),
         catalog(),
         Limits {
             max_sandboxes_per_user: 5,
             wake_deadline: Duration::from_secs(1),
         },
-        links(),
     );
     let api = Api {
         accounts: Accounts::new(
             store.clone(),
             store.clone(),
             sandboxes.clone(),
-            credentials.clone(),
+            environment.clone(),
             Vec::new(),
         ),
         keys: Keys::new(store),
-        credentials,
+        environment,
         sandboxes,
         ssh: SshEndpoint {
             host: "corral.example.com".to_owned(),

@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::get;
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
-use corral_core::app::{Accounts, Credentials, Keys, Limits, SandboxLinks, Sandboxes, SshAccess};
+use corral_core::app::{Accounts, Environment, Keys, Limits, SandboxLinks, Sandboxes, SshAccess};
 use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
@@ -40,22 +40,36 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     } = Adapters::resolve(config)?;
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
-    let credentials = Credentials::new(secret_store(secrets, &pool).await?, store.clone());
+    let environment = Environment::new(
+        store.clone(),
+        secret_store(secrets, &pool).await?,
+        store.clone(),
+        SandboxLinks {
+            api: config.http.sandbox_base_url().as_str().to_owned(),
+            web: config.http.base_url.as_str().to_owned(),
+        },
+    );
+    let adopted = environment
+        .adopt_credentials()
+        .await
+        .context("making the credentials kept before the environment entries")?;
+    if adopted > 0 {
+        tracing::info!(
+            adopted,
+            "made credentials secret variables of the environment"
+        );
+    }
     let (providers, provider_routes) = providers(config, oidc, &pool).await?;
     let (engine, lifecycle) = start_engine(config, engine, shutdown.clone()).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
         engine,
-        credentials.clone(),
+        environment.clone(),
         config.catalog.clone(),
         Limits {
             max_sandboxes_per_user: config.limits.max_sandboxes_per_user,
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
-        },
-        SandboxLinks {
-            api: config.http.sandbox_base_url().as_str().to_owned(),
-            web: config.http.base_url.as_str().to_owned(),
         },
     );
     let deletions = deletions::spawn(sandboxes.clone(), deletions::SWEEP_INTERVAL, shutdown);
@@ -70,11 +84,11 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
             store.clone(),
             store.clone(),
             sandboxes.clone(),
-            credentials.clone(),
+            environment.clone(),
             providers,
         ),
         keys: Keys::new(store.clone()),
-        credentials,
+        environment,
         sandboxes,
         ssh: SshEndpoint {
             host: config.ssh.public_host.clone(),
@@ -221,8 +235,12 @@ mod tests {
                 "_local_accounts_migrations",
                 "_store_migrations",
                 "credentials",
+                "credentials_to_adopt",
+                "environment_attachments",
+                "environment_entries",
                 "local_accounts",
                 "sandboxes",
+                "secrets",
                 "ssh_keys",
                 "users",
             ]

@@ -69,7 +69,7 @@ test.describe('an admin', () => {
 
 		await rowAction(page, 'carol', 'Delete');
 		const confirm = page.getByRole('alertdialog', { name: 'Delete carol?' });
-		await expect(confirm).toContainText('sandboxes, SSH keys and credentials');
+		await expect(confirm).toContainText('sandboxes, SSH keys and environment');
 		await confirm.getByRole('button', { name: 'Delete account' }).click();
 		await expect(confirm).toBeHidden();
 		await expect(accounts.getByRole('row', { name: /carol/ })).toHaveCount(0);

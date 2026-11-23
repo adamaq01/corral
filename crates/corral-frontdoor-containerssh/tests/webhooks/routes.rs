@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
-use chrono::{DateTime, Utc};
-use corral_core::app::{Credentials, Limits, Sandboxes, SshAccess};
+use corral_core::app::{Environment, Limits, Sandboxes, SshAccess};
 use corral_core::domain::{Handle, SandboxDefaults, SandboxId, SandboxStatus, User, UserId};
 use corral_core::fakes::{
-    ADAM_CERT, EngineCall, FakeEngine, MAX_SANDBOXES, MemoryKeyRepo, MemorySandboxRepo,
-    MemorySecretStore, WAKE_DEADLINE, World, admin_proof, catalog, links, sandbox_name,
+    ADAM_CERT, EngineCall, FakeEngine, MAX_SANDBOXES, MemoryEnvironmentRepo, MemoryKeyRepo,
+    MemorySandboxRepo, MemorySecretStore, WAKE_DEADLINE, World, admin_proof, catalog, links,
+    sandbox_name,
 };
 use corral_core::ports::{
     Boot, Inspection, SandboxEngine, SandboxSpec, SshTarget, Started, UserRepo,
@@ -383,17 +383,23 @@ async fn a_sandbox_a_login_creates_is_finished_after_containerssh_stops_waiting(
     let w = World::new();
     w.member("adam").await;
     let users = w.users.clone();
+    let sandbox_repo = Arc::new(MemorySandboxRepo::default());
+    let environment = Environment::new(
+        Arc::new(MemoryEnvironmentRepo::default()),
+        Arc::new(MemorySecretStore::default()),
+        sandbox_repo.clone(),
+        links(),
+    );
     let sandboxes = Sandboxes::new(
-        Arc::new(MemorySandboxRepo::default()),
+        sandbox_repo,
         users.clone(),
         engine.clone(),
-        Credentials::new(Arc::new(MemorySecretStore::default()), users.clone()),
+        environment,
         catalog(),
         Limits {
             max_sandboxes_per_user: MAX_SANDBOXES,
             wake_deadline: WAKE_DEADLINE,
         },
-        links(),
     );
     let access = SshAccess::new(users, Arc::new(MemoryKeyRepo::default()), sandboxes, vec![]);
     let app = router(Arc::new(access), ContainerSshConfig::default());
@@ -441,12 +447,6 @@ impl UserRepo for BrokenUsers {
         Err(Error::internal("store", "down"))
     }
     async fn delete(&self, _id: UserId) -> Result<bool> {
-        Err(Error::internal("store", "down"))
-    }
-    async fn credentials_changed_at(&self, _id: UserId) -> Result<Option<DateTime<Utc>>> {
-        Err(Error::internal("store", "down"))
-    }
-    async fn record_credentials_change(&self, _id: UserId, _at: DateTime<Utc>) -> Result<()> {
         Err(Error::internal("store", "down"))
     }
     async fn sandbox_defaults(&self, _id: UserId) -> Result<Option<SandboxDefaults>> {

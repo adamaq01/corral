@@ -1,6 +1,11 @@
 // Generated from the Rust API types by ts-rs. Do not edit: regenerate with
 // CORRAL_WRITE_TYPES=1 cargo test -p corral-server web_types
 
+/**
+ * An entry attached to a sandbox, with the value it has there in place of its own, if any.
+ */
+export type AttachedEntry = { entry: EnvironmentEntry, override: StoredValue | null, };
+
 export type Catalog = { images: Array<Choice>, sizes: Array<Choice>,
 /**
  * The signed-in user's default image.
@@ -23,12 +28,6 @@ export type ConfirmDeletion = { confirm: string, };
  */
 export type CreateSandbox = { name: SandboxName, image?: ImageKey, size?: SizeKey, };
 
-export type Credential = { name: CredentialName, };
-
-export type CredentialName = string;
-
-export type CredentialValue = { value: string, };
-
 /**
  * Whether `corral delete` inside the user's sandboxes may schedule their deletion.
  */
@@ -41,11 +40,42 @@ export type EngineEvent = { at: string | null, kind: EventKind,
 object: string, reason: string, message: string, };
 
 /**
+ * An entry's flags, and its value when given; without one, the value stays.
+ */
+export type EntryChange = { template: boolean, applyToNew: boolean, value?: ValueInput, };
+
+export type EntryKind = "variable" | "file";
+
+export type EnvironmentEntry = { id: string, kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home.
+ */
+target: string, secret: boolean,
+/**
+ * For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
+ * the same sandbox.
+ */
+template: boolean,
+/**
+ * Whether each new sandbox is attached to it.
+ */
+applyToNew: boolean, value: StoredValue, createdAt: string,
+/**
+ * The sandboxes it is attached to.
+ */
+sandboxes: Array<SandboxName>, };
+
+/**
  * What every error answers with.
  */
 export type ErrorBody = { error: string, };
 
 export type EventKind = "normal" | "warning";
+
+/**
+ * The most bytes an environment file may hold.
+ */
+export const FILE_LIMIT = 262144;
 
 export type Fact = { label: string,
 /**
@@ -74,6 +104,15 @@ export type Me = { handle: Handle, email: string | null, picture: PictureUrl | n
 
 export type NewAccount = { username: Handle, password: string, role: Role, };
 
+/**
+ * A new variable, `NAME=value` in each session, or a file at a path inside the home.
+ */
+export type NewEntry = { kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home.
+ */
+target: string, secret: boolean, template: boolean, applyToNew: boolean, value: ValueInput, };
+
 export type NewKey = { label: string, publicKey: string, };
 
 export type NewPassword = { password: string, };
@@ -89,9 +128,9 @@ lifetimeHours: number, };
 
 export type OwnedSandbox = { owner: Owner, name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
- * Runs without its owner's latest credential change, which a restart applies.
+ * Runs without the latest change to its environment, which a restart applies.
  */
-staleCredentials: boolean,
+staleEnvironment: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
@@ -122,9 +161,9 @@ export type Role = "member" | "admin";
 
 export type Sandbox = { name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
- * Runs without its owner's latest credential change, which a restart applies.
+ * Runs without the latest change to its environment, which a restart applies.
  */
-staleCredentials: boolean,
+staleEnvironment: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
@@ -167,6 +206,12 @@ export type SshKey = { id: string, label: string, publicKey: string, fingerprint
  */
 export type SshUsername = string;
 
+export type StoredValue = { setAt: string,
+/**
+ * In bytes.
+ */
+size: number, } & ({ "shown": "text", text: string, } | { "shown": "binary", base64: string, } | { "shown": "masked", length: number, head: string | null, tail: string | null, } | { "shown": "hidden" });
+
 export type User = { id: string, handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, status: UserStatus, createdAt: string, };
 
 /**
@@ -174,5 +219,10 @@ export type User = { id: string, handle: Handle, email: string | null, picture: 
  * deletion may finish.
  */
 export type UserStatus = "active" | "disabled" | "deleting";
+
+/**
+ * A value as someone sends it: text, or any bytes in standard base64.
+ */
+export type ValueInput = { "text": string } | { "base64": string };
 
 export type Wake = { ready: boolean, };

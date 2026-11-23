@@ -42,6 +42,7 @@ corral-sql = { path = "../corral-sql", features = ["testing"] }
 serde_json.workspace = true
 sqlx = { workspace = true, features = ["postgres", "sqlite"] }
 tempfile.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

@@ -2,6 +2,7 @@ mod auth;
 mod client_address;
 mod cookies;
 mod dto;
+mod environment_dto;
 mod error;
 mod extract;
 mod json_only;

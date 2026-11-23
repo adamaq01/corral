@@ -4,11 +4,13 @@ use std::collections::BTreeMap;
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use corral_core::Error;
-use corral_core::domain::{CredentialName, UserId};
+use corral_core::domain::{SecretId, UserId};
 use corral_core::ports::SecretStore;
 use corral_secrets_vault::{NOISY_LOG_TARGETS, VaultAuth, VaultStore};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use support::{KvServer, MOUNT, PREFIX, Server};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
@@ -47,29 +49,27 @@ async fn credential_values_never_reach_the_logs() {
     for server in [Server::OpenBao, Server::Vault] {
         let kv = KvServer::start(server).await;
         let store = VaultStore::connect(kv.root_config()).await.unwrap();
-        let (adam, key) = (
-            UserId(Uuid::new_v4()),
-            CredentialName::parse("CANARY_KEY").unwrap(),
-        );
+        let (adam, id) = (UserId(Uuid::new_v4()), SecretId::generate());
         let value = "sk-canary-0123456789";
         store
-            .set(adam, &key, SecretString::from(value))
+            .put(adam, id, &SecretSlice::from(value.as_bytes().to_vec()))
             .await
             .unwrap();
-        store.load(adam).await.unwrap();
+        let read = store.get(adam, &[id]).await.unwrap();
+        assert_eq!(read[&id].expose_secret(), value.as_bytes());
         let stored: BTreeMap<String, String> =
-            kv2::read(&kv.root, MOUNT, &format!("{PREFIX}/{}", adam.0))
+            kv2::read(&kv.root, MOUNT, &format!("{PREFIX}/{}/{}", adam.0, id.0))
                 .await
                 .unwrap();
-        assert_eq!(stored["CANARY_KEY"], value);
-        store.remove(adam, &key).await.unwrap();
+        assert_eq!(stored["base64"], STANDARD.encode(value));
+        store.remove(adam, id).await.unwrap();
 
         let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
         assert!(
             logs.contains("Sending Request") && logs.contains(&adam.0.to_string()),
             "the capture missed the store's requests"
         );
-        assert!(!logs.contains(value));
+        assert!(!logs.contains(value) && !logs.contains(&STANDARD.encode(value)));
     }
 }
 
@@ -100,9 +100,10 @@ async fn quieted_a_missing_secret_logs_no_error_and_a_real_failure_still_reaches
         let kv = KvServer::start(server).await;
         let store = VaultStore::connect(kv.root_config()).await.unwrap();
         let missing = UserId(Uuid::new_v4());
+        let nothing = [SecretId::generate()];
 
         listen("info");
-        assert!(store.load(missing).await.unwrap().is_empty());
+        assert!(store.get(missing, &nothing).await.unwrap().is_empty());
         assert!(
             logs().contains(
                 "vaultrs::api: error=The Vault server returned an error (status code 404)"
@@ -112,7 +113,7 @@ async fn quieted_a_missing_secret_logs_no_error_and_a_real_failure_still_reaches
         );
 
         listen(&quiet);
-        assert!(store.load(missing).await.unwrap().is_empty());
+        assert!(store.get(missing, &nothing).await.unwrap().is_empty());
         assert_eq!(logs(), "", "{server:?}");
 
         let unprivileged = token::new(
@@ -128,7 +129,7 @@ async fn quieted_a_missing_secret_logs_no_error_and_a_real_failure_still_reaches
         .await
         .unwrap();
         listen(&quiet);
-        let loaded = denied.load(missing).await;
+        let loaded = denied.get(missing, &nothing).await;
         assert!(
             matches!(&loaded, Err(Error::Internal { source, .. }) if source.to_string().contains("403")),
             "{server:?}: {loaded:?}"

@@ -3,12 +3,13 @@ use std::collections::BTreeMap;
 use ts_rs::{Config, TS, TypeVisitor};
 
 use crate::dto::{
-    CatalogDto, ConfirmDeletion, CredentialDto, CredentialValue, DeleteFromInside, KeyDto, Me,
-    NewKey, OwnedSandbox, SandboxDetailsDto, SandboxDto, ScheduledDeletion, UserDto, Wake,
+    CatalogDto, ConfirmDeletion, DeleteFromInside, KeyDto, Me, NewKey, OwnedSandbox,
+    SandboxDetailsDto, SandboxDto, ScheduledDeletion, UserDto, Wake,
 };
+use crate::environment_dto::{AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, ValueInput};
 use crate::error::ErrorBody;
 use crate::provider::ProviderListing;
-use corral_core::app::CreateSandbox;
+use corral_core::app::{CreateSandbox, FILE_LIMIT};
 use corral_core::domain::{SandboxDefaults, SandboxStatus};
 
 /// TypeScript declarations of the types the API takes and answers with, and of every type they
@@ -41,11 +42,19 @@ impl TypeScript {
             .add::<SandboxDetailsDto>()
             .add::<NewKey>()
             .add::<KeyDto>()
-            .add::<CredentialDto>()
-            .add::<CredentialValue>()
+            .add::<EntryDto>()
+            .add::<NewEntryDto>()
+            .add::<EntryChangeDto>()
+            .add::<ValueInput>()
+            .add::<AttachedDto>()
             .add::<UserDto>()
             .add::<ProviderListing>()
-            .add::<ErrorBody>();
+            .add::<ErrorBody>()
+            .limit(
+                "FILE_LIMIT",
+                "The most bytes an environment file may hold.",
+                FILE_LIMIT,
+            );
         types
     }
 

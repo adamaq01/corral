@@ -70,13 +70,13 @@ identity:
 
 # keys.existingSecret names a Secret with CORRAL_SESSION_KEY and CORRAL_SECRETS_KEY, as printed by
 # `corral-server keys generate`. Empty: `helm install` generates both once and keeps them across
-# upgrades, and `helm uninstall` leaves that Secret behind, since stored credentials need it.
+# upgrades, and `helm uninstall` leaves that Secret behind, since stored secrets need it.
 # Required where the chart is rendered without a cluster, as by helm template or Argo CD.
 keys:
   existingSecret: ""
 
 secretStore:
-  # secretStore.kind is where users' credentials are kept: database (encrypted with
+  # secretStore.kind is where users' secret values are kept: database (encrypted with
   # CORRAL_SECRETS_KEY) or vault (a Vault or OpenBao KV v2 mount).
   kind: database
   vault:

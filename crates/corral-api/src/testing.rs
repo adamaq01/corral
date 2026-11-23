@@ -30,7 +30,7 @@ pub fn api(world: &World) -> Api {
     Api {
         accounts: world.accounts.clone(),
         keys: world.keys.clone(),
-        credentials: world.credentials.clone(),
+        environment: world.environment.clone(),
         sandboxes: world.sandboxes.clone(),
         ssh: SshEndpoint {
             host: "corral.example.com".to_owned(),

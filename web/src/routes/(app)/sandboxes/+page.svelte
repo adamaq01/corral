@@ -1,6 +1,6 @@
 <script lang="ts">
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
-	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
+	import VariableIcon from '@lucide/svelte/icons/variable';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
@@ -94,7 +94,7 @@
 	{:else}
 		<ul class="grid gap-2" aria-label="Sandboxes">
 			{#each list.current.value as sandbox (sandbox.name)}
-				{@const stale = sandbox.staleCredentials}
+				{@const stale = sandbox.staleEnvironment}
 				<li class="grid">
 					<Item.Root variant="outline" class={stale ? 'rounded-b-none' : undefined}>
 						{#snippet child({ props })}
@@ -133,14 +133,14 @@
 						<div
 							class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-b-lg border border-t-0 px-3 py-2 text-sm"
 						>
-							<KeyRoundIcon class="size-4 text-muted-foreground" aria-hidden="true" />
+							<VariableIcon class="size-4 text-muted-foreground" aria-hidden="true" />
 							<p class="min-w-0 flex-1 text-muted-foreground">
 								{#if failure}
 									<span class="text-destructive">
 										Restart failed: {failure}
 									</span>
 								{:else}
-									Restart to apply your credential changes.
+									Restart to apply your environment changes.
 								{/if}
 							</p>
 							<Button

@@ -182,6 +182,6 @@
 		action="Delete user"
 		onconfirm={() => remove(user)}
 	>
-		This deletes {user.handle} with their sandboxes, SSH keys and credentials. It cannot be undone.
+		This deletes {user.handle} with their sandboxes, SSH keys and environment. It cannot be undone.
 	</ConfirmDialog>
 {/if}

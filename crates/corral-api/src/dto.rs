@@ -1,11 +1,10 @@
 use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxDetails, SandboxView};
 use corral_core::domain::{
-    CredentialName, Handle, ImageKey, PictureUrl, Role, SandboxDefaults, SandboxName,
-    SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus,
+    Handle, ImageKey, PictureUrl, Role, SandboxDefaults, SandboxName, SandboxStatus, SizeKey,
+    SshKey, SshUsername, User, UserStatus,
 };
 use corral_core::ports::{EngineEvent, EventKind, Fact};
-use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -17,12 +16,6 @@ use crate::state::SshEndpoint;
 pub(crate) struct NewKey {
     pub label: String,
     pub public_key: String,
-}
-
-#[derive(Deserialize, TS)]
-pub(crate) struct CredentialValue {
-    #[ts(type = "string")]
-    pub value: SecretString,
 }
 
 #[derive(Serialize, TS)]
@@ -115,8 +108,8 @@ pub(crate) struct SandboxDto {
     status: SandboxStatus,
     ssh: SandboxSsh,
     created_at: DateTime<Utc>,
-    /// Runs without its owner's latest credential change, which a restart applies.
-    stale_credentials: bool,
+    /// Runs without the latest change to its environment, which a restart applies.
+    stale_environment: bool,
     /// When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
     delete_at: Option<DateTime<Utc>>,
 }
@@ -128,7 +121,7 @@ impl SandboxDto {
             owner,
             is_default,
             status,
-            stale_credentials,
+            stale_environment,
         } = view;
         Self {
             ssh: SandboxSsh {
@@ -144,7 +137,7 @@ impl SandboxDto {
             is_default,
             status,
             created_at: sandbox.created_at,
-            stale_credentials,
+            stale_environment,
             delete_at: sandbox.delete_at,
         }
     }
@@ -294,18 +287,6 @@ impl From<SshKey> for KeyDto {
             public_key: key.public_key.as_str().to_owned(),
             created_at: key.created_at,
         }
-    }
-}
-
-#[derive(Serialize, TS)]
-#[ts(rename = "Credential")]
-pub(crate) struct CredentialDto {
-    name: CredentialName,
-}
-
-impl From<CredentialName> for CredentialDto {
-    fn from(name: CredentialName) -> Self {
-        Self { name }
     }
 }
 

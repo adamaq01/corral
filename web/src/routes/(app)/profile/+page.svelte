@@ -224,7 +224,7 @@
 		<Card.Header>
 			<Card.Title>Delete your account</Card.Title>
 			<Card.Description>
-				Deletes your sandboxes with their home directories, your SSH keys, your credentials and your
+				Deletes your sandboxes with their home directories, your SSH keys, your environment and your
 				account, for good.
 			</Card.Description>
 		</Card.Header>
@@ -250,7 +250,7 @@
 	onconfirm={remove}
 >
 	Every sandbox you own is deleted with its home directory, along with your SSH keys and
-	credentials. It cannot be undone.
+	environment. It cannot be undone.
 	{#snippet fields()}
 		<div class="grid gap-2">
 			<Label for="confirm-handle">

@@ -2,18 +2,19 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretSlice};
 
 use super::{
-    FakeEngine, FakeProvider, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
+    FakeEngine, FakeProvider, MemoryEnvironmentRepo, MemoryKeyRepo, MemorySandboxRepo,
+    MemorySecretStore, MemoryUserRepo,
 };
 use crate::app::{
-    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, SandboxLinks,
-    SandboxView, Sandboxes, SizePreset, SshAccess,
+    Accounts, Catalog, CreateSandbox, Environment, ImageOption, Keys, Limits, NewEntry,
+    SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{
-    Admin, Allocation, CredentialName, ImageKey, Resources, Role, Sandbox, SandboxDefaults,
-    SandboxName, SizeKey, User,
+    Admin, Allocation, CredentialName, Entry, HomePath, ImageKey, Resources, Role, Sandbox,
+    SandboxDefaults, SandboxName, SizeKey, Target, User,
 };
 use crate::ports::{CredentialMap, Identity, IdentityProvider};
 
@@ -52,6 +53,33 @@ pub fn identity(subject: &str, username: &str, role: Option<Role>) -> Identity {
 #[must_use]
 pub fn credential(name: &str) -> CredentialName {
     CredentialName::parse(name).unwrap()
+}
+
+#[must_use]
+pub fn variable(name: &str) -> Target {
+    Target::Variable(credential(name))
+}
+
+#[must_use]
+pub fn file(path: &str) -> Target {
+    Target::File(HomePath::parse(path).unwrap())
+}
+
+#[must_use]
+pub fn bytes(value: &str) -> SecretSlice<u8> {
+    SecretSlice::from(value.as_bytes().to_vec())
+}
+
+/// A plain entry that applies to new sandboxes.
+#[must_use]
+pub fn entry(target: Target, value: &str) -> NewEntry {
+    NewEntry {
+        target,
+        secret: false,
+        template: false,
+        apply_to_new: true,
+        value: bytes(value),
+    }
 }
 
 #[must_use]
@@ -136,7 +164,10 @@ pub struct World {
     pub provider: Arc<FakeProvider>,
     pub accounts: Accounts,
     pub keys: Keys,
-    pub credentials: Credentials,
+    pub environment: Environment,
+    pub environment_repo: Arc<MemoryEnvironmentRepo>,
+    pub sandbox_repo: Arc<MemorySandboxRepo>,
+    pub secrets: Arc<MemorySecretStore>,
     pub engine: Arc<FakeEngine>,
     pub sandboxes: Sandboxes,
     pub access: Arc<SshAccess>,
@@ -156,20 +187,27 @@ impl World {
         let mut providers: Vec<Arc<dyn IdentityProvider>> = vec![provider.clone()];
         providers.extend(others);
         let users = Arc::new(MemoryUserRepo::default());
-        let credentials = Credentials::new(Arc::new(MemorySecretStore::default()), users.clone());
+        let sandbox_repo = Arc::new(MemorySandboxRepo::default());
+        let environment_repo = Arc::new(MemoryEnvironmentRepo::default());
+        let secrets = Arc::new(MemorySecretStore::default());
+        let environment = Environment::new(
+            environment_repo.clone(),
+            secrets.clone(),
+            sandbox_repo.clone(),
+            links(),
+        );
         let engine = Arc::new(FakeEngine::default());
         let limits = Limits {
             max_sandboxes_per_user: MAX_SANDBOXES,
             wake_deadline: WAKE_DEADLINE,
         };
         let sandboxes = Sandboxes::new(
-            Arc::new(MemorySandboxRepo::default()),
+            sandbox_repo.clone(),
             users.clone(),
             engine.clone(),
-            credentials.clone(),
+            environment.clone(),
             catalog(),
             limits,
-            links(),
         );
         let key_repo = Arc::new(MemoryKeyRepo::default());
         let access = Arc::new(SshAccess::new(
@@ -183,12 +221,15 @@ impl World {
                 users.clone(),
                 key_repo.clone(),
                 sandboxes.clone(),
-                credentials.clone(),
+                environment.clone(),
                 providers,
             ),
             keys: Keys::new(key_repo),
             sandboxes,
-            credentials,
+            environment,
+            environment_repo,
+            sandbox_repo,
+            secrets,
             engine,
             users,
             provider,
@@ -202,6 +243,21 @@ impl World {
             .await
             .unwrap()
             .sandbox
+    }
+
+    /// An entry of the owner's that applies to new sandboxes.
+    pub async fn entry(&self, owner: &User, target: Target, value: &str, secret: bool) -> Entry {
+        self.environment
+            .create(
+                owner,
+                NewEntry {
+                    secret,
+                    ..entry(target, value)
+                },
+            )
+            .await
+            .unwrap()
+            .entry
     }
 
     pub async fn member(&self, handle: &str) -> User {

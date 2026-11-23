@@ -19,12 +19,12 @@ fn check(value: &str) -> Result<()> {
             .all(|b| matches!(b, b'A'..=b'Z' | b'0'..=b'9' | b'_'));
     if !well_formed {
         return Err(Error::Invalid(format!(
-            "credential name {value:?} must match [A-Z_][A-Z0-9_]{{0,63}}"
+            "variable name {value:?} must match [A-Z_][A-Z0-9_]{{0,63}}"
         )));
     }
     if value.starts_with(RESERVED_PREFIX) || RESERVED.contains(&value) {
         return Err(Error::Invalid(format!(
-            "credential name {value:?} is reserved by the sandbox"
+            "variable name {value:?} is reserved by the sandbox"
         )));
     }
     Ok(())

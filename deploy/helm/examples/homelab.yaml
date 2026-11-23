@@ -1,4 +1,4 @@
-# OIDC login, a CloudNativePG database, credentials in OpenBao with Kubernetes auth, the web UI
+# OIDC login, a CloudNativePG database, secrets in OpenBao with Kubernetes auth, the web UI
 # behind a Gateway, and ContainerSSH on a MetalLB address for the LAN and behind a rathole tunnel
 # from the pod network for the internet. The keys and host key come from existing Secrets, as
 # under Argo CD, which renders with helm template.

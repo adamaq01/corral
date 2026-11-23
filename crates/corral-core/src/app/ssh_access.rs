@@ -85,18 +85,16 @@ impl SshAccess {
 mod tests {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
-    use secrecy::SecretString;
-
     use crate::Error;
     use crate::Result;
     use crate::domain::User;
     use crate::fakes::EngineCall;
     use crate::fakes::{
         ADAM_CERT, ADAM_KEY, EVE_KEY, MAX_SANDBOXES, RSA_KEY, WAKE_DEADLINE, World, admin_proof,
-        algorithm_and_blob, credential, defaults, exposed, sandbox_name,
+        algorithm_and_blob, defaults, exposed, sandbox_name, variable,
     };
     use crate::ports::{IdentityProvider, Readiness, SshTarget};
+    use async_trait::async_trait;
 
     async fn adam_and_eve() -> (World, User, User) {
         let w = World::new();
@@ -354,13 +352,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn route_wakes_with_the_owners_current_credentials() {
+    async fn route_wakes_with_the_sandboxs_current_environment() {
         let (w, adam, eve) = adam_and_eve().await;
         let main = w.sandboxes.resolve(&adam, None).await.unwrap();
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
         for (owner, value) in [(&adam, "changed-while-asleep"), (&eve, "eves")] {
-            w.credentials
-                .set(owner.id, &credential("GH_TOKEN"), SecretString::from(value))
+            let entry = w.entry(owner, variable("GH_TOKEN"), value, true).await;
+            w.environment
+                .attach(owner, &main.name, entry.id)
                 .await
                 .unwrap();
         }

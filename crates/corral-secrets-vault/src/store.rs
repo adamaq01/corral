@@ -1,25 +1,28 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use corral_core::domain::{CredentialName, UserId};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use corral_core::domain::{CredentialName, SecretId, UserId};
 use corral_core::ports::{CredentialMap, SecretStore};
 use corral_core::{Error, Result};
-use secrecy::{ExposeSecret, SecretString};
-use serde_json::Value;
+use secrecy::{ExposeSecret, SecretSlice, SecretString};
+use serde_json::{Value, json};
 use vaultrs::api;
-use vaultrs::api::kv2::requests::{
-    ReadSecretRequest, SetSecretMetadataRequest, SetSecretRequestOptions,
-};
+use vaultrs::api::kv2::requests::{ReadSecretRequest, SetSecretMetadataRequest};
 use vaultrs::client::VaultClient;
-use vaultrs::error::ClientError;
 use vaultrs::kv2;
 
 use crate::VaultConfig;
 use crate::error::{status, vault_error};
 use crate::session::Session;
 
-const WRITE_ATTEMPTS: usize = 10;
+/// The field of each secret that holds its value, in standard base64.
+const FIELD: &str = "base64";
 
+/// Each value is a secret of its own at `<prefix>/<owner>/<id>`. What an owner kept as
+/// credentials before entries existed is the one secret `<prefix>/<owner>`, a map of names to
+/// values, which the two can share as a path.
 pub struct VaultStore {
     session: Session,
     mount: String,
@@ -35,145 +38,135 @@ impl VaultStore {
         })
     }
 
-    fn path(&self, user: UserId) -> String {
+    fn owner_path(&self, owner: UserId) -> String {
         if self.path_prefix.is_empty() {
-            user.0.to_string()
+            owner.0.to_string()
         } else {
-            format!("{}/{}", self.path_prefix, user.0)
+            format!("{}/{}", self.path_prefix, owner.0)
         }
     }
 
-    async fn update(
-        &self,
-        user: UserId,
-        change: impl Fn(&mut CredentialMap) -> bool + Send + Sync,
-    ) -> Result<bool> {
-        let path = self.path(user);
-        for _ in 0..WRITE_ATTEMPTS {
-            let client = self.session.client().await?;
-            // The map must come from the same version the write checks, or a racing writer is lost.
-            let version = current_version(&client, &self.mount, &path).await?;
-            let mut env = if version == 0 {
-                CredentialMap::new()
-            } else {
-                read(&client, &self.mount, &path, Some(version))
-                    .await?
-                    .unwrap_or_default()
-            };
-            if !change(&mut env) {
-                return Ok(false);
-            }
-            if write(&client, &self.mount, &path, &env, version).await? {
-                return Ok(true);
-            }
+    fn path(&self, owner: UserId, id: SecretId) -> String {
+        format!("{}/{}", self.owner_path(owner), id.0)
+    }
+
+    async fn delete(&self, client: &VaultClient, path: &str) -> Result<bool> {
+        match kv2::delete_metadata(client, &self.mount, path).await {
+            Ok(()) => Ok(true),
+            Err(err) if status(&err) == Some(404) => Ok(false),
+            Err(err) => Err(vault_error("delete", err)),
         }
-        Err(Error::internal(
-            format!("vault secret {path}"),
-            format!("changed under each of {WRITE_ATTEMPTS} write attempts"),
-        ))
     }
 }
 
 #[async_trait]
 impl SecretStore for VaultStore {
-    async fn set(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()> {
-        self.update(user, |env| {
-            env.insert(name.clone(), value.clone());
-            true
-        })
-        .await
-        .map(|_| ())
-    }
-
-    async fn remove(&self, user: UserId, name: &CredentialName) -> Result<bool> {
-        self.update(user, |env| env.remove(name).is_some()).await
-    }
-
-    async fn remove_all(&self, user: UserId) -> Result<()> {
+    async fn put(&self, owner: UserId, id: SecretId, value: &SecretSlice<u8>) -> Result<()> {
         let client = self.session.client().await?;
-        match kv2::delete_metadata(&*client, &self.mount, &self.path(user)).await {
-            Ok(()) => Ok(()),
-            Err(err) if status(&err) == Some(404) => Ok(()),
-            Err(err) => Err(vault_error("delete", err)),
+        let path = self.path(owner, id);
+        // Set before the write, which then drops any previous version; set later, it lingers.
+        kv2::set_metadata(
+            &*client,
+            &self.mount,
+            &path,
+            Some(SetSecretMetadataRequest::builder().max_versions(1_u64)),
+        )
+        .await
+        .map_err(|err| vault_error("metadata write", err))?;
+        let data = json!({ FIELD: STANDARD.encode(value.expose_secret()) });
+        kv2::set(&*client, &self.mount, &path, &data)
+            .await
+            .map(drop)
+            .map_err(|err| vault_error("write", err))
+    }
+
+    async fn get(
+        &self,
+        owner: UserId,
+        ids: &[SecretId],
+    ) -> Result<BTreeMap<SecretId, SecretSlice<u8>>> {
+        let client = self.session.client().await?;
+        let mut found = BTreeMap::new();
+        for id in ids {
+            let path = self.path(owner, *id);
+            if let Some(data) = read(&client, &self.mount, &path).await? {
+                found.insert(*id, parse_value(&path, &data)?);
+            }
+        }
+        Ok(found)
+    }
+
+    async fn remove(&self, owner: UserId, id: SecretId) -> Result<bool> {
+        let client = self.session.client().await?;
+        let path = self.path(owner, id);
+        // Deleting the metadata of a path that never held a secret succeeds too.
+        let existed = read(&client, &self.mount, &path).await?.is_some();
+        self.delete(&client, &path).await?;
+        Ok(existed)
+    }
+
+    async fn remove_all(&self, owner: UserId) -> Result<()> {
+        let client = self.session.client().await?;
+        let dir = format!("{}/", self.owner_path(owner));
+        let keys = match kv2::list(&*client, &self.mount, &dir).await {
+            Ok(keys) => keys,
+            Err(err) if status(&err) == Some(404) => Vec::new(),
+            Err(err) => return Err(vault_error("list", err)),
+        };
+        for key in keys {
+            self.delete(&client, &format!("{dir}{key}")).await?;
+        }
+        self.delete(&client, &self.owner_path(owner)).await?;
+        Ok(())
+    }
+
+    async fn legacy_credentials(&self, owner: UserId) -> Result<CredentialMap> {
+        let client = self.session.client().await?;
+        match read(&client, &self.mount, &self.owner_path(owner)).await? {
+            Some(data) => parse_credentials(data),
+            None => Ok(CredentialMap::new()),
         }
     }
 
-    async fn names(&self, user: UserId) -> Result<Vec<CredentialName>> {
-        Ok(self.load(user).await?.into_keys().collect())
-    }
-
-    async fn load(&self, user: UserId) -> Result<CredentialMap> {
+    async fn forget_legacy_credentials(&self, owner: UserId) -> Result<()> {
         let client = self.session.client().await?;
-        let found = read(&client, &self.mount, &self.path(user), None).await?;
-        Ok(found.unwrap_or_default())
+        self.delete(&client, &self.owner_path(owner))
+            .await
+            .map(drop)
     }
 }
 
-async fn read(
-    client: &VaultClient,
-    mount: &str,
-    path: &str,
-    version: Option<u64>,
-) -> Result<Option<CredentialMap>> {
+async fn read(client: &VaultClient, mount: &str, path: &str) -> Result<Option<Value>> {
     let request = ReadSecretRequest::builder()
         .mount(mount)
         .path(path)
-        .version(version)
         .build()
         .expect("mount and path are set");
     match api::exec_with_result(client, request).await {
-        Ok(secret) => parse_env(secret.data).map(Some),
+        Ok(secret) => Ok(Some(secret.data)),
         Err(err) if status(&err) == Some(404) => Ok(None),
         Err(err) => Err(vault_error("read", err)),
     }
 }
 
-async fn current_version(client: &VaultClient, mount: &str, path: &str) -> Result<u64> {
-    match kv2::read_metadata(client, mount, path).await {
-        Ok(metadata) => Ok(metadata.current_version),
-        Err(err) if status(&err) == Some(404) => Ok(0),
-        Err(err) => Err(vault_error("metadata read", err)),
-    }
-}
-
-async fn write(
-    client: &VaultClient,
-    mount: &str,
-    path: &str,
-    env: &CredentialMap,
-    version: u64,
-) -> Result<bool> {
-    let cas = u32::try_from(version).map_err(|_| {
+fn parse_value(path: &str, data: &Value) -> Result<SecretSlice<u8>> {
+    let malformed = || {
         Error::internal(
             format!("vault secret {path}"),
-            format!("at version {version}, beyond check-and-set range"),
+            format!("has no {FIELD:?} field of standard base64"),
         )
-    })?;
-    // Set before the write, which then drops the previous version; set later, it lingers.
-    kv2::set_metadata(
-        client,
-        mount,
-        path,
-        Some(SetSecretMetadataRequest::builder().max_versions(1_u64)),
-    )
-    .await
-    .map_err(|err| vault_error("metadata write", err))?;
-    let data: BTreeMap<&str, &str> = env
-        .iter()
-        .map(|(name, value)| (name.as_str(), value.expose_secret()))
-        .collect();
-    match kv2::set_with_options(client, mount, path, &data, SetSecretRequestOptions { cas }).await {
-        Ok(_) => Ok(true),
-        Err(ClientError::APIError { code: 400, errors })
-            if errors.iter().any(|error| error.contains("check-and-set")) =>
-        {
-            Ok(false)
-        }
-        Err(err) => Err(vault_error("write", err)),
-    }
+    };
+    let encoded = data
+        .get(FIELD)
+        .and_then(Value::as_str)
+        .ok_or_else(malformed)?;
+    STANDARD
+        .decode(encoded)
+        .map(SecretSlice::from)
+        .map_err(|_| malformed())
 }
 
-fn parse_env(data: Value) -> Result<CredentialMap> {
+fn parse_credentials(data: Value) -> Result<CredentialMap> {
     let Value::Object(entries) = data else {
         return Err(Error::internal("vault secret", "data is not a map"));
     };

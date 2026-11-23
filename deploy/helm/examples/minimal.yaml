@@ -1,4 +1,4 @@
-# The smallest install: local accounts, SQLite on a volume, credentials in the database, and
+# The smallest install: local accounts, SQLite on a volume, secrets in the database, and
 # ContainerSSH on a LoadBalancer Service.
 baseUrl: http://corral.example.lan:8080
 ssh:

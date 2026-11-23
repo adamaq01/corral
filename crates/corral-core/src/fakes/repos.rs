@@ -16,7 +16,6 @@ use crate::{Error, Result};
 #[derive(Default)]
 pub struct MemoryUserRepo {
     users: Mutex<Vec<User>>,
-    credential_changes: Mutex<BTreeMap<UserId, DateTime<Utc>>>,
     sandbox_defaults: Mutex<BTreeMap<UserId, SandboxDefaults>>,
     deleting_from_inside: Mutex<BTreeMap<UserId, bool>>,
 }
@@ -107,21 +106,9 @@ impl UserRepo for MemoryUserRepo {
         let mut users = lock(&self.users);
         let before = users.len();
         users.retain(|u| u.id != id);
-        lock(&self.credential_changes).remove(&id);
         lock(&self.sandbox_defaults).remove(&id);
         lock(&self.deleting_from_inside).remove(&id);
         Ok(users.len() < before)
-    }
-
-    async fn credentials_changed_at(&self, id: UserId) -> Result<Option<DateTime<Utc>>> {
-        Ok(lock(&self.credential_changes).get(&id).copied())
-    }
-
-    async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()> {
-        if lock(&self.users).iter().any(|u| u.id == id) {
-            lock(&self.credential_changes).insert(id, at);
-        }
-        Ok(())
     }
 
     async fn deletes_from_inside(&self, id: UserId) -> Result<bool> {
@@ -264,6 +251,15 @@ impl SandboxRepo for MemorySandboxRepo {
         if let Some(sandbox) = lock(&self.sandboxes).iter_mut().find(|s| s.id == *id) {
             sandbox.started_at = Some(at);
             lock(&self.tokens).insert(id.clone(), token.clone());
+        }
+        Ok(())
+    }
+
+    async fn record_environment_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
+        for sandbox in lock(&self.sandboxes).iter_mut() {
+            if ids.contains(&sandbox.id) {
+                sandbox.environment_changed_at = Some(at);
+            }
         }
         Ok(())
     }

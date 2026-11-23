@@ -3,19 +3,16 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 use serde::Deserialize;
 use ts_rs::TS;
 
-use super::inside::SandboxLinks;
-use super::{Catalog, Credentials};
+use super::{Catalog, Environment};
 use crate::domain::{
-    Admin, Handle, HomeFiles, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName,
-    SandboxStatus, SandboxToken, SizeKey, User, UserId,
+    Admin, Handle, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName, SandboxStatus,
+    SandboxToken, SizeKey, User, UserId,
 };
-use crate::ports::{
-    Boot, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
-};
+use crate::ports::{Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,8 +37,8 @@ pub struct SandboxView {
     pub owner: User,
     pub is_default: bool,
     pub status: SandboxStatus,
-    /// Runs without its owner's latest credential change, which a restart applies.
-    pub stale_credentials: bool,
+    /// Runs without the latest change to its environment, which a restart applies.
+    pub stale_environment: bool,
 }
 
 /// A sandbox with what its engine reports about how it runs.
@@ -56,10 +53,9 @@ pub struct Sandboxes {
     pub(super) repo: Arc<dyn SandboxRepo>,
     pub(super) users: Arc<dyn UserRepo>,
     pub(super) engine: Arc<dyn SandboxEngine>,
-    credentials: Credentials,
+    environment: Environment,
     catalog: Catalog,
     limits: Limits,
-    links: SandboxLinks,
 }
 
 impl Sandboxes {
@@ -68,19 +64,17 @@ impl Sandboxes {
         repo: Arc<dyn SandboxRepo>,
         users: Arc<dyn UserRepo>,
         engine: Arc<dyn SandboxEngine>,
-        credentials: Credentials,
+        environment: Environment,
         catalog: Catalog,
         limits: Limits,
-        links: SandboxLinks,
     ) -> Self {
         Self {
             repo,
             users,
             engine,
-            credentials,
+            environment,
             catalog,
             limits,
-            links,
         }
     }
 
@@ -122,8 +116,7 @@ impl Sandboxes {
         // The sandbox exists whether or not it starts; its view reports where the start got.
         let _ = self.start_within(&mut sandbox, Duration::ZERO).await;
         let is_default = self.is_default(&sandbox).await?;
-        let changed = self.credentials.changed_at(owner.id).await?;
-        Ok(self.view(sandbox, owner.clone(), is_default, changed).await)
+        Ok(self.view(sandbox, owner.clone(), is_default).await)
     }
 
     /// The owner's sandbox `name`, provisioned from their defaults, unstarted, when they have none
@@ -160,11 +153,16 @@ impl Sandboxes {
             size: size.key.clone(),
             created_at: Utc::now(),
             started_at: None,
+            environment_changed_at: None,
             delete_at: None,
         };
         self.repo
             .insert(&sandbox, self.limits.max_sandboxes_per_user)
             .await?;
+        if let Err(error) = self.environment.attach_new(&sandbox).await {
+            self.forget(&sandbox).await?;
+            return Err(error);
+        }
         let spec = SandboxSpec {
             owner: owner.handle.clone(),
             name: sandbox.name.clone(),
@@ -173,7 +171,7 @@ impl Sandboxes {
         };
         if let Err(error) = self.engine.create(&sandbox.id, &spec).await {
             let _ = self.engine.delete(&sandbox.id).await;
-            self.repo.delete(owner.id, &sandbox.name).await?;
+            self.forget(&sandbox).await?;
             return Err(error);
         }
         Ok(sandbox)
@@ -182,11 +180,10 @@ impl Sandboxes {
     pub async fn list(&self, owner: &User) -> Result<Vec<SandboxView>> {
         let sandboxes = self.repo.list(owner.id).await?;
         let default = self.default_among(owner.id, &sandboxes).await?;
-        let changed = self.credentials.changed_at(owner.id).await?;
         let mut views = Vec::with_capacity(sandboxes.len());
         for sandbox in sandboxes {
             let is_default = Some(&sandbox.id) == default.as_ref();
-            views.push(self.view(sandbox, owner.clone(), is_default, changed).await);
+            views.push(self.view(sandbox, owner.clone(), is_default).await);
         }
         Ok(views)
     }
@@ -194,8 +191,7 @@ impl Sandboxes {
     pub async fn get(&self, owner: &User, name: &SandboxName) -> Result<SandboxView> {
         let sandbox = self.find(owner, name).await?;
         let is_default = self.is_default(&sandbox).await?;
-        let changed = self.credentials.changed_at(owner.id).await?;
-        Ok(self.view(sandbox, owner.clone(), is_default, changed).await)
+        Ok(self.view(sandbox, owner.clone(), is_default).await)
     }
 
     pub async fn list_all(&self, _: &Admin) -> Result<Vec<SandboxView>> {
@@ -208,14 +204,9 @@ impl Sandboxes {
             .collect();
         let sandboxes = self.repo.list_all().await?;
         let mut defaults = HashMap::new();
-        let mut credential_changes = HashMap::new();
         for sandbox in &sandboxes {
             if let Entry::Vacant(slot) = defaults.entry(sandbox.owner) {
                 slot.insert(self.default_among(sandbox.owner, &sandboxes).await?);
-                credential_changes.insert(
-                    sandbox.owner,
-                    self.credentials.changed_at(sandbox.owner).await?,
-                );
             }
         }
         let mut views = Vec::with_capacity(sandboxes.len());
@@ -224,8 +215,7 @@ impl Sandboxes {
                 Error::internal("store", format!("sandbox {} has no owner", sandbox.id.0))
             })?;
             let is_default = defaults[&sandbox.owner].as_ref() == Some(&sandbox.id);
-            let changed = credential_changes[&sandbox.owner];
-            views.push(self.view(sandbox, owner, is_default, changed).await);
+            views.push(self.view(sandbox, owner, is_default).await);
         }
         Ok(views)
     }
@@ -261,6 +251,11 @@ impl Sandboxes {
     /// Deletes the sandbox from the engine, home included, then forgets it.
     pub(super) async fn remove(&self, sandbox: &Sandbox) -> Result<()> {
         self.engine.delete(&sandbox.id).await?;
+        self.forget(sandbox).await
+    }
+
+    async fn forget(&self, sandbox: &Sandbox) -> Result<()> {
+        self.environment.forget_sandbox(sandbox).await?;
         self.repo.delete(sandbox.owner, &sandbox.name).await?;
         Ok(())
     }
@@ -307,7 +302,7 @@ impl Sandboxes {
             .ok_or_else(|| Error::NotFound(format!("default sandbox of {}", owner.handle)))
     }
 
-    /// Starts the sandbox with its owner's current credentials, waiting up to the wake deadline.
+    /// Starts the sandbox with its current environment, waiting up to the wake deadline.
     pub async fn start(&self, sandbox: &Sandbox) -> Result<Readiness> {
         self.start_within(&mut sandbox.clone(), self.limits.wake_deadline)
             .await
@@ -317,13 +312,10 @@ impl Sandboxes {
     /// Issues the sandbox a token for the start, which it keeps only if the start boots it.
     async fn start_within(&self, sandbox: &mut Sandbox, deadline: Duration) -> Result<Readiness> {
         not_doomed(sandbox)?;
-        // Taken before the credentials load, so a change made while it starts counts as after it.
+        // Taken before the environment loads, so a change made while it starts counts as after it.
         let at = Utc::now();
         let token = SandboxToken::generate()?;
-        let boot = Boot {
-            env: self.credentials.load(sandbox.owner).await?,
-            files: HomeFiles::from([self.links.sandbox_file(sandbox, &token)]),
-        };
+        let boot = self.environment.boot(sandbox, &token).await?;
         let started = self.engine.start(&sandbox.id, boot, deadline).await?;
         if started.booted {
             self.repo
@@ -362,27 +354,22 @@ impl Sandboxes {
         }))
     }
 
-    async fn view(
-        &self,
-        sandbox: Sandbox,
-        owner: User,
-        is_default: bool,
-        credentials_changed_at: Option<DateTime<Utc>>,
-    ) -> SandboxView {
+    async fn view(&self, sandbox: Sandbox, owner: User, is_default: bool) -> SandboxView {
         let status = self
             .engine
             .status(&sandbox.id)
             .await
             .unwrap_or_else(|_| SandboxStatus::Failed("engine status unavailable".to_owned()));
-        let stale_credentials = status == SandboxStatus::Running
-            && credentials_changed_at
+        let stale_environment = status == SandboxStatus::Running
+            && sandbox
+                .environment_changed_at
                 .is_some_and(|changed| sandbox.started_at.is_none_or(|started| started < changed));
         SandboxView {
             sandbox,
             owner,
             is_default,
             status,
-            stale_credentials,
+            stale_environment,
         }
     }
 }
@@ -403,17 +390,24 @@ fn not_doomed(sandbox: &Sandbox) -> Result<()> {
 mod tests {
     use std::time::Duration;
 
-    use secrecy::SecretString;
-
     use super::SandboxView;
     use crate::Error;
+    use crate::app::EntryChange;
     use crate::domain::Handle;
-    use crate::domain::{Sandbox, SandboxStatus, SizeKey};
+    use crate::domain::{Sandbox, SandboxStatus, SizeKey, User};
     use crate::fakes::EngineCall;
     use crate::fakes::{
-        MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, catalog, credential, default_names,
-        defaults, exposed, request, sandbox_name,
+        MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, bytes, catalog, default_names, defaults,
+        exposed, file, request, sandbox_name, variable,
     };
+
+    fn change(value: Option<&str>) -> EntryChange {
+        EntryChange {
+            value: value.map(bytes),
+            template: false,
+            apply_to_new: true,
+        }
+    }
     use crate::ports::{EventKind, Fact, Readiness, SandboxEngine, SshTarget, UserRepo};
 
     #[tokio::test]
@@ -422,10 +416,7 @@ mod tests {
         let adam = w.member("adam").await;
         let eve = w.member("eve").await;
         for (owner, value) in [(&adam, "adams"), (&eve, "eves")] {
-            w.credentials
-                .set(owner.id, &credential("GH_TOKEN"), SecretString::from(value))
-                .await
-                .unwrap();
+            w.entry(owner, variable("GH_TOKEN"), value, true).await;
         }
         w.engine.set_waking(true);
 
@@ -614,10 +605,13 @@ mod tests {
     async fn wake_applies_fresh_env_only_from_stopped_and_restart_applies_it_always() {
         let w = World::new();
         let adam = w.member("adam").await;
+        let gh = w
+            .entry(&adam, variable("GH_TOKEN"), "at-create", true)
+            .await;
         let main = w.sandbox(&adam, "main").await;
         let set = async |value: &str| {
-            w.credentials
-                .set(adam.id, &credential("GH_TOKEN"), SecretString::from(value))
+            w.environment
+                .change(&adam, gh.id, change(Some(value)))
                 .await
                 .unwrap();
         };
@@ -654,67 +648,111 @@ mod tests {
         );
     }
 
+    /// The sandboxes that run without their latest environment change, as admins and their owner
+    /// see them.
+    async fn stale_ones(w: &World, root: &User, adam: &User) -> Vec<String> {
+        let stale = |views: Vec<SandboxView>| -> Vec<String> {
+            let mut names: Vec<String> = views
+                .into_iter()
+                .filter(|view| view.stale_environment)
+                .map(|view| format!("{}.{}", view.sandbox.name, view.owner.handle))
+                .collect();
+            names.sort();
+            names
+        };
+        let seen = stale(w.sandboxes.list_all(&admin_proof(root)).await.unwrap());
+        let adams = stale(w.sandboxes.list(adam).await.unwrap());
+        assert!(adams.iter().all(|name| seen.contains(name)), "{adams:?}");
+        seen
+    }
+
     #[tokio::test]
-    async fn a_credential_change_leaves_running_sandboxes_stale_until_they_start_again() {
+    async fn an_environment_change_leaves_running_sandboxes_stale_until_they_start_again() {
         let w = World::new();
         let adam = w.member("adam").await;
         let eve = w.member("eve").await;
         let root = w.admin("root").await;
+        let gh = w.entry(&adam, variable("GH_TOKEN"), "zero", true).await;
         let main = w.sandbox(&adam, "main").await;
         let dev = w.sandbox(&adam, "dev").await;
+        w.entry(&eve, variable("GH_TOKEN"), "eves", true).await;
         w.sandbox(&eve, "main").await;
+        let later = w.entry(&adam, file("notes"), "n", false).await;
         w.sandboxes.stop(&adam, &dev.name).await.unwrap();
-        let gh = credential("GH_TOKEN");
-        let stale = async || {
-            let mut seen: Vec<String> = w
-                .sandboxes
-                .list_all(&admin_proof(&root))
-                .await
-                .unwrap()
-                .into_iter()
-                .filter(|view| view.stale_credentials)
-                .map(|view| format!("{}.{}", view.sandbox.name, view.owner.handle))
-                .collect();
-            let adams: Vec<String> = w
-                .sandboxes
-                .list(&adam)
-                .await
-                .unwrap()
-                .into_iter()
-                .filter(|view| view.stale_credentials)
-                .map(|view| format!("{}.adam", view.sandbox.name))
-                .collect();
-            assert!(adams.iter().all(|name| seen.contains(name)), "{adams:?}");
-            assert_eq!(
-                w.sandboxes
-                    .get(&adam, &main.name)
-                    .await
-                    .unwrap()
-                    .stale_credentials,
-                seen.contains(&"main.adam".to_owned())
-            );
-            seen.sort();
-            seen
+        let stale = async || stale_ones(&w, &root, &adam).await;
+        let fresh = async || {
+            w.sandboxes.restart(&adam, &main.name).await.unwrap();
+            assert_eq!(stale().await, [] as [&str; 0]);
         };
         assert_eq!(stale().await, [] as [&str; 0]);
 
-        w.credentials
-            .set(adam.id, &gh, SecretString::from("one"))
+        w.environment
+            .change(&adam, gh.id, change(Some("one")))
             .await
             .unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.wake(&adam, &main.name).await.unwrap();
         w.access.route("main.adam").await.unwrap();
         assert_eq!(stale().await, ["main.adam"]);
-        w.sandboxes.restart(&adam, &main.name).await.unwrap();
-        assert_eq!(stale().await, [] as [&str; 0]);
+        fresh().await;
 
-        w.credentials.remove(adam.id, &gh).await.unwrap();
+        w.environment
+            .change(
+                &adam,
+                gh.id,
+                EntryChange {
+                    apply_to_new: false,
+                    ..change(None)
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stale().await,
+            [] as [&str; 0],
+            "the flag reaches no sandbox"
+        );
+
+        w.environment
+            .attach(&adam, &main.name, later.id)
+            .await
+            .unwrap();
+        assert_eq!(stale().await, ["main.adam"]);
+        fresh().await;
+        w.environment
+            .set_override(&adam, &main.name, later.id, Some(bytes("main's")))
+            .await
+            .unwrap();
+        assert_eq!(stale().await, ["main.adam"]);
+        fresh().await;
+        w.environment
+            .change(&adam, later.id, change(Some("everyone's")))
+            .await
+            .unwrap();
+        assert_eq!(stale().await, [] as [&str; 0], "main keeps its override");
+        w.environment
+            .set_override(&adam, &main.name, later.id, None)
+            .await
+            .unwrap();
+        assert_eq!(stale().await, ["main.adam"]);
+        fresh().await;
+        w.environment
+            .detach(&adam, &main.name, later.id)
+            .await
+            .unwrap();
+        assert_eq!(stale().await, ["main.adam"]);
+        fresh().await;
+
+        w.environment.delete(&adam, gh.id).await.unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
         w.access.route("main.adam").await.unwrap();
         w.sandboxes.wake(&adam, &dev.name).await.unwrap();
         assert_eq!(stale().await, [] as [&str; 0]);
+        assert_eq!(
+            exposed(&w.engine.env_of(&main.id).unwrap()),
+            [] as [&str; 0]
+        );
     }
 
     #[tokio::test]
@@ -732,14 +770,14 @@ mod tests {
                     owner: adam.clone(),
                     is_default: true,
                     status: SandboxStatus::Running,
-                    stale_credentials: false,
+                    stale_environment: false,
                 },
                 SandboxView {
                     sandbox: dev.clone(),
                     owner: adam.clone(),
                     is_default: false,
                     status: SandboxStatus::Sleeping,
-                    stale_credentials: false,
+                    stale_environment: false,
                 },
             ]
         );

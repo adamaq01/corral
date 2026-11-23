@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,12 +15,12 @@ use corral_api::{
     ApiError, ClientAddress, CurrentAdmin, Identities, LoginKind, PathParam, ProviderCookies,
     ProviderDescription, ProviderRoutes, router,
 };
-use corral_core::app::Credentials;
-use corral_core::domain::{CredentialName, Role, UserId};
-use corral_core::fakes::{ADAM_KEY, EngineCall, MAX_SANDBOXES, PROVIDER, World};
-use corral_core::ports::{CredentialMap, EventKind, Identity, SecretStore};
+use corral_core::app::Environment;
+use corral_core::domain::{Handle, Role, SecretId, UserId};
+use corral_core::fakes::{ADAM_KEY, EngineCall, MAX_SANDBOXES, PROVIDER, World, exposed, links};
+use corral_core::ports::{CredentialMap, EventKind, Identity, SecretStore, UserRepo};
 use corral_core::{Error, Result};
-use secrecy::SecretString;
+use secrecy::SecretSlice;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -95,14 +96,18 @@ struct BrokenVault;
 
 #[async_trait]
 impl SecretStore for BrokenVault {
-    async fn set(&self, _: UserId, _: &CredentialName, _: SecretString) -> Result<()> {
+    async fn put(&self, _: UserId, _: SecretId, _: &SecretSlice<u8>) -> Result<()> {
         Err(Error::internal(
             "vault",
             "vault at 10.9.8.7 refused token s.internal",
         ))
     }
 
-    async fn remove(&self, _: UserId, _: &CredentialName) -> Result<bool> {
+    async fn get(&self, _: UserId, _: &[SecretId]) -> Result<BTreeMap<SecretId, SecretSlice<u8>>> {
+        Ok(BTreeMap::new())
+    }
+
+    async fn remove(&self, _: UserId, _: SecretId) -> Result<bool> {
         Ok(false)
     }
 
@@ -110,12 +115,12 @@ impl SecretStore for BrokenVault {
         Ok(())
     }
 
-    async fn names(&self, _: UserId) -> Result<Vec<CredentialName>> {
-        Ok(Vec::new())
+    async fn legacy_credentials(&self, _: UserId) -> Result<CredentialMap> {
+        Ok(CredentialMap::new())
     }
 
-    async fn load(&self, _: UserId) -> Result<CredentialMap> {
-        Ok(CredentialMap::new())
+    async fn forget_legacy_credentials(&self, _: UserId) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -138,7 +143,12 @@ impl Setup {
         api.secure_cookies = self.secure;
         api.trust_forwarded_for = self.trust_forwarded_for;
         if let Some(secrets) = self.secrets {
-            api.credentials = Credentials::new(secrets, world.users.clone());
+            api.environment = Environment::new(
+                world.environment_repo.clone(),
+                secrets,
+                world.sandbox_repo.clone(),
+                links(),
+            );
         }
         Corral {
             app: router(api, vec![stub()]),
@@ -491,9 +501,37 @@ const API_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/keys"),
     ("POST", "/api/keys"),
     ("DELETE", "/api/keys/00000000-0000-0000-0000-000000000000"),
-    ("GET", "/api/credentials"),
-    ("PUT", "/api/credentials/GH_TOKEN"),
-    ("DELETE", "/api/credentials/GH_TOKEN"),
+    ("GET", "/api/environment"),
+    ("POST", "/api/environment"),
+    (
+        "GET",
+        "/api/environment/00000000-0000-0000-0000-000000000000",
+    ),
+    (
+        "PUT",
+        "/api/environment/00000000-0000-0000-0000-000000000000",
+    ),
+    (
+        "DELETE",
+        "/api/environment/00000000-0000-0000-0000-000000000000",
+    ),
+    ("GET", "/api/sandboxes/main/environment"),
+    (
+        "PUT",
+        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000",
+    ),
+    (
+        "DELETE",
+        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000",
+    ),
+    (
+        "PUT",
+        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000/override",
+    ),
+    (
+        "DELETE",
+        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000/override",
+    ),
 ];
 
 const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
@@ -587,7 +625,7 @@ async fn create_then_list_shows_the_ssh_username() {
         "state": "running",
         "ssh": { "username": "main.adam", "host": "corral.example.com", "port": 48291 },
         "createdAt": created["createdAt"],
-        "staleCredentials": false,
+        "staleEnvironment": false,
         "deleteAt": null,
     });
     assert_eq!(created, expected);
@@ -698,70 +736,401 @@ async fn sandbox_actions_reach_the_engine() {
     );
 }
 
-#[tokio::test]
-async fn a_running_sandbox_has_stale_credentials_from_a_change_until_it_restarts() {
-    let corral = Corral::new();
-    let mut adam = corral.signed_in("adam", Role::Member).await;
-    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
-    let main = "/api/sandboxes/main";
-    assert_eq!(adam.get(main).await.json()["staleCredentials"], false);
-
-    adam.call(
-        "PUT",
-        "/api/credentials/GH_TOKEN",
-        Some(json!({ "value": "ghp_1" })),
-    )
-    .await;
-    assert_eq!(adam.get(main).await.json()["staleCredentials"], true);
-    assert_eq!(
-        adam.get("/api/sandboxes").await.json()[0]["staleCredentials"],
-        true
-    );
-    adam.call("POST", "/api/sandboxes/main/restart", None).await;
-    assert_eq!(adam.get(main).await.json()["staleCredentials"], false);
+fn variable(name: &str, value: &str, secret: bool) -> Value {
+    json!({
+        "kind": "variable",
+        "target": name,
+        "secret": secret,
+        "applyToNew": true,
+        "value": { "text": value },
+    })
 }
 
 #[tokio::test]
-async fn credential_values_never_come_back() {
+async fn a_running_sandbox_is_stale_from_an_environment_change_until_it_restarts() {
     let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
-    let mut replies = vec![
-        adam.call(
+    let created = adam
+        .post("/api/environment", variable("GH_TOKEN", "ghp_1", false))
+        .await
+        .json();
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let main = "/api/sandboxes/main";
+    assert_eq!(adam.get(main).await.json()["staleEnvironment"], false);
+
+    let changed = adam
+        .call(
             "PUT",
-            "/api/credentials/GH_TOKEN",
-            Some(json!({ "value": "ghp_s3cr3t-value" })),
+            &format!("/api/environment/{}", created["id"].as_str().unwrap()),
+            Some(json!({ "template": false, "applyToNew": true, "value": { "text": "ghp_2" } })),
         )
-        .await,
-    ];
-    assert_eq!(replies[0].status, StatusCode::NO_CONTENT);
-    replies.push(adam.get("/api/credentials").await);
-    assert_eq!(replies[1].json(), json!([{ "name": "GH_TOKEN" }]));
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text());
+    assert_eq!(changed.json()["value"]["text"], "ghp_2");
+    assert_eq!(adam.get(main).await.json()["staleEnvironment"], true);
+    assert_eq!(
+        adam.get("/api/sandboxes").await.json()[0]["staleEnvironment"],
+        true
+    );
+    adam.call("POST", "/api/sandboxes/main/restart", None).await;
+    assert_eq!(adam.get(main).await.json()["staleEnvironment"], false);
+}
+
+fn file(target: &str, secret: bool, value: &Value) -> Value {
+    json!({
+        "kind": "file",
+        "target": target,
+        "secret": secret,
+        "applyToNew": false,
+        "value": value,
+    })
+}
+
+fn shown(entry: &Value, fields: &[&str]) -> Vec<Value> {
+    fields
+        .iter()
+        .map(|field| entry["value"][*field].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn secret_values_never_come_back_and_show_only_a_glimpse() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    let created = adam
+        .post(
+            "/api/environment",
+            variable("GH_TOKEN", "ghp_s3cr3t-value-0123456789Xz", true),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+    let entry = created.json();
+    assert_eq!(
+        [
+            &entry["kind"],
+            &entry["target"],
+            &entry["secret"],
+            &entry["applyToNew"]
+        ],
+        [
+            &json!("variable"),
+            &json!("GH_TOKEN"),
+            &json!(true),
+            &json!(true)
+        ]
+    );
+    assert_eq!(
+        shown(&entry, &["shown", "length", "head", "tail", "size"]),
+        [
+            json!("masked"),
+            json!(29),
+            json!("ghp_"),
+            json!("Xz"),
+            json!(29)
+        ]
+    );
+    assert!(entry["value"]["setAt"].is_string());
+    let short = adam
+        .post("/api/environment", variable("PIN", "s3cr3t", true))
+        .await
+        .json();
+    assert_eq!(
+        shown(&short, &["shown", "length", "head"]),
+        [json!("masked"), json!(6), Value::Null]
+    );
+    let key = adam
+        .post(
+            "/api/environment",
+            file(".ssh/id", true, &json!({ "text": "s3cr3t key" })),
+        )
+        .await
+        .json();
+    assert_eq!(
+        shown(&key, &["shown", "size"]),
+        [json!("hidden"), json!(10)]
+    );
+
+    let mut replies = vec![adam.get("/api/environment").await];
     replies.push(
-        adam.call(
-            "PUT",
-            "/api/credentials/GH_TOKEN",
-            Some(json!({ "value": "ghp_s3cr3t\nvalue" })),
-        )
+        adam.get(&format!(
+            "/api/environment/{}",
+            entry["id"].as_str().unwrap()
+        ))
         .await,
     );
-    assert_eq!(replies[2].status, StatusCode::BAD_REQUEST);
     replies.push(adam.post("/api/sandboxes", json!({ "name": "main" })).await);
-    replies.push(adam.get("/api/sandboxes").await);
+    replies.push(adam.get("/api/sandboxes/main/environment").await);
+    replies.push(
+        adam.post("/api/environment", variable("OTHER", "s3cr3t\nvalue", true))
+            .await,
+    );
     for reply in &replies {
         assert!(!reply.text().contains("s3cr3t"), "{}", reply.text());
     }
+    assert_eq!(replies[4].status, StatusCode::BAD_REQUEST);
+}
 
-    let removed = adam.call("DELETE", "/api/credentials/GH_TOKEN", None).await;
+#[tokio::test]
+async fn plain_values_show_in_full_and_entries_list_variables_first() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    let binary = adam
+        .post(
+            "/api/environment",
+            file("blob", false, &json!({ "base64": "AP8=" })),
+        )
+        .await
+        .json();
+    assert_eq!(
+        shown(&binary, &["shown", "base64", "size"]),
+        [json!("binary"), json!("AP8="), json!(2)]
+    );
+    let text = adam
+        .post(
+            "/api/environment",
+            file("notes", false, &json!({ "base64": "aGk=" })),
+        )
+        .await
+        .json();
+    assert_eq!(
+        shown(&text, &["shown", "text"]),
+        [json!("text"), json!("hi")]
+    );
+    let plain = adam
+        .post("/api/environment", variable("EDITOR", "vim", false))
+        .await
+        .json();
+    assert_eq!(
+        shown(&plain, &["shown", "text"]),
+        [json!("text"), json!("vim")]
+    );
+    let listed: Vec<Value> = adam
+        .get("/api/environment")
+        .await
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["target"].clone())
+        .collect();
+    assert_eq!(listed, ["EDITOR", "blob", "notes"]);
+
+    let id = binary["id"].as_str().unwrap();
+    let removed = adam
+        .call("DELETE", &format!("/api/environment/{id}"), None)
+        .await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
-    assert_eq!(adam.get("/api/credentials").await.json(), json!([]));
-    let invalid = adam
+    let again = adam
+        .call("DELETE", &format!("/api/environment/{id}"), None)
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn entries_their_target_cannot_take_are_refused_with_the_reason() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    adam.post("/api/environment", variable("GH_TOKEN", "x", false))
+        .await;
+    for (body, status, reason) in [
+        (
+            variable("gh-token", "x", false),
+            StatusCode::BAD_REQUEST,
+            "variable name",
+        ),
+        (
+            variable("PATH", "x", false),
+            StatusCode::BAD_REQUEST,
+            "reserved",
+        ),
+        (
+            file("../outside", false, &json!({ "text": "x" })),
+            StatusCode::BAD_REQUEST,
+            "inside the home",
+        ),
+        (
+            file("bad", false, &json!({ "base64": "not base64!" })),
+            StatusCode::BAD_REQUEST,
+            "base64",
+        ),
+        (
+            file("big", false, &json!({ "text": "x".repeat(256 * 1024 + 1) })),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "256 KiB",
+        ),
+        (
+            variable("GH_TOKEN", "again", false),
+            StatusCode::CONFLICT,
+            "applies to new sandboxes",
+        ),
+    ] {
+        let reply = adam.post("/api/environment", body).await;
+        assert_eq!(reply.status, status, "{}", reply.text());
+        assert!(reply.text().contains(reason), "{}", reply.text());
+    }
+}
+
+/// Adam's main sandbox with a secret `GH_TOKEN`, a plain one, and a template naming it, none
+/// attached, and each entry's path under main.
+async fn three_entries(corral: &Corral) -> (Browser, [String; 3]) {
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let mut paths = Vec::new();
+    for mut body in [
+        variable("GH_TOKEN", "ghp_everyone", true),
+        variable("GH_TOKEN", "ghp_other", false),
+        json!({
+            "kind": "file",
+            "target": ".config/tool.toml",
+            "secret": false,
+            "template": true,
+            "value": { "text": "token = \"{{ GH_TOKEN }}\"" },
+        }),
+    ] {
+        body["applyToNew"] = json!(false);
+        let created = adam.post("/api/environment", body).await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+        paths.push(format!(
+            "/api/sandboxes/main/environment/{}",
+            created.json()["id"].as_str().unwrap()
+        ));
+    }
+    (adam, paths.try_into().unwrap())
+}
+
+#[tokio::test]
+async fn a_sandbox_attaches_entries_that_fit_it() {
+    let corral = Corral::new();
+    let (mut adam, [token, other, config]) = three_entries(&corral).await;
+    let mut eve = corral.signed_in("eve", Role::Member).await;
+
+    let unknown = adam.call("PUT", &config, None).await;
+    assert_eq!(
+        unknown.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unknown.text()
+    );
+    assert!(unknown.text().contains("GH_TOKEN"), "{}", unknown.text());
+    for path in [&token, &config, &token] {
+        let attached = adam.call("PUT", path, None).await;
+        assert_eq!(
+            attached.status,
+            StatusCode::NO_CONTENT,
+            "{}",
+            attached.text()
+        );
+    }
+    let conflict = adam.call("PUT", &other, None).await;
+    assert_eq!(conflict.status, StatusCode::CONFLICT, "{}", conflict.text());
+    let theirs = eve.call("PUT", &token, None).await;
+    assert_eq!(theirs.status, StatusCode::NOT_FOUND);
+    let missing = adam
         .call(
             "PUT",
-            "/api/credentials/gh-token",
-            Some(json!({ "value": "x" })),
+            "/api/sandboxes/missing/environment/00000000-0000-0000-0000-000000000000",
+            None,
         )
         .await;
-    assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    let listed = adam.get("/api/sandboxes/main/environment").await.json();
+    let attached: Vec<(&Value, &Value)> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|attached| {
+            (
+                &attached["entry"]["target"],
+                &attached["entry"]["sandboxes"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        attached,
+        [
+            (&json!("GH_TOKEN"), &json!(["main"])),
+            (&json!(".config/tool.toml"), &json!(["main"]))
+        ]
+    );
+
+    let detached = adam.call("DELETE", &token, None).await;
+    assert_eq!(detached.status, StatusCode::NO_CONTENT);
+    let restart = adam.call("POST", "/api/sandboxes/main/restart", None).await;
+    assert_eq!(
+        restart.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        restart.text()
+    );
+    assert!(
+        restart.text().contains(".config/tool.toml") && restart.text().contains("GH_TOKEN"),
+        "{}",
+        restart.text()
+    );
+    let again = adam.call("DELETE", &token, None).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_override_gives_one_sandbox_its_own_value() {
+    let corral = Corral::new();
+    let (mut adam, [token, _, _]) = three_entries(&corral).await;
+    adam.call("PUT", &token, None).await;
+    let overridden = adam
+        .call(
+            "PUT",
+            &format!("{token}/override"),
+            Some(json!({ "text": "ghp_main_only" })),
+        )
+        .await;
+    assert_eq!(
+        overridden.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        overridden.text()
+    );
+    let listed = adam.get("/api/sandboxes/main/environment").await;
+    assert!(
+        !listed.text().contains("ghp_main_only"),
+        "{}",
+        listed.text()
+    );
+    let overriding = &listed.json()[0]["override"];
+    assert_eq!(
+        (&overriding["shown"], &overriding["length"]),
+        (&json!("masked"), &json!(13))
+    );
+
+    adam.call("POST", "/api/sandboxes/main/restart", None).await;
+    let owner = corral
+        .world
+        .users
+        .by_handle(&Handle::parse("adam").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let main = corral
+        .world
+        .sandboxes
+        .list(&owner)
+        .await
+        .unwrap()
+        .remove(0)
+        .sandbox;
+    assert_eq!(
+        exposed(&corral.world.engine.env_of(&main.id).unwrap()),
+        ["GH_TOKEN=ghp_main_only"]
+    );
+
+    let cleared = adam
+        .call("DELETE", &format!("{token}/override"), None)
+        .await;
+    assert_eq!(cleared.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        adam.get("/api/sandboxes/main/environment").await.json()[0]["override"],
+        Value::Null
+    );
 }
 
 #[tokio::test]
@@ -929,14 +1298,10 @@ async fn owning_everything(corral: &Corral, handle: &str) -> Browser {
         )
         .await;
     assert_eq!(key.status, StatusCode::CREATED, "{}", key.text());
-    let credential = browser
-        .call(
-            "PUT",
-            "/api/credentials/GH_TOKEN",
-            Some(json!({ "value": "gh-secret" })),
-        )
+    let entry = browser
+        .post("/api/environment", variable("GH_TOKEN", "gh-secret", true))
         .await;
-    assert_eq!(credential.status, StatusCode::NO_CONTENT);
+    assert_eq!(entry.status, StatusCode::CREATED, "{}", entry.text());
     let defaults = browser
         .call(
             "PUT",
@@ -957,7 +1322,7 @@ async fn owns_nothing_after_signing_up_again(corral: &Corral, handle: &str) {
             .contains(&handle.to_owned())
     );
     let mut again = corral.signed_in(handle, Role::Member).await;
-    for listing in ["/api/sandboxes", "/api/keys", "/api/credentials"] {
+    for listing in ["/api/sandboxes", "/api/keys", "/api/environment"] {
         assert_eq!(again.get(listing).await.json(), json!([]), "{listing}");
     }
     let catalog = again.get("/api/catalog").await.json();
@@ -1068,7 +1433,7 @@ async fn a_disabled_user_cannot_delete_themselves() {
     );
     root.post(&format!("/api/admin/users/{adam_id}/enable"), json!({}))
         .await;
-    for listing in ["/api/keys", "/api/credentials"] {
+    for listing in ["/api/keys", "/api/environment"] {
         assert_eq!(
             adam.get(listing).await.json().as_array().unwrap().len(),
             1,
@@ -1195,7 +1560,7 @@ async fn post_and_put_accept_only_json() {
             "/auth/logout",
             Some("multipart/form-data; boundary=x"),
         ),
-        ("PUT", "/api/credentials/GH_TOKEN", Some("text/plain")),
+        ("POST", "/api/environment", Some("text/plain")),
     ] {
         let mut request = Request::builder().method(method).uri(uri);
         if let Some(content_type) = content_type {
@@ -1235,11 +1600,7 @@ async fn internal_errors_have_a_generic_body() {
     .build();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let reply = adam
-        .call(
-            "PUT",
-            "/api/credentials/GH_TOKEN",
-            Some(json!({ "value": "x" })),
-        )
+        .post("/api/environment", variable("GH_TOKEN", "x", true))
         .await;
     assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(reply.json(), json!({ "error": "internal error" }));

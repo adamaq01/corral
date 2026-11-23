@@ -23,7 +23,7 @@ test.describe('a member', () => {
 		await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link')).toHaveText([
 			'Sandboxes',
 			'SSH keys',
-			'Credentials'
+			'Environment'
 		]);
 		await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
 

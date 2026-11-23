@@ -21,7 +21,7 @@ all their output, and Kubernetes terminals get no stray bytes and end when the c
 You need Docker with the Compose plugin and `ssh-keygen`.
 
 1. Copy this directory to the host and keep it private, since it will hold the key that opens
-   every sandbox and the key that decrypts every stored credential:
+   every sandbox and the key that decrypts every stored secret:
 
    ```sh
    cp -R deploy/compose /opt/corral && cd /opt/corral && chmod 700 .
@@ -30,7 +30,7 @@ You need Docker with the Compose plugin and `ssh-keygen`.
 2. In `config.toml`, set `base_url` (the address people open in a browser) and `public_host`
    (the host name people pass to `ssh`).
 
-3. Generate Corral's keys. Run this once: new keys make every stored credential unreadable.
+3. Generate Corral's keys. Run this once: new keys make every stored secret unreadable.
 
    ```sh
    docker compose run --rm corral keys generate > .env
@@ -84,13 +84,21 @@ block, and wakes, stops, restarts or deletes the sandbox.
 - Your **Profile** sets the image and size a new sandbox gets unless you pick others, including
   one made by connecting as `<sandbox>.<name>`. Until you set them, they are the first image and
   size in `config.toml`'s catalog.
-- **Credentials** stores secrets such as LLM API keys, encrypted with `CORRAL_SECRETS_KEY`. Each
-  reaches SSH sessions as an environment variable from the sandbox's next wake or restart on.
-  Values are never shown again.
+- **Environment** holds your variables (`NAME=value` in every SSH session) and files (written
+  into the home at every start, replacing what is at their path, missing directories made).
+  Either can be secret: a secret value is encrypted with `CORRAL_SECRETS_KEY` and never shown
+  again, only its length, first 4 and last 2 characters once it has 16 or more (a file only its
+  size), and a secret file is readable by the sandbox user alone. A file marked as a template
+  takes the value of each variable attached to the same sandbox in place of its `{{ NAME }}`.
+  A file holds at most 256 KiB, and a sandbox's files and its variables at most 1 MiB each.
+- A sandbox gets the variables and files attached to it: each new sandbox those marked
+  **Apply to new sandboxes**, and on its page you attach or detach others, or give one a value
+  for that sandbox alone. Changes reach a sandbox from its next wake or restart on, and a running
+  sandbox shows **Restart to apply** until then.
 - Admins add, reset and delete local accounts under **Local accounts**, and disable, enable or
   delete users under **Users**. **All sandboxes** lists every user's sandboxes.
 - Deleting a user, as an admin or from your own **Profile**, deletes their sandboxes with their
-  homes, keys, credentials and local account. The username is free again afterwards, and a new
+  homes, keys, environment and local account. The username is free again afterwards, and a new
   account with it starts empty. A deletion that fails part way leaves the user with status
   Deleting, unable to log in, and deleting them again finishes it.
 - A sandbox sleeps (its container stops) after 30 minutes with no SSH session and no Herdr
@@ -199,5 +207,7 @@ configuration; `crates/corral-server/config.example.toml` shows a Kubernetes ins
   it, and the sign-in page offers each login method that is on.
 - Vault or OpenBao: add a `[secrets]` section with `kind = "vault"` and `address`, and a
   `[secrets.auth]` section with `kind = "token"`, with `CORRAL_VAULT_TOKEN` in `.env`, to keep
-  credentials in a KV v2 mount (`secret` by default) instead of in the database. The adapter
-  speaks the Vault KV v2 API, which HashiCorp Vault and OpenBao both serve.
+  secret values in a KV v2 mount (`secret` by default) instead of in the database, each at
+  `<path_prefix>/<user id>/<value id>`. The token needs `create`, `read`, `update`, `delete` and
+  `list` on the prefix's data and metadata paths. The adapter speaks the Vault KV v2 API, which
+  HashiCorp Vault and OpenBao both serve.

@@ -1,15 +1,29 @@
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
-use secrecy::SecretString;
+use secrecy::SecretSlice;
 
 use super::CredentialMap;
 use crate::Result;
-use crate::domain::{CredentialName, UserId};
+use crate::domain::{SecretId, UserId};
 
+/// Keeps the values of users' secret entries as bytes, each under an id core gives it.
 #[async_trait]
 pub trait SecretStore: Send + Sync {
-    async fn set(&self, user: UserId, name: &CredentialName, value: SecretString) -> Result<()>;
-    async fn remove(&self, user: UserId, name: &CredentialName) -> Result<bool>;
-    async fn remove_all(&self, user: UserId) -> Result<()>;
-    async fn names(&self, user: UserId) -> Result<Vec<CredentialName>>;
-    async fn load(&self, user: UserId) -> Result<CredentialMap>;
+    /// Keeps `value` under `id`, replacing any value there.
+    async fn put(&self, owner: UserId, id: SecretId, value: &SecretSlice<u8>) -> Result<()>;
+    /// The values kept under `ids`; an id without one is left out.
+    async fn get(
+        &self,
+        owner: UserId,
+        ids: &[SecretId],
+    ) -> Result<BTreeMap<SecretId, SecretSlice<u8>>>;
+    /// Whether there was a value to remove.
+    async fn remove(&self, owner: UserId, id: SecretId) -> Result<bool>;
+    /// Removes every value of the owner, the credentials they kept before entries included.
+    async fn remove_all(&self, owner: UserId) -> Result<()>;
+    /// What the owner kept as credentials, by name, before entries replaced them.
+    async fn legacy_credentials(&self, owner: UserId) -> Result<CredentialMap>;
+    /// Removes those credentials once core has made them entries. Safe to repeat.
+    async fn forget_legacy_credentials(&self, owner: UserId) -> Result<()>;
 }

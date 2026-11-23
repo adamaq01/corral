@@ -1,7 +1,7 @@
 mod admin;
 mod auth;
 mod catalog;
-mod credentials;
+mod environment;
 mod inside;
 mod keys;
 mod me;
@@ -35,7 +35,7 @@ pub(crate) fn all(providers: Vec<ProviderListing>) -> Router<AppState> {
         .merge(sandboxes::routes())
         .merge(inside::routes())
         .merge(keys::routes())
-        .merge(credentials::routes())
+        .merge(environment::routes())
         .merge(admin::routes())
 }
 

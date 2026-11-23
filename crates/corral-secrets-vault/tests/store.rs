@@ -4,15 +4,16 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use corral_core::Error;
-use corral_core::contract::secrets;
-use corral_core::domain::{CredentialName, UserId};
+use corral_core::contract::secrets::{self, LegacyWriter};
+use corral_core::domain::{SecretId, UserId};
 use corral_core::fakes::exposed;
 use corral_core::ports::SecretStore;
 use corral_secrets_vault::{VaultAuth, VaultConfig, VaultStore};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde_json::{Value, json};
 use support::{KvServer, MOUNT, PREFIX, Server};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -27,126 +28,165 @@ use vaultrs::{kv2, sys};
 
 against_each_server!(
     meets_the_secret_store_contract,
-    each_user_owns_one_secret_holding_every_credential,
-    concurrent_writes_for_one_user_lose_nothing,
-    overwritten_and_deleted_values_leave_no_readable_history,
-    a_soft_deleted_secret_reads_empty_and_takes_new_writes,
+    each_value_is_a_secret_of_its_own_beside_the_credentials_kept_before,
+    concurrent_writes_for_one_owner_lose_nothing,
+    an_overwritten_value_leaves_no_readable_history,
+    a_soft_deleted_value_is_left_out,
     malformed_secrets_fail_without_quoting_values,
     connect_rejects_a_bad_address_or_token,
     kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expires,
 );
 
+/// Writes credentials as the store did before entries: one secret per owner, a map of names.
+struct Legacy<'a>(&'a KvServer);
+
+#[async_trait]
+impl LegacyWriter for Legacy<'_> {
+    async fn keep(&self, owner: UserId, name: &str, value: &str) {
+        let path = owner_path(owner);
+        let mut data: BTreeMap<String, String> = kv2::read(&self.0.root, MOUNT, &path)
+            .await
+            .unwrap_or_default();
+        data.insert(name.to_owned(), value.to_owned());
+        kv2::set(&self.0.root, MOUNT, &path, &data).await.unwrap();
+    }
+}
+
 fn user() -> UserId {
     UserId(Uuid::new_v4())
 }
 
-fn name(value: &str) -> CredentialName {
-    CredentialName::parse(value).unwrap()
+fn bytes(value: &str) -> SecretSlice<u8> {
+    SecretSlice::from(value.as_bytes().to_vec())
 }
 
 fn secret(value: &str) -> SecretString {
     SecretString::from(value)
 }
 
-fn path(user: UserId) -> String {
-    format!("{PREFIX}/{}", user.0)
+fn owner_path(owner: UserId) -> String {
+    format!("{PREFIX}/{}", owner.0)
+}
+
+fn path(owner: UserId, id: SecretId) -> String {
+    format!("{PREFIX}/{}/{}", owner.0, id.0)
+}
+
+async fn read(store: &VaultStore, owner: UserId, ids: &[SecretId]) -> BTreeMap<SecretId, Vec<u8>> {
+    store
+        .get(owner, ids)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(id, value)| (id, value.expose_secret().to_vec()))
+        .collect()
 }
 
 async fn meets_the_secret_store_contract(server: Server) {
     let kv = KvServer::start(server).await;
     let store = VaultStore::connect(kv.root_config()).await.unwrap();
-    secrets::secret_store(&store).await;
+    secrets::secret_store(&store, &Legacy(&kv)).await;
 }
 
-async fn each_user_owns_one_secret_holding_every_credential(server: Server) {
+async fn each_value_is_a_secret_of_its_own_beside_the_credentials_kept_before(server: Server) {
     let kv = KvServer::start(server).await;
     let mut config = kv.root_config();
     config.mount = format!("{MOUNT}/");
     config.path_prefix = format!("/{PREFIX}/");
     let store = VaultStore::connect(config).await.unwrap();
     let adam = user();
-    store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
-    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
+    Legacy(&kv).keep(adam, "GH_TOKEN", "ghp_kept").await;
+    let (a, b) = (SecretId::generate(), SecretId::generate());
+    store.put(adam, a, &bytes("a")).await.unwrap();
+    store
+        .put(adam, b, &SecretSlice::from(vec![0, 255]))
+        .await
+        .unwrap();
 
-    let stored: BTreeMap<String, String> = kv2::read(&kv.root, MOUNT, &path(adam)).await.unwrap();
+    for (id, encoded) in [(a, "YQ=="), (b, "AP8=")] {
+        let stored: BTreeMap<String, String> =
+            kv2::read(&kv.root, MOUNT, &path(adam, id)).await.unwrap();
+        assert_eq!(stored, BTreeMap::from([("base64".into(), encoded.into())]));
+    }
+    let mut listed = kv2::list(&kv.root, MOUNT, &format!("{}/", owner_path(adam)))
+        .await
+        .unwrap();
+    listed.sort();
+    let mut ids = vec![a.0.to_string(), b.0.to_string()];
+    ids.sort();
+    assert_eq!(listed, ids);
     assert_eq!(
-        stored,
-        BTreeMap::from([("A_KEY".into(), "a".into()), ("B_KEY".into(), "b".into())])
+        exposed(&store.legacy_credentials(adam).await.unwrap()),
+        ["GH_TOKEN=ghp_kept"]
     );
+    store.forget_legacy_credentials(adam).await.unwrap();
+    assert!(store.legacy_credentials(adam).await.unwrap().is_empty());
+    assert_eq!(read(&store, adam, &[a, b]).await.len(), 2);
 }
 
-async fn concurrent_writes_for_one_user_lose_nothing(server: Server) {
+async fn concurrent_writes_for_one_owner_lose_nothing(server: Server) {
     let kv = KvServer::start(server).await;
     let store = Arc::new(VaultStore::connect(kv.root_config()).await.unwrap());
     let adam = user();
+    let ids: Vec<SecretId> = (0..8).map(|_| SecretId::generate()).collect();
     let mut writers = JoinSet::new();
-    for i in 0..8 {
+    for (i, id) in ids.iter().copied().enumerate() {
         let store = Arc::clone(&store);
-        writers.spawn(async move {
-            store
-                .set(adam, &name(&format!("KEY_{i}")), secret(&format!("v{i}")))
-                .await
-        });
+        writers.spawn(async move { store.put(adam, id, &bytes(&format!("v{i}"))).await });
     }
     while let Some(written) = writers.join_next().await {
         written.unwrap().unwrap();
     }
-
-    let expected: Vec<_> = (0..8).map(|i| format!("KEY_{i}=v{i}")).collect();
-    assert_eq!(exposed(&store.load(adam).await.unwrap()), expected);
+    let found = read(&store, adam, &ids).await;
+    for (i, id) in ids.iter().enumerate() {
+        assert_eq!(found[id], format!("v{i}").into_bytes());
+    }
 }
 
-async fn overwritten_and_deleted_values_leave_no_readable_history(server: Server) {
+async fn an_overwritten_value_leaves_no_readable_history(server: Server) {
     let kv = KvServer::start(server).await;
     let store = VaultStore::connect(kv.root_config()).await.unwrap();
     let adam = user();
-    store
-        .set(adam, &name("A_KEY"), secret("first"))
-        .await
-        .unwrap();
-    store
-        .set(adam, &name("A_KEY"), secret("second"))
-        .await
-        .unwrap();
-    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
-    store.remove(adam, &name("B_KEY")).await.unwrap();
-
+    let id = SecretId::generate();
+    store.put(adam, id, &bytes("first")).await.unwrap();
+    store.put(adam, id, &bytes("second")).await.unwrap();
     assert_eq!(
-        readable_versions(&kv, adam).await,
-        [BTreeMap::from([("A_KEY".into(), "second".into())])]
+        readable_versions(&kv, &path(adam, id)).await,
+        [BTreeMap::from([("base64".into(), "c2Vjb25k".into())])]
     );
-
-    store.remove(adam, &name("A_KEY")).await.unwrap();
-    assert_eq!(readable_versions(&kv, adam).await, [BTreeMap::new()]);
-    assert!(store.load(adam).await.unwrap().is_empty());
-
-    store.set(adam, &name("C_KEY"), secret("c")).await.unwrap();
-    assert_eq!(exposed(&store.load(adam).await.unwrap()), ["C_KEY=c"]);
+    assert!(store.remove(adam, id).await.unwrap());
+    assert!(!store.remove(adam, id).await.unwrap());
+    assert_eq!(readable_versions(&kv, &path(adam, id)).await, []);
+    assert!(read(&store, adam, &[id]).await.is_empty());
 }
 
 // Probes every version number the store could have written, not only those metadata lists.
-async fn readable_versions(kv: &KvServer, user: UserId) -> Vec<BTreeMap<String, String>> {
+async fn readable_versions(kv: &KvServer, path: &str) -> Vec<BTreeMap<String, String>> {
     let mut readable = Vec::new();
     for version in 1..=10 {
-        if let Ok(data) = kv2::read_version(&kv.root, MOUNT, &path(user), version).await {
+        if let Ok(data) = kv2::read_version(&kv.root, MOUNT, path, version).await {
             readable.push(data);
         }
     }
     readable
 }
 
-async fn a_soft_deleted_secret_reads_empty_and_takes_new_writes(server: Server) {
+async fn a_soft_deleted_value_is_left_out(server: Server) {
     let kv = KvServer::start(server).await;
     let store = VaultStore::connect(kv.root_config()).await.unwrap();
     let adam = user();
-    store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
-    kv2::delete_latest(&kv.root, MOUNT, &path(adam))
+    let (gone, kept) = (SecretId::generate(), SecretId::generate());
+    store.put(adam, gone, &bytes("a")).await.unwrap();
+    store.put(adam, kept, &bytes("b")).await.unwrap();
+    kv2::delete_latest(&kv.root, MOUNT, &path(adam, gone))
         .await
         .unwrap();
-
-    assert!(store.load(adam).await.unwrap().is_empty());
-    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
-    assert_eq!(exposed(&store.load(adam).await.unwrap()), ["B_KEY=b"]);
+    assert_eq!(
+        read(&store, adam, &[gone, kept]).await,
+        BTreeMap::from([(kept, b"b".to_vec())])
+    );
+    store.put(adam, gone, &bytes("again")).await.unwrap();
+    assert_eq!(read(&store, adam, &[gone]).await[&gone], b"again");
 }
 
 async fn malformed_secrets_fail_without_quoting_values(server: Server) {
@@ -160,12 +200,33 @@ async fn malformed_secrets_fail_without_quoting_values(server: Server) {
             "lower",
         ),
     ] {
-        kv2::set(&kv.root, MOUNT, &path(adam), &data).await.unwrap();
-        match store.load(adam).await {
+        kv2::set(&kv.root, MOUNT, &owner_path(adam), &data)
+            .await
+            .unwrap();
+        match store.legacy_credentials(adam).await {
             Err(error @ Error::Internal { .. }) => {
                 let message = error.to_string();
                 assert!(
                     message.contains(culprit) && !message.contains("sk-quoted"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected a secrets error, got {other:?}"),
+        }
+    }
+    let id = SecretId::generate();
+    for data in [
+        json!({"value": "sk-quoted-3"}),
+        json!({"base64": "sk-quoted-4!"}),
+    ] {
+        kv2::set(&kv.root, MOUNT, &path(adam, id), &data)
+            .await
+            .unwrap();
+        match store.get(adam, &[id]).await {
+            Err(error @ Error::Internal { .. }) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains(&id.0.to_string()) && !message.contains("sk-quoted"),
                     "{message}"
                 );
             }
@@ -241,21 +302,22 @@ async fn kubernetes_auth_logs_in_again_with_the_current_jwt_once_its_token_expir
     .await
     .unwrap();
     let adam = user();
-    store.set(adam, &name("A_KEY"), secret("a")).await.unwrap();
+    let (a, b) = (SecretId::generate(), SecretId::generate());
+    store.put(adam, a, &bytes("a")).await.unwrap();
 
     std::fs::write(&jwt_path, &second).unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
-    store.set(adam, &name("B_KEY"), secret("b")).await.unwrap();
+    store.put(adam, b, &bytes("b")).await.unwrap();
 
     assert_eq!(
-        exposed(&store.load(adam).await.unwrap()),
-        ["A_KEY=a", "B_KEY=b"]
+        read(&store, adam, &[a, b]).await,
+        BTreeMap::from([(a, b"a".to_vec()), (b, b"b".to_vec())])
     );
     assert_eq!(*reviewed.lock().unwrap(), [first, second]);
 
-    store.remove(adam, &name("A_KEY")).await.unwrap();
-    store.remove(adam, &name("B_KEY")).await.unwrap();
-    assert!(store.load(adam).await.unwrap().is_empty());
+    store.remove(adam, a).await.unwrap();
+    store.remove(adam, b).await.unwrap();
+    assert!(read(&store, adam, &[a, b]).await.is_empty());
     std::fs::remove_file(jwt_path).unwrap();
 }
 
@@ -277,7 +339,7 @@ async fn enable_kubernetes_auth(kv: &KvServer, review_port: u16, token_ttl: &str
     .unwrap();
     let policy = format!(
         r#"path "{MOUNT}/data/{PREFIX}/*" {{ capabilities = ["create", "read", "update"] }}
-path "{MOUNT}/metadata/{PREFIX}/*" {{ capabilities = ["read", "create", "update"] }}"#
+path "{MOUNT}/metadata/{PREFIX}/*" {{ capabilities = ["read", "create", "update", "delete", "list"] }}"#
     );
     sys::policy::set(&kv.root, "corral", &policy).await.unwrap();
     kubernetes::role::create(

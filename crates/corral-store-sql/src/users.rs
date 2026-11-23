@@ -156,29 +156,6 @@ impl UserRepo for Store {
         Ok(deleted > 0)
     }
 
-    async fn credentials_changed_at(&self, id: UserId) -> Result<Option<DateTime<Utc>>> {
-        let changed: Option<Option<DateTime<Utc>>> = on_pool!(self.pool, |pool| {
-            sqlx::query_scalar("select credentials_changed_at from users where id = $1")
-                .bind(id.0)
-                .fetch_optional(pool)
-                .await
-        })
-        .map_err(db_error)?;
-        Ok(changed.flatten())
-    }
-
-    async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()> {
-        on_pool!(self.pool, |pool| {
-            sqlx::query("update users set credentials_changed_at = $2 where id = $1")
-                .bind(id.0)
-                .bind(at)
-                .execute(pool)
-                .await
-                .map(drop)
-        })
-        .map_err(db_error)
-    }
-
     async fn deletes_from_inside(&self, id: UserId) -> Result<bool> {
         let allowed: Option<bool> = on_pool!(self.pool, |pool| {
             sqlx::query_scalar("select deletes_from_inside from users where id = $1")

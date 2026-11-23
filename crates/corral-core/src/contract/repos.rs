@@ -14,12 +14,12 @@ use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 
 pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dyn SandboxRepo) {
     user_repo(users).await;
-    credential_change_times(users).await;
     sandbox_defaults(users).await;
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
     sandbox_tokens(users, sandboxes).await;
     scheduled_deletions(users, sandboxes).await;
+    environment_change_times(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
     deleting_a_user_leaves_nothing_of_them(users, keys, sandboxes).await;
 }
@@ -122,34 +122,6 @@ async fn user_repo(repo: &dyn UserRepo) {
         Err(Error::NotFound(_))
     ));
     assert_eq!(repo.get(absent.id).await.unwrap(), None);
-}
-
-async fn credential_change_times(repo: &dyn UserRepo) {
-    let adam = seed_user(repo, "adam").await;
-    let eve = seed_user(repo, "eve").await;
-    assert_eq!(repo.credentials_changed_at(adam.id).await.unwrap(), None);
-    repo.record_credentials_change(adam.id, at(5))
-        .await
-        .expect("record a credential change");
-    repo.record_credentials_change(adam.id, at(6))
-        .await
-        .expect("record a later credential change");
-    let ghost = UserId(Uuid::new_v4());
-    repo.record_credentials_change(ghost, at(6))
-        .await
-        .expect("record a change for nobody");
-    repo.update(&User {
-        email: None,
-        ..adam.clone()
-    })
-    .await
-    .expect("update the user");
-    assert_eq!(
-        repo.credentials_changed_at(adam.id).await.unwrap(),
-        Some(at(6))
-    );
-    assert_eq!(repo.credentials_changed_at(eve.id).await.unwrap(), None);
-    assert_eq!(repo.credentials_changed_at(ghost).await.unwrap(), None);
 }
 
 async fn sandbox_defaults(repo: &dyn UserRepo) {
@@ -348,6 +320,46 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     assert_eq!(sandboxes.default_id(adam.id).await.unwrap(), None);
     assert_eq!(sandboxes.list(adam.id).await.unwrap(), vec![main]);
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
+}
+
+async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+    let adam = seed_user(users, "adam").await;
+    let (main, dev, other) = (
+        new_sandbox(adam.id, "main", 1),
+        new_sandbox(adam.id, "dev", 2),
+        new_sandbox(adam.id, "other", 3),
+    );
+    for sandbox in [&main, &dev, &other] {
+        sandboxes.insert(sandbox, 5).await.expect("insert sandbox");
+    }
+    let nothing = SandboxId(unique("sbx"));
+    sandboxes
+        .record_environment_change(&[main.id.clone(), dev.id.clone(), nothing], at(5))
+        .await
+        .expect("record a change, of nothing too");
+    sandboxes
+        .record_environment_change(std::slice::from_ref(&dev.id), at(6))
+        .await
+        .expect("record a later change");
+    sandboxes
+        .record_environment_change(&[], at(7))
+        .await
+        .expect("record a change of no sandbox");
+    let changed: Vec<(String, Option<DateTime<Utc>>)> = sandboxes
+        .list(adam.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|sandbox| (sandbox.name.to_string(), sandbox.environment_changed_at))
+        .collect();
+    assert_eq!(
+        changed,
+        [
+            ("main".to_owned(), Some(at(5))),
+            ("dev".to_owned(), Some(at(6))),
+            ("other".to_owned(), None)
+        ]
+    );
 }
 
 async fn sandbox_tokens(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
@@ -609,7 +621,7 @@ fn public_key(seed: Uuid) -> SshPublicKey {
     SshPublicKey::parse(&key.to_openssh().expect("encodable key")).expect("valid key")
 }
 
-fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
+pub(super) fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
     Sandbox {
         id: SandboxId(unique("sbx")),
         owner,
@@ -618,6 +630,7 @@ fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
         started_at: None,
+        environment_changed_at: None,
         delete_at: None,
     }
 }

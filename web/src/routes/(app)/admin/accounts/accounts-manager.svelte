@@ -29,7 +29,7 @@
 		{
 			value: 'member',
 			label: 'Member',
-			description: 'Manages their own sandboxes, SSH keys and credentials.'
+			description: 'Manages their own sandboxes, SSH keys and environment.'
 		},
 		{
 			value: 'admin',
@@ -297,6 +297,6 @@
 		onconfirm={() => remove(account)}
 	>
 		This deletes the account and the user who signs in with it, with their sandboxes, SSH keys and
-		credentials. It cannot be undone.
+		environment. It cannot be undone.
 	</ConfirmDialog>
 {/if}

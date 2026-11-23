@@ -52,6 +52,7 @@ macro_rules! validated_string {
 
 mod catalog_key;
 mod credential_name;
+mod entry;
 mod handle;
 mod home_file;
 mod picture_url;
@@ -63,10 +64,13 @@ mod sandbox_token;
 mod ssh_key;
 mod ssh_public_key;
 mod ssh_username;
+mod stored_value;
+mod template;
 mod user;
 
 pub use catalog_key::{ImageKey, SizeKey};
 pub use credential_name::CredentialName;
+pub use entry::{Attachment, Entry, EntryId, Target};
 pub use handle::Handle;
 pub use home_file::{FileMode, HomeFile, HomeFiles, HomePath};
 pub use picture_url::PictureUrl;
@@ -78,6 +82,8 @@ pub use sandbox_token::{SandboxToken, TokenHash};
 pub use ssh_key::SshKey;
 pub use ssh_public_key::SshPublicKey;
 pub use ssh_username::SshUsername;
+pub use stored_value::{Glimpse, Kept, SecretId, SecretRef, StoredValue};
+pub use template::Template;
 pub use user::{Admin, Role, User, UserId, UserStatus};
 
 const SLUG_MAX_LEN: usize = 32;

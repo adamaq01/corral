@@ -759,6 +759,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-extra",
+ "base64 0.23.1",
  "chrono",
  "cookie",
  "corral-api",
@@ -915,6 +916,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "corral-core",
+ "corral-secrets-database",
  "corral-sql",
  "secrecy",
  "sqlx",
@@ -979,6 +981,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

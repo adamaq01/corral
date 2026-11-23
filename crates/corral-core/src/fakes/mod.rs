@@ -1,4 +1,5 @@
 mod engine;
+mod environment;
 mod provider;
 mod repos;
 mod secrets;
@@ -7,6 +8,7 @@ mod world;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub use engine::{EngineCall, FakeEngine};
+pub use environment::MemoryEnvironmentRepo;
 pub use provider::FakeProvider;
 pub use repos::{MemoryKeyRepo, MemorySandboxRepo, MemoryUserRepo};
 pub use secrets::MemorySecretStore;

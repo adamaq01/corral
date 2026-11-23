@@ -119,7 +119,9 @@ with the path of the offending value. The required combinations:
   `/var/log` for opkssh's files.
 - With `secretStore.kind: vault`: `address`, and a `role` for Kubernetes auth or a `token` for
   token auth. Kubernetes auth logs in with the ServiceAccount named after the release
-  (`corral` for a release named corral), in the release namespace.
+  (`corral` for a release named corral), in the release namespace. Its policy needs `create`,
+  `read`, `update`, `delete` and `list` on `<mount>/data/<pathPrefix>/*` and
+  `<mount>/metadata/<pathPrefix>/*`.
 - With `database.kind: postgres`: `database.postgres.url`.
 - Either `ingress` or `httpRoute`, not both.
 
@@ -138,14 +140,14 @@ install, so clients keep trusting the same host.
 Argo CD renders the chart with `helm template` and applies the result, so there is no Helm
 release and Helm's `lookup` finds nothing in the cluster. The chart generates the keys and host
 key once and reads them back with `lookup` on every upgrade; under Argo CD it would make new ones
-at every render, leaving stored credentials unreadable and every client facing a new host key.
+at every render, leaving stored secrets unreadable and every client facing a new host key.
 Rendered without a cluster, the chart therefore fails until `keys.existingSecret` and
 `containerssh.hostKey.existingSecret` name existing Secrets. A `helm template` preview needs them
 too, or use `helm install --dry-run=server` against the cluster instead.
 
 Create the two Secrets once in the release namespace, outside the chart, so that neither a sync
 nor deleting the Application touches them. Keep their values in a secret store, since losing
-`CORRAL_SECRETS_KEY` makes every stored credential unreadable. With the
+`CORRAL_SECRETS_KEY` makes every stored secret unreadable. With the
 [External Secrets Operator](https://external-secrets.io), store `CORRAL_SESSION_KEY` and
 `CORRAL_SECRETS_KEY` from `docker run --rm ghcr.io/adamaq01/corral keys generate`, and a
 `host_key` from `ssh-keygen -q -t ed25519 -N '' -C containerssh -f host_key`, under one key of
@@ -213,7 +215,7 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
 
 `helm uninstall corral --namespace corral` deletes Corral, ContainerSSH and their config. Then:
 
-- The generated keys and host key Secrets always stay, since stored credentials and users'
+- The generated keys and host key Secrets always stay, since stored secrets and users'
   `known_hosts` depend on them. Delete them by hand to start over.
 - By default the database volume (or CloudNativePG Cluster) and the chart-created sandbox
   namespace are deleted, and with the namespace every sandbox and home.

@@ -1,3 +1,4 @@
+pub mod environment;
 pub mod repos;
 pub mod secrets;
 
@@ -40,17 +41,18 @@ pub async fn seed_user(users: &dyn UserRepo, label: &str) -> User {
 
 #[cfg(test)]
 mod tests {
-    use crate::fakes::{MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo};
+    use crate::fakes::{
+        MemoryEnvironmentRepo, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
+    };
 
     #[tokio::test]
     async fn the_fakes_meet_every_contract() {
         let users = MemoryUserRepo::default();
-        super::repos::every_repo(
-            &users,
-            &MemoryKeyRepo::default(),
-            &MemorySandboxRepo::default(),
-        )
-        .await;
-        super::secrets::secret_store(&MemorySecretStore::default()).await;
+        let sandboxes = MemorySandboxRepo::default();
+        super::repos::every_repo(&users, &MemoryKeyRepo::default(), &sandboxes).await;
+        super::environment::environment_repo(&users, &sandboxes, &MemoryEnvironmentRepo::default())
+            .await;
+        let secrets = MemorySecretStore::default();
+        super::secrets::secret_store(&secrets, &secrets).await;
     }
 }

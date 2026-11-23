@@ -8,6 +8,18 @@ const MAX_LEN: usize = 1024;
 
 validated_string!(HomePath, check);
 
+impl HomePath {
+    /// Whether the two are one path, or one is a directory the other sits in.
+    #[must_use]
+    pub fn overlaps(&self, other: &Self) -> bool {
+        let inside = |path: &str, dir: &str| {
+            path.strip_prefix(dir)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        inside(self.as_str(), other.as_str()) || inside(other.as_str(), self.as_str())
+    }
+}
+
 /// What sits at a path in the home: its permission bits and its bytes.
 #[derive(Clone, Debug)]
 pub struct HomeFile {

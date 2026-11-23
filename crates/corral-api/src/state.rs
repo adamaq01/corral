@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::http::request::Parts;
 use cookie::Key;
-use corral_core::app::{Accounts, Credentials, Keys, Sandboxes};
+use corral_core::app::{Accounts, Environment, Keys, Sandboxes};
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -14,7 +14,7 @@ pub(crate) type AppState = Arc<Api>;
 pub struct Api {
     pub accounts: Accounts,
     pub keys: Keys,
-    pub credentials: Credentials,
+    pub environment: Environment,
     pub sandboxes: Sandboxes,
     pub ssh: SshEndpoint,
     /// Encrypts the session cookie and providers' cookies.

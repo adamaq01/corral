@@ -3,6 +3,9 @@ name = "corral-secrets-database"
 version.workspace = true
 edition.workspace = true
 
+[features]
+testing = []
+
 [dependencies]
 aes-gcm = { version = "0.11.1", features = ["zeroize"] }
 async-trait.workspace = true
@@ -11,13 +14,14 @@ corral-core = { path = "../corral-core" }
 corral-sql = { path = "../corral-sql" }
 secrecy.workspace = true
 sqlx = { workspace = true, features = ["macros", "migrate", "postgres", "sqlite", "uuid"] }
+uuid.workspace = true
 zeroize = "1.9.2"
 
 [dev-dependencies]
 corral-core = { path = "../corral-core", features = ["contract"] }
+corral-secrets-database = { path = ".", features = ["testing"] }
 corral-sql = { path = "../corral-sql", features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
-uuid.workspace = true
 
 [lints]
 workspace = true

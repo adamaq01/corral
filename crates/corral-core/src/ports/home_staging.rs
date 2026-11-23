@@ -4,6 +4,8 @@
 
 use std::fmt::Write as _;
 
+use secrecy::ExposeSecret;
+
 use crate::domain::{HomeFile, HomeFiles};
 
 pub const DIR: &str = "/etc/corral/home-files";
@@ -28,6 +30,20 @@ pub fn stage(files: &HomeFiles) -> Staged<'_> {
     Staged {
         manifest,
         files: staged,
+    }
+}
+
+impl Staged<'_> {
+    /// What the staging takes, counted as a Kubernetes Secret counts its data: each name and
+    /// its bytes, the manifest's included.
+    #[must_use]
+    pub fn size(&self) -> usize {
+        let files: usize = self
+            .files
+            .iter()
+            .map(|(key, file)| key.len() + file.content.expose_secret().len())
+            .sum();
+        MANIFEST.len() + self.manifest.len() + files
     }
 }
 
@@ -62,6 +78,11 @@ mod tests {
             .map(|(key, file)| (key.as_str(), file.content.expose_secret()))
             .collect();
         assert_eq!(keyed, [("0", b"{}".as_slice()), ("1", b"hi".as_slice())]);
+        assert_eq!(
+            staged.size(),
+            "manifest".len() + staged.manifest.len() + 1 + 2 + 1 + 2
+        );
         assert_eq!(stage(&HomeFiles::new()).manifest, "");
+        assert_eq!(stage(&HomeFiles::new()).size(), "manifest".len());
     }
 }

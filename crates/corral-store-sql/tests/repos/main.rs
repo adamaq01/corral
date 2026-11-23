@@ -1,7 +1,9 @@
+mod migration;
+
 use std::sync::Arc;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use corral_core::contract::repos;
+use corral_core::contract::{environment, repos};
 use corral_core::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, User, UserId, UserStatus,
 };
@@ -21,6 +23,7 @@ async fn meets_every_repo_contract(url: &str) {
             .expect("reopen a migrated database"),
     );
     repos::every_repo(&*store, &*store, &*store).await;
+    environment::environment_repo(&*store, &*store, &*store).await;
 
     let gone = repos::deleting_a_user_leaves_nothing_of_them(&*store, &*store, &*store).await;
     let pool = Pool::connect(url).await.expect("raw connection");
@@ -63,6 +66,7 @@ async fn a_scheduled_deletion_outlives_the_store(url: &str) {
         size: SizeKey::parse("small").unwrap(),
         created_at: Utc::now(),
         started_at: None,
+        environment_changed_at: None,
         delete_at: None,
     };
     let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
@@ -136,6 +140,7 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         size: SizeKey::parse("small").unwrap(),
         created_at: second + offset,
         started_at: None,
+        environment_changed_at: None,
         delete_at: None,
     })
     .collect();

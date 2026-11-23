@@ -1,9 +1,9 @@
 import BoxesIcon from '@lucide/svelte/icons/boxes';
 import KeyRoundIcon from '@lucide/svelte/icons/key-round';
-import LockKeyholeIcon from '@lucide/svelte/icons/lock-keyhole';
 import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 import UserCogIcon from '@lucide/svelte/icons/user-cog';
 import UsersIcon from '@lucide/svelte/icons/users';
+import VariableIcon from '@lucide/svelte/icons/variable';
 import type { Me, Provider } from '#lib/api/generated/index.js';
 
 export type NavItem = { href: string; label: string; icon: typeof BoxesIcon };
@@ -14,7 +14,7 @@ export function navigation(user: Me, providers: Provider[]): Navigation {
 	const main = [
 		{ href: '/sandboxes', label: 'Sandboxes', icon: SquareTerminalIcon },
 		{ href: '/keys', label: 'SSH keys', icon: KeyRoundIcon },
-		{ href: '/credentials', label: 'Credentials', icon: LockKeyholeIcon }
+		{ href: '/environment', label: 'Environment', icon: VariableIcon }
 	];
 	if (user.role !== 'admin') {
 		return { main, admin: null };

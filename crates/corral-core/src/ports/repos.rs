@@ -18,10 +18,6 @@ pub trait UserRepo: Send + Sync {
     async fn list(&self) -> Result<Vec<User>>;
     /// Whether the user existed.
     async fn delete(&self, id: UserId) -> Result<bool>;
-    /// When the user last set or removed a credential, if ever.
-    async fn credentials_changed_at(&self, id: UserId) -> Result<Option<DateTime<Utc>>>;
-    /// Does nothing unless the user exists.
-    async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()>;
     /// Whether the user lets `corral delete` inside their sandboxes schedule a deletion.
     async fn deletes_from_inside(&self, id: UserId) -> Result<bool>;
     /// Does nothing unless the user exists.
@@ -61,6 +57,8 @@ pub trait SandboxRepo: Send + Sync {
         at: DateTime<Utc>,
         token: &TokenHash,
     ) -> Result<()>;
+    /// Sets `environment_changed_at` of each of the sandboxes that exists.
+    async fn record_environment_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()>;
     /// Leaves the sandbox without a token.
     async fn revoke_token(&self, id: &SandboxId) -> Result<()>;
     async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>>;

@@ -5,13 +5,13 @@
 <script lang="ts">
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
-	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import PowerIcon from '@lucide/svelte/icons/power';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import VariableIcon from '@lucide/svelte/icons/variable';
 	import { goto } from '$app/navigation';
 	import { opksshLogin } from '#lib/api/auth.js';
 	import { failureMessage } from '#lib/api/client.js';
@@ -19,6 +19,7 @@
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import CopySnippet from '#lib/components/copy-snippet.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
+	import SandboxEnvironment from '#lib/components/sandbox-environment.svelte';
 	import SandboxStateBadge from '#lib/components/sandbox-state-badge.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
@@ -230,19 +231,19 @@
 			</Alert.Root>
 		{/if}
 
-		{#if current.staleCredentials}
+		{#if current.staleEnvironment}
 			<Alert.Root>
-				<KeyRoundIcon />
-				<Alert.Title>Restart to apply your credential changes</Alert.Title>
+				<VariableIcon />
+				<Alert.Title>Restart to apply your environment changes</Alert.Title>
 				<Alert.Description>
-					Your credentials changed after this sandbox started. Until it restarts, its SSH sessions
-					get the values it started with.
+					Its environment changed after this sandbox started. Until it restarts, its SSH sessions
+					and home get what it started with.
 				</Alert.Description>
 			</Alert.Root>
 		{/if}
 
 		{#if presentation.manageable && !current.deleteAt}
-			{@const powers = current.staleCredentials
+			{@const powers = current.staleEnvironment
 				? (['restart', 'stop'] as const)
 				: presentation.powers}
 			<div class="flex flex-wrap gap-2">
@@ -309,6 +310,8 @@
 				</Card.Content>
 			</Card.Root>
 		{/if}
+
+		<SandboxEnvironment sandbox={name} onchanged={() => sandbox.reload()} />
 
 		{#if presentation.manageable}
 			<Card.Root class="ring-destructive/30">
