@@ -116,14 +116,20 @@ impl DockerEngine {
         self.inspect(id).await
     }
 
-    /// Recreates a stopped container that is not what `create` would make today, keeping its
-    /// home volume and host key. The replacement is complete before the old container goes.
+    /// Recreates a stopped container that is not what `create` would make today from `spec`, or
+    /// without one from what it was made from, keeping its home volume and host key. The
+    /// replacement is complete before the old container goes.
     async fn converge(
         &self,
         id: &SandboxId,
+        spec: Option<&SandboxSpec>,
         current: ContainerInspectResponse,
     ) -> Result<ContainerInspectResponse> {
-        let definition = container::Definition::recorded(id, &current)?;
+        let recorded = container::Definition::recorded(id, &current)?;
+        let definition = match spec {
+            Some(spec) => recorded.remade(id, spec)?,
+            None => recorded,
+        };
         let image_id = image::ensure_present(&self.docker, &definition.image).await?;
         let body = container::body(id, &definition, &self.config.network);
         if container::is_made_from(&current, &body, &image_id) {
@@ -169,6 +175,7 @@ impl DockerEngine {
     async fn boot(
         &self,
         id: &SandboxId,
+        spec: Option<&SandboxSpec>,
         current: ContainerInspectResponse,
         boot: &Boot,
     ) -> Result<ContainerInspectResponse> {
@@ -178,7 +185,7 @@ impl DockerEngine {
                 "{max} sandboxes are already running"
             )));
         }
-        let current = self.converge(id, current).await?;
+        let current = self.converge(id, spec, current).await?;
         let name = container::name(id);
         let files = session_files::archive(&self.proxy_public_key, boot);
         let at_root = UploadToContainerOptionsBuilder::default().path("/").build();
@@ -230,14 +237,20 @@ impl SandboxEngine for DockerEngine {
         self.create_container(&container::name(id), body).await
     }
 
-    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
+    async fn start(
+        &self,
+        id: &SandboxId,
+        spec: Option<&SandboxSpec>,
+        boot: Boot,
+        deadline: Duration,
+    ) -> Result<Started> {
         let called = Instant::now();
         let (target, booted) = {
             let _waking = self.activity.wake(id).await;
             let mut current = self.settled(id).await?.ok_or_else(|| missing(id))?;
             let booted = !status::is_running(&current);
             if booted {
-                current = Box::pin(self.boot(id, current, &boot)).await?;
+                current = Box::pin(self.boot(id, spec, current, &boot)).await?;
             }
             let target = SshTarget::SshServer {
                 host_key_fingerprint: container::host_key_fingerprint(id, &current)?,

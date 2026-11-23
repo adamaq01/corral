@@ -22,6 +22,7 @@ pub enum EngineCall {
     },
     Start {
         id: SandboxId,
+        spec: Option<SandboxSpec>,
         boot: Boot,
         deadline: Duration,
     },
@@ -146,10 +147,17 @@ impl SandboxEngine for FakeEngine {
         Ok(())
     }
 
-    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
+    async fn start(
+        &self,
+        id: &SandboxId,
+        spec: Option<&SandboxSpec>,
+        boot: Boot,
+        deadline: Duration,
+    ) -> Result<Started> {
         let mut state = lock(&self.state);
         state.calls.push(EngineCall::Start {
             id: id.clone(),
+            spec: spec.cloned(),
             boot: boot.clone(),
             deadline,
         });

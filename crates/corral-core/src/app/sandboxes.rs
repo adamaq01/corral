@@ -316,7 +316,11 @@ impl Sandboxes {
         let at = Utc::now();
         let token = SandboxToken::generate()?;
         let boot = self.environment.boot(sandbox, &token).await?;
-        let started = self.engine.start(&sandbox.id, boot, deadline).await?;
+        let spec = self.spec(sandbox).await?;
+        let started = self
+            .engine
+            .start(&sandbox.id, spec.as_ref(), boot, deadline)
+            .await?;
         if started.booted {
             self.repo
                 .record_start(&sandbox.id, at, &token.hash())
@@ -324,6 +328,26 @@ impl Sandboxes {
             sandbox.started_at = Some(at);
         }
         Ok(started.readiness)
+    }
+
+    /// What the sandbox is made from now, from the catalog entries it was made from. None once
+    /// the catalog no longer offers its image or its size.
+    async fn spec(&self, sandbox: &Sandbox) -> Result<Option<SandboxSpec>> {
+        let (Ok(image), Ok(size)) = (
+            self.catalog.image(Some(&sandbox.image)),
+            self.catalog.size(Some(&sandbox.size)),
+        ) else {
+            return Ok(None);
+        };
+        let owner = self.users.get(sandbox.owner).await?.ok_or_else(|| {
+            Error::internal("store", format!("sandbox {} has no owner", sandbox.id.0))
+        })?;
+        Ok(Some(SandboxSpec {
+            owner: owner.handle,
+            name: sandbox.name.clone(),
+            image: image.reference.clone(),
+            resources: size.resources,
+        }))
     }
 
     pub(super) async fn find(&self, owner: &User, name: &SandboxName) -> Result<Sandbox> {
@@ -390,8 +414,9 @@ fn not_doomed(sandbox: &Sandbox) -> Result<()> {
 mod tests {
     use std::time::Duration;
 
-    use super::SandboxView;
+    use super::{SandboxView, Sandboxes};
     use crate::Error;
+    use crate::app::Catalog;
     use crate::app::EntryChange;
     use crate::domain::Handle;
     use crate::domain::{Sandbox, SandboxStatus, SizeKey, User};
@@ -445,6 +470,7 @@ mod tests {
             EngineCall::Create { id, spec },
             EngineCall::Start {
                 id: started,
+                spec: started_from,
                 boot,
                 deadline,
             },
@@ -453,6 +479,7 @@ mod tests {
             panic!("{calls:?}");
         };
         assert_eq!((id, started), (&sandbox.id, &sandbox.id));
+        assert_eq!(started_from.as_ref(), Some(spec));
         assert_eq!((&spec.owner, &spec.name), (&adam.handle, &sandbox.name));
         assert_eq!(spec.image, "ghcr.io/adamaq01/corral-tools:2");
         assert_eq!(
@@ -646,6 +673,59 @@ mod tests {
             ),
             "{calls:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_start_makes_the_sandbox_from_its_catalog_entries_as_they_are_now() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let main = w
+            .sandboxes
+            .create(&adam, request("main", Some("tools"), Some("large")))
+            .await
+            .unwrap()
+            .sandbox;
+        let started_from = || match w.engine.calls().last() {
+            Some(EngineCall::Start { spec, .. }) => spec.clone(),
+            other => panic!("{other:?}"),
+        };
+        let with_catalog = |catalog: Catalog| {
+            Sandboxes::new(
+                w.sandbox_repo.clone(),
+                w.users.clone(),
+                w.engine.clone(),
+                w.environment.clone(),
+                catalog,
+                w.sandboxes.limits,
+            )
+        };
+        let mut images = catalog().images().to_vec();
+        let mut sizes = catalog().sizes().to_vec();
+        images[1].reference = "ghcr.io/adamaq01/corral-tools:3".to_owned();
+        sizes[1].resources = sizes[0].resources;
+        let edited = with_catalog(Catalog::new(images.clone(), sizes.clone()).unwrap());
+        w.sandboxes.stop(&adam, &main.name).await.unwrap();
+
+        edited.wake(&adam, &main.name).await.unwrap();
+        let spec = started_from().unwrap();
+        assert_eq!(
+            (spec.image.as_str(), spec.resources),
+            ("ghcr.io/adamaq01/corral-tools:3", sizes[0].resources)
+        );
+        assert_eq!((&spec.owner, &spec.name), (&adam.handle, &main.name));
+
+        for (images, sizes) in [
+            (images[..1].to_vec(), sizes.clone()),
+            (images.clone(), sizes[..1].to_vec()),
+        ] {
+            w.sandboxes.stop(&adam, &main.name).await.unwrap();
+            let without = with_catalog(Catalog::new(images, sizes).unwrap());
+            assert!(matches!(
+                without.wake(&adam, &main.name).await.unwrap(),
+                Readiness::Ready(_)
+            ));
+            assert_eq!(started_from(), None, "it runs as it was last made");
+        }
     }
 
     /// The sandboxes that run without their latest environment change, as admins and their owner

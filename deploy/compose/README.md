@@ -84,6 +84,10 @@ block, and wakes, stops, restarts or deletes the sandbox.
 - Your **Profile** sets the image and size a new sandbox gets unless you pick others, including
   one made by connecting as `<sandbox>.<name>`. Until you set them, they are the first image and
   size in `config.toml`'s catalog.
+- A change to a catalog entry's `reference` or size reaches each sandbox made from it at its
+  next start from sleep, its home kept; a running sandbox keeps what it has until then. A
+  sandbox whose image or size is no longer in the catalog keeps running as it was made. Docker
+  volumes have no size, so `home_size` does nothing here.
 - **Environment** holds your variables (`NAME=value` in every SSH session) and files (written
   into the home at every start, replacing what is at their path, missing directories made).
   Either can be secret: a secret value is encrypted with `CORRAL_SECRETS_KEY` and never shown

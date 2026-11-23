@@ -239,6 +239,11 @@ latter.
 - The `corral` command in a sandbox (`corral status`, `restart`, `stop`, `delete --confirm`)
   reaches Corral's API at its Service, `http://<release>.<namespace>.svc`, which the
   NetworkPolicy leaves open on the HTTP port.
+- A change to a `catalog.images` entry's `reference` or to a size reaches each sandbox made
+  from it at its next start from sleep: its pod template is made again with the new image,
+  requests and limits, its home kept. A running sandbox keeps what it has until then, and a
+  sandbox whose image or size is no longer in the catalog keeps running as it was made. A
+  size's `homeSize` applies to new sandboxes only: an existing home's claim keeps its size.
 - Behind an Ingress controller or Gateway, set `trustForwardedFor: true` so password-login limits
   count each client, not the proxy.
 - With `database.kind: cnpg`, the operator's PodDisruptionBudgets keep a node drain from evicting

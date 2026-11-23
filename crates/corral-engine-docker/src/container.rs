@@ -64,6 +64,11 @@ impl Definition {
         })
     }
 
+    /// What `spec` makes of the sandbox, which keeps this definition's host key.
+    pub(crate) fn remade(self, id: &SandboxId, spec: &SandboxSpec) -> Result<Self> {
+        Self::new(id, spec, self.host_key)
+    }
+
     /// The definition `container` was made from, read back from it.
     pub(crate) fn recorded(id: &SandboxId, container: &ContainerInspectResponse) -> Result<Self> {
         let unreadable = |what: &str| {
@@ -362,6 +367,42 @@ mod tests {
         let labels = unrecorded.config.as_mut().unwrap().labels.as_mut().unwrap();
         labels.remove("corral.adamaq01.fr/definition");
         assert!(!is_made_from(&unrecorded, &original, "sha256:one"));
+    }
+
+    #[test]
+    fn a_remade_definition_takes_the_spec_and_keeps_the_host_key() {
+        let original = body(&id(), &definition(), NETWORK);
+        let container = made(&original, "sha256:one");
+        let mut changed = spec();
+        changed.image = "ghcr.io/adamaq01/corral-sandbox:2.0".to_owned();
+        changed.resources.memory_bytes = Allocation::new(1 << 30, 8 << 30).unwrap();
+
+        let remade = Definition::recorded(&id(), &container)
+            .unwrap()
+            .remade(&id(), &changed)
+            .unwrap();
+        let again = body(&id(), &remade, NETWORK);
+
+        assert!(!is_made_from(&container, &again, "sha256:one"));
+        assert_eq!(
+            again.image.as_deref(),
+            Some("ghcr.io/adamaq01/corral-sandbox:2.0")
+        );
+        assert_eq!(again.host_config.unwrap().memory, Some(8 << 30));
+        let fingerprint = "corral.adamaq01.fr/host-key-fingerprint";
+        assert_eq!(
+            again.labels.unwrap()[fingerprint],
+            original.labels.unwrap()[fingerprint]
+        );
+        let unchanged = Definition::recorded(&id(), &container)
+            .unwrap()
+            .remade(&id(), &spec())
+            .unwrap();
+        assert!(is_made_from(
+            &container,
+            &body(&id(), &unchanged, NETWORK),
+            "sha256:one"
+        ));
     }
 
     #[test]

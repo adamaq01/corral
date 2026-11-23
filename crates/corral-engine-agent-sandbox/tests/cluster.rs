@@ -122,7 +122,7 @@ impl Cluster {
     async fn wake(&self, id: &SandboxId, pairs: &[(&str, &str)]) {
         let started = self
             .engine
-            .start(id, boot(pairs), READY_WITHIN)
+            .start(id, None, boot(pairs), READY_WITHIN)
             .await
             .unwrap();
         assert_eq!(
@@ -327,7 +327,7 @@ async fn a_wake_while_stopping_lets_the_stop_finish(cluster: &Cluster, id: &Sand
         let id = id.clone();
         tokio::spawn(async move {
             engine
-                .start(&id, boot(&[("FOO_TOKEN", "four")]), READY_WITHIN)
+                .start(&id, None, boot(&[("FOO_TOKEN", "four")]), READY_WITHIN)
                 .await
         })
     };
@@ -367,7 +367,9 @@ async fn concurrent_starts_never_exceed_max_running(cluster: &Cluster) {
         starts.spawn(async move {
             engine.status(&id).await.unwrap();
             barrier.wait().await;
-            engine.start(&id, Boot::default(), Duration::ZERO).await
+            engine
+                .start(&id, None, Boot::default(), Duration::ZERO)
+                .await
         });
     }
     let mut outcomes = Vec::new();
@@ -471,6 +473,33 @@ async fn outdated(cluster: Arc<Cluster>, id: SandboxId) {
         running,
         "a running sandbox is left as it is"
     );
+
+    cluster.engine.stop(&id).await.unwrap();
+    let mut larger = spec("outdated");
+    larger.resources.memory_bytes = Allocation::new(128 << 20, 2 << 30).unwrap();
+    let started = cluster
+        .engine
+        .start(
+            &id,
+            Some(&larger),
+            boot(&[("FOO_TOKEN", "four")]),
+            READY_WITHIN,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(started.readiness, Readiness::Ready(_)) && started.booted);
+    let pod = cluster.pods.get(&id.0).await.unwrap();
+    let limits = pod.spec.unwrap().containers[0]
+        .resources
+        .clone()
+        .unwrap()
+        .limits
+        .unwrap();
+    assert_eq!(
+        limits["memory"].0, "2147483648",
+        "a start from stopped takes the spec it is given"
+    );
+    assert_eq!(cluster.home_marker(&id).await, "kept\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]

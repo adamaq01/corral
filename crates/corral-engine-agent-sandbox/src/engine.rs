@@ -98,8 +98,13 @@ impl AgentSandboxEngine {
     }
 
     /// Whether it resumed the sandbox, which was suspended, with the pod template Corral would
-    /// make for it today.
-    async fn resume(&self, id: &SandboxId, boot: &Boot) -> Result<bool> {
+    /// make for it today from `spec`, or without one from what it was made from.
+    async fn resume(
+        &self,
+        id: &SandboxId,
+        spec: Option<&SandboxSpec>,
+        boot: &Boot,
+    ) -> Result<bool> {
         let _waking = self.activity.wake(id).await;
         let sandbox = self.sandbox(id).await?;
         if sandbox.spec.operating_mode == OperatingMode::Running {
@@ -112,7 +117,11 @@ impl AgentSandboxEngine {
             )));
         }
         self.write_boot(id, boot).await?;
-        let template = manifest::pod_template(id, &Workload::recorded(&sandbox)?, &self.config);
+        let workload = match spec {
+            Some(spec) => Workload::new(id, spec),
+            None => Workload::recorded(&sandbox)?,
+        };
+        let template = manifest::pod_template(id, &workload, &self.config);
         // A replace drops what the template no longer has, which a merge patch would keep; one
         // patch for both means a resume never starts a pod from the old template.
         let resume: json_patch::Patch = serde_json::from_value(json!([
@@ -150,9 +159,15 @@ impl SandboxEngine for AgentSandboxEngine {
         }
     }
 
-    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
+    async fn start(
+        &self,
+        id: &SandboxId,
+        spec: Option<&SandboxSpec>,
+        boot: Boot,
+        deadline: Duration,
+    ) -> Result<Started> {
         let started = Instant::now();
-        let booted = self.resume(id, &boot).await?;
+        let booted = self.resume(id, spec, &boot).await?;
         let readiness = loop {
             if self.observe(id).await? == SandboxStatus::Running {
                 break Readiness::Ready(SshTarget::KubernetesPod {

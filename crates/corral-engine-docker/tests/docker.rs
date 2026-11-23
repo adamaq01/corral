@@ -275,7 +275,7 @@ async fn wake(engine: &DockerEngine, id: &SandboxId, env: CredentialMap) -> SshT
 
 /// The target, and whether the start booted the sandbox.
 async fn wake_with(engine: &DockerEngine, id: &SandboxId, boot: Boot) -> (SshTarget, bool) {
-    let started = engine.start(id, boot, WAKE).await.unwrap();
+    let started = engine.start(id, None, boot, WAKE).await.unwrap();
     match started.readiness {
         Readiness::Ready(target) => (target, started.booted),
         Readiness::Waking => panic!("sandbox {} was not ready within {WAKE:?}", id.0),
@@ -359,7 +359,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.delete(&id).await.unwrap();
     assert!(matches!(engine.status(&id).await, Err(Error::NotFound(_))));
     assert!(matches!(
-        engine.start(&id, Boot::default(), WAKE).await,
+        engine.start(&id, None, Boot::default(), WAKE).await,
         Err(Error::NotFound(_))
     ));
     assert!(matches!(engine.stop(&id).await, Err(Error::NotFound(_))));
@@ -635,6 +635,48 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_from_stopped_remakes_the_sandbox_from_the_spec_it_is_given() {
+    let tags = Tags::default();
+    let Some(lab) = Lab::open("respec") else {
+        return;
+    };
+    let engine = lab.engine(10).await;
+    let newer = Tags::named("respec", "newer");
+    let newer_id = tags.variant(&newer);
+    let id = lab.create(&engine, "main").await;
+    let name = container_name(&id);
+    let target = wake(&engine, &id, CredentialMap::new()).await;
+    lab.pin_host_key(&target);
+    lab.ssh(&name, "echo kept > ~/kept");
+
+    let mut edited = spec("main");
+    edited.image.clone_from(&newer);
+    edited.resources.memory_bytes = Allocation::new(256 << 20, 2 << 30).unwrap();
+    let running = engine
+        .start(&id, Some(&edited), Boot::default(), WAKE)
+        .await
+        .unwrap();
+    assert!(!running.booted, "a running sandbox is left as it is");
+    assert_eq!(inspect(&name, "{{.Config.Image}}"), image());
+
+    engine.stop(&id).await.unwrap();
+    let started = engine
+        .start(&id, Some(&edited), Boot::default(), WAKE)
+        .await
+        .unwrap();
+    assert!(started.booted);
+    assert_eq!(started.readiness, Readiness::Ready(target));
+    assert_eq!(
+        (
+            inspect(&name, "{{.Image}}"),
+            inspect(&name, "{{.HostConfig.Memory}}")
+        ),
+        (newer_id, (2u64 << 30).to_string())
+    );
+    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_remake_cut_short_finishes_at_the_next_start() {
     let tags = Tags::default();
     let Some(lab) = Lab::open("remake") else {
@@ -696,7 +738,11 @@ async fn concurrent_starts_never_exceed_max_running() {
     let mut starts = JoinSet::new();
     for id in ids.clone() {
         let engine = engine.clone();
-        starts.spawn(async move { engine.start(&id, Boot::default(), Duration::ZERO).await });
+        starts.spawn(async move {
+            engine
+                .start(&id, None, Boot::default(), Duration::ZERO)
+                .await
+        });
     }
     let (mut started, mut refused) = (0, 0);
     while let Some(outcome) = starts.join_next().await {
@@ -717,12 +763,14 @@ async fn concurrent_starts_never_exceed_max_running() {
 
     let asleep = ids.iter().find(|id| !running.contains(id)).unwrap();
     assert!(matches!(
-        engine.start(asleep, Boot::default(), Duration::ZERO).await,
+        engine
+            .start(asleep, None, Boot::default(), Duration::ZERO)
+            .await,
         Err(Error::LimitReached(_))
     ));
     engine.stop(&running[0]).await.unwrap();
     engine
-        .start(asleep, Boot::default(), Duration::ZERO)
+        .start(asleep, None, Boot::default(), Duration::ZERO)
         .await
         .unwrap();
     assert_eq!(state(&engine, asleep).await, SandboxStatus::Running);

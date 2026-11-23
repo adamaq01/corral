@@ -63,9 +63,17 @@ pub trait SandboxEngine: Send + Sync {
     /// Provisions the sandbox without starting it.
     async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()>;
     /// Starts a stopped sandbox with `boot` and waits up to `deadline` for it to accept SSH. A
-    /// running sandbox is left as it is, `boot` unused. Refuses with `LimitReached` beyond the
+    /// stopped sandbox is first remade from `spec`, its home kept, where it differs from what
+    /// the sandbox was made from; without a spec it runs as it was last made. A running sandbox
+    /// is left as it is, `spec` and `boot` unused. Refuses with `LimitReached` beyond the
     /// running limit.
-    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started>;
+    async fn start(
+        &self,
+        id: &SandboxId,
+        spec: Option<&SandboxSpec>,
+        boot: Boot,
+        deadline: Duration,
+    ) -> Result<Started>;
     /// Returns once the sandbox no longer runs.
     async fn stop(&self, id: &SandboxId) -> Result<()>;
     async fn delete(&self, id: &SandboxId) -> Result<()>;

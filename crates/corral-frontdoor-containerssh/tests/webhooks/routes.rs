@@ -357,8 +357,14 @@ impl SandboxEngine for SlowCreates {
         drop(self.pulled.acquire().await.unwrap());
         self.engine.create(id, spec).await
     }
-    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
-        self.engine.start(id, boot, deadline).await
+    async fn start(
+        &self,
+        id: &SandboxId,
+        spec: Option<&SandboxSpec>,
+        boot: Boot,
+        deadline: Duration,
+    ) -> Result<Started> {
+        self.engine.start(id, spec, boot, deadline).await
     }
     async fn stop(&self, id: &SandboxId) -> Result<()> {
         self.engine.stop(id).await
