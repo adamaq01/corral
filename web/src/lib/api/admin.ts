@@ -1,5 +1,5 @@
 import { api } from './client.js';
-import type { OwnedSandbox, User } from './generated/index.js';
+import type { OwnedSandbox, SandboxDetails, User } from './generated/index.js';
 
 export function users(): Promise<User[]> {
 	return api.get<User[]>('/api/admin/users');
@@ -16,4 +16,9 @@ export function deleteUser(user: User): Promise<void> {
 
 export function allSandboxes(): Promise<OwnedSandbox[]> {
 	return api.get<OwnedSandbox[]>('/api/admin/sandboxes');
+}
+
+/** The sandbox with what its engine reports about how it runs. */
+export function sandboxDetails(handle: string, name: string): Promise<SandboxDetails> {
+	return api.get<SandboxDetails>(`/api/admin/sandboxes/${handle}/${name}`);
 }

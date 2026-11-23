@@ -77,7 +77,13 @@
 								<Table.Cell>
 									<div class="grid gap-0.5">
 										<span class="flex items-center gap-2 font-medium sm:font-normal">
-											{sandbox.name}
+											<a
+												href="/admin/sandboxes/{sandbox.owner.handle}/{sandbox.name}"
+												class="rounded-sm underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+												aria-label="{sandbox.name}.{sandbox.owner.handle} details"
+											>
+												{sandbox.name}
+											</a>
 											{#if sandbox.isDefault}
 												<Badge variant="secondary">Default</Badge>
 											{/if}

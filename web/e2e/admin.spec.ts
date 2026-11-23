@@ -85,6 +85,47 @@ test.describe('an admin', () => {
 		await context.close();
 	});
 
+	test("sees what runs a member's sandbox from All sandboxes", async ({ page, browser }) => {
+		test.setTimeout(120_000);
+		const dana = { username: 'dana', password: 'dana, keeper of sandboxes' };
+		const made = await page.request.post('/auth/local/accounts', {
+			data: { ...dana, role: 'member' }
+		});
+		expect(made.ok(), await made.text()).toBe(true);
+		const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+		const member = await context.newPage();
+		await member.goto('/sign-in');
+		await signIn(member, dana);
+		await expect(member).toHaveURL('/sandboxes');
+		const created = await member.request.post('/api/sandboxes', { data: { name: 'probe' } });
+		expect(created.status(), await created.text()).toBe(201);
+
+		await page.goto('/admin/sandboxes');
+		await page.getByRole('link', { name: 'probe.dana details' }).click();
+		await expect(page).toHaveURL('/admin/sandboxes/dana/probe');
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText('probe');
+		const facts = page.locator('dl');
+		const fact = (label: string) =>
+			facts.locator('div').filter({ has: page.getByText(label, { exact: true }) });
+		await expect(fact('Container')).toContainText(/corral-sbx-[0-9a-f]{12}/);
+		await expect(fact('Home volume')).toContainText(/corral-home-sbx-[0-9a-f]{12}/);
+		await expect(fact('Image')).toContainText(
+			process.env.CORRAL_SANDBOX_IMAGE ?? 'corral-sandbox:dev'
+		);
+		const events = page.getByRole('list', { name: 'Recent events' });
+		await expect(async () => {
+			await page.getByRole('button', { name: 'Refresh' }).click();
+			await expect(fact('State')).toContainText('running', { timeout: 1_000 });
+			await expect(events).toContainText('Started', { timeout: 1_000 });
+		}).toPass({ timeout: 90_000 });
+
+		const deleted = await member.request.delete('/api/me');
+		expect(deleted.ok(), await deleted.text()).toBe(true);
+		await context.close();
+		await page.getByRole('button', { name: 'Refresh' }).click();
+		await expect(page.getByText('dana has no sandbox named probe')).toBeVisible();
+	});
+
 	test('cannot disable or delete themselves from the users page', async ({ page }) => {
 		await page.goto('/admin/users');
 		const self = page.getByRole('table', { name: 'Users' }).getByRole('row', {
@@ -115,12 +156,20 @@ test.describe('a member', () => {
 	test.use({ role: 'member' });
 
 	test('never sees the Admin group and is sent away from admin pages', async ({ page }) => {
-		for (const path of ['/admin/users', '/admin/accounts', '/admin/sandboxes']) {
+		const admin = account('admin').username;
+		for (const path of [
+			'/admin/users',
+			'/admin/accounts',
+			'/admin/sandboxes',
+			`/admin/sandboxes/${admin}/main`
+		]) {
 			await page.goto(path);
 			await expect(page).toHaveURL('/sandboxes');
 			await expect(page.getByRole('navigation', { name: 'Main' })).toBeAttached();
 			await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
 		}
+		const details = await page.request.get(`/api/admin/sandboxes/${admin}/main`);
+		expect(details.status()).toBe(403);
 	});
 });
 
