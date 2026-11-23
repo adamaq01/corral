@@ -43,12 +43,27 @@ pub(crate) struct Choice {
     label: String,
 }
 
+/// Images users may name themselves, beside the catalog's.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NamedImages {
+    /// Registries, or repository paths in one, that a named image must come from.
+    registries: Vec<String>,
+    /// The most a named image may take to download, its layers compressed.
+    #[ts(type = "number")]
+    max_bytes: u64,
+}
+
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "Catalog")]
 pub(crate) struct CatalogDto {
     images: Vec<Choice>,
     sizes: Vec<Choice>,
+    /// Absent when users run only the catalog's images.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    named_images: Option<NamedImages>,
     /// The signed-in user's default image.
     default_image: ImageKey,
     /// The signed-in user's default size.
@@ -83,6 +98,10 @@ impl CatalogDto {
             default_size: defaults.size,
             images,
             sizes,
+            named_images: catalog.named_images().map(|named| NamedImages {
+                registries: named.registries.clone(),
+                max_bytes: named.max_bytes.get(),
+            }),
             max_sandboxes,
             ssh: ssh.clone(),
         }
@@ -101,7 +120,8 @@ pub(crate) struct SandboxSsh {
 #[ts(rename = "Sandbox")]
 pub(crate) struct SandboxDto {
     name: SandboxName,
-    image: ImageKey,
+    /// A catalog image's key, or the image its owner named, written out in full.
+    image: String,
     size: SizeKey,
     is_default: bool,
     #[serde(flatten)]
@@ -132,7 +152,7 @@ impl SandboxDto {
                 endpoint: ssh.clone(),
             },
             name: sandbox.name,
-            image: sandbox.image,
+            image: sandbox.image.to_string(),
             size: sandbox.size,
             is_default,
             status,

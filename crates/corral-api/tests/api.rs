@@ -646,6 +646,30 @@ async fn create_then_list_shows_the_ssh_username() {
 }
 
 #[tokio::test]
+async fn an_image_reference_is_refused_where_users_run_only_the_catalogs_images() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    let refused = adam
+        .post(
+            "/api/sandboxes",
+            json!({ "name": "main", "imageReference": "debian:13" }),
+        )
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.text()
+    );
+    assert!(
+        refused.text().contains("only the catalog's images"),
+        "{}",
+        refused.text()
+    );
+    assert_eq!(adam.get("/api/sandboxes").await.json(), json!([]));
+}
+
+#[tokio::test]
 async fn a_users_sandbox_defaults_preselect_and_fill_in_new_sandboxes() {
     let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;

@@ -161,6 +161,7 @@ impl Lab {
             },
             self.proxy_public_key.clone().unwrap(),
             max_running,
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -932,6 +933,7 @@ async fn connect_refuses_a_missing_network() {
         },
         key,
         1,
+        Vec::new(),
     )
     .await;
     assert!(

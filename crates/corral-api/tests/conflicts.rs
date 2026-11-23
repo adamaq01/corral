@@ -10,7 +10,7 @@ use corral_api::testing::trusting_provider;
 use corral_api::{Api, Key, SshEndpoint, router};
 use corral_core::app::{Accounts, Environment, Keys, Limits, Sandboxes};
 use corral_core::fakes::{
-    ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, MemorySecretStore, catalog, links,
+    ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, FakeRegistry, MemorySecretStore, catalog, links,
 };
 use corral_sql::testing::Databases;
 use corral_store_sql::Store;
@@ -29,6 +29,7 @@ async fn app(databases: &Databases) -> Router {
         store.clone(),
         store.clone(),
         Arc::new(FakeEngine::default()),
+        Arc::new(FakeRegistry::default()),
         environment.clone(),
         catalog(),
         Limits {

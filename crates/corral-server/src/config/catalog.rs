@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
-use anyhow::{Context, Result};
-use corral_core::app::{Catalog, ImageOption, SizePreset};
+use anyhow::{Context, Result, ensure};
+use corral_core::app::{Catalog, ImageOption, NamedImages, SizePreset};
 use corral_core::domain::{Allocation, ImageKey, Resources, SizeKey};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
@@ -13,6 +13,16 @@ use super::quantity;
 struct Entries {
     images: Vec<ImageOption>,
     sizes: Vec<SizeEntry>,
+    /// Without it, sandboxes run the catalog's images alone.
+    named_images: Option<NamedImagesEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedImagesEntry {
+    registries: Vec<String>,
+    #[serde(deserialize_with = "quantity::bytes")]
+    max_size: NonZeroU64,
 }
 
 #[derive(Deserialize)]
@@ -49,6 +59,7 @@ impl Default for Entries {
                 memory_limit: const { NonZeroU64::new(4 << 30).unwrap() },
                 home_size: const { NonZeroU64::new(10 << 30).unwrap() },
             }],
+            named_images: None,
         }
     }
 }
@@ -64,7 +75,18 @@ impl Entries {
                     .with_context(|| format!("size {key:?} is invalid"))
             })
             .collect::<Result<_>>()?;
-        Ok(Catalog::new(self.images, sizes)?)
+        let catalog = Catalog::new(self.images, sizes)?;
+        let Some(named) = self.named_images else {
+            return Ok(catalog);
+        };
+        ensure!(
+            !named.registries.is_empty(),
+            "catalog.named_images lists no registry"
+        );
+        Ok(catalog.with_named_images(NamedImages {
+            registries: named.registries,
+            max_bytes: named.max_size,
+        }))
     }
 }
 

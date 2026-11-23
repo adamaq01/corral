@@ -40,6 +40,48 @@ a file under `/etc/profile.d/`.
 Only `/home/sandbox` survives sleep. The home files and variables of a sandbox's environment are
 written at every start.
 
+## Who picks the image
+
+Admins list images in the catalog (`[[catalog.images]]` in `config.toml`, `catalog.images` in the
+chart's values), and users pick one when they create a sandbox. A change to an entry's reference
+reaches each sandbox made from it at its next start from sleep.
+
+Users may also name an image of their own, from registries the admin allows and up to a size the
+admin sets. It is off until the catalog says so:
+
+```toml
+[catalog.named_images]
+# Registries, such as ghcr.io, or repository paths in one, such as ghcr.io/acme.
+registries = ["docker.io", "ghcr.io/acme"]
+# The most an image may take to download, its layers compressed, for Corral's own platform.
+max_size = "5Gi"
+```
+
+The web UI then offers **Another image** beside the catalog's, and the API takes
+`imageReference` in place of `image` when a sandbox is created. Corral reads the image's manifest
+from its registry before it makes the sandbox, and refuses an image from another registry, one
+that takes more than `max_size` to download, or one it cannot read.
+
+## Private registries
+
+Credentials for a registry are the admin's and never shown to users. For the size check of named
+images, and on Docker for every pull, Corral uses those under `[[registries]]`; the password
+comes from the environment variable `password_env` names:
+
+```toml
+[[registries]]
+registry = "registry.example.lan:5000"
+username = "corral"
+password_env = "CORRAL_REGISTRY_PASSWORD"
+# Read the size of named images over plain HTTP.
+plain_http = true
+```
+
+On Kubernetes, nodes pull with Secrets of type `kubernetes.io/dockerconfigjson` in the sandbox
+namespace, named under `image_pull_secrets` in `[engine]` (`sandboxes.imagePullSecrets` in the
+chart); every sandbox pod uses them, for its image and the overlay. The chart's `registries` value
+holds the `[[registries]]` entries, each password a secret value.
+
 ## How each engine starts a sandbox
 
 Docker (Docker Engine 28 or later, for image mounts): the container mounts the overlay as an image

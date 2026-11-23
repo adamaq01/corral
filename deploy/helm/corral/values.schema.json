@@ -414,6 +414,65 @@
               "type": "string"
             }
           }
+        },
+        "imagePullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "registries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "registry"
+        ],
+        "properties": {
+          "registry": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9.-]+(:[0-9]+)?$"
+          },
+          "username": {
+            "type": "string",
+            "minLength": 1
+          },
+          "password": {
+            "$ref": "#/$defs/secretValue"
+          },
+          "plainHttp": {
+            "type": "boolean"
+          }
+        },
+        "dependentRequired": {
+          "username": [
+            "password"
+          ],
+          "password": [
+            "username"
+          ]
+        },
+        "dependentSchemas": {
+          "password": {
+            "properties": {
+              "password": {
+                "$ref": "#/$defs/secretSet"
+              }
+            }
+          }
         }
       }
     },
@@ -513,6 +572,42 @@
               },
               "homeSize": {
                 "$ref": "#/$defs/byteQuantity"
+              }
+            }
+          }
+        },
+        "namedImages": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "registries": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "maxSize": {
+              "$ref": "#/$defs/byteQuantity"
+            }
+          },
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "registries": {
+                "minItems": 1
               }
             }
           }

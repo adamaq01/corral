@@ -68,6 +68,7 @@ impl Cluster {
                 .unwrap_or_else(|_| "containerssh/agent:v0.11.0".to_owned()),
             overlay_image: std::env::var("CORRAL_OVERLAY_IMAGE")
                 .unwrap_or_else(|_| "corral-overlay:dev".to_owned()),
+            image_pull_secrets: Vec::new(),
         };
         let sandbox = ApiResource::from_gvk_with_plural(
             &GroupVersionKind::gvk("agents.x-k8s.io", "v1beta1", "Sandbox"),

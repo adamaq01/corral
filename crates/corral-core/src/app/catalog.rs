@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
+use std::num::NonZeroU64;
 
 use serde::Deserialize;
 
-use crate::domain::{ImageKey, Resources, SizeKey};
+use crate::domain::{ImageKey, ImageReference, Resources, SizeKey};
 use crate::{Error, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -20,18 +21,60 @@ pub struct SizePreset {
     pub resources: Resources,
 }
 
+/// Images users may name themselves, beside the catalog's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedImages {
+    /// Registries, such as `ghcr.io`, or repository paths in one, such as `ghcr.io/acme`.
+    pub registries: Vec<String>,
+    /// The most an image may take to download, its layers compressed.
+    pub max_bytes: NonZeroU64,
+}
+
+impl NamedImages {
+    /// Refuses an image from none of the registries.
+    pub fn check(&self, image: &ImageReference) -> Result<()> {
+        if self.registries.iter().any(|place| image.is_in(place)) {
+            return Ok(());
+        }
+        Err(Error::Invalid(format!(
+            "{image} is from none of the registries sandboxes may use: {}",
+            self.registries.join(", ")
+        )))
+    }
+}
+
 /// The images and sizes a sandbox is made from. The first of each is the default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Catalog {
     images: Vec<ImageOption>,
     sizes: Vec<SizePreset>,
+    named: Option<NamedImages>,
 }
 
 impl Catalog {
     pub fn new(images: Vec<ImageOption>, sizes: Vec<SizePreset>) -> Result<Self> {
         check_keys("image", images.iter().map(|image| image.key.as_str()))?;
         check_keys("size", sizes.iter().map(|size| size.key.as_str()))?;
-        Ok(Self { images, sizes })
+        Ok(Self {
+            images,
+            sizes,
+            named: None,
+        })
+    }
+
+    /// The same catalog, letting users name images too.
+    #[must_use]
+    pub fn with_named_images(self, named: NamedImages) -> Self {
+        Self {
+            named: Some(named),
+            ..self
+        }
+    }
+
+    /// Whether and which images users may name, beside the catalog's.
+    #[must_use]
+    pub fn named_images(&self) -> Option<&NamedImages> {
+        self.named.as_ref()
     }
 
     #[must_use]

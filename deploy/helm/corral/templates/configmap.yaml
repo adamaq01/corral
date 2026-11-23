@@ -31,6 +31,20 @@
 {{- with .Values.sandboxes.storageClass }}
 {{- $_ := set $engine "storage_class" . }}
 {{- end }}
+{{- with .Values.sandboxes.imagePullSecrets }}
+{{- $pullSecrets := list }}
+{{- range . }}{{ $pullSecrets = append $pullSecrets .name }}{{ end }}
+{{- $_ := set $engine "image_pull_secrets" $pullSecrets }}
+{{- end }}
+{{- $registries := list }}
+{{- range $index, $registry := .Values.registries }}
+{{- $entry := dict "registry" $registry.registry "plain_http" (default false $registry.plainHttp) }}
+{{- if $registry.username }}
+{{- $_ := set $entry "username" $registry.username }}
+{{- $_ := set $entry "password_env" (printf "CORRAL_REGISTRY_%d_PASSWORD" $index) }}
+{{- end }}
+{{- $registries = append $registries $entry }}
+{{- end }}
 {{- $images := list }}
 {{- range .Values.catalog.images }}
 {{- $images = append $images (dict "key" .key "label" .label "reference" .reference) }}
@@ -53,6 +67,9 @@
 {{- $catalog := dict }}
 {{- with $images }}{{ $_ := set $catalog "images" . }}{{ end }}
 {{- with $sizes }}{{ $_ := set $catalog "sizes" . }}{{ end }}
+{{- with .Values.catalog.namedImages }}{{ if .enabled }}
+{{- $_ := set $catalog "named_images" (dict "registries" .registries "max_size" .maxSize) }}
+{{- end }}{{ end }}
 {{- $sandboxBaseUrl := printf "http://%s.%s.svc:%d" (include "corral.fullname" .) .Release.Namespace (int .Values.service.port) }}
 {{- $config := dict
   "http" (dict "base_url" .Values.baseUrl "sandbox_base_url" $sandboxBaseUrl "trust_forwarded_for" .Values.trustForwardedFor)
@@ -64,6 +81,7 @@
   "ssh" (dict "public_host" .Values.ssh.publicHost "public_port" (int .Values.ssh.publicPort) "wake_deadline_secs" (int .Values.ssh.wakeDeadlineSecs))
   "limits" (dict "max_sandboxes_per_user" (int .Values.limits.maxSandboxesPerUser) "max_running" (int .Values.limits.maxRunning)) }}
 {{- with $catalog }}{{ $_ := set $config "catalog" . }}{{ end }}
+{{- with $registries }}{{ $_ := set $config "registries" . }}{{ end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -9,7 +9,7 @@ mod sandboxes;
 mod ssh_access;
 
 pub use accounts::Accounts;
-pub use catalog::{Catalog, ImageOption, SizePreset};
+pub use catalog::{Catalog, ImageOption, NamedImages, SizePreset};
 pub use deletion::DELETION_GRACE;
 pub use environment::{
     Attached, EntryChange, EntryView, Environment, FILE_LIMIT, FILES_LIMIT, NewEntry,

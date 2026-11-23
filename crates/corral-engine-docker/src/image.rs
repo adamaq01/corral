@@ -1,17 +1,25 @@
 use bollard::Docker;
+use bollard::auth::DockerCredentials;
 use bollard::query_parameters::CreateImageOptionsBuilder;
+use corral_core::domain::ImageReference;
+use corral_core::ports::RegistryAccess;
 use corral_core::{Error, Result};
 use futures_util::TryStreamExt;
+use secrecy::ExposeSecret;
 use tracing::warn;
 
 use crate::docker_error::is_not_found;
 
 /// The ID of the image `reference` names, pulled first if the daemon does not have it.
-pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<String> {
+pub(crate) async fn ensure_present(
+    docker: &Docker,
+    reference: &str,
+    registries: &[RegistryAccess],
+) -> Result<String> {
     if let Some(id) = local_id(docker, reference).await? {
         return Ok(id);
     }
-    pull(docker, reference).await?;
+    pull(docker, reference, registries).await?;
     local_id(docker, reference)
         .await?
         .ok_or_else(|| Error::internal(format!("image {reference}"), "is missing after its pull"))
@@ -19,8 +27,12 @@ pub(crate) async fn ensure_present(docker: &Docker, reference: &str) -> Result<S
 
 /// The ID of the image `reference` names once pulled again, or of the copy the daemon has when
 /// the pull fails.
-pub(crate) async fn refresh(docker: &Docker, reference: &str) -> Result<String> {
-    let pulled = pull(docker, reference).await;
+pub(crate) async fn refresh(
+    docker: &Docker,
+    reference: &str,
+    registries: &[RegistryAccess],
+) -> Result<String> {
+    let pulled = pull(docker, reference, registries).await;
     match (pulled, local_id(docker, reference).await?) {
         (Ok(()), Some(id)) => Ok(id),
         (Err(error), Some(id)) => {
@@ -43,12 +55,12 @@ async fn local_id(docker: &Docker, reference: &str) -> Result<Option<String>> {
     }
 }
 
-async fn pull(docker: &Docker, reference: &str) -> Result<()> {
+async fn pull(docker: &Docker, reference: &str, registries: &[RegistryAccess]) -> Result<()> {
     let options = CreateImageOptionsBuilder::default()
         .from_image(&with_default_tag(reference))
         .build();
     docker
-        .create_image(Some(options), None, None)
+        .create_image(Some(options), None, credentials(reference, registries))
         .try_collect::<Vec<_>>()
         .await
         .map(drop)
@@ -57,6 +69,19 @@ async fn pull(docker: &Docker, reference: &str) -> Result<()> {
 
 fn id_of(reference: &str, id: Option<String>) -> Result<String> {
     id.ok_or_else(|| Error::internal(format!("image {reference}"), "has no ID"))
+}
+
+/// The login configured for the registry `reference` is in, as the pull's registry auth.
+fn credentials(reference: &str, registries: &[RegistryAccess]) -> Option<DockerCredentials> {
+    let image = ImageReference::parse(reference).ok()?;
+    let access = RegistryAccess::of(registries, &image)?;
+    let login = access.login.as_ref()?;
+    Some(DockerCredentials {
+        username: Some(login.username.clone()),
+        password: Some(login.password.expose_secret().to_owned()),
+        serveraddress: Some(access.registry.clone()),
+        ..DockerCredentials::default()
+    })
 }
 
 // The API pulls every tag of an image named without a tag or digest.

@@ -1,0 +1,19 @@
+[package]
+name = "corral-registry-oci"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+corral-core = { path = "../corral-core" }
+oci-client = { version = "0.18.0", default-features = false, features = ["rustls-tls"] }
+secrecy.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2 = "0.11.1"
+tokio = { workspace = true, features = ["macros", "rt"] }
+wiremock = "0.6.5"
+
+[lints]
+workspace = true

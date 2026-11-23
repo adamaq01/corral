@@ -5,8 +5,8 @@ use std::time::Duration;
 use secrecy::{ExposeSecret, SecretSlice};
 
 use super::{
-    FakeEngine, FakeProvider, MemoryEnvironmentRepo, MemoryKeyRepo, MemorySandboxRepo,
-    MemorySecretStore, MemoryUserRepo,
+    FakeEngine, FakeProvider, FakeRegistry, MemoryEnvironmentRepo, MemoryKeyRepo,
+    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
 };
 use crate::app::{
     Accounts, Catalog, CreateSandbox, Environment, ImageOption, Keys, Limits, NewEntry,
@@ -21,6 +21,10 @@ use crate::ports::{CredentialMap, Identity, IdentityProvider};
 pub const MAX_SANDBOXES: usize = 3;
 pub const PROVIDER: &str = "test";
 pub const WAKE_DEADLINE: Duration = Duration::from_secs(7);
+const LIMITS: Limits = Limits {
+    max_sandboxes_per_user: MAX_SANDBOXES,
+    wake_deadline: WAKE_DEADLINE,
+};
 
 pub const ADAM_KEY: &str = include_str!("../../tests/fixtures/adam_ed25519.pub");
 pub const ADAM_FINGERPRINT: &str = "SHA256:0nvzQlr5lq8mmP7FV396FL0Mlt63oN/Y5WfWKMEYeFo";
@@ -92,6 +96,7 @@ pub fn request(name: &str, image: Option<&str>, size: Option<&str>) -> CreateSan
     CreateSandbox {
         name: sandbox_name(name),
         image: image.map(|key| ImageKey::parse(key).unwrap()),
+        image_reference: None,
         size: size.map(|key| SizeKey::parse(key).unwrap()),
     }
 }
@@ -169,6 +174,7 @@ pub struct World {
     pub sandbox_repo: Arc<MemorySandboxRepo>,
     pub secrets: Arc<MemorySecretStore>,
     pub engine: Arc<FakeEngine>,
+    pub registry: Arc<FakeRegistry>,
     pub sandboxes: Sandboxes,
     pub access: Arc<SshAccess>,
 }
@@ -197,17 +203,15 @@ impl World {
             links(),
         );
         let engine = Arc::new(FakeEngine::default());
-        let limits = Limits {
-            max_sandboxes_per_user: MAX_SANDBOXES,
-            wake_deadline: WAKE_DEADLINE,
-        };
+        let registry = Arc::new(FakeRegistry::default());
         let sandboxes = Sandboxes::new(
             sandbox_repo.clone(),
             users.clone(),
             engine.clone(),
+            registry.clone(),
             environment.clone(),
             catalog(),
-            limits,
+            LIMITS,
         );
         let key_repo = Arc::new(MemoryKeyRepo::default());
         let access = Arc::new(SshAccess::new(
@@ -231,10 +235,25 @@ impl World {
             sandbox_repo,
             secrets,
             engine,
+            registry,
             users,
             provider,
             access,
         }
+    }
+
+    /// The same sandboxes, users, engine and registry, from another catalog.
+    #[must_use]
+    pub fn sandboxes_with(&self, catalog: Catalog) -> Sandboxes {
+        Sandboxes::new(
+            self.sandbox_repo.clone(),
+            self.users.clone(),
+            self.engine.clone(),
+            self.registry.clone(),
+            self.environment.clone(),
+            catalog,
+            LIMITS,
+        )
     }
 
     pub async fn sandbox(&self, owner: &User, name: &str) -> Sandbox {

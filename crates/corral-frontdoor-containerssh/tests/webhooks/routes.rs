@@ -8,9 +8,9 @@ use axum::http::{Method, Request, StatusCode, header};
 use corral_core::app::{Environment, Limits, Sandboxes, SshAccess};
 use corral_core::domain::{Handle, SandboxDefaults, SandboxId, SandboxStatus, User, UserId};
 use corral_core::fakes::{
-    ADAM_CERT, EngineCall, FakeEngine, MAX_SANDBOXES, MemoryEnvironmentRepo, MemoryKeyRepo,
-    MemorySandboxRepo, MemorySecretStore, WAKE_DEADLINE, World, admin_proof, catalog, links,
-    sandbox_name,
+    ADAM_CERT, EngineCall, FakeEngine, FakeRegistry, MAX_SANDBOXES, MemoryEnvironmentRepo,
+    MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, WAKE_DEADLINE, World, admin_proof,
+    catalog, links, sandbox_name,
 };
 use corral_core::ports::{
     Boot, Inspection, SandboxEngine, SandboxSpec, SshTarget, Started, UserRepo,
@@ -401,6 +401,7 @@ async fn a_sandbox_a_login_creates_is_finished_after_containerssh_stops_waiting(
         sandbox_repo,
         users.clone(),
         engine.clone(),
+        Arc::new(FakeRegistry::default()),
         environment,
         catalog(),
         Limits {

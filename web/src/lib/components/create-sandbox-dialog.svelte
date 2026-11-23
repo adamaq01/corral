@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import type { Catalog, Sandbox } from '#lib/api/generated/index.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
+	import { bytesLabel } from '#lib/catalog.js';
 	import FormDialog from '#lib/components/form-dialog.svelte';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
@@ -20,8 +21,12 @@
 		onCreated: (sandbox: Sandbox) => Promise<void>;
 	} = $props();
 
+	// Never a catalog key, which holds only lowercase letters, digits and dashes.
+	const NAMED = '+named';
+
 	let name = $state('');
 	let image = $state('');
+	let reference = $state('');
 	let size = $state('');
 
 	$effect(() => {
@@ -29,6 +34,7 @@
 			untrack(() => {
 				name = count === 0 ? 'main' : '';
 				image = catalog.defaultImage;
+				reference = '';
 				size = catalog.defaultSize;
 			});
 		}
@@ -36,8 +42,11 @@
 
 	const full = $derived(count >= catalog.maxSandboxes);
 
+	const named = $derived(catalog.namedImages && image === NAMED ? catalog.namedImages : undefined);
+
 	async function create() {
-		await onCreated(await sandboxes.create({ name, image, size }));
+		const choice = named ? { imageReference: reference.trim() } : { image };
+		await onCreated(await sandboxes.create({ name, ...choice, size }));
 	}
 </script>
 
@@ -74,8 +83,31 @@
 			{#each catalog.images as choice (choice.key)}
 				<NativeSelect.Option value={choice.key}>{choice.label}</NativeSelect.Option>
 			{/each}
+			{#if catalog.namedImages}
+				<NativeSelect.Option value={NAMED}>Another image</NativeSelect.Option>
+			{/if}
 		</NativeSelect.Root>
 	</Field.Field>
+	{#if named}
+		<Field.Field>
+			<Field.Label for="sandbox-image-reference">Image reference</Field.Label>
+			<Input
+				id="sandbox-image-reference"
+				aria-describedby="sandbox-image-reference-hint"
+				bind:value={reference}
+				required
+				placeholder="debian:13"
+				autocomplete="off"
+				autocapitalize="none"
+				spellcheck={false}
+				disabled={full}
+			/>
+			<Field.Description id="sandbox-image-reference-hint">
+				Any Linux image from {named.registries.join(', ')}, at most {bytesLabel(named.maxBytes)}
+				to download. Corral brings the sandbox user, SSH and Herdr to it.
+			</Field.Description>
+		</Field.Field>
+	{/if}
 	<Field.Field>
 		<Field.Label for="sandbox-size">Size</Field.Label>
 		<NativeSelect.Root id="sandbox-size" bind:value={size} class="w-full" disabled={full}>

@@ -83,6 +83,9 @@ in its own Secret or a reference to an existing Secret.
 {{- if eq .Values.database.kind "postgres" }}
 {{- $env = append $env (dict "name" "DATABASE_URL" "ref" .Values.database.postgres.url) }}
 {{- end }}
+{{- range $index, $registry := .Values.registries }}{{ if $registry.username }}
+{{- $env = append $env (dict "name" (printf "CORRAL_REGISTRY_%d_PASSWORD" $index) "ref" $registry.password) }}
+{{- end }}{{ end }}
 {{- toJson $env }}
 {{- end }}
 

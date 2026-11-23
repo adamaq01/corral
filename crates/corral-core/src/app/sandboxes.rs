@@ -9,10 +9,12 @@ use ts_rs::TS;
 
 use super::{Catalog, Environment};
 use crate::domain::{
-    Admin, Handle, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName, SandboxStatus,
-    SandboxToken, SizeKey, User, UserId,
+    Admin, Handle, ImageKey, ImageReference, Sandbox, SandboxDefaults, SandboxId, SandboxImage,
+    SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
 };
-use crate::ports::{Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
+use crate::ports::{
+    ImageRegistry, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
+};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,12 +23,16 @@ pub struct Limits {
     pub wake_deadline: Duration,
 }
 
-/// Without an image or a size, the owner's default.
+/// Without an image or a size, the owner's default. An image reference names an image of the
+/// owner's choosing in place of a catalog image, where the catalog lets users name images.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateSandbox {
     pub name: SandboxName,
     #[ts(optional)]
     pub image: Option<ImageKey>,
+    #[ts(optional)]
+    pub image_reference: Option<String>,
     #[ts(optional)]
     pub size: Option<SizeKey>,
 }
@@ -53,6 +59,7 @@ pub struct Sandboxes {
     pub(super) repo: Arc<dyn SandboxRepo>,
     pub(super) users: Arc<dyn UserRepo>,
     pub(super) engine: Arc<dyn SandboxEngine>,
+    registry: Arc<dyn ImageRegistry>,
     environment: Environment,
     catalog: Catalog,
     limits: Limits,
@@ -64,6 +71,7 @@ impl Sandboxes {
         repo: Arc<dyn SandboxRepo>,
         users: Arc<dyn UserRepo>,
         engine: Arc<dyn SandboxEngine>,
+        registry: Arc<dyn ImageRegistry>,
         environment: Environment,
         catalog: Catalog,
         limits: Limits,
@@ -72,6 +80,7 @@ impl Sandboxes {
             repo,
             users,
             engine,
+            registry,
             environment,
             catalog,
             limits,
@@ -128,6 +137,7 @@ impl Sandboxes {
         let request = CreateSandbox {
             name: name.clone(),
             image: None,
+            image_reference: None,
             size: None,
         };
         match self.provision(owner, request).await {
@@ -139,9 +149,20 @@ impl Sandboxes {
 
     async fn provision(&self, owner: &User, request: CreateSandbox) -> Result<Sandbox> {
         let defaults = self.defaults(owner).await?;
-        let image = self
-            .catalog
-            .image(Some(request.image.as_ref().unwrap_or(&defaults.image)))?;
+        let image = match (request.image_reference, request.image) {
+            (Some(_), Some(_)) => {
+                return Err(Error::Invalid(
+                    "a sandbox takes a catalog image or an image reference, not both".to_owned(),
+                ));
+            }
+            (Some(reference), None) => SandboxImage::Named(self.named_image(&reference).await?),
+            (None, key) => SandboxImage::Catalog(
+                self.catalog
+                    .image(Some(key.as_ref().unwrap_or(&defaults.image)))?
+                    .key
+                    .clone(),
+            ),
+        };
         let size = self
             .catalog
             .size(Some(request.size.as_ref().unwrap_or(&defaults.size)))?;
@@ -149,7 +170,7 @@ impl Sandboxes {
             id: SandboxId::generate(),
             owner: owner.id,
             name: request.name,
-            image: image.key.clone(),
+            image,
             size: size.key.clone(),
             created_at: Utc::now(),
             started_at: None,
@@ -163,12 +184,9 @@ impl Sandboxes {
             self.forget(&sandbox).await?;
             return Err(error);
         }
-        let spec = SandboxSpec {
-            owner: owner.handle.clone(),
-            name: sandbox.name.clone(),
-            image: image.reference.clone(),
-            resources: size.resources,
-        };
+        let spec = self
+            .spec_of(&sandbox, owner.handle.clone())
+            .expect("the catalog offers what the sandbox was just made from");
         if let Err(error) = self.engine.create(&sandbox.id, &spec).await {
             let _ = self.engine.delete(&sandbox.id).await;
             self.forget(&sandbox).await?;
@@ -330,24 +348,46 @@ impl Sandboxes {
         Ok(started.readiness)
     }
 
+    /// Refuses an image the catalog does not let users name, or one that takes more to
+    /// download than it allows.
+    async fn named_image(&self, reference: &str) -> Result<ImageReference> {
+        let allowed = self.catalog.named_images().ok_or_else(|| {
+            Error::Invalid("sandboxes run only the catalog's images here".to_owned())
+        })?;
+        let image = ImageReference::parse(reference)?;
+        allowed.check(&image)?;
+        let size = self.registry.download_size(&image).await?;
+        let max = allowed.max_bytes.get();
+        if size > max {
+            return Err(Error::Invalid(format!(
+                "{image} takes {} to download, more than the {} an image may take here",
+                mebibytes(size),
+                mebibytes(max)
+            )));
+        }
+        Ok(image)
+    }
+
     /// What the sandbox is made from now, from the catalog entries it was made from. None once
     /// the catalog no longer offers its image or its size.
     async fn spec(&self, sandbox: &Sandbox) -> Result<Option<SandboxSpec>> {
-        let (Ok(image), Ok(size)) = (
-            self.catalog.image(Some(&sandbox.image)),
-            self.catalog.size(Some(&sandbox.size)),
-        ) else {
-            return Ok(None);
-        };
         let owner = self.users.get(sandbox.owner).await?.ok_or_else(|| {
             Error::internal("store", format!("sandbox {} has no owner", sandbox.id.0))
         })?;
-        Ok(Some(SandboxSpec {
-            owner: owner.handle,
+        Ok(self.spec_of(sandbox, owner.handle))
+    }
+
+    fn spec_of(&self, sandbox: &Sandbox, owner: Handle) -> Option<SandboxSpec> {
+        let image = match &sandbox.image {
+            SandboxImage::Catalog(key) => self.catalog.image(Some(key)).ok()?.reference.clone(),
+            SandboxImage::Named(reference) => reference.to_string(),
+        };
+        Some(SandboxSpec {
+            owner,
             name: sandbox.name.clone(),
-            image: image.reference.clone(),
-            resources: size.resources,
-        }))
+            image,
+            resources: self.catalog.size(Some(&sandbox.size)).ok()?.resources,
+        })
     }
 
     pub(super) async fn find(&self, owner: &User, name: &SandboxName) -> Result<Sandbox> {
@@ -398,6 +438,10 @@ impl Sandboxes {
     }
 }
 
+fn mebibytes(bytes: u64) -> String {
+    format!("{} MiB", bytes.div_ceil(1 << 20))
+}
+
 /// A sandbox scheduled for deletion stays stopped until its owner cancels the deletion.
 fn not_doomed(sandbox: &Sandbox) -> Result<()> {
     match sandbox.delete_at {
@@ -414,10 +458,12 @@ fn not_doomed(sandbox: &Sandbox) -> Result<()> {
 mod tests {
     use std::time::Duration;
 
-    use super::{SandboxView, Sandboxes};
+    use std::num::NonZeroU64;
+
+    use super::{CreateSandbox, SandboxView};
     use crate::Error;
-    use crate::app::Catalog;
     use crate::app::EntryChange;
+    use crate::app::{Catalog, NamedImages};
     use crate::domain::Handle;
     use crate::domain::{Sandbox, SandboxStatus, SizeKey, User};
     use crate::fakes::EngineCall;
@@ -455,7 +501,7 @@ mod tests {
             (
                 sandbox.owner,
                 sandbox.name.as_str(),
-                sandbox.image.as_str(),
+                sandbox.image.to_string().as_str(),
                 sandbox.size.as_str()
             ),
             (adam.id, "main", "tools", "large")
@@ -689,16 +735,7 @@ mod tests {
             Some(EngineCall::Start { spec, .. }) => spec.clone(),
             other => panic!("{other:?}"),
         };
-        let with_catalog = |catalog: Catalog| {
-            Sandboxes::new(
-                w.sandbox_repo.clone(),
-                w.users.clone(),
-                w.engine.clone(),
-                w.environment.clone(),
-                catalog,
-                w.sandboxes.limits,
-            )
-        };
+        let with_catalog = |catalog: Catalog| w.sandboxes_with(catalog);
         let mut images = catalog().images().to_vec();
         let mut sizes = catalog().sizes().to_vec();
         images[1].reference = "ghcr.io/adamaq01/corral-tools:3".to_owned();
@@ -726,6 +763,91 @@ mod tests {
             ));
             assert_eq!(started_from(), None, "it runs as it was last made");
         }
+    }
+
+    #[tokio::test]
+    async fn an_image_its_owner_names_runs_when_the_catalog_allows_its_registry_and_size() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let named = |name: &str, reference: &str| CreateSandbox {
+            image_reference: Some(reference.to_owned()),
+            ..request(name, None, Some("large"))
+        };
+        w.registry.publish("ghcr.io/acme/tools:1", 100 << 20);
+        w.registry.publish("ghcr.io/acme/huge:1", 600 << 20);
+        w.registry.publish("debian:13", 50 << 20);
+        let allowing = w.sandboxes_with(catalog().with_named_images(NamedImages {
+            registries: vec!["ghcr.io/acme".to_owned()],
+            max_bytes: NonZeroU64::new(500 << 20).unwrap(),
+        }));
+        let refusal = async |sandboxes: &super::Sandboxes, request| match sandboxes
+            .create(&adam, request)
+            .await
+        {
+            Err(Error::Invalid(message)) => message,
+            other => panic!("{other:?}"),
+        };
+
+        assert!(
+            refusal(&w.sandboxes, named("tools", "ghcr.io/acme/tools:1"))
+                .await
+                .contains("only the catalog's images")
+        );
+        let created = allowing
+            .create(&adam, named("tools", "ghcr.io/acme/tools:1"))
+            .await
+            .unwrap();
+        assert_eq!(created.sandbox.image.to_string(), "ghcr.io/acme/tools:1");
+        let Some(EngineCall::Create { spec, .. }) = w
+            .engine
+            .calls()
+            .into_iter()
+            .find(|call| matches!(call, EngineCall::Create { .. }))
+        else {
+            panic!("no create");
+        };
+        assert_eq!(spec.image, "ghcr.io/acme/tools:1");
+        assert_eq!(
+            spec.resources,
+            catalog()
+                .size(Some(&SizeKey::parse("large").unwrap()))
+                .unwrap()
+                .resources
+        );
+
+        for (request, expected) in [
+            (named("a", "debian:13"), "none of the registries"),
+            (
+                named("b", "ghcr.io/acme/huge:1"),
+                "takes 600 MiB to download, more than the 500 MiB",
+            ),
+            (named("c", "ghcr.io/acme/missing:1"), "no image"),
+            (named("d", "Not An Image"), "not an image reference"),
+            (
+                CreateSandbox {
+                    image: Some(crate::domain::ImageKey::parse("base").unwrap()),
+                    ..named("e", "ghcr.io/acme/tools:1")
+                },
+                "not both",
+            ),
+        ] {
+            let message = refusal(&allowing, request).await;
+            assert!(message.contains(expected), "{message}");
+        }
+        assert_eq!(
+            w.registry.reads(),
+            [
+                "ghcr.io/acme/tools:1",
+                "ghcr.io/acme/huge:1",
+                "ghcr.io/acme/missing:1"
+            ],
+            "only images from an allowed registry are read"
+        );
+        assert_eq!(
+            allowing.list(&adam).await.unwrap().len(),
+            1,
+            "nothing is made of a refused image"
+        );
     }
 
     /// The sandboxes that run without their latest environment change, as admins and their owner

@@ -7,8 +7,8 @@ use uuid::Uuid;
 use super::{at, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
-    Handle, ImageKey, Role, Sandbox, SandboxDefaults, SandboxId, SandboxName, SizeKey, SshKey,
-    SshPublicKey, TokenHash, User, UserId, UserStatus,
+    Handle, ImageKey, ImageReference, Role, Sandbox, SandboxDefaults, SandboxId, SandboxImage,
+    SandboxName, SizeKey, SshKey, SshPublicKey, TokenHash, User, UserId, UserStatus,
 };
 use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 
@@ -222,7 +222,7 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     let eve = seed_user(users, "eve").await;
     let main = new_sandbox(adam.id, "main", 1);
     let eves_main = new_sandbox(eve.id, "main", 2);
-    let dev = new_sandbox(adam.id, "dev", 3);
+    let dev = named_image_sandbox(adam.id, "dev", 3);
     for sandbox in [&dev, &eves_main, &main] {
         sandboxes.insert(sandbox, 2).await.expect("insert sandbox");
     }
@@ -621,12 +621,20 @@ fn public_key(seed: Uuid) -> SshPublicKey {
     SshPublicKey::parse(&key.to_openssh().expect("encodable key")).expect("valid key")
 }
 
+/// A sandbox of an image its owner named, which reads back as it was written.
+fn named_image_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
+    Sandbox {
+        image: SandboxImage::Named(ImageReference::parse("ghcr.io/acme/tools:1").unwrap()),
+        ..new_sandbox(owner, name, created)
+    }
+}
+
 pub(super) fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
     Sandbox {
         id: SandboxId(unique("sbx")),
         owner,
         name: sandbox_name(name),
-        image: ImageKey::parse("default").unwrap(),
+        image: SandboxImage::Catalog(ImageKey::parse("default").unwrap()),
         size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
         started_at: None,

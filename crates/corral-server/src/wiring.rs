@@ -6,11 +6,12 @@ use axum::Router;
 use axum::routing::get;
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
 use corral_core::app::{Accounts, Environment, Keys, Limits, SandboxLinks, Sandboxes, SshAccess};
-use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
+use corral_core::ports::{IdentityProvider, RegistryAccess, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
 use corral_identity_local::LocalProvider;
 use corral_identity_oidc::OidcProvider;
+use corral_registry_oci::OciRegistry;
 use corral_secrets_database::DatabaseSecretStore;
 use corral_secrets_vault::VaultStore;
 use corral_sql::Pool;
@@ -37,6 +38,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         secrets,
         engine,
         oidc,
+        registries,
     } = Adapters::resolve(config)?;
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
@@ -60,11 +62,13 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         );
     }
     let (providers, provider_routes) = providers(config, oidc, &pool).await?;
-    let (engine, lifecycle) = start_engine(config, engine, shutdown.clone()).await?;
+    let (engine, lifecycle) =
+        start_engine(config, engine, registries.clone(), shutdown.clone()).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
         engine,
+        Arc::new(OciRegistry::new(registries)),
         environment.clone(),
         config.catalog.clone(),
         Limits {
@@ -168,6 +172,7 @@ async fn providers(
 async fn start_engine(
     config: &Config,
     choice: EngineChoice,
+    registries: Vec<RegistryAccess>,
     shutdown: CancellationToken,
 ) -> Result<(Arc<dyn SandboxEngine>, JoinHandle<()>)> {
     let max_running = config.limits.max_running;
@@ -178,8 +183,9 @@ async fn start_engine(
             config,
             proxy_public_key,
         } => {
-            let docker =
-                Arc::new(DockerEngine::connect(config, proxy_public_key, max_running).await?);
+            let docker = Arc::new(
+                DockerEngine::connect(config, proxy_public_key, max_running, registries).await?,
+            );
             let lifecycle =
                 corral_activity::spawn(docker.clone(), interval, idle_timeout, shutdown);
             Ok((docker, lifecycle))

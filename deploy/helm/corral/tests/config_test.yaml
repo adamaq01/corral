@@ -176,3 +176,34 @@ tests:
       - matchRegex:
           path: data["config.toml"]
           pattern: '\[frontdoor\]\s+kind = "containerssh"\s+lockout_exempt_networks = \["10\.42\.0\.0/16", "fd00:42::/48"\]\n'
+
+  - it: lets users name images from the registries it lists, up to the size it caps them at
+    set:
+      catalog.namedImages:
+        enabled: true
+        registries: [ghcr.io/acme, docker.io]
+        maxSize: 2Gi
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[catalog\.named_images\]\s+max_size = "2Gi"\s+registries = \["ghcr\.io/acme", "docker\.io"\]'
+
+  - it: pulls sandbox images with the Secrets it names, and reads registries with the logins it is given
+    set:
+      sandboxes.imagePullSecrets: [{ name: regcred }]
+      registries:
+        - registry: ghcr.io
+          username: corral
+          password: { existingSecret: ghcr, key: token }
+        - registry: registry.lan:5000
+          plainHttp: true
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'image_pull_secrets = \["regcred"\]'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[registries\]\]\s+password_env = "CORRAL_REGISTRY_0_PASSWORD"\s+plain_http = false\s+registry = "ghcr\.io"\s+username = "corral"\s+\[\[registries\]\]\s+plain_http = true\s+registry = "registry\.lan:5000"'
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: 'token|ghcr"'

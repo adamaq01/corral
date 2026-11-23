@@ -12,6 +12,9 @@ pub struct AgentSandboxConfig {
     /// The Corral overlay every sandbox mounts at /opt/corral, as an image volume.
     #[serde(default = "overlay_image")]
     pub overlay_image: String,
+    /// Secrets in the namespace that sandbox pods pull their images and the overlay with.
+    #[serde(default)]
+    pub image_pull_secrets: Vec<String>,
 }
 
 fn overlay_image() -> String {

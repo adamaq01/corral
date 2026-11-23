@@ -250,6 +250,10 @@ latter.
 - The `corral` command in a sandbox (`corral status`, `restart`, `stop`, `delete --confirm`)
   reaches Corral's API at its Service, `http://<release>.<namespace>.svc`, which the
   NetworkPolicy leaves open on the HTTP port.
+- With `catalog.namedImages.enabled`, users can also name an image of their own, from
+  `catalog.namedImages.registries` and at most `catalog.namedImages.maxSize` to download. Nodes
+  pull private images with `sandboxes.imagePullSecrets`; Corral reads their sizes with the
+  logins under `registries`. [docs/images.md](../../../docs/images.md) has both.
 - A change to a `catalog.images` entry's `reference` or to a size reaches each sandbox made
   from it at its next start from sleep: its pod template is made again with the new image,
   requests and limits, its home kept. A running sandbox keeps what it has until then, and a

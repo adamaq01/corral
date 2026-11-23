@@ -88,6 +88,9 @@ block, and wakes, stops, restarts or deletes the sandbox.
 - Your **Profile** sets the image and size a new sandbox gets unless you pick others, including
   one made by connecting as `<sandbox>.<name>`. Until you set them, they are the first image and
   size in `config.toml`'s catalog.
+- Users can also name an image of their own once `[catalog.named_images]` lists the registries
+  it may come from and the most it may take to download; credentials for a private registry go
+  under `[[registries]]`, never shown to users. [docs/images.md](../../docs/images.md) has both.
 - A change to a catalog entry's `reference` or size reaches each sandbox made from it at its
   next start from sleep, its home kept; a running sandbox keeps what it has until then. A
   sandbox whose image or size is no longer in the catalog keeps running as it was made. Docker

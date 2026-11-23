@@ -244,7 +244,7 @@ mod tests {
             .unwrap()
             .sandbox;
         assert_eq!(
-            (scratch.image.as_str(), scratch.size.as_str()),
+            (scratch.image.to_string().as_str(), scratch.size.as_str()),
             ("tools", "large")
         );
         let made = w.engine.calls().split_off(calls);

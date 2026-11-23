@@ -167,3 +167,22 @@ containerssh:
 # expect: at '/containerssh/lockoutExemptNetworks': got string, want array
 containerssh:
   lockoutExemptNetworks: 10.42.0.0/16
+---
+# expect: at '/catalog/namedImages/registries': minItems: got 0, want 1
+catalog:
+  namedImages:
+    enabled: true
+---
+# expect: at '/registries/0': properties 'password' required, if 'username' exists
+registries:
+  - registry: ghcr.io
+    username: corral
+---
+# expect: at '/registries/0/registry': 'https://ghcr.io' does not match pattern
+registries:
+  - registry: https://ghcr.io
+---
+# expect: at '/sandboxes/overlayImage/repository': minLength: got 0, want 1
+sandboxes:
+  overlayImage:
+    repository: ""

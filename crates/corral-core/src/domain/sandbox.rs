@@ -3,7 +3,8 @@ use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::{ImageKey, SandboxName, SizeKey, UserId};
+use super::{ImageKey, ImageReference, SandboxName, SizeKey, UserId};
+use crate::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SandboxId(pub String);
@@ -18,12 +19,40 @@ impl SandboxId {
     }
 }
 
+/// What a sandbox runs: a catalog image, by its key, or an image its owner named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SandboxImage {
+    Catalog(ImageKey),
+    Named(ImageReference),
+}
+
+impl SandboxImage {
+    /// Reads the text `Display` writes. A key never holds a `/` and a written-out reference
+    /// always does.
+    pub fn parse(text: &str) -> Result<Self> {
+        if text.contains('/') {
+            ImageReference::parse(text).map(Self::Named)
+        } else {
+            ImageKey::parse(text).map(Self::Catalog)
+        }
+    }
+}
+
+impl std::fmt::Display for SandboxImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Catalog(key) => key.fmt(f),
+            Self::Named(reference) => reference.fmt(f),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sandbox {
     pub id: SandboxId,
     pub owner: UserId,
     pub name: SandboxName,
-    pub image: ImageKey,
+    pub image: SandboxImage,
     pub size: SizeKey,
     pub created_at: DateTime<Utc>,
     /// When Corral last started it from stopped, so with its environment of that moment.
@@ -48,7 +77,7 @@ pub enum SandboxStatus {
 mod tests {
     use serde_json::json;
 
-    use super::{SandboxId, SandboxStatus};
+    use super::{SandboxId, SandboxImage, SandboxStatus};
 
     #[test]
     fn status_serializes_its_state_and_any_failure_detail() {
@@ -60,6 +89,26 @@ mod tests {
             serde_json::to_value(SandboxStatus::Failed("ran out of memory".to_owned())).unwrap(),
             json!({ "state": "failed", "detail": "ran out of memory" })
         );
+    }
+
+    #[test]
+    fn an_image_reads_back_from_its_text() {
+        for text in [
+            "ubuntu",
+            "ghcr.io/acme/tools:1",
+            "docker.io/library/debian:13",
+        ] {
+            assert_eq!(SandboxImage::parse(text).unwrap().to_string(), text);
+        }
+        assert!(matches!(
+            SandboxImage::parse("ubuntu").unwrap(),
+            SandboxImage::Catalog(_)
+        ));
+        assert!(matches!(
+            SandboxImage::parse("debian/x").unwrap(),
+            SandboxImage::Named(_)
+        ));
+        assert!(SandboxImage::parse("Ubuntu").is_err());
     }
 
     #[test]

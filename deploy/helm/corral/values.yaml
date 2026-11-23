@@ -140,6 +140,9 @@ sandboxes:
     repository: ghcr.io/adamaq01/corral-overlay
     # sandboxes.overlayImage.tag defaults to the chart's appVersion.
     tag: ""
+  # sandboxes.imagePullSecrets are Secrets in the sandbox namespace, each as name, that sandbox
+  # pods pull their image and the overlay with.
+  imagePullSecrets: []
 
 # keepOnUninstall keeps the database volume or CNPG Cluster and the chart-created sandbox
 # namespace, with every sandbox and home in it, when the release is uninstalled or its Argo CD
@@ -167,6 +170,21 @@ catalog:
   # 2 CPUs, 4 GiB and a 10 GiB home. Each has key, label, cpuRequest, cpuLimit, memoryRequest,
   # memoryLimit and homeSize.
   sizes: []
+  namedImages:
+    # catalog.namedImages.enabled lets users name an image of their own beside the catalog's.
+    enabled: false
+    # catalog.namedImages.registries are where a named image must come from: registries, such as
+    # ghcr.io, or repository paths in one, such as ghcr.io/acme.
+    registries: []
+    # catalog.namedImages.maxSize is the most a named image may take to download, its layers
+    # compressed.
+    maxSize: 5Gi
+
+# registries are the registries Corral reads named images' sizes from. Each has registry (its
+# host, with its port if any), and for a private one username and password, a secret value as
+# below; plainHttp reads it over plain HTTP. Users never see the credentials. Nodes pull with
+# sandboxes.imagePullSecrets.
+registries: []
 
 serviceAccount:
   # serviceAccount.annotations are added to Corral's ServiceAccount.

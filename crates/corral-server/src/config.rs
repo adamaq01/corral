@@ -36,6 +36,23 @@ pub struct Config {
         deserialize_with = "catalog::deserialize"
     )]
     pub catalog: Catalog,
+    #[serde(default)]
+    pub registries: Vec<RegistryEntry>,
+}
+
+/// A registry Corral pulls sandbox images from or reads their sizes from, with credentials users
+/// never see.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryEntry {
+    /// The registry's host, with its port if it has one, such as `registry.example.lan:5000`.
+    pub registry: String,
+    pub username: Option<String>,
+    /// The environment variable holding the password or token, which never sits in this file.
+    pub password_env: Option<String>,
+    /// Whether Corral reads image sizes from it over plain HTTP.
+    #[serde(default)]
+    pub plain_http: bool,
 }
 
 #[derive(Deserialize)]
@@ -216,6 +233,20 @@ impl Config {
             config.identity.local.is_some() || config.identity.oidc.is_some(),
             "no login method: add [identity.local], [identity.oidc] or both"
         );
+        for (index, registry) in config.registries.iter().enumerate() {
+            ensure!(
+                registry.username.is_some() == registry.password_env.is_some(),
+                "registry {:?} needs both username and password_env, or neither",
+                registry.registry
+            );
+            ensure!(
+                !config.registries[..index]
+                    .iter()
+                    .any(|other| other.registry.eq_ignore_ascii_case(&registry.registry)),
+                "registry {:?} is listed twice",
+                registry.registry
+            );
+        }
         Ok(config)
     }
 }
@@ -437,6 +468,57 @@ mod tests {
         .unwrap();
         assert_eq!(config.catalog.image(None).unwrap().key.as_str(), "debian");
         assert_eq!(config.catalog.size(None).unwrap().key.as_str(), "small");
+    }
+
+    #[test]
+    fn named_images_and_registries_are_parsed_and_validated() {
+        let config = Config::parse(&format!(
+            "{MINIMAL}\n[catalog.named_images]\nregistries = [\"ghcr.io/acme\", \"docker.io\"]\n\
+             max_size = \"2Gi\"\n[[registries]]\nregistry = \"ghcr.io\"\nusername = \"corral\"\n\
+             password_env = \"CORRAL_GHCR_TOKEN\""
+        ))
+        .unwrap();
+        let named = config.catalog.named_images().unwrap();
+        assert_eq!(named.registries, ["ghcr.io/acme", "docker.io"]);
+        assert_eq!(named.max_bytes.get(), 2 << 30);
+        assert_eq!(
+            config.catalog.image(None).unwrap().reference,
+            "ghcr.io/adamaq01/corral-sandbox",
+            "the catalog's own images stay"
+        );
+        assert_eq!(config.registries.len(), 1);
+        let plain = Config::parse(MINIMAL).unwrap();
+        assert!(plain.catalog.named_images().is_none() && plain.registries.is_empty());
+
+        for (extra, expected) in [
+            (
+                "[catalog.named_images]\nregistries = []\nmax_size = \"1Gi\"",
+                "lists no registry",
+            ),
+            (
+                "[catalog.named_images]\nregistries = [\"ghcr.io\"]\nmax_size = \"lots\"",
+                "\"lots\"",
+            ),
+            (
+                "[catalog.named_images]\nregistries = [\"ghcr.io\"]",
+                "missing field `max_size`",
+            ),
+            (
+                "[[registries]]\nregistry = \"ghcr.io\"\nusername = \"corral\"",
+                "needs both username and password_env",
+            ),
+            (
+                "[[registries]]\nregistry = \"ghcr.io\"\n[[registries]]\nregistry = \"GHCR.io\"",
+                "listed twice",
+            ),
+            (
+                "[[registries]]\nregistry = \"ghcr.io\"\npassword = \"in-the-file\"",
+                "unknown field `password`",
+            ),
+        ] {
+            let message = rejection(&format!("{MINIMAL}\n{extra}"));
+            assert!(message.contains(expected), "{extra}: {message}");
+        }
     }
 
     #[test]

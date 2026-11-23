@@ -12,7 +12,7 @@ use corral_activity::{ActivityLock, Exec};
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{
-    Boot, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, Started,
+    Boot, Inspection, Readiness, RegistryAccess, SandboxEngine, SandboxSpec, SshTarget, Started,
 };
 use corral_core::{Error, Result};
 use ssh_key::PublicKey;
@@ -41,6 +41,8 @@ pub struct DockerEngine {
     config: DockerConfig,
     /// The image ID of the overlay, pinned when the engine connected.
     overlay: String,
+    /// The credentials pulls use, for the registries that need them.
+    registries: Vec<RegistryAccess>,
     proxy_public_key: PublicKey,
     max_running: usize,
     pub(crate) activity: ActivityLock,
@@ -51,6 +53,7 @@ impl DockerEngine {
         config: DockerConfig,
         proxy_public_key: PublicKey,
         max_running: usize,
+        registries: Vec<RegistryAccess>,
     ) -> Result<Self> {
         let docker = Docker::connect_with_defaults()
             .map_err(|err| Error::internal("connect to Docker", err))?;
@@ -82,11 +85,12 @@ impl DockerEngine {
                 ),
             ));
         }
-        let overlay = image::refresh(&docker, &config.overlay_image).await?;
+        let overlay = image::refresh(&docker, &config.overlay_image, &registries).await?;
         Ok(Self {
             docker,
             config,
             overlay,
+            registries,
             proxy_public_key,
             max_running,
             activity: ActivityLock::default(),
@@ -154,7 +158,8 @@ impl DockerEngine {
             Some(spec) => recorded.remade(id, spec)?,
             None => recorded,
         };
-        let image_id = image::ensure_present(&self.docker, &definition.image).await?;
+        let image_id =
+            image::ensure_present(&self.docker, &definition.image, &self.registries).await?;
         let body = container::body(id, &definition, &self.wiring());
         if container::is_made_from(&current, &body, &image_id) {
             return Ok(current);
@@ -264,7 +269,7 @@ impl SandboxEngine for DockerEngine {
             return Ok(());
         }
         let definition = container::Definition::new(id, spec, HostKey::generate())?;
-        image::ensure_present(&self.docker, &spec.image).await?;
+        image::ensure_present(&self.docker, &spec.image, &self.registries).await?;
         self.docker
             .create_volume(container::volume(id, spec))
             .await

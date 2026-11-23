@@ -5,7 +5,8 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::contract::{environment, repos};
 use corral_core::domain::{
-    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxName, SizeKey, User, UserId, UserStatus,
+    Handle, ImageKey, Role, Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, User, UserId,
+    UserStatus,
 };
 use corral_core::ports::{SandboxRepo, UserRepo};
 use corral_sql::testing::Databases;
@@ -62,7 +63,7 @@ async fn a_scheduled_deletion_outlives_the_store(url: &str) {
         id: SandboxId("sbx-scheduled".to_owned()),
         owner: owner.id,
         name: SandboxName::parse("main").unwrap(),
-        image: ImageKey::parse("default").unwrap(),
+        image: SandboxImage::Catalog(ImageKey::parse("default").unwrap()),
         size: SizeKey::parse("small").unwrap(),
         created_at: Utc::now(),
         started_at: None,
@@ -136,7 +137,7 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         id: SandboxId(format!("sbx-{}", 9 - i)),
         owner: owner.id,
         name: SandboxName::parse(&format!("box-{}", 9 - i)).unwrap(),
-        image: ImageKey::parse("default").unwrap(),
+        image: SandboxImage::Catalog(ImageKey::parse("default").unwrap()),
         size: SizeKey::parse("small").unwrap(),
         created_at: second + offset,
         started_at: None,

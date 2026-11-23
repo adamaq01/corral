@@ -61,6 +61,11 @@ max_sandboxes_per_user = 5
 # Sandboxes awake at once, across all users.
 max_running = 6
 
+# Users may also name images of their own from these registries, up to this download size.
+[catalog.named_images]
+registries = ["docker.io", "ghcr.io/adamaq01"]
+max_size = "5Gi"
+
 # The first image and the first size are the defaults.
 [[catalog.images]]
 key = "ubuntu"

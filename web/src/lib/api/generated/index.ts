@@ -8,6 +8,10 @@ export type AttachedEntry = { entry: EnvironmentEntry, override: StoredValue | n
 
 export type Catalog = { images: Array<Choice>, sizes: Array<Choice>,
 /**
+ * Absent when users run only the catalog's images.
+ */
+namedImages?: NamedImages,
+/**
  * The signed-in user's default image.
  */
 defaultImage: ImageKey,
@@ -24,9 +28,10 @@ export type Choice = { key: string, label: string, };
 export type ConfirmDeletion = { confirm: string, };
 
 /**
- * Without an image or a size, the owner's default.
+ * Without an image or a size, the owner's default. An image reference names an image of the
+ * owner's choosing in place of a catalog image, where the catalog lets users name images.
  */
-export type CreateSandbox = { name: SandboxName, image?: ImageKey, size?: SizeKey, };
+export type CreateSandbox = { name: SandboxName, image?: ImageKey, imageReference?: string, size?: SizeKey, };
 
 /**
  * Whether `corral delete` inside the user's sandboxes may schedule their deletion.
@@ -102,6 +107,19 @@ export const MIN_PASSWORD_CHARS = 12;
 
 export type Me = { handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, };
 
+/**
+ * Images users may name themselves, beside the catalog's.
+ */
+export type NamedImages = {
+/**
+ * Registries, or repository paths in one, that a named image must come from.
+ */
+registries: Array<string>,
+/**
+ * The most a named image may take to download, its layers compressed.
+ */
+maxBytes: number, };
+
 export type NewAccount = { username: Handle, password: string, role: Role, };
 
 /**
@@ -126,7 +144,11 @@ export type OpksshLogin = { issuer: string, clientId: string,
  */
 lifetimeHours: number, };
 
-export type OwnedSandbox = { owner: Owner, name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
+export type OwnedSandbox = { owner: Owner, name: SandboxName,
+/**
+ * A catalog image's key, or the image its owner named, written out in full.
+ */
+image: string, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
  * Runs without the latest change to its environment, which a restart applies.
  */
@@ -159,7 +181,11 @@ opkssh: string | null, };
 
 export type Role = "member" | "admin";
 
-export type Sandbox = { name: SandboxName, image: ImageKey, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
+export type Sandbox = { name: SandboxName,
+/**
+ * A catalog image's key, or the image its owner named, written out in full.
+ */
+image: string, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
  * Runs without the latest change to its environment, which a restart applies.
  */

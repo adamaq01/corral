@@ -8,9 +8,9 @@ use corral_core::{Error, Result};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
     Container, EmptyDirVolumeSource, EnvFromSource, EnvVar, ImageVolumeSource,
-    PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate, PodSecurityContext, PodSpec,
-    PodTemplateSpec, ResourceRequirements, Secret, SecretEnvSource, SecretVolumeSource,
-    SecurityContext, Volume, VolumeMount, VolumeResourceRequirements,
+    LocalObjectReference, PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate,
+    PodSecurityContext, PodSpec, PodTemplateSpec, ResourceRequirements, Secret, SecretEnvSource,
+    SecretVolumeSource, SecurityContext, Volume, VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -218,6 +218,12 @@ fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> Po
             run_as_group: Some(SANDBOX_UID),
             fs_group: Some(SANDBOX_UID),
             ..PodSecurityContext::default()
+        }),
+        image_pull_secrets: (!cfg.image_pull_secrets.is_empty()).then(|| {
+            cfg.image_pull_secrets
+                .iter()
+                .map(|name| LocalObjectReference { name: name.clone() })
+                .collect()
         }),
         init_containers: Some(vec![init_container(workload)]),
         containers: vec![sandbox_container(id, workload)],
@@ -443,6 +449,7 @@ mod tests {
             storage_class: Some("tns-csi-nvmeof".to_owned()),
             agent_image: "containerssh/agent:v0.11.0".to_owned(),
             overlay_image: "ghcr.io/adamaq01/corral-overlay:sha-1".to_owned(),
+            image_pull_secrets: Vec::new(),
         }
     }
 
@@ -612,6 +619,25 @@ mod tests {
         let claim = &sandbox["spec"]["volumeClaimTemplates"][0]["spec"];
         assert_eq!(claim["resources"]["requests"]["storage"], "10737418240");
         assert!(claim.get("storageClassName").is_none(), "{claim}");
+    }
+
+    #[test]
+    fn pods_pull_with_the_secrets_the_engine_names() {
+        let id = SandboxId("sbx-0123456789ab".to_owned());
+        let pull_secret = |cfg: &AgentSandboxConfig| {
+            serde_json::to_value(build(&id, &spec(), cfg)).unwrap()["spec"]["podTemplate"]["spec"]
+                .get("imagePullSecrets")
+                .cloned()
+        };
+        assert_eq!(pull_secret(&cfg()), None);
+        let cfg = AgentSandboxConfig {
+            image_pull_secrets: vec!["registry-lan".to_owned(), "ghcr".to_owned()],
+            ..cfg()
+        };
+        assert_eq!(
+            pull_secret(&cfg),
+            Some(json!([{"name": "registry-lan"}, {"name": "ghcr"}]))
+        );
     }
 
     #[test]
