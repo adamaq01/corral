@@ -84,6 +84,12 @@ database:
 database:
   kind: mysql
 ---
+# expect: at '/database/cnpg/enablePDB': got string, want boolean
+database:
+  kind: cnpg
+  cnpg:
+    enablePDB: "false"
+---
 # expect: at '/catalog/sizes/0/memoryLimit': '4GB' does not match pattern
 catalog:
   sizes:

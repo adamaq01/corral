@@ -116,6 +116,10 @@ database:
     size: 1Gi
     # database.cnpg.storageClass is the instances' StorageClass. Empty: the cluster default.
     storageClass: ""
+    # database.cnpg.enablePDB keeps the operator's PodDisruptionBudgets, which stop a node drain
+    # from evicting the primary. With one instance that blocks draining its node; false removes
+    # them. Needs CloudNativePG 1.23 or later to turn off.
+    enablePDB: true
 
 sandboxes:
   namespace:

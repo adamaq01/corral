@@ -12,6 +12,9 @@ metadata:
   {{- end }}
 spec:
   instances: {{ .Values.database.cnpg.instances }}
+  {{- if not .Values.database.cnpg.enablePDB }}
+  enablePDB: false
+  {{- end }}
   storage:
     size: {{ .Values.database.cnpg.size }}
     {{- with .Values.database.cnpg.storageClass }}

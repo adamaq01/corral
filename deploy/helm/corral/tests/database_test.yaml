@@ -64,6 +64,24 @@ tests:
             valueFrom: { secretKeyRef: { name: corral-db-app, key: uri } }
         template: templates/deployment.yaml
 
+  - it: leaves the CNPG operator's PodDisruptionBudgets on by default
+    template: templates/cnpg-cluster.yaml
+    set:
+      database.kind: cnpg
+    asserts:
+      - notExists:
+          path: spec.enablePDB
+
+  - it: turns the CNPG PodDisruptionBudgets off, so a single instance does not block a node drain
+    template: templates/cnpg-cluster.yaml
+    set:
+      database.kind: cnpg
+      database.cnpg.enablePDB: false
+    asserts:
+      - equal:
+          path: spec.enablePDB
+          value: false
+
   - it: keeps the data volume, the CNPG Cluster and the sandbox namespace with keepOnUninstall
     templates:
       - templates/data-pvc.yaml

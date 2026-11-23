@@ -50,7 +50,8 @@ cluster access. The chart does not install agent-sandbox or the CloudNativePG op
 - A network plugin that enforces NetworkPolicy. Without one, sandboxes can reach Corral's
   unauthenticated webhook port, which wakes any sandbox it is asked about; set
   `networkPolicy.enabled: false` only where something else keeps them apart.
-- For `database.kind: cnpg`, the [CloudNativePG](https://cloudnative-pg.io) operator.
+- For `database.kind: cnpg`, the [CloudNativePG](https://cloudnative-pg.io) operator, 1.23 or
+  later for `database.cnpg.enablePDB: false`.
 
 ## Install
 
@@ -158,6 +159,9 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
   server's live-reload socket, and not while the tunnel carries nothing.
 - Behind an Ingress controller or Gateway, set `trustForwardedFor: true` so password-login limits
   count each client, not the proxy.
+- With `database.kind: cnpg`, the operator's PodDisruptionBudgets keep a node drain from evicting
+  the primary, so a single instance blocks draining its node. `database.cnpg.enablePDB: false`
+  removes them; a drain then stops the database until the instance starts again elsewhere.
 - `containerssh.service.externalTrafficPolicy: Local` keeps clients' addresses, so Corral's
   lockout after 10 failed SSH connections in 5 minutes applies per client (per /64 for IPv6).
 
