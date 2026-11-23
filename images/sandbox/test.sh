@@ -45,7 +45,7 @@ check "runs as uid 1000" 1000 "$out"
 docker exec "$client" sudo -n true || fail "sudo -n true failed"
 echo "ok - passwordless sudo"
 
-for tool in herdr-core hc claude codex; do
+for tool in herdr-core hc claude codex python3; do
   out=$(docker exec "$client" "$tool" --version) || fail "$tool --version failed"
   [[ "$out" =~ [0-9]+\.[0-9]+\.[0-9]+ ]] || fail "$tool --version printed no version: $out"
   echo "ok - $tool --version: $out"

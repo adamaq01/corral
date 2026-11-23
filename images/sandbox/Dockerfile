@@ -16,7 +16,7 @@ ENV LANG=C.UTF-8
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl git sudo tini build-essential procps openssh-client openssh-server \
+      ca-certificates curl git sudo tini build-essential procps openssh-client openssh-server python3 \
  && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*
 
 RUN userdel --remove ubuntu \
