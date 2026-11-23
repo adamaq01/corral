@@ -206,6 +206,9 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
   (`ghcr.io/adamaq01/corral-overlay:latest` by default) each time it starts, and uses the copy
   Docker has when the pull fails. Each sandbox mounts the overlay Corral pulled, from its next
   start from sleep on; a running sandbox keeps the one it started with.
+- A sandbox running without the overlay, started by a Corral from before sandboxes mounted it,
+  cannot be checked for activity, so it stays awake until it is stopped or restarted; that start
+  remakes its container with the overlay, its home and host key kept.
 - `docker compose down` stops Corral and ContainerSSH only. Sandbox containers are not part of
   the Compose project: running ones keep running, and they hold the `corral-sandboxes` network
   until they are deleted in the web UI.

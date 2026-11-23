@@ -212,6 +212,9 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
 - The overlay is `sandboxes.overlayImage`, of the chart's appVersion unless its tag says
   otherwise, so each chart version brings its own. A sandbox mounts it from its next start from
   sleep on; a running sandbox keeps the one it started with.
+- A sandbox running without the overlay, started by a Corral from before sandboxes mounted it,
+  cannot be checked for activity, so it stays awake until it is stopped or restarted; that start
+  makes its pod from the current template, its home kept.
 - A change to Corral's or ContainerSSH's config restarts its pods. Corral runs one replica and
   is replaced, not rolled, so the web UI and new SSH logins pause while it restarts; open SSH
   sessions continue.
