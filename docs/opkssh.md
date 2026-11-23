@@ -73,6 +73,9 @@ people signed in with single sign-on:
   `opkssh login corral -i ~/.ssh/corral-opkssh` before ssh connects, when that certificate is
   missing or written more than its lifetime less an hour ago, and gives up after 30 seconds.
   opkssh's certificates carry no expiry of their own, so the hook goes by the file's age.
+  The block also sets `PreferredAuthentications publickey`: ContainerSSH offers password
+  logins it always refuses, and without it ssh answers a refused certificate with a password
+  prompt.
 
 While the browser holds a VoidAuth session (sign in with Remember Me), the login opens a tab that
 completes on its own in under a second. Without one, sign in within the 30 seconds, or run
