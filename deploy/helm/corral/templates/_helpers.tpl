@@ -78,10 +78,17 @@ in its own Secret or a reference to an existing Secret.
 {{- toJson $env }}
 {{- end }}
 
-{{- define "corral.keepAnnotation" -}}
-{{- if .Values.keepOnUninstall }}
+{{/*
+Keeps a resource when Helm (uninstall, upgrade, rollback) or Argo CD (deleting the Application,
+pruning) would delete it.
+*/}}
+{{- define "corral.keep" -}}
 helm.sh/resource-policy: keep
+argocd.argoproj.io/sync-options: Delete=false,Prune=false
 {{- end }}
+
+{{- define "corral.keepOnUninstall" -}}
+{{- if .Values.keepOnUninstall }}{{ include "corral.keep" . }}{{ end }}
 {{- end }}
 
 {{/*

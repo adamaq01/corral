@@ -150,6 +150,11 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
 - With `sandboxes.namespace.create: false`, the namespace and the sandboxes in it stay; delete
   the sandboxes from the web UI before uninstalling if their homes should go.
 
+Argo CD keeps the same resources when its Application is deleted, and never prunes them when a
+values change drops them: they carry `argocd.argoproj.io/sync-options: Delete=false,Prune=false`
+next to Helm's `helm.sh/resource-policy: keep`. Flux runs `helm uninstall`, which reads the
+latter.
+
 ## Operating it
 
 - Logs: `kubectl --namespace corral logs deploy/corral`. `logLevel` sets the level.

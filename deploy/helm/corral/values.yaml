@@ -134,7 +134,8 @@ sandboxes:
   agentImage: containerssh/agent:v0.11.0
 
 # keepOnUninstall keeps the database volume or CNPG Cluster and the chart-created sandbox
-# namespace, with every sandbox and home in it, when the release is uninstalled.
+# namespace, with every sandbox and home in it, when the release is uninstalled or its Argo CD
+# Application deleted.
 keepOnUninstall: false
 
 idle:

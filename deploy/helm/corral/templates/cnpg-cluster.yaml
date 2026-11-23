@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "corral.labels" . | nindent 4 }}
     app.kubernetes.io/component: database
-  {{- with include "corral.keepAnnotation" . }}
+  {{- with include "corral.keepOnUninstall" . }}
   annotations:
     {{- . | nindent 4 }}
   {{- end }}

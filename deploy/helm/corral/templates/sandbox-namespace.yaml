@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: sandboxes
     # Sandboxes run as uid 1000 with sudo, which baseline allows and restricted does not.
     pod-security.kubernetes.io/enforce: baseline
-  {{- with include "corral.keepAnnotation" . }}
+  {{- with include "corral.keepOnUninstall" . }}
   annotations:
     {{- . | nindent 4 }}
   {{- end }}

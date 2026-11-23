@@ -82,29 +82,42 @@ tests:
           path: spec.enablePDB
           value: false
 
-  - it: keeps the data volume, the CNPG Cluster and the sandbox namespace with keepOnUninstall
+  - it: keeps the data volume and the sandbox namespace through helm uninstall and Argo CD with keepOnUninstall
     templates:
       - templates/data-pvc.yaml
-      - templates/cnpg-cluster.yaml
       - templates/sandbox-namespace.yaml
     set:
       keepOnUninstall: true
     asserts:
       - equal:
-          path: metadata.annotations["helm.sh/resource-policy"]
-          value: keep
+          path: metadata.annotations
+          value: &kept
+            helm.sh/resource-policy: keep
+            argocd.argoproj.io/sync-options: Delete=false,Prune=false
         template: templates/data-pvc.yaml
       - equal:
-          path: metadata.annotations["helm.sh/resource-policy"]
-          value: keep
+          path: metadata.annotations
+          value: *kept
         template: templates/sandbox-namespace.yaml
 
-  - it: keeps the CNPG Cluster with keepOnUninstall
+  - it: keeps the CNPG Cluster through helm uninstall and Argo CD with keepOnUninstall
     template: templates/cnpg-cluster.yaml
     set:
       keepOnUninstall: true
       database.kind: cnpg
     asserts:
       - equal:
-          path: metadata.annotations["helm.sh/resource-policy"]
-          value: keep
+          path: metadata.annotations
+          value:
+            helm.sh/resource-policy: keep
+            argocd.argoproj.io/sync-options: Delete=false,Prune=false
+
+  - it: lets helm uninstall and Argo CD delete the CNPG Cluster and the sandbox namespace by default
+    templates:
+      - templates/cnpg-cluster.yaml
+      - templates/sandbox-namespace.yaml
+    set:
+      database.kind: cnpg
+    asserts:
+      - notExists:
+          path: metadata.annotations
