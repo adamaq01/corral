@@ -1,6 +1,6 @@
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use corral_core::app::CreateSandbox;
 use corral_core::domain::SandboxName;
@@ -15,11 +15,12 @@ use crate::state::AppState;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/sandboxes", get(list).post(create))
-        .route("/api/sandboxes/{name}", get(show).delete(delete))
+        .route("/api/sandboxes/{name}", get(show).delete(remove))
         .route("/api/sandboxes/{name}/wake", post(wake))
         .route("/api/sandboxes/{name}/stop", post(stop))
         .route("/api/sandboxes/{name}/restart", post(restart))
         .route("/api/sandboxes/{name}/default", post(make_default))
+        .route("/api/sandboxes/{name}/deletion", delete(cancel_deletion))
 }
 
 async fn list(
@@ -53,7 +54,7 @@ async fn show(
     Ok(Json(SandboxDto::new(view, &state.ssh)))
 }
 
-async fn delete(
+async fn remove(
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
     PathParam(name): PathParam<SandboxName>,
@@ -88,6 +89,16 @@ async fn restart(
     PathParam(name): PathParam<SandboxName>,
 ) -> Result<StatusCode, ApiError> {
     state.sandboxes.restart(&user, &name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Cancels a deletion `corral delete` scheduled; the sandbox stays stopped.
+async fn cancel_deletion(
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    PathParam(name): PathParam<SandboxName>,
+) -> Result<StatusCode, ApiError> {
+    state.sandboxes.cancel_deletion(&user, &name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

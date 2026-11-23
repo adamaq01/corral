@@ -179,6 +179,29 @@ impl UserRepo for Store {
         .map_err(db_error)
     }
 
+    async fn deletes_from_inside(&self, id: UserId) -> Result<bool> {
+        let allowed: Option<bool> = on_pool!(self.pool, |pool| {
+            sqlx::query_scalar("select deletes_from_inside from users where id = $1")
+                .bind(id.0)
+                .fetch_optional(pool)
+                .await
+        })
+        .map_err(db_error)?;
+        Ok(allowed.unwrap_or(false))
+    }
+
+    async fn set_deletes_from_inside(&self, id: UserId, allowed: bool) -> Result<()> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query("update users set deletes_from_inside = $2 where id = $1")
+                .bind(id.0)
+                .bind(allowed)
+                .execute(pool)
+                .await
+                .map(drop)
+        })
+        .map_err(db_error)
+    }
+
     async fn sandbox_defaults(&self, id: UserId) -> Result<Option<SandboxDefaults>> {
         let row: Option<(Option<String>, Option<String>)> = on_pool!(self.pool, |pool| {
             sqlx::query_as("select default_image, default_size from users where id = $1")

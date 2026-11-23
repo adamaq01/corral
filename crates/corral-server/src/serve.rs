@@ -36,6 +36,9 @@ pub async fn run(config: &Config) -> Result<()> {
     app.lifecycle
         .await
         .context("the engine lifecycle task failed")?;
+    app.deletions
+        .await
+        .context("the scheduled deletions task failed")?;
     served.context("serving HTTP failed")?;
     info!("corral stopped");
     Ok(())

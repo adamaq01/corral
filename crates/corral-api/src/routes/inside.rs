@@ -8,10 +8,12 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use chrono::Utc;
 use corral_core::app::CallingSandbox;
 
-use crate::dto::SandboxDto;
+use crate::dto::{ConfirmDeletion, SandboxDto, ScheduledDeletion};
 use crate::error::ApiError;
+use crate::extract::JsonBody;
 use crate::state::{AppState, shared};
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -19,6 +21,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/sandbox", get(show))
         .route("/api/sandbox/restart", post(restart))
         .route("/api/sandbox/stop", post(stop))
+        .route("/api/sandbox/delete", post(delete))
 }
 
 /// The sandbox whose current token the request carries as `Authorization: Bearer <token>`.
@@ -76,6 +79,23 @@ async fn stop(
     accept("stop", sandbox, async move {
         state.sandboxes.stop(calling.owner(), calling.name()).await
     })
+}
+
+/// Schedules the deletion, then stops the sandbox at once, as an accepted stop.
+async fn delete(
+    CurrentSandbox(calling): CurrentSandbox,
+    State(state): State<AppState>,
+    JsonBody(ConfirmDeletion { confirm }): JsonBody<ConfirmDeletion>,
+) -> Result<(StatusCode, Json<ScheduledDeletion>), ApiError> {
+    let delete_at = state
+        .sandboxes
+        .schedule_deletion(&calling, &confirm, Utc::now())
+        .await?;
+    let sandbox = calling.name().to_string();
+    let status = accept("stop before a deletion", sandbox, async move {
+        state.sandboxes.stop(calling.owner(), calling.name()).await
+    });
+    Ok((status, Json(ScheduledDeletion { delete_at })))
 }
 
 /// Runs `action` on its own: it ends the session that asked for it, whose connection may close

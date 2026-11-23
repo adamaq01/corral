@@ -117,6 +117,8 @@ pub(crate) struct SandboxDto {
     created_at: DateTime<Utc>,
     /// Runs without its owner's latest credential change, which a restart applies.
     stale_credentials: bool,
+    /// When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
+    delete_at: Option<DateTime<Utc>>,
 }
 
 impl SandboxDto {
@@ -143,6 +145,7 @@ impl SandboxDto {
             status,
             created_at: sandbox.created_at,
             stale_credentials,
+            delete_at: sandbox.delete_at,
         }
     }
 }
@@ -251,6 +254,24 @@ impl From<EngineEvent> for EngineEventDto {
 #[derive(Serialize, TS)]
 pub(crate) struct Wake {
     pub ready: bool,
+}
+
+/// What `corral delete` sends: the sandbox's name, typed to confirm.
+#[derive(Deserialize, TS)]
+pub(crate) struct ConfirmDeletion {
+    pub confirm: String,
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ScheduledDeletion {
+    pub delete_at: DateTime<Utc>,
+}
+
+/// Whether `corral delete` inside the user's sandboxes may schedule their deletion.
+#[derive(Serialize, Deserialize, TS)]
+pub(crate) struct DeleteFromInside {
+    pub enabled: bool,
 }
 
 #[derive(Serialize, TS)]

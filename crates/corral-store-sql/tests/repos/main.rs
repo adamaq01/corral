@@ -53,6 +53,52 @@ async fn postgres_meets_every_repo_contract() {
     meets_every_repo_contract(&postgres.url().await).await;
 }
 
+async fn a_scheduled_deletion_outlives_the_store(url: &str) {
+    let owner = user();
+    let sandbox = Sandbox {
+        id: SandboxId("sbx-scheduled".to_owned()),
+        owner: owner.id,
+        name: SandboxName::parse("main").unwrap(),
+        image: ImageKey::parse("default").unwrap(),
+        size: SizeKey::parse("small").unwrap(),
+        created_at: Utc::now(),
+        started_at: None,
+        delete_at: None,
+    };
+    let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+    {
+        let store = Store::open(Pool::connect(url).await.unwrap())
+            .await
+            .unwrap();
+        UserRepo::insert(&store, &owner).await.unwrap();
+        SandboxRepo::insert(&store, &sandbox, 5).await.unwrap();
+        store.set_delete_at(&sandbox.id, Some(at)).await.unwrap();
+    }
+    let reopened = Store::open(Pool::connect(url).await.unwrap())
+        .await
+        .unwrap();
+    let due: Vec<(SandboxId, Option<DateTime<Utc>>)> = reopened
+        .due_for_deletion(at)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|sandbox| (sandbox.id, sandbox.delete_at))
+        .collect();
+    assert_eq!(due, [(sandbox.id, Some(at))]);
+}
+
+#[tokio::test]
+async fn sqlite_keeps_a_scheduled_deletion_across_a_restart() {
+    let sqlite = Databases::sqlite();
+    a_scheduled_deletion_outlives_the_store(&sqlite.url().await).await;
+}
+
+#[tokio::test]
+async fn postgres_keeps_a_scheduled_deletion_across_a_restart() {
+    let postgres = Databases::postgres().await;
+    a_scheduled_deletion_outlives_the_store(&postgres.url().await).await;
+}
+
 fn user() -> User {
     User {
         id: UserId(Uuid::new_v4()),
@@ -90,6 +136,7 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         size: SizeKey::parse("small").unwrap(),
         created_at: second + offset,
         started_at: None,
+        delete_at: None,
     })
     .collect();
 

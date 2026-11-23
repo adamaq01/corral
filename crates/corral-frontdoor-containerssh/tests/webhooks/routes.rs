@@ -455,6 +455,12 @@ impl UserRepo for BrokenUsers {
     async fn set_sandbox_defaults(&self, _id: UserId, _defaults: &SandboxDefaults) -> Result<()> {
         Err(Error::internal("store", "down"))
     }
+    async fn deletes_from_inside(&self, _id: UserId) -> Result<bool> {
+        Err(Error::internal("store", "down"))
+    }
+    async fn set_deletes_from_inside(&self, _id: UserId, _allowed: bool) -> Result<()> {
+        Err(Error::internal("store", "down"))
+    }
 }
 
 #[tokio::test]

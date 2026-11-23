@@ -2,7 +2,12 @@
 	import { goto } from '$app/navigation';
 	import { failureMessage } from '#lib/api/client.js';
 	import type { SandboxDefaults } from '#lib/api/generated/index.js';
-	import { deleteAccount, setSandboxDefaults } from '#lib/api/me.js';
+	import {
+		deleteAccount,
+		deleteFromInside,
+		setDeleteFromInside,
+		setSandboxDefaults
+	} from '#lib/api/me.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
@@ -48,6 +53,31 @@
 			saved = { ok: false, message: failureMessage(failure) };
 		} finally {
 			saving = false;
+		}
+	}
+
+	const insideDelete = new Remote(deleteFromInside);
+	let switching = $state(false);
+	let switched = $state<{ ok: boolean; message: string } | null>(null);
+
+	async function allowInsideDelete(event: Event) {
+		const enabled = (event.currentTarget as HTMLInputElement).checked;
+		switching = true;
+		switched = null;
+		try {
+			await setDeleteFromInside({ enabled });
+			insideDelete.update(() => ({ enabled }));
+			switched = {
+				ok: true,
+				message: enabled
+					? 'Saved. corral delete works in your sandboxes.'
+					: 'Saved. corral delete is refused in your sandboxes.'
+			};
+		} catch (failure) {
+			switched = { ok: false, message: failureMessage(failure) };
+			await insideDelete.reload();
+		} finally {
+			switching = false;
 		}
 	}
 
@@ -142,6 +172,52 @@
 				</Card.Footer>
 			</form>
 		{/if}
+	</Card.Root>
+
+	<Card.Root>
+		<Card.Header>
+			<Card.Title>Deleting from inside a sandbox</Card.Title>
+			<Card.Description>
+				With this on, running
+				<code class="font-mono text-xs wrap-anywhere">corral delete --confirm &lt;name&gt;</code>
+				in one of your sandboxes stops it at once and deletes it, with its home directory, 10 minutes
+				later. Until then you can cancel the deletion on the sandbox's page.
+			</Card.Description>
+		</Card.Header>
+		<Card.Content>
+			{#if insideDelete.current.state === 'failed'}
+				<LoadFailed
+					title="Loading the setting failed"
+					error={insideDelete.current.error}
+					onretry={() => insideDelete.reload()}
+				/>
+			{:else if !insideDelete.value}
+				<Skeleton class="h-6 w-72" />
+			{:else}
+				<div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+					<label class="flex items-center gap-2 text-sm font-medium">
+						<input
+							type="checkbox"
+							class="size-4 accent-primary"
+							checked={insideDelete.value.enabled}
+							disabled={switching}
+							onchange={allowInsideDelete}
+						/>
+						Allow corral delete in my sandboxes
+					</label>
+					{#if switching}
+						<Spinner />
+					{:else if switched}
+						<p
+							class={['text-sm', switched.ok ? 'text-muted-foreground' : 'text-destructive']}
+							role={switched.ok ? 'status' : 'alert'}
+						>
+							{switched.message}
+						</p>
+					{/if}
+				</div>
+			{/if}
+		</Card.Content>
 	</Card.Root>
 
 	<Card.Root class="ring-destructive/30">

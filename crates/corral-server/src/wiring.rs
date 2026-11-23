@@ -20,12 +20,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::adapters::{Adapters, EngineChoice, Oidc, SecretsChoice};
 use crate::config::{Config, FrontDoor};
+use crate::deletions;
 use crate::ui::Ui;
 
 pub struct App {
     pub public: Router,
     pub internal: Router,
     pub lifecycle: JoinHandle<()>,
+    pub deletions: JoinHandle<()>,
 }
 
 pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> {
@@ -40,7 +42,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     let store = Arc::new(Store::open(pool.clone()).await?);
     let credentials = Credentials::new(secret_store(secrets, &pool).await?, store.clone());
     let (providers, provider_routes) = providers(config, oidc, &pool).await?;
-    let (engine, lifecycle) = start_engine(config, engine, shutdown).await?;
+    let (engine, lifecycle) = start_engine(config, engine, shutdown.clone()).await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
@@ -56,6 +58,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
             web: config.http.base_url.as_str().to_owned(),
         },
     );
+    let deletions = deletions::spawn(sandboxes.clone(), deletions::SWEEP_INTERVAL, shutdown);
     let access = SshAccess::new(
         store.clone(),
         store.clone(),
@@ -94,6 +97,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         public,
         internal: internal.route("/healthz", get(healthz)),
         lifecycle,
+        deletions,
     })
 }
 

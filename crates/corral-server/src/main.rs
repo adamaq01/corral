@@ -2,6 +2,7 @@ mod adapters;
 mod cli;
 mod config;
 mod crypto;
+mod deletions;
 mod healthcheck;
 mod keys;
 mod local_account;

@@ -476,6 +476,8 @@ const API_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/me"),
     ("DELETE", "/api/me"),
     ("PUT", "/api/me/sandbox-defaults"),
+    ("GET", "/api/me/delete-from-inside"),
+    ("PUT", "/api/me/delete-from-inside"),
     ("GET", "/api/catalog"),
     ("GET", "/api/sandboxes"),
     ("POST", "/api/sandboxes"),
@@ -485,6 +487,7 @@ const API_ROUTES: &[(&str, &str)] = &[
     ("POST", "/api/sandboxes/main/stop"),
     ("POST", "/api/sandboxes/main/restart"),
     ("POST", "/api/sandboxes/main/default"),
+    ("DELETE", "/api/sandboxes/main/deletion"),
     ("GET", "/api/keys"),
     ("POST", "/api/keys"),
     ("DELETE", "/api/keys/00000000-0000-0000-0000-000000000000"),
@@ -585,6 +588,7 @@ async fn create_then_list_shows_the_ssh_username() {
         "ssh": { "username": "main.adam", "host": "corral.example.com", "port": 48291 },
         "createdAt": created["createdAt"],
         "staleCredentials": false,
+        "deleteAt": null,
     });
     assert_eq!(created, expected);
     assert_eq!(adam.get("/api/sandboxes").await.json(), json!([expected]));

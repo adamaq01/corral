@@ -82,6 +82,7 @@ test('a refused key fails at once, with no password prompt, under either config 
 		ssh: { username: 'main.bob', host: '127.0.0.1', port: Number(port) },
 		createdAt: '2026-11-02T09:30:00Z',
 		staleCredentials: false,
+		deleteAt: null,
 		state: 'running'
 	};
 	const catalog: Catalog = {

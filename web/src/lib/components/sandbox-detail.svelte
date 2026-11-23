@@ -1,3 +1,7 @@
+<script lang="ts" module>
+	const moment = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+</script>
+
 <script lang="ts">
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
@@ -7,6 +11,7 @@
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
 	import SquareIcon from '@lucide/svelte/icons/square';
 	import StarIcon from '@lucide/svelte/icons/star';
+	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import { goto } from '$app/navigation';
 	import { opksshLogin } from '#lib/api/auth.js';
 	import { failureMessage } from '#lib/api/client.js';
@@ -91,6 +96,22 @@
 	async function remove() {
 		await sandboxes.remove(name);
 		await goto('/sandboxes', { replace: true });
+	}
+
+	let cancelling = $state(false);
+	let cancelFailure = $state<string | null>(null);
+
+	async function cancelDeletion() {
+		cancelling = true;
+		cancelFailure = null;
+		try {
+			await sandboxes.cancelDeletion(name);
+		} catch (error) {
+			cancelFailure = failureMessage(error);
+		} finally {
+			cancelling = false;
+		}
+		await sandbox.reload();
 	}
 </script>
 
@@ -183,6 +204,32 @@
 			</Alert.Root>
 		{/if}
 
+		{#if current.deleteAt}
+			<Alert.Root variant="destructive">
+				<Trash2Icon />
+				<Alert.Title>Deletes at {moment.format(new Date(current.deleteAt))}</Alert.Title>
+				<Alert.Description>
+					<p>
+						<code class="font-mono text-xs">corral delete</code> in this sandbox scheduled its deletion,
+						with everything in its home directory. It stays stopped until then, unless you cancel.
+					</p>
+					{#if cancelFailure}
+						<p class="text-destructive first-letter:uppercase" role="alert">{cancelFailure}</p>
+					{/if}
+				</Alert.Description>
+				<Alert.Action>
+					<Button variant="outline" size="sm" disabled={cancelling} onclick={cancelDeletion}>
+						{#if cancelling}
+							<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+							Cancelling…
+						{:else}
+							Cancel deletion
+						{/if}
+					</Button>
+				</Alert.Action>
+			</Alert.Root>
+		{/if}
+
 		{#if current.staleCredentials}
 			<Alert.Root>
 				<KeyRoundIcon />
@@ -194,7 +241,7 @@
 			</Alert.Root>
 		{/if}
 
-		{#if presentation.manageable}
+		{#if presentation.manageable && !current.deleteAt}
 			{@const powers = current.staleCredentials
 				? (['restart', 'stop'] as const)
 				: presentation.powers}

@@ -105,6 +105,9 @@
 										{#if sandbox.isDefault}
 											<Badge variant="secondary">Default</Badge>
 										{/if}
+										{#if sandbox.deleteAt}
+											<Badge variant="destructive">Deletion scheduled</Badge>
+										{/if}
 									</Item.Title>
 									<Item.Description>
 										{choiceLabel(catalog.value?.images, sandbox.image)} · {choiceLabel(

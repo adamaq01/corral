@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use chrono::{DateTime, TimeDelta, Utc};
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -68,6 +70,16 @@ impl Corral {
 
     /// A request from inside a sandbox, with `token` as its bearer.
     async fn inside(&self, method: &str, path: &str, token: Option<&str>) -> Reply {
+        self.inside_with(method, path, token, None).await
+    }
+
+    async fn inside_with(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Option<Value>,
+    ) -> Reply {
         let mut request = Request::builder().method(method).uri(path);
         if method == "POST" {
             request = request.header(header::CONTENT_TYPE, "application/json");
@@ -75,8 +87,26 @@ impl Corral {
         if let Some(token) = token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
+        let body = body.map_or_else(Body::empty, |body| Body::from(body.to_string()));
         let mut browser = Browser::new(&self.app, "198.51.100.7:40000");
-        browser.send(request.body(Body::empty()).unwrap()).await
+        browser.send(request.body(body).unwrap()).await
+    }
+
+    async fn delete_from_inside(&self, token: &str, confirm: &str) -> Reply {
+        let body = json!({ "confirm": confirm });
+        self.inside_with("POST", "/api/sandbox/delete", Some(token), Some(body))
+            .await
+    }
+
+    /// Waits for the sandbox to be in `status`, which work run on its own reaches.
+    async fn reaches(&self, handle: &str, name: &str, status: SandboxStatus) {
+        for _ in 0..100 {
+            if self.status(handle, name).await == status {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(self.status(handle, name).await, status);
     }
 
     /// Waits for the work an accepted request runs on its own.
@@ -133,6 +163,7 @@ async fn only_a_running_sandboxs_current_token_gets_in() {
             ("GET", "/api/sandbox"),
             ("POST", "/api/sandbox/restart"),
             ("POST", "/api/sandbox/stop"),
+            ("POST", "/api/sandbox/delete"),
         ] {
             let reply = corral.inside(method, path, presented).await;
             assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{method} {path}");
@@ -209,4 +240,121 @@ async fn restart_and_stop_are_accepted_then_run() {
     );
     let after = corral.inside("GET", "/api/sandbox", Some(&rotated)).await;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn delete_from_inside_is_refused_until_the_owner_turns_it_on() {
+    let corral = Corral::new();
+    let mut adam = corral.member("adam").await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let token = corral.token("adam", "main").await;
+    let setting = async |adam: &mut Browser| adam.get("/api/me/delete-from-inside").await.json();
+    assert_eq!(setting(&mut adam).await, json!({ "enabled": false }));
+
+    let off = corral.delete_from_inside(&token, "main").await;
+    assert_eq!(off.status, StatusCode::FORBIDDEN, "{}", off.text());
+    assert_eq!(
+        off.json(),
+        json!({ "error": "deleting a sandbox from inside it is off; turn it on in your profile \
+                          in the web UI" })
+    );
+    let turned_on = adam
+        .call(
+            "PUT",
+            "/api/me/delete-from-inside",
+            Some(json!({ "enabled": true })),
+        )
+        .await;
+    assert_eq!(turned_on.status, StatusCode::NO_CONTENT);
+    assert_eq!(setting(&mut adam).await, json!({ "enabled": true }));
+    let unconfirmed = corral.delete_from_inside(&token, "other").await;
+    assert_eq!(unconfirmed.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        unconfirmed.json(),
+        json!({ "error": "invalid: to confirm, type this sandbox's name, main" })
+    );
+    let shapeless = corral
+        .inside_with("POST", "/api/sandbox/delete", Some(&token), Some(json!({})))
+        .await;
+    assert_eq!(shapeless.status, StatusCode::BAD_REQUEST);
+    assert_eq!(corral.status("adam", "main").await, SandboxStatus::Running);
+    assert_eq!(
+        adam.get("/api/sandboxes/main").await.json()["deleteAt"],
+        Value::Null
+    );
+}
+
+#[tokio::test]
+async fn a_deletion_from_inside_stops_the_sandbox_until_cancelled() {
+    let corral = Corral::new();
+    let mut adam = corral.member("adam").await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    adam.call(
+        "PUT",
+        "/api/me/delete-from-inside",
+        Some(json!({ "enabled": true })),
+    )
+    .await;
+    let token = corral.token("adam", "main").await;
+
+    let scheduled = corral.delete_from_inside(&token, "main").await;
+    assert_eq!(
+        scheduled.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        scheduled.text()
+    );
+    let delete_at = scheduled.json()["deleteAt"].as_str().unwrap().to_owned();
+    let in_ten_minutes = Utc::now() + TimeDelta::minutes(10);
+    let parsed: DateTime<Utc> = delete_at.parse().unwrap();
+    assert!(
+        (in_ten_minutes - parsed).abs() < TimeDelta::seconds(5),
+        "{delete_at}"
+    );
+    corral
+        .reaches("adam", "main", SandboxStatus::Sleeping)
+        .await;
+    let shown = adam.get("/api/sandboxes/main").await.json();
+    assert_eq!(
+        (&shown["state"], &shown["deleteAt"]),
+        (&json!("sleeping"), &json!(delete_at))
+    );
+    assert_eq!(
+        corral
+            .inside("GET", "/api/sandbox", Some(&token))
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED,
+        "the stop revoked the token"
+    );
+    for refused in ["wake", "restart"] {
+        let reply = adam
+            .call("POST", &format!("/api/sandboxes/main/{refused}"), None)
+            .await;
+        assert_eq!(reply.status, StatusCode::CONFLICT, "{refused}");
+        assert!(
+            reply.json()["error"]
+                .as_str()
+                .unwrap()
+                .contains("cancel the deletion"),
+            "{}",
+            reply.text()
+        );
+    }
+
+    let cancelled = adam
+        .call("DELETE", "/api/sandboxes/main/deletion", None)
+        .await;
+    assert_eq!(cancelled.status, StatusCode::NO_CONTENT);
+    let shown = adam.get("/api/sandboxes/main").await.json();
+    assert_eq!(
+        (&shown["state"], &shown["deleteAt"]),
+        (&json!("sleeping"), &Value::Null)
+    );
+    let woken = adam.call("POST", "/api/sandboxes/main/wake", None).await;
+    assert_eq!(woken.json(), json!({ "ready": true }));
+    let missing = adam
+        .call("DELETE", "/api/sandboxes/nope/deletion", None)
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
 }

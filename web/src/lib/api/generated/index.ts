@@ -14,6 +14,11 @@ defaultSize: SizeKey, maxSandboxes: number, ssh: SshEndpoint, };
 export type Choice = { key: string, label: string, };
 
 /**
+ * What `corral delete` sends: the sandbox's name, typed to confirm.
+ */
+export type ConfirmDeletion = { confirm: string, };
+
+/**
  * Without an image or a size, the owner's default.
  */
 export type CreateSandbox = { name: SandboxName, image?: ImageKey, size?: SizeKey, };
@@ -23,6 +28,11 @@ export type Credential = { name: CredentialName, };
 export type CredentialName = string;
 
 export type CredentialValue = { value: string, };
+
+/**
+ * Whether `corral delete` inside the user's sandboxes may schedule their deletion.
+ */
+export type DeleteFromInside = { enabled: boolean, };
 
 export type EngineEvent = { at: string | null, kind: EventKind,
 /**
@@ -81,7 +91,11 @@ export type OwnedSandbox = { owner: Owner, name: SandboxName, image: ImageKey, s
 /**
  * Runs without its owner's latest credential change, which a restart applies.
  */
-staleCredentials: boolean, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+staleCredentials: boolean,
+/**
+ * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
+ */
+deleteAt: string | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
 
@@ -110,7 +124,11 @@ export type Sandbox = { name: SandboxName, image: ImageKey, size: SizeKey, isDef
 /**
  * Runs without its owner's latest credential change, which a restart applies.
  */
-staleCredentials: boolean, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+staleCredentials: boolean,
+/**
+ * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
+ */
+deleteAt: string | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 /**
  * The image and size a user's new sandbox gets when its creation names none.
@@ -131,6 +149,8 @@ export type SandboxName = string;
 export type SandboxSsh = { username: SshUsername, host: string, port: number, };
 
 export type SandboxStatus = { "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" };
+
+export type ScheduledDeletion = { deleteAt: string, };
 
 export type SizeKey = string;
 

@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use futures_util::future::join_all;
 use ssh_key::PublicKey;
 use ssh_key::public::{Ed25519PublicKey, KeyData};
@@ -18,6 +19,7 @@ pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dy
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
     sandbox_tokens(users, sandboxes).await;
+    scheduled_deletions(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
     deleting_a_user_leaves_nothing_of_them(users, keys, sandboxes).await;
 }
@@ -402,6 +404,81 @@ async fn sandbox_tokens(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     );
 }
 
+async fn scheduled_deletions(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+    let adam = seed_user(users, "adam").await;
+    assert!(!users.deletes_from_inside(adam.id).await.unwrap());
+    users.set_deletes_from_inside(adam.id, true).await.unwrap();
+    assert!(users.deletes_from_inside(adam.id).await.unwrap());
+    users
+        .set_deletes_from_inside(UserId(Uuid::new_v4()), true)
+        .await
+        .expect("allow it for nobody");
+    users.set_deletes_from_inside(adam.id, false).await.unwrap();
+    assert!(!users.deletes_from_inside(adam.id).await.unwrap());
+
+    let (old, new, kept) = (
+        new_sandbox(adam.id, "old", 1),
+        new_sandbox(adam.id, "new", 2),
+        new_sandbox(adam.id, "kept", 3),
+    );
+    for sandbox in [&new, &kept, &old] {
+        sandboxes.insert(sandbox, 5).await.expect("insert sandbox");
+    }
+    sandboxes
+        .set_delete_at(&new.id, Some(at(20)))
+        .await
+        .unwrap();
+    sandboxes
+        .set_delete_at(&old.id, Some(at(10)))
+        .await
+        .unwrap();
+    sandboxes
+        .set_delete_at(&kept.id, Some(at(10)))
+        .await
+        .unwrap();
+    sandboxes.set_delete_at(&kept.id, None).await.unwrap();
+    sandboxes
+        .set_delete_at(&SandboxId(unique("sbx")), Some(at(0)))
+        .await
+        .expect("schedule nothing");
+    let due = async |seconds: i64| -> Vec<(String, Option<DateTime<Utc>>)> {
+        let swept = sandboxes.due_for_deletion(at(seconds)).await.unwrap();
+        swept
+            .into_iter()
+            .filter(|sandbox| sandbox.owner == adam.id)
+            .map(|sandbox| (sandbox.name.to_string(), sandbox.delete_at))
+            .collect()
+    };
+
+    assert_eq!(due(9).await, []);
+    assert_eq!(due(10).await, [("old".to_owned(), Some(at(10)))]);
+    assert_eq!(
+        due(30).await,
+        [
+            ("old".to_owned(), Some(at(10))),
+            ("new".to_owned(), Some(at(20)))
+        ]
+    );
+    assert_eq!(
+        sandboxes
+            .by_name(adam.id, &new.name)
+            .await
+            .unwrap()
+            .unwrap()
+            .delete_at,
+        Some(at(20))
+    );
+    assert_eq!(
+        sandboxes
+            .by_name(adam.id, &kept.name)
+            .await
+            .unwrap()
+            .unwrap()
+            .delete_at,
+        None
+    );
+}
+
 async fn sandbox_limit_holds_under_concurrent_inserts(
     users: &dyn UserRepo,
     sandboxes: &dyn SandboxRepo,
@@ -541,5 +618,6 @@ fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
         started_at: None,
+        delete_at: None,
     }
 }

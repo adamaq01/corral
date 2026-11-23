@@ -18,6 +18,7 @@ pub struct MemoryUserRepo {
     users: Mutex<Vec<User>>,
     credential_changes: Mutex<BTreeMap<UserId, DateTime<Utc>>>,
     sandbox_defaults: Mutex<BTreeMap<UserId, SandboxDefaults>>,
+    deleting_from_inside: Mutex<BTreeMap<UserId, bool>>,
 }
 
 #[derive(Default)]
@@ -108,6 +109,7 @@ impl UserRepo for MemoryUserRepo {
         users.retain(|u| u.id != id);
         lock(&self.credential_changes).remove(&id);
         lock(&self.sandbox_defaults).remove(&id);
+        lock(&self.deleting_from_inside).remove(&id);
         Ok(users.len() < before)
     }
 
@@ -118,6 +120,20 @@ impl UserRepo for MemoryUserRepo {
     async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()> {
         if lock(&self.users).iter().any(|u| u.id == id) {
             lock(&self.credential_changes).insert(id, at);
+        }
+        Ok(())
+    }
+
+    async fn deletes_from_inside(&self, id: UserId) -> Result<bool> {
+        Ok(lock(&self.deleting_from_inside)
+            .get(&id)
+            .copied()
+            .unwrap_or(false))
+    }
+
+    async fn set_deletes_from_inside(&self, id: UserId, allowed: bool) -> Result<()> {
+        if lock(&self.users).iter().any(|u| u.id == id) {
+            lock(&self.deleting_from_inside).insert(id, allowed);
         }
         Ok(())
     }
@@ -263,5 +279,20 @@ impl SandboxRepo for MemorySandboxRepo {
             .find(|(_, held)| *held == token)
             .map(|(id, _)| id.clone());
         Ok(id.and_then(|id| find(&self.sandboxes, |s| s.id == id)))
+    }
+
+    async fn set_delete_at(&self, id: &SandboxId, at: Option<DateTime<Utc>>) -> Result<()> {
+        if let Some(sandbox) = lock(&self.sandboxes).iter_mut().find(|s| s.id == *id) {
+            sandbox.delete_at = at;
+        }
+        Ok(())
+    }
+
+    async fn due_for_deletion(&self, now: DateTime<Utc>) -> Result<Vec<Sandbox>> {
+        Ok(oldest_first(
+            &self.sandboxes,
+            |s| s.delete_at.is_some_and(|at| at <= now),
+            |s| s.created_at,
+        ))
     }
 }

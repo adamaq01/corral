@@ -17,6 +17,7 @@ struct SandboxRow {
     size: String,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
+    delete_at: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<SandboxRow> for Sandbox {
@@ -31,6 +32,7 @@ impl TryFrom<SandboxRow> for Sandbox {
             size: parsed("size key", SizeKey::parse(&row.size))?,
             created_at: row.created_at,
             started_at: row.started_at,
+            delete_at: row.delete_at,
         })
     }
 }
@@ -40,7 +42,7 @@ impl SandboxRepo for Store {
     async fn list(&self, owner: UserId) -> Result<Vec<Sandbox>> {
         let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at \
+                "select id, owner, name, image, size, created_at, started_at, delete_at \
                  from sandboxes where owner = $1 order by created_at, id",
             )
             .bind(owner.0)
@@ -54,7 +56,7 @@ impl SandboxRepo for Store {
     async fn list_all(&self) -> Result<Vec<Sandbox>> {
         let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at \
+                "select id, owner, name, image, size, created_at, started_at, delete_at \
                  from sandboxes order by created_at, id",
             )
             .fetch_all(pool)
@@ -67,7 +69,7 @@ impl SandboxRepo for Store {
     async fn by_name(&self, owner: UserId, name: &SandboxName) -> Result<Option<Sandbox>> {
         let row: Option<SandboxRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at \
+                "select id, owner, name, image, size, created_at, started_at, delete_at \
                  from sandboxes where owner = $1 and name = $2",
             )
             .bind(owner.0)
@@ -196,7 +198,7 @@ impl SandboxRepo for Store {
     async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>> {
         let row: Option<SandboxRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at \
+                "select id, owner, name, image, size, created_at, started_at, delete_at \
                  from sandboxes where token_hash = $1",
             )
             .bind(token.as_str())
@@ -205,5 +207,31 @@ impl SandboxRepo for Store {
         })
         .map_err(db_error)?;
         row.map(Sandbox::try_from).transpose()
+    }
+
+    async fn set_delete_at(&self, id: &SandboxId, at: Option<DateTime<Utc>>) -> Result<()> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query("update sandboxes set delete_at = $2 where id = $1")
+                .bind(&id.0)
+                .bind(at)
+                .execute(pool)
+                .await
+                .map(drop)
+        })
+        .map_err(db_error)
+    }
+
+    async fn due_for_deletion(&self, now: DateTime<Utc>) -> Result<Vec<Sandbox>> {
+        let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
+            sqlx::query_as(
+                "select id, owner, name, image, size, created_at, started_at, delete_at \
+                 from sandboxes where delete_at <= $1 order by created_at, id",
+            )
+            .bind(now)
+            .fetch_all(pool)
+            .await
+        })
+        .map_err(db_error)?;
+        rows.into_iter().map(Sandbox::try_from).collect()
     }
 }

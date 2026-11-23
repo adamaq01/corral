@@ -60,7 +60,14 @@ impl SshAccess {
             Error::NotFound(_) | Error::LimitReached(_) => Error::Forbidden,
             error => error,
         })?;
-        self.sandboxes.start(&sandbox).await
+        // One scheduled for deletion stays stopped.
+        self.sandboxes
+            .start(&sandbox)
+            .await
+            .map_err(|error| match error {
+                Error::Conflict(_) => Error::Forbidden,
+                error => error,
+            })
     }
 
     async fn locate(&self, username: &str) -> Result<Option<(User, SshUsername)>> {

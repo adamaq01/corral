@@ -3,7 +3,7 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use ts_rs::TS;
 
@@ -160,6 +160,7 @@ impl Sandboxes {
             size: size.key.clone(),
             created_at: Utc::now(),
             started_at: None,
+            delete_at: None,
         };
         self.repo
             .insert(&sandbox, self.limits.max_sandboxes_per_user)
@@ -247,16 +248,20 @@ impl Sandboxes {
 
     pub async fn delete(&self, owner: &User, name: &SandboxName) -> Result<()> {
         let sandbox = self.find(owner, name).await?;
-        self.engine.delete(&sandbox.id).await?;
-        self.repo.delete(owner.id, name).await?;
-        Ok(())
+        self.remove(&sandbox).await
     }
 
     pub(crate) async fn delete_all(&self, owner: UserId) -> Result<()> {
         for sandbox in self.repo.list(owner).await? {
-            self.engine.delete(&sandbox.id).await?;
-            self.repo.delete(owner, &sandbox.name).await?;
+            self.remove(&sandbox).await?;
         }
+        Ok(())
+    }
+
+    /// Deletes the sandbox from the engine, home included, then forgets it.
+    pub(super) async fn remove(&self, sandbox: &Sandbox) -> Result<()> {
+        self.engine.delete(&sandbox.id).await?;
+        self.repo.delete(sandbox.owner, &sandbox.name).await?;
         Ok(())
     }
 
@@ -273,13 +278,14 @@ impl Sandboxes {
 
     pub async fn restart(&self, owner: &User, name: &SandboxName) -> Result<()> {
         let mut sandbox = self.find(owner, name).await?;
+        not_doomed(&sandbox)?;
         self.halt(&sandbox).await?;
         self.start_within(&mut sandbox, Duration::ZERO).await?;
         Ok(())
     }
 
     // Its token goes first: a stop that fails part way leaves it running without one.
-    async fn halt(&self, sandbox: &Sandbox) -> Result<()> {
+    pub(super) async fn halt(&self, sandbox: &Sandbox) -> Result<()> {
         self.repo.revoke_token(&sandbox.id).await?;
         self.engine.stop(&sandbox.id).await
     }
@@ -310,6 +316,7 @@ impl Sandboxes {
     /// Records the start on `sandbox` too, unless the engine kept it running as it was.
     /// Issues the sandbox a token for the start, which it keeps only if the start boots it.
     async fn start_within(&self, sandbox: &mut Sandbox, deadline: Duration) -> Result<Readiness> {
+        not_doomed(sandbox)?;
         // Taken before the credentials load, so a change made while it starts counts as after it.
         let at = Utc::now();
         let token = SandboxToken::generate()?;
@@ -327,7 +334,7 @@ impl Sandboxes {
         Ok(started.readiness)
     }
 
-    async fn find(&self, owner: &User, name: &SandboxName) -> Result<Sandbox> {
+    pub(super) async fn find(&self, owner: &User, name: &SandboxName) -> Result<Sandbox> {
         self.repo
             .by_name(owner.id, name)
             .await?
@@ -377,6 +384,18 @@ impl Sandboxes {
             status,
             stale_credentials,
         }
+    }
+}
+
+/// A sandbox scheduled for deletion stays stopped until its owner cancels the deletion.
+fn not_doomed(sandbox: &Sandbox) -> Result<()> {
+    match sandbox.delete_at {
+        Some(at) => Err(Error::Conflict(format!(
+            "sandbox {} is to be deleted at {}; cancel the deletion to use it again",
+            sandbox.name,
+            at.to_rfc3339_opts(SecondsFormat::Secs, true)
+        ))),
+        None => Ok(()),
     }
 }
 

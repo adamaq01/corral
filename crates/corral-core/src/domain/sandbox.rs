@@ -28,6 +28,8 @@ pub struct Sandbox {
     pub created_at: DateTime<Utc>,
     /// When Corral last started it from stopped, so with its owner's credentials of that moment.
     pub started_at: Option<DateTime<Utc>>,
+    /// When it is to be deleted, if `corral delete` inside it scheduled that.
+    pub delete_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]

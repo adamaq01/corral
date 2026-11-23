@@ -22,6 +22,10 @@ pub trait UserRepo: Send + Sync {
     async fn credentials_changed_at(&self, id: UserId) -> Result<Option<DateTime<Utc>>>;
     /// Does nothing unless the user exists.
     async fn record_credentials_change(&self, id: UserId, at: DateTime<Utc>) -> Result<()>;
+    /// Whether the user lets `corral delete` inside their sandboxes schedule a deletion.
+    async fn deletes_from_inside(&self, id: UserId) -> Result<bool>;
+    /// Does nothing unless the user exists.
+    async fn set_deletes_from_inside(&self, id: UserId, allowed: bool) -> Result<()>;
     /// The defaults the user picked, if they ever did.
     async fn sandbox_defaults(&self, id: UserId) -> Result<Option<SandboxDefaults>>;
     /// Does nothing unless the user exists.
@@ -60,4 +64,9 @@ pub trait SandboxRepo: Send + Sync {
     /// Leaves the sandbox without a token.
     async fn revoke_token(&self, id: &SandboxId) -> Result<()>;
     async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>>;
+    /// Schedules the sandbox's deletion, or with `None` cancels it. Does nothing unless the
+    /// sandbox exists.
+    async fn set_delete_at(&self, id: &SandboxId, at: Option<DateTime<Utc>>) -> Result<()>;
+    /// Every sandbox whose deletion is due at `now`, oldest first.
+    async fn due_for_deletion(&self, now: DateTime<Utc>) -> Result<Vec<Sandbox>>;
 }
