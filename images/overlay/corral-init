@@ -1,0 +1,142 @@
+#!/opt/corral/bin/sh
+# Makes any base image a Corral sandbox. It runs only the overlay's static busybox, never the
+# base image's tools, which may be missing or of any libc.
+set -eu
+
+O=/opt/corral
+B=$O/bin/busybox
+SANDBOX_ID=1000
+HOME_DIR=/home/sandbox
+STAGED=/etc/corral/home-files
+SUDOERS_LINE='sandbox ALL=(ALL:ALL) NOPASSWD: ALL'
+PROFILE_LINE='case ":$PATH:" in *:/opt/corral/bin:*) ;; *) PATH="$PATH:/opt/corral/bin:/opt/corral/fallback" ;; esac'
+
+# Replaces the content of the file $1 with what the rest of the arguments print, keeping its
+# owner and mode.
+replace() {
+  local file=$1
+  shift
+  "$@" >"$file.corral-new"
+  $B cat "$file.corral-new" >"$file"
+  $B rm -f "$file.corral-new"
+}
+
+# Writes the sandbox user into passwd, group and shadow under $1, in place of any user or group
+# named sandbox or numbered 1000, and adds root and nobody when they are missing. Each function
+# keeps its variables local: sh has no other scope.
+accounts() {
+  local dir=$1 gone
+  $B mkdir -p "$dir"
+  [ -e "$dir/passwd" ] || $B install -m 0644 /dev/null "$dir/passwd"
+  [ -e "$dir/group" ] || $B install -m 0644 /dev/null "$dir/group"
+  [ -e "$dir/shadow" ] || $B install -m 0600 /dev/null "$dir/shadow"
+  gone=$($B awk -F: -v id=$SANDBOX_ID '$1 == "sandbox" || $3 == id { print $1 }' "$dir/passwd")
+  replace "$dir/passwd" passwd_of "$dir/passwd"
+  replace "$dir/group" group_of "$dir/group"
+  replace "$dir/shadow" shadow_of "$dir/shadow" "$gone"
+}
+
+passwd_of() {
+  $B awk -F: -v id=$SANDBOX_ID '$1 != "sandbox" && $3 != id' "$1"
+  $B grep -q '^root:' "$1" || echo "root:x:0:0:root:/root:$O/bin/sh"
+  $B grep -q '^nobody:' "$1" || echo "nobody:x:65534:65534:nobody:/nonexistent:$O/fallback/false"
+  echo "sandbox:x:$SANDBOX_ID:$SANDBOX_ID:Corral sandbox:$HOME_DIR:$O/bin/corral-shell"
+}
+
+group_of() {
+  $B awk -F: -v id=$SANDBOX_ID '$1 != "sandbox" && $3 != id' "$1"
+  $B grep -q '^root:' "$1" || echo "root:x:0:"
+  echo "sandbox:x:$SANDBOX_ID:"
+}
+
+shadow_of() {
+  $B awk -F: -v gone="$2" 'BEGIN { split(gone, names, "\n"); for (i in names) skip[names[i]] = 1 }
+    !($1 in skip) && $1 != "sandbox"' "$1"
+  echo "sandbox:*:20000:0:99999:7:::"
+}
+
+# What the sandbox user's sessions need from /etc: its sudo rule for the image's own sudo, and
+# the overlay's commands at the end of PATH for login shells whose profile resets it.
+system() {
+  accounts /etc
+  $B mkdir -p /etc/sudoers.d /etc/profile.d
+  echo "$SUDOERS_LINE" >/etc/sudoers.d/corral-sandbox
+  $B chmod 0440 /etc/sudoers.d/corral-sandbox
+  echo "$PROFILE_LINE" >/etc/profile.d/corral.sh
+}
+
+# Runs as the sandbox user: the skeleton on the first start, then the home files the engine
+# staged, each replacing what is at its path.
+home() {
+  local skel line key rest mode path
+  if [ ! -e "$HOME_DIR/.corral-initialized" ]; then
+    skel=$O/etc/skel
+    if [ -n "$($B ls -A /etc/skel 2>/dev/null)" ]; then
+      skel=/etc/skel
+    fi
+    $B cp -R "$skel/." "$HOME_DIR/"
+    : >"$HOME_DIR/.corral-initialized"
+  fi
+  [ -f "$STAGED/manifest" ] || return 0
+  while IFS= read -r line; do
+    key=${line%% *}
+    rest=${line#* }
+    mode=${rest%% *}
+    path=${rest#* }
+    # A file the sandbox cannot replace, such as a directory at its path, must not keep the
+    # sandbox from starting.
+    if [ -d "$HOME_DIR/$path" ] || ! $B install -D -m "$mode" "$STAGED/$key" "$HOME_DIR/$path"; then
+      echo "corral-init: could not write ~/$path" >&2
+    fi
+  done <"$STAGED/manifest"
+}
+
+as_sandbox() {
+  $B su -s $O/bin/sh sandbox -c "$O/bin/corral-init home"
+}
+
+case "${1:-}" in
+  docker)
+    # Docker, as root: the accounts and the home, then the overlay's sshd.
+    system
+    $B mkdir -p $HOME_DIR /run /var/empty /etc/ssh /etc/corral
+    if [ "$($B stat -c %u $HOME_DIR)" != $SANDBOX_ID ]; then
+      $B chown $SANDBOX_ID:$SANDBOX_ID $HOME_DIR
+      $B chmod 0750 $HOME_DIR
+    fi
+    as_sandbox
+    : "${CORRAL_SSH_HOST_KEY:?corral-init docker needs CORRAL_SSH_HOST_KEY}"
+    (umask 077 && printf '%s\n' "$CORRAL_SSH_HOST_KEY" >/etc/ssh/corral_host_key)
+    [ -e /etc/corral/sshd_env.conf ] || $B install -m 0600 /dev/null /etc/corral/sshd_env.conf
+    unset CORRAL_SSH_HOST_KEY
+    exec $O/sbin/sshd -D -e -f $O/etc/sshd_config
+    ;;
+  prepare)
+    # Kubernetes init container, as root: the account files the sandbox container mounts from
+    # the directory $2, and the home.
+    dir=${2:?corral-init prepare needs a directory}
+    accounts /etc
+    $B install -m 0644 /etc/passwd "$dir/passwd"
+    $B install -m 0644 /etc/group "$dir/group"
+    $B install -m 0600 /etc/shadow "$dir/shadow"
+    (umask 0337 && echo "$SUDOERS_LINE" >"$dir/sudoers")
+    echo "$PROFILE_LINE" >"$dir/profile.sh"
+    as_sandbox
+    ;;
+  idle)
+    # Kubernetes sandbox container, as the sandbox user: sessions are execs into it.
+    exec $B sleep 2147483647
+    ;;
+  build)
+    # An image build that bakes the overlay in, as root.
+    system
+    $B install -d -o $SANDBOX_ID -g $SANDBOX_ID -m 0750 $HOME_DIR
+    ;;
+  home)
+    home
+    ;;
+  *)
+    echo "usage: corral-init docker | prepare DIR | idle | build" >&2
+    exit 2
+    ;;
+esac

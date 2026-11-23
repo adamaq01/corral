@@ -24,6 +24,7 @@ jobs:
     env:
       CORRAL_SERVER_IMAGE: corral-server:e2e
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
       # The runner's preinstalled SDKs leave too little disk for the images plus the test build.
       - name: Free disk space
@@ -47,7 +48,15 @@ jobs:
           load: true
           tags: corral-sandbox:e2e
           cache-from: type=gha,scope=corral-sandbox
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/overlay/Dockerfile
+          load: true
+          tags: corral-overlay:e2e
+          cache-from: type=gha,scope=corral-overlay
       - run: images/sandbox/test.sh
+      - run: images/overlay/test.sh
       # Every test but the agent-sandbox cluster tests, which need a kind cluster: engine-kind runs them.
       - run: cargo test --workspace --all-features --exclude corral-engine-agent-sandbox
       - run: cargo test --package corral-engine-agent-sandbox --all-features --lib
@@ -218,6 +227,9 @@ jobs:
           - name: corral-sandbox
             context: .
             file: images/sandbox/Dockerfile
+          - name: corral-overlay
+            context: .
+            file: images/overlay/Dockerfile
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
