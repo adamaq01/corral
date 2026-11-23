@@ -326,18 +326,60 @@ api adam POST api/sandboxes/main/stop >/dev/null
 expect "container after stop" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
 expect "state after stop" sleeping "$(api adam GET api/sandboxes/main | jq -r .state)"
 token="e2e-$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
-api adam PUT api/credentials/E2E_TOKEN "$(jq -cn --arg v "$token" '{value: $v}')" >/dev/null
-listed=$(api adam GET api/credentials)
-expect "GET /api/credentials" E2E_TOKEN "$(jq -r '.[].name' <<<"$listed")"
-[[ "$listed" != *"$token"* ]] || fail "GET /api/credentials returned the value"
+entry() {
+  jq -cn --arg kind "$1" --arg target "$2" --argjson secret "$3" --argjson template "$4" \
+    --argjson new "$5" --arg value "$6" \
+    '{kind: $kind, target: $target, secret: $secret, template: $template, applyToNew: $new,
+      value: {text: $value}}'
+}
+attach() {
+  local id
+  id=$(api adam POST api/environment "$(entry "$@")" | jq -r .id)
+  [[ "$id" != null ]] || fail "creating $2 was refused"
+  api adam PUT "api/sandboxes/main/environment/$id" >/dev/null
+  echo "$id"
+}
+attach variable E2E_PLAIN false false false plain-value >/dev/null
+token_id=$(attach variable E2E_TOKEN true false true "$token")
+attach file .e2e/plain.txt false false false "plain file" >/dev/null
+attach file .e2e/secret.key true false false "secret-key-$token" >/dev/null
+attach file .e2e/config.toml false true false 'token = "{{ E2E_TOKEN }}"' >/dev/null
+api adam PUT "api/sandboxes/main/environment/$token_id/override" \
+  "$(jq -cn --arg v "$token-main" '{text: $v}')" >/dev/null
+listed=$(api adam GET api/environment)
+expect "GET /api/environment" "E2E_PLAIN E2E_TOKEN .e2e/config.toml .e2e/plain.txt .e2e/secret.key" \
+  "$(jq -r '.[].target' <<<"$listed" | xargs)"
+expect "the secret variable as listed" "masked $((${#token})) e2e-" \
+  "$(jq -r '.[] | select(.target == "E2E_TOKEN") | "\(.value.shown) \(.value.length) \(.value.head)"' <<<"$listed")"
+attached=$(api adam GET api/sandboxes/main/environment)
+[[ "$listed$attached" != *"$token"* ]] || fail "the API returned a secret value"
+ok "a plain and a secret variable, a plain, a secret and a template file attached to main as it slept"
+
 woke_at=$SECONDS
-expect "after the wake" "$token adam" "$(as adam main.adam 'echo "$E2E_TOKEN $(cat ~/owner)"')"
-ok "a credential set while main slept reached SSH on the wake ($((SECONDS - woke_at))s), home kept"
+expect "after the wake" "plain-value $token-main adam" \
+  "$(as adam main.adam 'echo "$E2E_PLAIN $E2E_TOKEN $(cat ~/owner)"')"
+ok "the variables reached SSH on the wake ($((SECONDS - woke_at))s), main's own value in place of the shared one, home kept"
+
+files() {
+  as adam main.adam 'cd ~/.e2e && for f in plain.txt secret.key config.toml; do
+    echo "$f $(stat -c "%a %U" "$f") $(cat "$f")"; done'
+}
+expect "the files in main's home" "plain.txt 644 sandbox plain file
+secret.key 600 sandbox secret-key-$token
+config.toml 600 sandbox token = \"$token-main\"" "$(files)"
+ok "the files are in main's home, the secret one and the template that takes a secret 0600"
+
+api adam POST api/sandboxes '{"name":"other"}' >/dev/null
+expect "the shared value in other" "$token" "$(as adam other.adam 'printenv E2E_TOKEN')"
+expect "what other has of the rest" "unset absent" \
+  "$(as adam other.adam 'echo "${E2E_PLAIN:-unset} $(test -e ~/.e2e && echo present || echo absent)"')"
+api adam DELETE api/sandboxes/other >/dev/null
+ok "a new sandbox gets the entry that applies to new sandboxes, with the shared value: the override is main's alone"
 
 if docker compose logs --no-color 2>&1 | grep -qF "$token"; then
-  fail "the credential value appears in the service logs"
+  fail "a secret value appears in the service logs"
 fi
-ok "the credential value is in neither service's logs"
+ok "no secret value is in either service's logs"
 
 bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
 expect "bob's status once disabled" disabled \
@@ -351,11 +393,14 @@ docker compose up -d --wait >>"$log" 2>&1
 login adam "$admin_password"
 expect "keys after the restart" 1 "$(api adam GET api/keys | jq length)"
 expect "sandboxes after the restart" main "$(api adam GET api/sandboxes | jq -r '.[].name')"
-expect "credentials after the restart" E2E_TOKEN "$(api adam GET api/credentials | jq -r '.[].name')"
+expect "entries after the restart" 5 "$(api adam GET api/environment | jq length)"
 expect "ssh after the restart" sandbox "$(as adam main.adam "id -un")"
 api adam POST api/sandboxes/main/restart >/dev/null
-expect "the credential after an API restart" "$token" "$(as adam main.adam 'printenv E2E_TOKEN')"
-ok "after docker compose restart corral, the user, key, sandbox and credential persist"
+expect "the variable after an API restart" "$token-main" "$(as adam main.adam 'printenv E2E_TOKEN')"
+expect "the files after an API restart" "plain.txt 644 sandbox plain file
+secret.key 600 sandbox secret-key-$token
+config.toml 600 sandbox token = \"$token-main\"" "$(files)"
+ok "after docker compose restart corral, the user, key, sandbox and environment persist, and a restart delivers it"
 
 started_at() {
   docker inspect --format '{{.State.StartedAt}}' "$adam_container"
@@ -383,7 +428,7 @@ while [[ "$(started_at)" == "$before" || "$(api adam GET api/sandboxes/main | jq
   sleep 1
   waited=$((waited + 1))
 done
-expect "ssh after corral restart" "sandbox $token" "$(as adam main.adam 'echo "$(id -un) $E2E_TOKEN"')"
+expect "ssh after corral restart" "sandbox $token-main" "$(as adam main.adam 'echo "$(id -un) $E2E_TOKEN"')"
 ok "corral restart inside main was accepted, and main came back (${waited}s)"
 
 out=$(as adam main.adam 'corral stop' 2>&1 || true)
@@ -514,8 +559,8 @@ ok "a wake past the deadline: /config answers 503 in ${answered}s, ssh gets in o
 
 api adam POST "api/admin/users/$bob_id/enable" >/dev/null
 login bob "$bob_password"
-api bob PUT api/credentials/BOB_TOKEN '{"value":"bob-secret"}' >/dev/null
-expect "bob's sandboxes, keys and credentials" "1 1 1" "$(for listing in sandboxes keys credentials; do
+api bob POST api/environment "$(entry variable BOB_TOKEN true false true bob-secret)" >/dev/null
+expect "bob's sandboxes, keys and environment" "1 1 1" "$(for listing in sandboxes keys environment; do
   api bob GET "api/$listing" | jq length; done | xargs)"
 api adam DELETE "api/admin/users/$bob_id" >/dev/null
 expect "bob's containers after deleting bob" "" \
@@ -531,7 +576,7 @@ ok "deleting bob removed his container and home, and his key is refused over SSH
 api adam POST auth/local/accounts \
   "$(jq -cn --arg p "$bob_password" '{username: "bob", password: $p, role: "member"}')" >/dev/null
 login bob "$bob_password"
-expect "the new bob's sandboxes, keys and credentials" "0 0 0" "$(for listing in sandboxes keys credentials; do
+expect "the new bob's sandboxes, keys and environment" "0 0 0" "$(for listing in sandboxes keys environment; do
   api bob GET "api/$listing" | jq length; done | xargs)"
 new_bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
 [[ -n "$new_bob_id" && "$new_bob_id" != "$bob_id" ]] || fail "the new bob reused id [$new_bob_id]"
