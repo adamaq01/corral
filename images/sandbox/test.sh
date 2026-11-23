@@ -88,11 +88,32 @@ docker exec "$client" sh -c '
   chmod 0600 /tmp/session/etc/corral/sshd_env.conf
 '
 
+# The home files the engine stages, as corral-home-init reads them: "<key> <mode> <path>" lines.
+stage_home_files() {
+  docker exec --interactive "$client" sh -c '
+    rm -rf /tmp/home-files && mkdir -m 0700 -p /tmp/home-files/etc/corral/home-files
+    cd /tmp/home-files/etc/corral/home-files
+    cat >manifest
+    printf "%s" "$1" >0
+    printf "plain" >1
+    printf "blocked" >2
+    chmod 0600 manifest 0 1 2
+    cd /tmp/home-files && tar --owner=1000 --group=1000 -cf /tmp/home-files.tar etc/corral/home-files
+  ' sh "$1"
+}
+
+stage_home_files first <<'MANIFEST'
+0 0600 .config/corral test/secret
+1 0644 notes.txt
+2 0600 notes.txt/blocked
+MANIFEST
+
 start_server() {
   docker create --name "$server" --network "$network" --volume "$volume:/home/sandbox" \
     --env CORRAL_SSHD=1 --env CORRAL_SSH_HOST_KEY="$host_key" "$image" >/dev/null
   docker exec "$client" tar -C /tmp/session --owner=0 --group=0 -cf - \
     etc/ssh/corral_authorized_keys etc/corral/sshd_env.conf | docker cp - "$server:/"
+  docker exec "$client" cat /tmp/home-files.tar | docker cp - "$server:/"
   docker start "$server" >/dev/null
   for _ in $(seq 50); do
     if ssh_run true 2>/dev/null; then
@@ -132,7 +153,21 @@ check "home has no authorized_keys" absent "$out"
 out=$(ssh_run 'test -f ~/.corral-initialized && test -f ~/.bashrc && echo initialized')
 check "first start copies the skeleton home" initialized "$out"
 
+out=$(ssh_run 'cat ~/".config/corral test/secret"; echo; stat -c "%a %U" ~/".config/corral test/secret" ~/".config/corral test" ~/notes.txt')
+check "a staged home file is written with its mode, owned by the sandbox user, its directories made" \
+  "first
+600 sandbox
+755 sandbox
+644 sandbox" "$out"
+
+out=$(ssh_run 'cat ~/notes.txt')
+check "a staged file that cannot be written is skipped, and the sandbox starts" plain "$out"
+
 ssh_run 'echo kept > ~/persist-check && echo "# edited" >> ~/.bashrc'
+ssh_run 'echo "edited inside" > ~/".config/corral test/secret" && chmod 0644 ~/".config/corral test/secret"'
+stage_home_files second <<'MANIFEST'
+0 0600 .config/corral test/secret
+MANIFEST
 docker rm --force "$server" >/dev/null
 start_server
 
@@ -141,5 +176,10 @@ check "home file survives a second start on the same volume" kept "$out"
 
 out=$(ssh_run tail -n 1 .bashrc)
 check "second start leaves the initialized home alone" "# edited" "$out"
+
+out=$(ssh_run 'cat ~/".config/corral test/secret"; echo; stat -c %a ~/".config/corral test/secret"; cat ~/notes.txt')
+check "every start rewrites the staged home files, edits inside replaced" "second
+600
+plain" "$out"
 
 echo "all checks passed"

@@ -6,10 +6,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use super::lock;
+use crate::domain::HomeFiles;
 use crate::domain::{SandboxId, SandboxStatus};
 use crate::ports::{
-    CredentialMap, EngineEvent, EventKind, Fact, Inspection, Readiness, SandboxEngine, SandboxSpec,
-    SshTarget,
+    Boot, CredentialMap, EngineEvent, EventKind, Fact, Inspection, Readiness, SandboxEngine,
+    SandboxSpec, SshTarget, Started,
 };
 use crate::{Error, Result};
 
@@ -21,7 +22,7 @@ pub enum EngineCall {
     },
     Start {
         id: SandboxId,
-        env: CredentialMap,
+        boot: Boot,
         deadline: Duration,
     },
     Stop(SandboxId),
@@ -47,7 +48,7 @@ struct State {
 
 struct FakeSandbox {
     status: SandboxStatus,
-    env: CredentialMap,
+    boot: Boot,
 }
 
 impl State {
@@ -90,12 +91,22 @@ impl FakeEngine {
         lock(&self.state).deletes_before_failing = successes;
     }
 
+    /// The env of the sandbox's last boot.
     #[must_use]
     pub fn env_of(&self, id: &SandboxId) -> Option<CredentialMap> {
         lock(&self.state)
             .sandboxes
             .get(id)
-            .map(|sandbox| sandbox.env.clone())
+            .map(|sandbox| sandbox.boot.env.clone())
+    }
+
+    /// The home files of the sandbox's last boot.
+    #[must_use]
+    pub fn files_of(&self, id: &SandboxId) -> Option<HomeFiles> {
+        lock(&self.state)
+            .sandboxes
+            .get(id)
+            .map(|sandbox| sandbox.boot.files.clone())
     }
 
     /// Records an event about the sandbox, which its inspection then lists first.
@@ -130,37 +141,34 @@ impl SandboxEngine for FakeEngine {
         }
         state.sandboxes.entry(id.clone()).or_insert(FakeSandbox {
             status: SandboxStatus::Sleeping,
-            env: CredentialMap::new(),
+            boot: Boot::default(),
         });
         Ok(())
     }
 
-    async fn start(
-        &self,
-        id: &SandboxId,
-        env: CredentialMap,
-        deadline: Duration,
-    ) -> Result<Readiness> {
+    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
         let mut state = lock(&self.state);
         state.calls.push(EngineCall::Start {
             id: id.clone(),
-            env: env.clone(),
+            boot: boot.clone(),
             deadline,
         });
         let waking = state.waking;
         let target = state.target(id);
         let sandbox = state.sandbox(id)?;
-        if sandbox.status == SandboxStatus::Running {
-            return Ok(Readiness::Ready(target));
+        let booted = sandbox.status == SandboxStatus::Sleeping;
+        if booted {
+            sandbox.boot = boot;
         }
-        sandbox.env = env;
-        if waking {
+        // A sandbox already starting is up by the next start, unless starts leave it waking.
+        let readiness = if waking && sandbox.status != SandboxStatus::Running {
             sandbox.status = SandboxStatus::Starting;
-            Ok(Readiness::Waking)
+            Readiness::Waking
         } else {
             sandbox.status = SandboxStatus::Running;
-            Ok(Readiness::Ready(target))
-        }
+            Readiness::Ready(target)
+        };
+        Ok(Started { readiness, booted })
     }
 
     async fn stop(&self, id: &SandboxId) -> Result<()> {

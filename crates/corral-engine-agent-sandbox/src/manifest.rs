@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 
-use corral_core::domain::{Allocation, Resources, SandboxId};
+use corral_core::domain::{Allocation, HomeFiles, Resources, SandboxId};
+use corral_core::ports::home_staging::{self, Staged};
 use corral_core::ports::labels::{self, MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{CredentialMap, SandboxSpec};
+use corral_core::{Error, Result};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
     Container, EnvFromSource, ImageVolumeSource, PersistentVolumeClaimSpec,
     PersistentVolumeClaimTemplate, PodSecurityContext, PodSpec, PodTemplateSpec,
-    ResourceRequirements, Secret, SecretEnvSource, SecurityContext, Volume, VolumeMount,
-    VolumeResourceRequirements,
+    ResourceRequirements, Secret, SecretEnvSource, SecretVolumeSource, SecurityContext, Volume,
+    VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -25,6 +27,9 @@ const HOME_PATH: &str = "/home/sandbox";
 const AGENT_VOLUME: &str = "containerssh-agent";
 const AGENT_PATH: &str = "/opt/containerssh-agent";
 const HOME_INIT: &str = "/usr/local/bin/corral-home-init";
+const HOME_FILES_VOLUME: &str = "home-files";
+// Kubernetes refuses a Secret whose data is larger.
+const SECRET_LIMIT: usize = 1 << 20;
 
 #[must_use]
 pub fn secret_name(id: &SandboxId) -> String {
@@ -35,6 +40,11 @@ pub fn secret_name(id: &SandboxId) -> String {
 #[must_use]
 pub fn home_claim_name(id: &SandboxId) -> String {
     format!("{HOME_VOLUME}-{}", id.0)
+}
+
+#[must_use]
+pub fn home_secret_name(id: &SandboxId) -> String {
+    format!("{}-home", id.0)
 }
 
 #[must_use]
@@ -72,9 +82,43 @@ pub fn env_secret(id: &SandboxId, env: &CredentialMap, namespace: &str) -> Secre
             (name.as_str().to_owned(), ByteString(bytes))
         })
         .collect();
+    secret(id, secret_name(id), namespace, data)
+}
+
+/// The home files as `corral-home-init` reads them, staged by key; refused beyond what a Secret
+/// holds.
+pub fn home_secret(id: &SandboxId, files: &HomeFiles, namespace: &str) -> Result<Secret> {
+    let Staged { manifest, files } = home_staging::stage(files);
+    let mut data = BTreeMap::from([(
+        home_staging::MANIFEST.to_owned(),
+        ByteString(manifest.into_bytes()),
+    )]);
+    for (key, file) in files {
+        data.insert(key, ByteString(file.content.expose_secret().to_vec()));
+    }
+    let size: usize = data
+        .iter()
+        .map(|(key, value)| key.len() + value.0.len())
+        .sum();
+    if size > SECRET_LIMIT {
+        return Err(Error::Invalid(format!(
+            "the home files of sandbox {} take {size} bytes, more than the {SECRET_LIMIT} a \
+             Kubernetes Secret holds",
+            id.0
+        )));
+    }
+    Ok(secret(id, home_secret_name(id), namespace, data))
+}
+
+fn secret(
+    id: &SandboxId,
+    name: String,
+    namespace: &str,
+    data: BTreeMap<String, ByteString>,
+) -> Secret {
     Secret {
         metadata: ObjectMeta {
-            name: Some(secret_name(id)),
+            name: Some(name),
             namespace: Some(namespace.to_owned()),
             labels: Some(BTreeMap::from([
                 (MANAGED_BY.to_owned(), MANAGER.to_owned()),
@@ -102,7 +146,15 @@ fn pod_spec(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Pod
             name: "home-init".to_owned(),
             image: Some(spec.image.clone()),
             command: Some(vec![HOME_INIT.to_owned()]),
-            volume_mounts: Some(vec![home_mount()]),
+            volume_mounts: Some(vec![
+                home_mount(),
+                VolumeMount {
+                    name: HOME_FILES_VOLUME.to_owned(),
+                    mount_path: home_staging::DIR.to_owned(),
+                    read_only: Some(true),
+                    ..VolumeMount::default()
+                },
+            ]),
             ..Container::default()
         }]),
         containers: vec![Container {
@@ -131,14 +183,26 @@ fn pod_spec(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Pod
             ]),
             ..Container::default()
         }],
-        volumes: Some(vec![Volume {
-            name: AGENT_VOLUME.to_owned(),
-            image: Some(ImageVolumeSource {
-                reference: Some(cfg.agent_image.clone()),
-                pull_policy: Some("IfNotPresent".to_owned()),
-            }),
-            ..Volume::default()
-        }]),
+        volumes: Some(vec![
+            Volume {
+                name: AGENT_VOLUME.to_owned(),
+                image: Some(ImageVolumeSource {
+                    reference: Some(cfg.agent_image.clone()),
+                    pull_policy: Some("IfNotPresent".to_owned()),
+                }),
+                ..Volume::default()
+            },
+            Volume {
+                name: HOME_FILES_VOLUME.to_owned(),
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(home_secret_name(id)),
+                    // The pod's fsGroup owns the files, and only the sandbox user is in it.
+                    default_mode: Some(0o440),
+                    ..SecretVolumeSource::default()
+                }),
+                ..Volume::default()
+            },
+        ]),
         ..PodSpec::default()
     }
 }
@@ -201,14 +265,16 @@ fn home_claim(
 mod tests {
     use std::num::NonZeroU64;
 
+    use corral_core::Error;
     use corral_core::domain::{
-        Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName,
+        Allocation, CredentialName, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources,
+        SandboxId, SandboxName,
     };
     use corral_core::ports::{CredentialMap, SandboxSpec};
-    use secrecy::SecretString;
+    use secrecy::{SecretSlice, SecretString};
     use serde_json::{Value, json};
 
-    use super::{build, env_secret};
+    use super::{build, env_secret, home_secret};
     use crate::AgentSandboxConfig;
 
     fn spec() -> SandboxSpec {
@@ -293,7 +359,10 @@ mod tests {
                 "name": "home-init",
                 "image": "ghcr.io/adamaq01/corral-sandbox:1",
                 "command": ["/usr/local/bin/corral-home-init"],
-                "volumeMounts": [home],
+                "volumeMounts": [
+                    home,
+                    {"name": "home-files", "mountPath": "/etc/corral/home-files", "readOnly": true},
+                ],
             }])
         );
         assert_eq!(
@@ -315,10 +384,16 @@ mod tests {
         );
         assert_eq!(
             pod["volumes"],
-            json!([{
-                "name": "containerssh-agent",
-                "image": {"reference": "containerssh/agent:v0.11.0", "pullPolicy": "IfNotPresent"},
-            }])
+            json!([
+                {
+                    "name": "containerssh-agent",
+                    "image": {"reference": "containerssh/agent:v0.11.0", "pullPolicy": "IfNotPresent"},
+                },
+                {
+                    "name": "home-files",
+                    "secret": {"secretName": "sbx-0123456789ab-home", "defaultMode": 0o440},
+                },
+            ])
         );
         assert_eq!(
             sandbox["spec"]["volumeClaimTemplates"],
@@ -373,5 +448,56 @@ mod tests {
                 },
             })
         );
+    }
+
+    fn home_files(sizes: &[usize]) -> HomeFiles {
+        sizes
+            .iter()
+            .enumerate()
+            .map(|(index, size)| {
+                (
+                    HomePath::parse(&format!("dir/file-{index}")).unwrap(),
+                    HomeFile {
+                        mode: FileMode::new(0o640).unwrap(),
+                        content: SecretSlice::from(vec![b'x'; *size]),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_home_secret_stages_files_by_key_up_to_a_secrets_size() {
+        let id = SandboxId("sbx-0123456789ab".to_owned());
+        let secret = home_secret(&id, &home_files(&[2, 3]), "corral-sandboxes").unwrap();
+        assert_eq!(
+            serde_json::to_value(secret).unwrap(),
+            json!({
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": {
+                    "name": "sbx-0123456789ab-home",
+                    "namespace": "corral-sandboxes",
+                    "labels": {
+                        "app.kubernetes.io/managed-by": "corral",
+                        "corral.adamaq01.fr/sandbox-id": "sbx-0123456789ab",
+                    },
+                },
+                "type": "Opaque",
+                "data": {
+                    "manifest": "MCAwNjQwIGRpci9maWxlLTAKMSAwNjQwIGRpci9maWxlLTEK",
+                    "0": "eHg=",
+                    "1": "eHh4",
+                },
+            })
+        );
+
+        let manifest = "0 0640 dir/file-0\n1 0640 dir/file-1\n".len() + "manifest".len() + 2;
+        let fits = (1 << 20) - manifest - (1 << 19);
+        home_secret(&id, &home_files(&[1 << 19, fits]), "ns").unwrap();
+        assert!(matches!(
+            home_secret(&id, &home_files(&[1 << 19, fits + 1]), "ns"),
+            Err(Error::Invalid(_))
+        ));
     }
 }

@@ -3,9 +3,24 @@ set -euo pipefail
 
 home=/home/sandbox
 marker=$home/.corral-initialized
+# The engine stages the home files here before each start: a manifest of "<key> <mode> <path>"
+# lines, and each file under its key.
+staged=/etc/corral/home-files
 
-if [[ -e "$marker" ]]; then
-  exit 0
+if [[ ! -e "$marker" ]]; then
+  cp -R /etc/corral/skel/. "$home/"
+  touch "$marker"
 fi
-cp -R /etc/corral/skel/. "$home/"
-touch "$marker"
+
+if [[ -f "$staged/manifest" ]]; then
+  while IFS= read -r line; do
+    key=${line%% *}
+    rest=${line#* }
+    mode=${rest%% *}
+    path=${rest#* }
+    # A file the sandbox cannot replace, such as a directory at its path, must not keep the
+    # sandbox from starting.
+    install -D -T -m "$mode" "$staged/$key" "$home/$path" \
+      || echo "corral-home-init: could not write ~/$path" >&2
+  done <"$staged/manifest"
+fi

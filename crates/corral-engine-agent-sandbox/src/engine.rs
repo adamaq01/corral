@@ -5,7 +5,7 @@ use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{
-    CredentialMap, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+    Boot, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, Started,
 };
 use corral_core::{Error, Result};
 use k8s_openapi::api::core::v1::{Event, PersistentVolumeClaim, Pod, Secret};
@@ -67,16 +67,20 @@ impl AgentSandboxEngine {
         Ok(pod.and_then(|pod| pod.metadata.uid))
     }
 
-    async fn write_env(&self, id: &SandboxId, env: &CredentialMap) -> Result<()> {
-        let secret = manifest::env_secret(id, env, &self.config.namespace);
-        self.secrets
-            .patch(
-                &manifest::secret_name(id),
-                &PatchParams::apply(MANAGER).force(),
-                &Patch::Apply(&secret),
-            )
-            .await
-            .map_err(kube_error)?;
+    async fn write_boot(&self, id: &SandboxId, boot: &Boot) -> Result<()> {
+        let namespace = &self.config.namespace;
+        let home = manifest::home_secret(id, &boot.files, namespace)?;
+        for secret in [manifest::env_secret(id, &boot.env, namespace), home] {
+            let name = secret.metadata.name.clone().unwrap_or_default();
+            self.secrets
+                .patch(
+                    &name,
+                    &PatchParams::apply(MANAGER).force(),
+                    &Patch::Apply(&secret),
+                )
+                .await
+                .map_err(kube_error)?;
+        }
         Ok(())
     }
 
@@ -93,10 +97,11 @@ impl AgentSandboxEngine {
             .count())
     }
 
-    async fn resume(&self, id: &SandboxId, env: &CredentialMap) -> Result<()> {
+    /// Whether it resumed the sandbox, which was suspended.
+    async fn resume(&self, id: &SandboxId, boot: &Boot) -> Result<bool> {
         let _waking = self.activity.wake(id).await;
         if self.sandbox(id).await?.spec.operating_mode == OperatingMode::Running {
-            return Ok(());
+            return Ok(false);
         }
         let max = self.max_running;
         if self.running_count().await? >= max {
@@ -104,12 +109,13 @@ impl AgentSandboxEngine {
                 "at most {max} sandboxes may run at once"
             )));
         }
-        self.write_env(id, env).await?;
+        self.write_boot(id, boot).await?;
         self.merge_patch(
             id,
             json!({"spec": {"operatingMode": OperatingMode::Running}}),
         )
-        .await
+        .await?;
+        Ok(true)
     }
 
     pub(crate) async fn merge_patch(&self, id: &SandboxId, patch: serde_json::Value) -> Result<()> {
@@ -135,27 +141,23 @@ impl SandboxEngine for AgentSandboxEngine {
         }
     }
 
-    async fn start(
-        &self,
-        id: &SandboxId,
-        env: CredentialMap,
-        deadline: Duration,
-    ) -> Result<Readiness> {
+    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
         let started = Instant::now();
-        self.resume(id, &env).await?;
-        loop {
+        let booted = self.resume(id, &boot).await?;
+        let readiness = loop {
             if self.observe(id).await? == SandboxStatus::Running {
-                return Ok(Readiness::Ready(SshTarget::KubernetesPod {
+                break Readiness::Ready(SshTarget::KubernetesPod {
                     namespace: self.config.namespace.clone(),
                     pod: id.0.clone(),
-                }));
+                });
             }
             let remaining = deadline.saturating_sub(started.elapsed());
             if remaining.is_zero() {
-                return Ok(Readiness::Waking);
+                break Readiness::Waking;
             }
             sleep(POLL_INTERVAL.min(remaining)).await;
-        }
+        };
+        Ok(Started { readiness, booted })
     }
 
     async fn stop(&self, id: &SandboxId) -> Result<()> {
@@ -186,10 +188,12 @@ impl SandboxEngine for AgentSandboxEngine {
             .delete_opt(&id.0, &params)
             .await
             .map_err(kube_error)?;
-        self.secrets
-            .delete_opt(&manifest::secret_name(id), &params)
-            .await
-            .map_err(kube_error)?;
+        for secret in [manifest::secret_name(id), manifest::home_secret_name(id)] {
+            self.secrets
+                .delete_opt(&secret, &params)
+                .await
+                .map_err(kube_error)?;
+        }
         let claims = ListParams::default().labels(&format!("{SANDBOX_ID}={}", id.0));
         self.claims
             .delete_collection(&params, &claims)

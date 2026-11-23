@@ -13,7 +13,7 @@ use corral_core::fakes::{
     MemorySecretStore, WAKE_DEADLINE, World, admin_proof, catalog, sandbox_name,
 };
 use corral_core::ports::{
-    CredentialMap, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, UserRepo,
+    Boot, Inspection, SandboxEngine, SandboxSpec, SshTarget, Started, UserRepo,
 };
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::{Cidr, ContainerSshConfig, router};
@@ -357,13 +357,8 @@ impl SandboxEngine for SlowCreates {
         drop(self.pulled.acquire().await.unwrap());
         self.engine.create(id, spec).await
     }
-    async fn start(
-        &self,
-        id: &SandboxId,
-        env: CredentialMap,
-        deadline: Duration,
-    ) -> Result<Readiness> {
-        self.engine.start(id, env, deadline).await
+    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
+        self.engine.start(id, boot, deadline).await
     }
     async fn stop(&self, id: &SandboxId) -> Result<()> {
         self.engine.stop(id).await

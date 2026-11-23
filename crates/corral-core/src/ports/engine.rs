@@ -6,9 +6,28 @@ use secrecy::SecretString;
 
 use super::Inspection;
 use crate::Result;
-use crate::domain::{CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus};
+use crate::domain::{
+    CredentialName, Handle, HomeFiles, Resources, SandboxId, SandboxName, SandboxStatus,
+};
 
 pub type CredentialMap = BTreeMap<CredentialName, SecretString>;
+
+/// What a sandbox gets when it starts from stopped.
+#[derive(Clone, Debug, Default)]
+pub struct Boot {
+    /// The environment of its sessions.
+    pub env: CredentialMap,
+    /// Written into its home, owned by the sandbox user, before anything else runs: each replaces
+    /// whatever is at its path, with any missing directory made.
+    pub files: HomeFiles,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Started {
+    pub readiness: Readiness,
+    /// Whether this start took the sandbox from stopped, and so applied its boot.
+    pub booted: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxSpec {
@@ -43,14 +62,10 @@ pub enum SshTarget {
 pub trait SandboxEngine: Send + Sync {
     /// Provisions the sandbox without starting it.
     async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()>;
-    /// Starts a stopped sandbox with `env` and waits up to `deadline` for it to accept SSH. A
-    /// running sandbox is left as it is. Refuses with `LimitReached` beyond the running limit.
-    async fn start(
-        &self,
-        id: &SandboxId,
-        env: CredentialMap,
-        deadline: Duration,
-    ) -> Result<Readiness>;
+    /// Starts a stopped sandbox with `boot` and waits up to `deadline` for it to accept SSH. A
+    /// running sandbox is left as it is, `boot` unused. Refuses with `LimitReached` beyond the
+    /// running limit.
+    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started>;
     /// Returns once the sandbox no longer runs.
     async fn stop(&self, id: &SandboxId) -> Result<()>;
     async fn delete(&self, id: &SandboxId) -> Result<()>;

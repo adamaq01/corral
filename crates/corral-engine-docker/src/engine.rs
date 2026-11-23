@@ -12,7 +12,7 @@ use corral_activity::{ActivityLock, Exec};
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{
-    CredentialMap, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+    Boot, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, Started,
 };
 use corral_core::{Error, Result};
 use ssh_key::PublicKey;
@@ -100,7 +100,7 @@ impl DockerEngine {
     }
 
     // Runs under a wake, which holds other wakes off until the container has started.
-    async fn boot(&self, id: &SandboxId, env: &CredentialMap) -> Result<()> {
+    async fn boot(&self, id: &SandboxId, boot: &Boot) -> Result<()> {
         let max = self.max_running;
         if self.running_ids().await?.len() >= max {
             return Err(Error::LimitReached(format!(
@@ -108,7 +108,7 @@ impl DockerEngine {
             )));
         }
         let name = container::name(id);
-        let files = session_files::archive(&self.proxy_public_key, env);
+        let files = session_files::archive(&self.proxy_public_key, boot);
         let at_root = UploadToContainerOptionsBuilder::default().path("/").build();
         self.docker
             .upload_to_container(&name, Some(at_root), body_full(files.into()))
@@ -162,32 +162,30 @@ impl SandboxEngine for DockerEngine {
             .map_err(|err| Error::internal(format!("create {name}"), err))
     }
 
-    async fn start(
-        &self,
-        id: &SandboxId,
-        env: CredentialMap,
-        deadline: Duration,
-    ) -> Result<Readiness> {
+    async fn start(&self, id: &SandboxId, boot: Boot, deadline: Duration) -> Result<Started> {
         let called = Instant::now();
-        let target = {
+        let (target, booted) = {
             let _waking = self.activity.wake(id).await;
             let current = self.inspect(id).await?.ok_or_else(|| missing(id))?;
-            if !status::is_running(&current) {
-                self.boot(id, &env).await?;
+            let booted = !status::is_running(&current);
+            if booted {
+                self.boot(id, &boot).await?;
             }
-            SshTarget::SshServer {
+            let target = SshTarget::SshServer {
                 host_key_fingerprint: container::host_key_fingerprint(id, &current)?,
                 host: container::name(id),
                 port: SSH_PORT,
                 username: SSH_USER.to_owned(),
-            }
+            };
+            (target, booted)
         };
         let patience = deadline.saturating_sub(called.elapsed());
-        if self.wait_for_sshd(id, patience).await? {
-            Ok(Readiness::Ready(target))
+        let readiness = if self.wait_for_sshd(id, patience).await? {
+            Readiness::Ready(target)
         } else {
-            Ok(Readiness::Waking)
-        }
+            Readiness::Waking
+        };
+        Ok(Started { readiness, booted })
     }
 
     async fn stop(&self, id: &SandboxId) -> Result<()> {

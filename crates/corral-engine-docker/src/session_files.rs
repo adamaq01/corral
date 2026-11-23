@@ -1,35 +1,76 @@
-use corral_core::ports::CredentialMap;
+use corral_core::ports::home_staging::{self, Staged};
+use corral_core::ports::{Boot, CredentialMap};
 use secrecy::ExposeSecret;
 use ssh_key::PublicKey;
 use tracing::warn;
 
 const AUTHORIZED_KEYS: &str = "etc/ssh/corral_authorized_keys";
 const SSHD_ENV: &str = "etc/corral/sshd_env.conf";
+const ROOT: u64 = 0;
+const SANDBOX_USER: u64 = 1000;
 
-/// A tar archive, to extract at `/`, of what the sandbox's sshd reads when it starts: the key
-/// the front door logs in with, and the credentials its sessions see.
-pub(crate) fn archive(proxy_key: &PublicKey, env: &CredentialMap) -> Vec<u8> {
+/// A tar archive, to extract at `/`, of what the sandbox reads when it starts: the key the front
+/// door logs in with and the credentials its sessions see, both for sshd, and the home files,
+/// staged for `corral-home-init` where only the sandbox user may read them.
+pub(crate) fn archive(proxy_key: &PublicKey, boot: &Boot) -> Vec<u8> {
     let authorized_key = format!(
         "{}\n",
         proxy_key.to_openssh().expect("a public key always encodes")
     );
-    let mut archive = tar::Builder::new(Vec::new());
-    for (path, mode, contents) in [
-        (AUTHORIZED_KEYS, 0o644, authorized_key),
-        (SSHD_ENV, 0o600, set_env(env)),
-    ] {
-        let mut header = tar::Header::new_ustar();
-        header.set_size(contents.len() as u64);
-        header.set_mode(mode);
-        header.set_uid(0);
-        header.set_gid(0);
-        archive
-            .append_data(&mut header, path, contents.as_bytes())
-            .expect("an archive in memory always writes");
+    let mut archive = Archive(tar::Builder::new(Vec::new()));
+    archive.file(AUTHORIZED_KEYS, 0o644, ROOT, authorized_key.as_bytes());
+    archive.file(SSHD_ENV, 0o600, ROOT, set_env(&boot.env).as_bytes());
+    let staging = home_staging::DIR.trim_start_matches('/');
+    archive.directory(staging, 0o700, SANDBOX_USER);
+    let Staged { manifest, files } = home_staging::stage(&boot.files);
+    let staged = |key: &str| format!("{staging}/{key}");
+    archive.file(
+        &staged(home_staging::MANIFEST),
+        0o600,
+        SANDBOX_USER,
+        manifest.as_bytes(),
+    );
+    for (key, file) in files {
+        archive.file(
+            &staged(&key),
+            0o600,
+            SANDBOX_USER,
+            file.content.expose_secret(),
+        );
     }
     archive
+        .0
         .into_inner()
         .expect("an archive in memory always writes")
+}
+
+struct Archive(tar::Builder<Vec<u8>>);
+
+impl Archive {
+    fn file(&mut self, path: &str, mode: u32, owner: u64, contents: &[u8]) {
+        let mut header = header(tar::EntryType::Regular, mode, owner);
+        header.set_size(contents.len() as u64);
+        self.0
+            .append_data(&mut header, path, contents)
+            .expect("an archive in memory always writes");
+    }
+
+    fn directory(&mut self, path: &str, mode: u32, owner: u64) {
+        let mut header = header(tar::EntryType::Directory, mode, owner);
+        header.set_size(0);
+        self.0
+            .append_data(&mut header, path, std::io::empty())
+            .expect("an archive in memory always writes");
+    }
+}
+
+fn header(kind: tar::EntryType, mode: u32, owner: u64) -> tar::Header {
+    let mut header = tar::Header::new_ustar();
+    header.set_entry_type(kind);
+    header.set_mode(mode);
+    header.set_uid(owner);
+    header.set_gid(owner);
+    header
 }
 
 fn set_env(env: &CredentialMap) -> String {
@@ -60,9 +101,9 @@ fn set_env(env: &CredentialMap) -> String {
 mod tests {
     use std::io::Read;
 
-    use corral_core::domain::CredentialName;
-    use corral_core::ports::CredentialMap;
-    use secrecy::SecretString;
+    use corral_core::domain::{CredentialName, FileMode, HomeFile, HomeFiles, HomePath};
+    use corral_core::ports::{Boot, CredentialMap};
+    use secrecy::{SecretSlice, SecretString};
     use ssh_key::PublicKey;
 
     use super::archive;
@@ -82,8 +123,10 @@ mod tests {
             .collect()
     }
 
-    fn entries(env: &CredentialMap) -> Vec<(String, u32, (u64, u64), String)> {
-        let bytes = archive(&PublicKey::from_openssh(PROXY_KEY).unwrap(), env);
+    type Entry = (String, u32, (u64, u64), String);
+
+    fn entries_of(boot: &Boot) -> Vec<Entry> {
+        let bytes = archive(&PublicKey::from_openssh(PROXY_KEY).unwrap(), boot);
         let mut archive = tar::Archive::new(bytes.as_slice());
         archive
             .entries()
@@ -103,12 +146,19 @@ mod tests {
             .collect()
     }
 
+    fn entries(env: &CredentialMap) -> Vec<Entry> {
+        entries_of(&Boot {
+            env: env.clone(),
+            files: HomeFiles::new(),
+        })
+    }
+
     #[test]
     fn archive_holds_root_owned_sshd_files() {
         let entries = entries(&env(&[("GH_TOKEN", "gh"), ("ANTHROPIC_API_KEY", "sk")]));
 
         assert_eq!(
-            entries,
+            entries[..2],
             [
                 (
                     "etc/ssh/corral_authorized_keys".to_owned(),
@@ -122,6 +172,38 @@ mod tests {
                     (0, 0),
                     "SetEnv \"ANTHROPIC_API_KEY=sk\" \"GH_TOKEN=gh\"\n".to_owned()
                 ),
+            ]
+        );
+    }
+
+    #[test]
+    fn archive_stages_home_files_for_the_sandbox_user_alone() {
+        let file = |mode, content: &str| HomeFile {
+            mode: FileMode::new(mode).unwrap(),
+            content: SecretSlice::from(content.as_bytes().to_vec()),
+        };
+        let boot = Boot {
+            env: CredentialMap::new(),
+            files: HomeFiles::from([
+                (HomePath::parse(".config/a").unwrap(), file(0o600, "first")),
+                (HomePath::parse("b").unwrap(), file(0o755, "second")),
+            ]),
+        };
+        let owned = |path: &str, mode, contents: &str| {
+            (path.to_owned(), mode, (1000, 1000), contents.to_owned())
+        };
+
+        assert_eq!(
+            entries_of(&boot)[2..],
+            [
+                owned("etc/corral/home-files", 0o700, ""),
+                owned(
+                    "etc/corral/home-files/manifest",
+                    0o600,
+                    "0 0600 .config/a\n1 0755 b\n"
+                ),
+                owned("etc/corral/home-files/0", 0o600, "first"),
+                owned("etc/corral/home-files/1", 0o600, "second"),
             ]
         );
     }

@@ -6,11 +6,12 @@ use std::time::Duration;
 use corral_activity::{Exec, Sweepable};
 use corral_core::Error;
 use corral_core::domain::{
-    Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
+    Allocation, CredentialName, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources,
+    SandboxId, SandboxName, SandboxStatus,
 };
 use corral_core::ports::labels::SANDBOX_ID;
 use corral_core::ports::{
-    CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+    Boot, CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
 };
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
@@ -19,7 +20,7 @@ use kube::api::{
     PatchParams,
 };
 use kube::{Api, Client};
-use secrecy::SecretString;
+use secrecy::{SecretSlice, SecretString};
 use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::sync::{Barrier, Mutex};
@@ -119,13 +120,13 @@ impl Cluster {
     }
 
     async fn wake(&self, id: &SandboxId, pairs: &[(&str, &str)]) {
-        let readiness = self
+        let started = self
             .engine
-            .start(id, env(pairs), READY_WITHIN)
+            .start(id, boot(pairs), READY_WITHIN)
             .await
             .unwrap();
         assert_eq!(
-            readiness,
+            started.readiness,
             Readiness::Ready(SshTarget::KubernetesPod {
                 namespace: self.namespace.clone(),
                 pod: id.0.clone(),
@@ -163,6 +164,12 @@ async fn sandbox_lifecycle_against_agent_sandbox() {
             && cluster
                 .secrets
                 .get_opt(&format!("{}-env", id.0))
+                .await
+                .unwrap()
+                .is_none()
+            && cluster
+                .secrets
+                .get_opt(&format!("{}-home", id.0))
                 .await
                 .unwrap()
                 .is_none()
@@ -220,11 +227,48 @@ async fn sessions_run_as_the_sandbox_user_with_credentials(cluster: &Cluster, id
     );
     assert_eq!(cluster.exec(id, &["test", "-x", AGENT]).await.0, 0);
     assert_eq!(cluster.exec(id, &["corral-no-such-command"]).await.0, 127);
+    assert_eq!(
+        cluster.exec(id, &["sh", "-c", HOME_FILE_LISTING]).await,
+        (
+            0,
+            "600 1000 1000 /home/sandbox/.config/corral test/token\n\
+             755 1000 1000 /home/sandbox/.config/corral test\n\
+             one\n"
+                .to_owned()
+        ),
+        "the home files are written as the sandbox user"
+    );
+    assert_ne!(
+        cluster
+            .exec(id, &["test", "-e", "/etc/corral/home-files/manifest"])
+            .await
+            .0,
+        0,
+        "only the home init step sees the staged files"
+    );
+}
+
+const HOME_FILE_LISTING: &str = "cd /home/sandbox/.config && \
+    stat -c '%a %u %g %n' \"$PWD/corral test/token\" \"$PWD/corral test\" && \
+    cat 'corral test/token' && echo";
+
+async fn home_file(cluster: &Cluster, id: &SandboxId) -> String {
+    let (code, contents) = cluster
+        .exec(id, &["cat", "/home/sandbox/.config/corral test/token"])
+        .await;
+    assert_eq!(code, 0);
+    contents
 }
 
 async fn sleep_keeps_home_and_wake_applies_new_env(cluster: &Cluster, id: &SandboxId) {
     let marker = ["sh", "-c", "echo kept > /home/sandbox/corral-test-marker"];
     assert_eq!(cluster.exec(id, &marker).await.0, 0);
+    let edit = [
+        "sh",
+        "-c",
+        "echo edited > '/home/sandbox/.config/corral test/token'",
+    ];
+    assert_eq!(cluster.exec(id, &edit).await.0, 0);
     cluster.engine.stop(id).await.unwrap();
     assert_eq!(cluster.state(id).await, SandboxStatus::Sleeping);
     assert_eq!(
@@ -238,6 +282,7 @@ async fn sleep_keeps_home_and_wake_applies_new_env(cluster: &Cluster, id: &Sandb
 
     cluster.wake(id, &[("FOO_TOKEN", "two")]).await;
     assert_eq!(cluster.home_marker(id).await, "kept\n");
+    assert_eq!(home_file(cluster, id).await, "two");
     assert_eq!(
         cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
         (0, "two\n".to_owned())
@@ -255,6 +300,7 @@ async fn stop_then_start_applies_new_env(cluster: &Cluster, id: &SandboxId) {
         cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
         (0, "three\n".to_owned())
     );
+    assert_eq!(home_file(cluster, id).await, "three");
     assert_eq!(cluster.home_marker(id).await, "kept\n");
 }
 
@@ -281,7 +327,7 @@ async fn a_wake_while_stopping_lets_the_stop_finish(cluster: &Cluster, id: &Sand
         let id = id.clone();
         tokio::spawn(async move {
             engine
-                .start(&id, env(&[("FOO_TOKEN", "four")]), READY_WITHIN)
+                .start(&id, boot(&[("FOO_TOKEN", "four")]), READY_WITHIN)
                 .await
         })
     };
@@ -292,7 +338,10 @@ async fn a_wake_while_stopping_lets_the_stop_finish(cluster: &Cluster, id: &Sand
     .await;
     cluster.set_pod_finalizers(id, Value::Null).await;
 
-    assert!(matches!(waking.await.unwrap(), Ok(Readiness::Ready(_))));
+    assert!(matches!(
+        waking.await.unwrap(),
+        Ok(started) if matches!(started.readiness, Readiness::Ready(_)) && started.booted
+    ));
     stopping.await.unwrap().unwrap();
     assert_ne!(cluster.pod_uid(id).await.unwrap(), before);
     assert_eq!(cluster.state(id).await, SandboxStatus::Running);
@@ -300,6 +349,7 @@ async fn a_wake_while_stopping_lets_the_stop_finish(cluster: &Cluster, id: &Sand
         cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
         (0, "four\n".to_owned())
     );
+    assert_eq!(home_file(cluster, id).await, "four");
 }
 
 // Runs while every other sandbox in the namespace sleeps, with max_running = 1.
@@ -317,9 +367,7 @@ async fn concurrent_starts_never_exceed_max_running(cluster: &Cluster) {
         starts.spawn(async move {
             engine.status(&id).await.unwrap();
             barrier.wait().await;
-            engine
-                .start(&id, CredentialMap::new(), Duration::ZERO)
-                .await
+            engine.start(&id, Boot::default(), Duration::ZERO).await
         });
     }
     let mut outcomes = Vec::new();
@@ -552,6 +600,22 @@ fn spec(name: &str) -> SandboxSpec {
             memory_bytes: Allocation::new(128 << 20, 1 << 30).unwrap(),
             home_bytes: NonZeroU64::new(1 << 30).unwrap(),
         },
+    }
+}
+
+/// The pairs as the env, and `FOO_TOKEN`'s value as a home file too.
+fn boot(pairs: &[(&str, &str)]) -> Boot {
+    let token = pairs
+        .iter()
+        .find(|(name, _)| *name == "FOO_TOKEN")
+        .map_or("", |(_, value)| *value);
+    let file = HomeFile {
+        mode: FileMode::OWNER_ONLY,
+        content: SecretSlice::from(token.as_bytes().to_vec()),
+    };
+    Boot {
+        env: env(pairs),
+        files: HomeFiles::from([(HomePath::parse(".config/corral test/token").unwrap(), file)]),
     }
 }
 

@@ -9,10 +9,12 @@ use ts_rs::TS;
 
 use super::{Catalog, Credentials};
 use crate::domain::{
-    Admin, Handle, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName, SandboxStatus,
-    SizeKey, User, UserId,
+    Admin, Handle, HomeFiles, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName,
+    SandboxStatus, SizeKey, User, UserId,
 };
-use crate::ports::{Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
+use crate::ports::{
+    Boot, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
+};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -297,20 +299,18 @@ impl Sandboxes {
 
     /// Records the start on `sandbox` too, unless the engine kept it running as it was.
     async fn start_within(&self, sandbox: &mut Sandbox, deadline: Duration) -> Result<Readiness> {
-        // Only a stopped sandbox takes the env on every engine; read before the credentials, so a
-        // change made while it starts counts as after the start.
-        let from_stopped = matches!(
-            self.engine.status(&sandbox.id).await,
-            Ok(SandboxStatus::Sleeping)
-        );
+        // Taken before the credentials load, so a change made while it starts counts as after it.
         let at = Utc::now();
-        let env = self.credentials.load(sandbox.owner).await?;
-        let readiness = self.engine.start(&sandbox.id, env, deadline).await?;
-        if from_stopped {
+        let boot = Boot {
+            env: self.credentials.load(sandbox.owner).await?,
+            files: HomeFiles::new(),
+        };
+        let started = self.engine.start(&sandbox.id, boot, deadline).await?;
+        if started.booted {
             self.repo.record_start(&sandbox.id, at).await?;
             sandbox.started_at = Some(at);
         }
-        Ok(readiness)
+        Ok(started.readiness)
     }
 
     async fn find(&self, owner: &User, name: &SandboxName) -> Result<Sandbox> {
@@ -421,7 +421,7 @@ mod tests {
             EngineCall::Create { id, spec },
             EngineCall::Start {
                 id: started,
-                env,
+                boot,
                 deadline,
             },
         ] = calls.as_slice()
@@ -438,7 +438,7 @@ mod tests {
                 .unwrap()
                 .resources
         );
-        assert_eq!(exposed(env), ["GH_TOKEN=adams"]);
+        assert_eq!(exposed(&boot.env), ["GH_TOKEN=adams"]);
         assert_eq!(*deadline, Duration::ZERO);
         assert_eq!(
             w.sandboxes.get(&adam, &sandbox.name).await.unwrap(),

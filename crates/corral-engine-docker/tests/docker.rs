@@ -5,13 +5,14 @@ use std::time::{Duration, Instant};
 
 use corral_core::Error;
 use corral_core::domain::{
-    Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
+    Allocation, CredentialName, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources,
+    SandboxId, SandboxName, SandboxStatus,
 };
 use corral_core::ports::{
-    CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+    Boot, CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
 };
 use corral_engine_docker::{DockerConfig, DockerEngine};
-use secrecy::SecretString;
+use secrecy::{SecretSlice, SecretString};
 use ssh_key::PublicKey;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -255,10 +256,40 @@ async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxStatus {
 }
 
 async fn wake(engine: &DockerEngine, id: &SandboxId, env: CredentialMap) -> SshTarget {
-    match engine.start(id, env, WAKE).await.unwrap() {
-        Readiness::Ready(target) => target,
+    wake_with(
+        engine,
+        id,
+        Boot {
+            env,
+            ..Boot::default()
+        },
+    )
+    .await
+    .0
+}
+
+/// The target, and whether the start booted the sandbox.
+async fn wake_with(engine: &DockerEngine, id: &SandboxId, boot: Boot) -> (SshTarget, bool) {
+    let started = engine.start(id, boot, WAKE).await.unwrap();
+    match started.readiness {
+        Readiness::Ready(target) => (target, started.booted),
         Readiness::Waking => panic!("sandbox {} was not ready within {WAKE:?}", id.0),
     }
+}
+
+fn home_files(files: &[(&str, u32, &str)]) -> HomeFiles {
+    files
+        .iter()
+        .map(|(path, mode, content)| {
+            (
+                HomePath::parse(path).unwrap(),
+                HomeFile {
+                    mode: FileMode::new(*mode).unwrap(),
+                    content: SecretSlice::from(content.as_bytes().to_vec()),
+                },
+            )
+        })
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -323,7 +354,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.delete(&id).await.unwrap();
     assert!(matches!(engine.status(&id).await, Err(Error::NotFound(_))));
     assert!(matches!(
-        engine.start(&id, CredentialMap::new(), WAKE).await,
+        engine.start(&id, Boot::default(), WAKE).await,
         Err(Error::NotFound(_))
     ));
     assert!(matches!(engine.stop(&id).await, Err(Error::NotFound(_))));
@@ -379,6 +410,81 @@ async fn credentials_apply_at_each_start_and_stay_out_of_the_container_config() 
     assert!(!inspected.contains("ODD_TOKEN"));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn home_files_are_written_at_each_start_from_stopped() {
+    let Some(lab) = Lab::open("home-files") else {
+        return;
+    };
+    let engine = lab.engine(10).await;
+    let id = lab.create(&engine, "main").await;
+    let name = container_name(&id);
+    let boot = |files| Boot {
+        env: CredentialMap::new(),
+        files: home_files(files),
+    };
+    let listing = "for f in .config/corral/sandbox.json '.config/corral' 'notes dir/notes.txt'; do \
+                   stat -c '%a %U %G %n' ~/\"$f\"; done; cat ~/.config/corral/sandbox.json";
+
+    let (target, booted) = wake_with(
+        &engine,
+        &id,
+        boot(&[
+            (".config/corral/sandbox.json", 0o600, "first"),
+            ("notes dir/notes.txt", 0o644, "notes"),
+        ]),
+    )
+    .await;
+    assert!(booted);
+    lab.pin_host_key(&target);
+    assert_eq!(
+        lab.ssh(&name, listing),
+        "600 sandbox sandbox /home/sandbox/.config/corral/sandbox.json\n\
+         755 sandbox sandbox /home/sandbox/.config/corral\n\
+         644 sandbox sandbox /home/sandbox/notes dir/notes.txt\n\
+         first"
+    );
+    lab.ssh(
+        &name,
+        "echo edited > ~/.config/corral/sandbox.json && echo mine > ~/kept",
+    );
+
+    let (_, booted) = wake_with(
+        &engine,
+        &id,
+        boot(&[(".config/corral/sandbox.json", 0o600, "ignored")]),
+    )
+    .await;
+    assert!(!booted, "a running sandbox is not booted again");
+    assert_eq!(
+        lab.ssh(&name, "cat ~/.config/corral/sandbox.json"),
+        "edited"
+    );
+
+    engine.stop(&id).await.unwrap();
+    let (_, booted) = wake_with(
+        &engine,
+        &id,
+        boot(&[(".config/corral/sandbox.json", 0o600, "second")]),
+    )
+    .await;
+    assert!(booted);
+    assert_eq!(
+        lab.ssh(
+            &name,
+            "cat ~/.config/corral/sandbox.json ~/kept ~/'notes dir/notes.txt'"
+        ),
+        "secondmine\nnotes",
+        "a start rewrites the files, and leaves the rest of the home alone"
+    );
+    assert_eq!(
+        lab.ssh(
+            &name,
+            "stat -c %a /etc/corral/home-files; cat /etc/corral/home-files/manifest"
+        ),
+        "700\n0 0600 .config/corral/sandbox.json"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_starts_never_exceed_max_running() {
     const MAX: usize = 2;
@@ -394,11 +500,7 @@ async fn concurrent_starts_never_exceed_max_running() {
     let mut starts = JoinSet::new();
     for id in ids.clone() {
         let engine = engine.clone();
-        starts.spawn(async move {
-            engine
-                .start(&id, CredentialMap::new(), Duration::ZERO)
-                .await
-        });
+        starts.spawn(async move { engine.start(&id, Boot::default(), Duration::ZERO).await });
     }
     let (mut started, mut refused) = (0, 0);
     while let Some(outcome) = starts.join_next().await {
@@ -419,14 +521,12 @@ async fn concurrent_starts_never_exceed_max_running() {
 
     let asleep = ids.iter().find(|id| !running.contains(id)).unwrap();
     assert!(matches!(
-        engine
-            .start(asleep, CredentialMap::new(), Duration::ZERO)
-            .await,
+        engine.start(asleep, Boot::default(), Duration::ZERO).await,
         Err(Error::LimitReached(_))
     ));
     engine.stop(&running[0]).await.unwrap();
     engine
-        .start(asleep, CredentialMap::new(), Duration::ZERO)
+        .start(asleep, Boot::default(), Duration::ZERO)
         .await
         .unwrap();
     assert_eq!(state(&engine, asleep).await, SandboxStatus::Running);
