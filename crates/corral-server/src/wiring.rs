@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::get;
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
-use corral_core::app::{Accounts, Credentials, Keys, Limits, Sandboxes, SshAccess};
+use corral_core::app::{Accounts, Credentials, Keys, Limits, SandboxLinks, Sandboxes, SshAccess};
 use corral_core::ports::{IdentityProvider, SandboxEngine, SecretStore};
 use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
@@ -50,6 +50,10 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         Limits {
             max_sandboxes_per_user: config.limits.max_sandboxes_per_user,
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
+        },
+        SandboxLinks {
+            api: config.http.sandbox_base_url().as_str().to_owned(),
+            web: config.http.base_url.as_str().to_owned(),
         },
     );
     let access = SshAccess::new(

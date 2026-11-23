@@ -8,8 +8,8 @@ use super::{
     FakeEngine, FakeProvider, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
 };
 use crate::app::{
-    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, SandboxView,
-    Sandboxes, SizePreset, SshAccess,
+    Accounts, Catalog, CreateSandbox, Credentials, ImageOption, Keys, Limits, SandboxLinks,
+    SandboxView, Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{
     Admin, Allocation, CredentialName, ImageKey, Resources, Role, Sandbox, SandboxDefaults,
@@ -73,6 +73,14 @@ pub fn defaults(image: &str, size: &str) -> SandboxDefaults {
     SandboxDefaults {
         image: ImageKey::parse(image).unwrap(),
         size: SizeKey::parse(size).unwrap(),
+    }
+}
+
+#[must_use]
+pub fn links() -> SandboxLinks {
+    SandboxLinks {
+        api: "http://corral.internal:8080".to_owned(),
+        web: "https://corral.example.com".to_owned(),
     }
 }
 
@@ -161,6 +169,7 @@ impl World {
             credentials.clone(),
             catalog(),
             limits,
+            links(),
         );
         let key_repo = Arc::new(MemoryKeyRepo::default());
         let access = Arc::new(SshAccess::new(

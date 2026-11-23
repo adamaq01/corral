@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use corral_core::domain::{ImageKey, Sandbox, SandboxId, SandboxName, SizeKey, UserId};
+use corral_core::domain::{ImageKey, Sandbox, SandboxId, SandboxName, SizeKey, TokenHash, UserId};
 use corral_core::ports::SandboxRepo;
 use corral_core::{Error, Result};
 use uuid::Uuid;
@@ -164,15 +164,46 @@ impl SandboxRepo for Store {
         .map_err(db_error)
     }
 
-    async fn record_start(&self, id: &SandboxId, at: DateTime<Utc>) -> Result<()> {
+    async fn record_start(
+        &self,
+        id: &SandboxId,
+        at: DateTime<Utc>,
+        token: &TokenHash,
+    ) -> Result<()> {
         on_pool!(self.pool, |pool| {
-            sqlx::query("update sandboxes set started_at = $2 where id = $1")
+            sqlx::query("update sandboxes set started_at = $2, token_hash = $3 where id = $1")
                 .bind(&id.0)
                 .bind(at)
+                .bind(token.as_str())
                 .execute(pool)
                 .await
                 .map(drop)
         })
         .map_err(db_error)
+    }
+
+    async fn revoke_token(&self, id: &SandboxId) -> Result<()> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query("update sandboxes set token_hash = null where id = $1")
+                .bind(&id.0)
+                .execute(pool)
+                .await
+                .map(drop)
+        })
+        .map_err(db_error)
+    }
+
+    async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>> {
+        let row: Option<SandboxRow> = on_pool!(self.pool, |pool| {
+            sqlx::query_as(
+                "select id, owner, name, image, size, created_at, started_at \
+                 from sandboxes where token_hash = $1",
+            )
+            .bind(token.as_str())
+            .fetch_optional(pool)
+            .await
+        })
+        .map_err(db_error)?;
+        row.map(Sandbox::try_from).transpose()
     }
 }

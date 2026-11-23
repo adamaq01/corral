@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use crate::Result;
 use crate::domain::{
-    Handle, Sandbox, SandboxDefaults, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
+    Handle, Sandbox, SandboxDefaults, SandboxId, SandboxName, SshKey, SshPublicKey, TokenHash,
+    User, UserId,
 };
 
 #[async_trait]
@@ -48,6 +49,15 @@ pub trait SandboxRepo: Send + Sync {
     async fn default_id(&self, owner: UserId) -> Result<Option<SandboxId>>;
     /// Does nothing unless `id` is one of the owner's sandboxes.
     async fn set_default(&self, owner: UserId, id: &SandboxId) -> Result<()>;
-    /// Sets the sandbox's `started_at`. Does nothing unless the sandbox exists.
-    async fn record_start(&self, id: &SandboxId, at: DateTime<Utc>) -> Result<()>;
+    /// Sets the sandbox's `started_at`, and the token of that start in place of any earlier one.
+    /// Does nothing unless the sandbox exists.
+    async fn record_start(
+        &self,
+        id: &SandboxId,
+        at: DateTime<Utc>,
+        token: &TokenHash,
+    ) -> Result<()>;
+    /// Leaves the sandbox without a token.
+    async fn revoke_token(&self, id: &SandboxId) -> Result<()>;
+    async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>>;
 }

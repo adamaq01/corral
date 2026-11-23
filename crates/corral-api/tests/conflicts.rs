@@ -9,7 +9,9 @@ use axum::http::{Request, StatusCode, header};
 use corral_api::testing::trusting_provider;
 use corral_api::{Api, Key, SshEndpoint, router};
 use corral_core::app::{Accounts, Credentials, Keys, Limits, Sandboxes};
-use corral_core::fakes::{ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, MemorySecretStore, catalog};
+use corral_core::fakes::{
+    ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, MemorySecretStore, catalog, links,
+};
 use corral_sql::testing::Databases;
 use corral_store_sql::Store;
 use serde_json::{Value, json};
@@ -28,6 +30,7 @@ async fn app(databases: &Databases) -> Router {
             max_sandboxes_per_user: 5,
             wake_deadline: Duration::from_secs(1),
         },
+        links(),
     );
     let api = Api {
         accounts: Accounts::new(

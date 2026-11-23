@@ -11,8 +11,11 @@ contract = ["fakes", "dep:futures-util"]
 async-trait.workspace = true
 chrono.workspace = true
 futures-util = { version = "0.3.34", optional = true, default-features = false, features = ["alloc"] }
+getrandom = "0.4.3"
 secrecy.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.1"
 ssh-key.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
@@ -20,7 +23,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
-serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]

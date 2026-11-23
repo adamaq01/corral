@@ -7,7 +7,7 @@ use super::{at, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxDefaults, SandboxId, SandboxName, SizeKey, SshKey,
-    SshPublicKey, User, UserId, UserStatus,
+    SshPublicKey, TokenHash, User, UserId, UserStatus,
 };
 use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 
@@ -17,6 +17,7 @@ pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dy
     sandbox_defaults(users).await;
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
+    sandbox_tokens(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
     deleting_a_user_leaves_nothing_of_them(users, keys, sandboxes).await;
 }
@@ -316,12 +317,11 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     );
     assert_eq!(sandboxes.default_id(eve.id).await.unwrap(), None);
 
-    sandboxes.record_start(&main.id, at(7)).await.unwrap();
-    sandboxes.record_start(&main.id, at(8)).await.unwrap();
-    sandboxes
-        .record_start(&SandboxId(unique("sbx")), at(8))
-        .await
-        .expect("record a start of nothing");
+    let (token, nothing) = (TokenHash::of(&unique("token")), SandboxId(unique("sbx")));
+    for (id, second) in [(&main.id, 7), (&main.id, 8), (&nothing, 8)] {
+        let started = sandboxes.record_start(id, at(second), &token).await;
+        started.expect("record a start, of nothing too");
+    }
     let main = Sandbox {
         started_at: Some(at(8)),
         ..main
@@ -346,6 +346,60 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     assert_eq!(sandboxes.default_id(adam.id).await.unwrap(), None);
     assert_eq!(sandboxes.list(adam.id).await.unwrap(), vec![main]);
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
+}
+
+async fn sandbox_tokens(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+    let adam = seed_user(users, "adam").await;
+    let eve = seed_user(users, "eve").await;
+    let main = new_sandbox(adam.id, "main", 1);
+    let dev = new_sandbox(adam.id, "dev", 2);
+    let eves = new_sandbox(eve.id, "main", 3);
+    for sandbox in [&main, &dev, &eves] {
+        sandboxes.insert(sandbox, 5).await.expect("insert sandbox");
+    }
+    let token = |label: &str| TokenHash::of(&unique(label));
+    let (first, second, theirs) = (token("first"), token("second"), token("theirs"));
+    sandboxes
+        .record_start(&main.id, at(7), &first)
+        .await
+        .unwrap();
+    sandboxes
+        .record_start(&eves.id, at(7), &theirs)
+        .await
+        .unwrap();
+    sandboxes
+        .record_start(&main.id, at(8), &second)
+        .await
+        .unwrap();
+    let holder = async |token: &TokenHash| {
+        sandboxes
+            .by_token(token)
+            .await
+            .unwrap()
+            .map(|sandbox| (sandbox.id, sandbox.started_at))
+    };
+
+    assert_eq!(holder(&second).await, Some((main.id.clone(), Some(at(8)))));
+    assert_eq!(holder(&theirs).await, Some((eves.id.clone(), Some(at(7)))));
+    assert_eq!(holder(&first).await, None, "a start replaces the token");
+    assert_eq!(holder(&token("never")).await, None);
+
+    sandboxes.revoke_token(&main.id).await.unwrap();
+    sandboxes.revoke_token(&main.id).await.unwrap();
+    assert_eq!(holder(&second).await, None);
+    assert_eq!(holder(&theirs).await, Some((eves.id.clone(), Some(at(7)))));
+
+    sandboxes
+        .record_start(&dev.id, at(9), &first)
+        .await
+        .unwrap();
+    assert_eq!(holder(&first).await, Some((dev.id.clone(), Some(at(9)))));
+    assert!(sandboxes.delete(adam.id, &dev.name).await.unwrap());
+    assert_eq!(
+        holder(&first).await,
+        None,
+        "a deleted sandbox's token goes too"
+    );
 }
 
 async fn sandbox_limit_holds_under_concurrent_inserts(

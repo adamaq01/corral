@@ -7,10 +7,11 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use ts_rs::TS;
 
+use super::inside::SandboxLinks;
 use super::{Catalog, Credentials};
 use crate::domain::{
     Admin, Handle, HomeFiles, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName,
-    SandboxStatus, SizeKey, User, UserId,
+    SandboxStatus, SandboxToken, SizeKey, User, UserId,
 };
 use crate::ports::{
     Boot, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
@@ -52,12 +53,13 @@ pub struct SandboxDetails {
 
 #[derive(Clone)]
 pub struct Sandboxes {
-    repo: Arc<dyn SandboxRepo>,
-    users: Arc<dyn UserRepo>,
-    engine: Arc<dyn SandboxEngine>,
+    pub(super) repo: Arc<dyn SandboxRepo>,
+    pub(super) users: Arc<dyn UserRepo>,
+    pub(super) engine: Arc<dyn SandboxEngine>,
     credentials: Credentials,
     catalog: Catalog,
     limits: Limits,
+    links: SandboxLinks,
 }
 
 impl Sandboxes {
@@ -69,6 +71,7 @@ impl Sandboxes {
         credentials: Credentials,
         catalog: Catalog,
         limits: Limits,
+        links: SandboxLinks,
     ) -> Self {
         Self {
             repo,
@@ -77,6 +80,7 @@ impl Sandboxes {
             credentials,
             catalog,
             limits,
+            links,
         }
     }
 
@@ -264,14 +268,20 @@ impl Sandboxes {
 
     pub async fn stop(&self, owner: &User, name: &SandboxName) -> Result<()> {
         let sandbox = self.find(owner, name).await?;
-        self.engine.stop(&sandbox.id).await
+        self.halt(&sandbox).await
     }
 
     pub async fn restart(&self, owner: &User, name: &SandboxName) -> Result<()> {
         let mut sandbox = self.find(owner, name).await?;
-        self.engine.stop(&sandbox.id).await?;
+        self.halt(&sandbox).await?;
         self.start_within(&mut sandbox, Duration::ZERO).await?;
         Ok(())
+    }
+
+    // Its token goes first: a stop that fails part way leaves it running without one.
+    async fn halt(&self, sandbox: &Sandbox) -> Result<()> {
+        self.repo.revoke_token(&sandbox.id).await?;
+        self.engine.stop(&sandbox.id).await
     }
 
     pub async fn set_default(&self, owner: &User, name: &SandboxName) -> Result<()> {
@@ -298,16 +308,20 @@ impl Sandboxes {
     }
 
     /// Records the start on `sandbox` too, unless the engine kept it running as it was.
+    /// Issues the sandbox a token for the start, which it keeps only if the start boots it.
     async fn start_within(&self, sandbox: &mut Sandbox, deadline: Duration) -> Result<Readiness> {
         // Taken before the credentials load, so a change made while it starts counts as after it.
         let at = Utc::now();
+        let token = SandboxToken::generate()?;
         let boot = Boot {
             env: self.credentials.load(sandbox.owner).await?,
-            files: HomeFiles::new(),
+            files: HomeFiles::from([self.links.sandbox_file(sandbox, &token)]),
         };
         let started = self.engine.start(&sandbox.id, boot, deadline).await?;
         if started.booted {
-            self.repo.record_start(&sandbox.id, at).await?;
+            self.repo
+                .record_start(&sandbox.id, at, &token.hash())
+                .await?;
             sandbox.started_at = Some(at);
         }
         Ok(started.readiness)

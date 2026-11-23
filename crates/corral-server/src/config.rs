@@ -46,6 +46,9 @@ pub struct Http {
     #[serde(default = "internal_addr")]
     pub internal_addr: SocketAddr,
     pub base_url: BaseUrl,
+    /// Where sandboxes reach the public API, such as an in-cluster Service. Without it, the base
+    /// URL.
+    pub sandbox_base_url: Option<BaseUrl>,
     #[serde(default)]
     pub trust_forwarded_for: bool,
     /// The directory of the built web UI, which must hold one. Without it, the UI is served from
@@ -62,9 +65,15 @@ fn internal_addr() -> SocketAddr {
 }
 
 /// An `http://` or `https://` URL with no trailing slash.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(try_from = "String")]
 pub struct BaseUrl(String);
+
+impl Http {
+    pub fn sandbox_base_url(&self) -> &BaseUrl {
+        self.sandbox_base_url.as_ref().unwrap_or(&self.base_url)
+    }
+}
 
 impl BaseUrl {
     pub fn as_str(&self) -> &str {
@@ -486,6 +495,29 @@ mod tests {
         let config =
             Config::parse(&MINIMAL.replace("corral.lan:8080\"", "corral.lan:8080/\"")).unwrap();
         assert_eq!(config.http.base_url.as_str(), "http://corral.lan:8080");
+    }
+
+    #[test]
+    fn sandboxes_reach_the_base_url_unless_told_otherwise() {
+        let config = Config::parse(MINIMAL).unwrap();
+        assert_eq!(
+            config.http.sandbox_base_url().as_str(),
+            "http://corral.lan:8080"
+        );
+        let config = Config::parse(&MINIMAL.replace(
+            "base_url = \"http://corral.lan:8080\"",
+            "base_url = \"http://corral.lan:8080\"\nsandbox_base_url = \"http://corral.corral:8080/\"",
+        ))
+        .unwrap();
+        assert_eq!(
+            config.http.sandbox_base_url().as_str(),
+            "http://corral.corral:8080"
+        );
+        let message = rejection(&MINIMAL.replace(
+            "base_url = \"http://corral.lan:8080\"",
+            "base_url = \"http://corral.lan:8080\"\nsandbox_base_url = \"corral:8080\"",
+        ));
+        assert!(message.contains("base_url"), "{message}");
     }
 
     #[test]

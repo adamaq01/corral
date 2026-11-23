@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use super::lock;
 use crate::domain::{
-    Handle, Sandbox, SandboxDefaults, SandboxId, SandboxName, SshKey, SshPublicKey, User, UserId,
+    Handle, Sandbox, SandboxDefaults, SandboxId, SandboxName, SshKey, SshPublicKey, TokenHash,
+    User, UserId,
 };
 use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
 use crate::{Error, Result};
@@ -28,6 +29,7 @@ pub struct MemoryKeyRepo {
 pub struct MemorySandboxRepo {
     sandboxes: Mutex<Vec<Sandbox>>,
     defaults: Mutex<BTreeMap<UserId, SandboxId>>,
+    tokens: Mutex<BTreeMap<SandboxId, TokenHash>>,
 }
 
 fn find<T: Clone>(items: &Mutex<Vec<T>>, matches: impl Fn(&T) -> bool) -> Option<T> {
@@ -218,6 +220,7 @@ impl SandboxRepo for MemorySandboxRepo {
         let mut sandboxes = lock(&self.sandboxes);
         let before = sandboxes.len();
         sandboxes.retain(|s| !(s.owner == owner && s.name == *name));
+        lock(&self.tokens).retain(|id, _| sandboxes.iter().any(|s| s.id == *id));
         Ok(sandboxes.len() < before)
     }
 
@@ -236,10 +239,29 @@ impl SandboxRepo for MemorySandboxRepo {
         Ok(())
     }
 
-    async fn record_start(&self, id: &SandboxId, at: DateTime<Utc>) -> Result<()> {
+    async fn record_start(
+        &self,
+        id: &SandboxId,
+        at: DateTime<Utc>,
+        token: &TokenHash,
+    ) -> Result<()> {
         if let Some(sandbox) = lock(&self.sandboxes).iter_mut().find(|s| s.id == *id) {
             sandbox.started_at = Some(at);
+            lock(&self.tokens).insert(id.clone(), token.clone());
         }
         Ok(())
+    }
+
+    async fn revoke_token(&self, id: &SandboxId) -> Result<()> {
+        lock(&self.tokens).remove(id);
+        Ok(())
+    }
+
+    async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>> {
+        let id = lock(&self.tokens)
+            .iter()
+            .find(|(_, held)| *held == token)
+            .map(|(id, _)| id.clone());
+        Ok(id.and_then(|id| find(&self.sandboxes, |s| s.id == id)))
     }
 }

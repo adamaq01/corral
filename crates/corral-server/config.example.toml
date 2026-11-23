@@ -9,6 +9,8 @@
 public_addr = "0.0.0.0:8080"
 internal_addr = "0.0.0.0:8081"
 base_url = "https://corral.adamaq01.fr"
+# Where the `corral` command inside a sandbox reaches the API, when not at base_url.
+# sandbox_base_url = "http://corral.corral.svc:8080"
 # Behind Traefik every peer is the proxy, so password-login limits key on X-Forwarded-For.
 trust_forwarded_for = true
 # The built web UI. The server image has it in /usr/share/corral/web, which is the default.

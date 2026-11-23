@@ -10,7 +10,7 @@ use corral_core::app::{Credentials, Limits, Sandboxes, SshAccess};
 use corral_core::domain::{Handle, SandboxDefaults, SandboxId, SandboxStatus, User, UserId};
 use corral_core::fakes::{
     ADAM_CERT, EngineCall, FakeEngine, MAX_SANDBOXES, MemoryKeyRepo, MemorySandboxRepo,
-    MemorySecretStore, WAKE_DEADLINE, World, admin_proof, catalog, sandbox_name,
+    MemorySecretStore, WAKE_DEADLINE, World, admin_proof, catalog, links, sandbox_name,
 };
 use corral_core::ports::{
     Boot, Inspection, SandboxEngine, SandboxSpec, SshTarget, Started, UserRepo,
@@ -393,6 +393,7 @@ async fn a_sandbox_a_login_creates_is_finished_after_containerssh_stops_waiting(
             max_sandboxes_per_user: MAX_SANDBOXES,
             wake_deadline: WAKE_DEADLINE,
         },
+        links(),
     );
     let access = SshAccess::new(users, Arc::new(MemoryKeyRepo::default()), sandboxes, vec![]);
     let app = router(Arc::new(access), ContainerSshConfig::default());
