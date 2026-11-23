@@ -15,7 +15,6 @@ base=http://127.0.0.1:$http_port
 started=$SECONDS
 passed=0
 work=
-stdin_holder=
 
 ok() {
   passed=$((passed + 1))
@@ -55,9 +54,6 @@ cleanup() {
   local status=$?
   if [[ -n "$work" && -d "$work/hc-home" ]]; then
     hc_local server stop >/dev/null 2>&1 || true
-  fi
-  if [[ -n "$stdin_holder" ]]; then
-    kill "$stdin_holder" 2>/dev/null || true
   fi
   if ((status != 0)) && [[ -n "$work" ]]; then
     tail -n 60 "$work/run.log" >&2 2>/dev/null || true
@@ -206,15 +202,8 @@ Host corral-e2e
   ConnectTimeout 10
   LogLevel ERROR
 EOF
-# ContainerSSH 0.6.1's sshproxy backend ends a session as soon as the client's stdin ends, and
-# can close it before relaying the command's last output. Hold stdin open, and let each command
-# pause before it exits.
-exec 3< <(exec sleep 3600)
-stdin_holder=$!
-
 as() {
-  ssh -F "$work/ssh_config" -i "$work/keys/$1" "$2@corral-e2e" \
-    "$3"$'\n''status=$?; sleep 0.2; exit $status' <&3
+  ssh -n -F "$work/ssh_config" -i "$work/keys/$1" "$2@corral-e2e" "$3"
 }
 
 refused() {
@@ -225,15 +214,19 @@ refused() {
   [[ "$output" == *"Permission denied"* ]] || fail "$2 with $1's key: unexpected error: $output"
 }
 
-expect "ssh main.adam id -un" sandbox "$(as adam main.adam "id -un")"
+expect "ssh -n main.adam id -un" sandbox "$(as adam main.adam "id -un")"
 as adam main.adam 'echo adam >~/owner'
-ok "ssh main.adam@127.0.0.1 -p $ssh_port runs as sandbox, ContainerSSH's host key pinned"
+ok "ssh -n main.adam@127.0.0.1 -p $ssh_port runs as sandbox, ContainerSSH's host key pinned"
+
+expect "bytes from ssh -n main.adam with a 200 kB output" 200000 \
+  "$(as adam main.adam 'head -c 200000 /dev/zero | tr "\0" a' | wc -c | xargs)"
+ok "a one-shot command's 200 kB output arrives whole with stdin closed"
 
 printf '#!/bin/sh\ntouch "%s/asked"\necho guess\n' "$work" >askpass
 chmod 700 askpass
 if output=$(SSH_ASKPASS=$work/askpass SSH_ASKPASS_REQUIRE=force ssh -F ssh_config -o BatchMode=no \
   -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=1 \
-  main.adam@corral-e2e true 2>&1 <&3); then
+  main.adam@corral-e2e true 2>&1 </dev/null); then
   fail "a password login was let in"
 fi
 [[ "$output" == *"Permission denied"* ]] || fail "password login: unexpected error: $output"
@@ -249,8 +242,7 @@ expect "scratch's image and size" "dev small" \
 ok "ssh scratch.adam made sandbox scratch from adam's defaults, then opened it"
 
 expect "ssh ssh://main.adam@corral-e2e:$ssh_port" sandbox \
-  "$(ssh -F ssh_config -i keys/adam "ssh://main.adam@corral-e2e:$ssh_port" \
-    'id -un'$'\n''status=$?; sleep 0.2; exit $status' <&3)"
+  "$(ssh -n -F ssh_config -i keys/adam "ssh://main.adam@corral-e2e:$ssh_port" 'id -un')"
 ok "an ssh:// URI takes main.adam as written, as hc machine add passes it"
 
 refused adam adam+main

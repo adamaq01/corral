@@ -264,17 +264,10 @@ touch "$work/approvals"
 export PATH=$work/bin:$PATH
 cert=$work/home/.ssh/corral-opkssh-cert.pub
 
-# ContainerSSH 0.6.1's sshproxy backend ends a session as soon as the client's stdin ends, and
-# can close it before relaying the command's last output. Hold stdin open, and let each command
-# pause before it exits.
-exec 3< <(exec sleep 3600)
-pids+=($!)
-
 login_as() {
   local user=$1
   shift
-  HOME=$work/home ssh -F "$work/ssh_config" "$@" "$user@corral-e2e" \
-    "id -un"$'\n''status=$?; sleep 0.2; exit $status' <&3 2>&1
+  HOME=$work/home ssh -n -F "$work/ssh_config" "$@" "$user@corral-e2e" "id -un" 2>&1
 }
 refused() {
   local output
@@ -318,10 +311,10 @@ mv "$work/kept" "$key"
 mv "$work/kept-cert.pub" "$cert"
 plain_ssh() {
   local user=$1 identity=$2
-  HOME=$work/home ssh -F /dev/null -p "$ssh_port" -i "$identity" -o IdentitiesOnly=yes \
+  HOME=$work/home ssh -n -F /dev/null -p "$ssh_port" -i "$identity" -o IdentitiesOnly=yes \
     -o IdentityAgent=none -o BatchMode=yes -o PreferredAuthentications=publickey \
     -o "UserKnownHostsFile=$work/known_hosts" -o StrictHostKeyChecking=yes -o LogLevel=ERROR \
-    "$user@127.0.0.1" "id -un"$'\n''status=$?; sleep 0.2; exit $status' <&3 2>&1
+    "$user@127.0.0.1" "id -un" 2>&1
 }
 denied() {
   local output

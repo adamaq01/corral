@@ -11,9 +11,7 @@ test.afterAll(() => rmSync(keyDir, { recursive: true, force: true }));
 
 /**
  * Runs `remote` over `command`, an SSH command as the UI shows it, with the test's key and
- * ContainerSSH's host key pinned. ContainerSSH 0.6.1 can drop a command's output when the
- * client's input ends or the command exits at once, so stdin stays open and each command pauses
- * before it exits.
+ * ContainerSSH's host key pinned.
  */
 function overSsh(command: string, key: string, remote: string): Promise<string> {
 	const [program, ...args] = command.split(' ');
@@ -37,9 +35,10 @@ function overSsh(command: string, key: string, remote: string): Promise<string> 
 		'-o',
 		'LogLevel=ERROR'
 	];
-	const script = `${remote}\nstatus=$?; sleep 0.2; exit $status`;
 	return new Promise((resolve, reject) => {
-		const ssh = spawn(program, [...options, ...args, script], { stdio: ['pipe', 'pipe', 'pipe'] });
+		const ssh = spawn(program, [...options, ...args, remote], {
+			stdio: ['ignore', 'pipe', 'pipe']
+		});
 		let [stdout, stderr] = ['', ''];
 		ssh.stdout.on('data', (data) => (stdout += data));
 		ssh.stderr.on('data', (data) => (stderr += data));
