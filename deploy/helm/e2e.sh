@@ -238,6 +238,43 @@ if ssh -F "$work/ssh_config" -o BatchMode=no -o PreferredAuthentications=passwor
 fi
 ok "password and keyboard-interactive logins are refused"
 
+# The command is typed before ssh connects, so it reaches the session before the shell starts.
+type_ahead_and_drop() {
+  python3 -I -c '
+import os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+os.write(fd, b"echo typed-$((6 * 7))\n")
+seen = b""
+end = time.time() + 30
+while b"typed-42\r\n" not in seen and time.time() < end:
+    if select.select([fd], [], [], 0.5)[0]:
+        try:
+            seen += os.read(fd, 4096)
+        except OSError:
+            break
+os.kill(pid, 9)
+os.waitpid(pid, 0)
+print(repr(seen))
+' ssh -F "$work/ssh_config" main.adam@corral-e2e
+}
+shells() {
+  kubectl --namespace "$sandboxes" exec "$sandbox_id" -c sandbox -- pgrep -c -x bash 2>/dev/null || true
+}
+shells_before=$(shells)
+typed=$(type_ahead_and_drop)
+[[ "$typed" == *'typed-42\r\n'* && "$typed" != *'\x00'* ]] \
+  || fail "a command typed before the shell started: the terminal showed $typed"
+ok "a command typed before the shell starts runs, with no stray bytes on the terminal"
+waited=0
+until [[ "$(shells)" == "$shells_before" ]]; do
+  ((waited < 30)) || fail "$(shells) bash processes 30s after the connection dropped, $shells_before before"
+  sleep 1
+  waited=$((waited + 1))
+done
+ok "dropping that connection ended its shell within ${waited}s"
+
 as main.adam 'nohup node -e "require(\"http\").createServer((q, r) => q.url === \"/hold\" ? r.writeHead(200).write(\"held\") : r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" >/dev/null 2>&1 &'
 ssh -F "$work/ssh_config" -o ExitOnForwardFailure=yes -N \
   -L "127.0.0.1:$forward_port:127.0.0.1:8000" main.adam@corral-e2e </dev/null &
