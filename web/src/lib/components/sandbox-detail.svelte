@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
+	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import PowerIcon from '@lucide/svelte/icons/power';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
@@ -182,9 +183,23 @@
 			</Alert.Root>
 		{/if}
 
+		{#if current.staleCredentials}
+			<Alert.Root>
+				<KeyRoundIcon />
+				<Alert.Title>Restart to apply your credential changes</Alert.Title>
+				<Alert.Description>
+					Your credentials changed after this sandbox started. Until it restarts, its SSH sessions
+					get the values it started with.
+				</Alert.Description>
+			</Alert.Root>
+		{/if}
+
 		{#if presentation.manageable}
+			{@const powers = current.staleCredentials
+				? (['restart', 'stop'] as const)
+				: presentation.powers}
 			<div class="flex flex-wrap gap-2">
-				{#each presentation.powers as power, index (power)}
+				{#each powers as power, index (power)}
 					{@render actionButton(power, index === 0 ? 'default' : 'outline')}
 				{/each}
 				{#if !current.isDefault}

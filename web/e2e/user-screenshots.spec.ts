@@ -28,7 +28,7 @@ const catalog: Catalog = {
 function sandbox(
 	name: string,
 	status: SandboxStatus,
-	extra: Partial<Pick<Sandbox, 'image' | 'size' | 'isDefault'>> = {}
+	extra: Partial<Pick<Sandbox, 'image' | 'size' | 'isDefault' | 'staleCredentials'>> = {}
 ): Sandbox {
 	return {
 		name,
@@ -45,6 +45,7 @@ function sandbox(
 
 const sandboxes: Sandbox[] = [
 	sandbox('main', { state: 'running' }, { isDefault: true }),
+	sandbox('agents', { state: 'running' }, { staleCredentials: true }),
 	sandbox('experiments', { state: 'starting' }, { size: 'large' }),
 	sandbox('docs', { state: 'sleeping' }, { image: 'python' }),
 	sandbox('broken', { state: 'failed', detail: 'the container exited with code 137' }),
@@ -141,8 +142,15 @@ inEveryView((look) => {
 		await look(page, 'sandbox-delete', { fullPage: false });
 	});
 
+	test('a sandbox missing a credential change', async ({ page }) => {
+		await serve(page, { '/api/sandboxes/agents': sandboxes[1], '/api/catalog': catalog });
+		await page.goto('/sandboxes/agents');
+		await page.getByText('Restart to apply your credential changes').waitFor();
+		await look(page, 'sandbox-stale-credentials');
+	});
+
 	test('a failed sandbox, and a missing one', async ({ page }) => {
-		await serve(page, { '/api/sandboxes/broken': sandboxes[3], '/api/catalog': catalog });
+		await serve(page, { '/api/sandboxes/broken': sandboxes[4], '/api/catalog': catalog });
 		await page.goto('/sandboxes/broken');
 		await page.getByText('The sandbox failed').waitFor();
 		await look(page, 'sandbox-failed');

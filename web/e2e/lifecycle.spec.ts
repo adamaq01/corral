@@ -72,6 +72,29 @@ test('the sandbox page and the list keep up with a power action while it runs an
 		await expect(badge(row, 'Running')).toBeVisible({ timeout: 90_000 });
 	});
 
+	await test.step('a credential change marks the running sandbox until a restart', async () => {
+		const set = await page.request.put('/api/credentials/LIFECYCLE_TOKEN', {
+			data: { value: 'one' }
+		});
+		expect(set.ok(), await set.text()).toBe(true);
+		await page.goto('/sandboxes/main');
+		await expect(page.getByText('Restart to apply your credential changes')).toBeVisible();
+
+		await page
+			.getByRole('navigation', { name: 'Main' })
+			.getByRole('link', { name: 'Sandboxes' })
+			.click();
+		const row = page.getByRole('list', { name: 'Sandboxes' }).getByRole('listitem');
+		await expect(row).toContainText('Restart to apply your credential changes.');
+		await row.getByRole('button', { name: 'Restart main' }).click();
+		await expect(row).not.toContainText('Restart to apply', { timeout: 90_000 });
+		await expect(badge(row, 'Running')).toBeVisible({ timeout: 90_000 });
+
+		await page.goto('/sandboxes/main');
+		await expect(badge(page, 'Running')).toBeVisible();
+		await expect(page.getByText('Restart to apply your credential changes')).toBeHidden();
+	});
+
 	const deleted = await page.request.delete('/api/me');
 	expect(deleted.ok(), await deleted.text()).toBe(true);
 });

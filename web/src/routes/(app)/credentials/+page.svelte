@@ -65,7 +65,8 @@
 		<Alert.Title>Values reach a sandbox when it next starts</Alert.Title>
 		<Alert.Description>
 			Each credential is an environment variable in every SSH session. A sleeping sandbox gets the
-			current values when it wakes; restart a running one to pick up a change.
+			current values when it wakes. A running one keeps the values it started with until it
+			restarts, and Sandboxes marks it until then.
 		</Alert.Description>
 	</Alert.Root>
 
