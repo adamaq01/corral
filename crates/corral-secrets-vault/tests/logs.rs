@@ -37,11 +37,12 @@ impl io::Write for Capture {
 async fn credential_values_never_reach_the_logs() {
     let capture = Capture::default();
     let writer = capture.clone();
-    tracing_subscriber::fmt()
+    let _scope = tracing_subscriber::fmt()
         .with_max_level(LevelFilter::TRACE)
         .with_ansi(false)
         .with_writer(move || writer.clone())
-        .init();
+        .finish()
+        .set_default();
 
     for server in [Server::OpenBao, Server::Vault] {
         let kv = KvServer::start(server).await;
