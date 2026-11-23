@@ -48,7 +48,7 @@ jobs:
           tags: corral-sandbox:e2e
           cache-from: type=gha,scope=corral-sandbox
       - run: images/sandbox/test.sh
-      # Every test but the agent-sandbox cluster tests, which need a kind cluster and run locally.
+      # Every test but the agent-sandbox cluster tests, which need a kind cluster: engine-kind runs them.
       - run: cargo test --workspace --all-features --exclude corral-engine-agent-sandbox
       - run: cargo test --package corral-engine-agent-sandbox --all-features --lib
       - name: Install hc, the version and checksum the sandbox image pins
@@ -170,9 +170,41 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: deploy/helm/e2e.sh
 
+  engine-kind:
+    runs-on: ubuntu-latest
+    env:
+      CI: "1"
+      CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_TEST_KUBE_NAMESPACE: corral-dev
+    steps:
+      # The sandbox image is loaded into the kind node too, which needs room for a second copy.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/sandbox/Dockerfile
+          load: true
+          tags: corral-sandbox:e2e
+          cache-from: type=gha,scope=corral-sandbox
+      - name: Install kind
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  $RUNNER_TEMP/kind" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 755 "$RUNNER_TEMP/kind" "$RUNNER_TEMP/bin/kind"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: crates/corral-engine-agent-sandbox/tests/kind/up.sh
+      - run: cargo test --package corral-engine-agent-sandbox --all-features --test cluster -- --test-threads=1
+
   publish:
     if: github.event_name == 'push'
-    needs: [check, test, web, chart, chart-kind]
+    needs: [check, test, web, chart, chart-kind, engine-kind]
     runs-on: ubuntu-latest
     permissions:
       contents: read
