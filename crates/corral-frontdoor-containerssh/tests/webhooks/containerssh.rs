@@ -127,8 +127,15 @@ fn key_file(key: &PrivateKey) -> NamedTempFile {
 }
 
 fn ssh(port: u16, keys: &[&NamedTempFile], username: &str) -> Child {
+    ssh_to(
+        keys,
+        &["-p", &port.to_string(), &format!("{username}@127.0.0.1")],
+    )
+}
+
+fn ssh_to(keys: &[&NamedTempFile], destination: &[&str]) -> Child {
     let mut command = Command::new("ssh");
-    command.args(["-F", "/dev/null", "-p", &port.to_string()]);
+    command.args(["-F", "/dev/null"]);
     for key in keys {
         command.arg("-i").arg(key.path());
     }
@@ -150,9 +157,9 @@ fn ssh(port: u16, keys: &[&NamedTempFile], username: &str) -> Child {
             "ConnectTimeout=10",
             "-o",
             "LogLevel=ERROR",
-            &format!("{username}@127.0.0.1"),
-            "true",
         ])
+        .args(destination)
+        .arg("true")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -188,7 +195,7 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
     let adam_key = key_file(&w.adam.key);
     let eve_key = key_file(&w.eve.key);
 
-    let denied = ssh(port, &[&eve_key], "adam+main")
+    let denied = ssh(port, &[&eve_key], "main.adam")
         .wait_with_output()
         .await
         .unwrap();
@@ -203,7 +210,7 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
         .unwrap();
     w.world.engine.set_waking(true);
     let starts = w.starts(&eve_main.id);
-    let _eve = ssh(port, &[&eve_key], "eve+main");
+    let _eve = ssh(port, &[&eve_key], "main.eve");
     let first_wake = async {
         while w.starts(&eve_main.id) == starts {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -215,7 +222,7 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
     assert_eq!(banner.unwrap().unwrap(), "SSH-2.0-ContainerSSH");
     assert_eq!(w.starts(&eve_main.id), starts + 2);
 
-    let _adam = ssh(port, &[&adam_key], "adam+main");
+    let _adam = ssh(port, &[&adam_key], "main.adam");
     let request = timeout(Duration::from_secs(60), kube_requests.recv()).await;
     let request = request.unwrap().unwrap();
     let (method, target) = request.split_once(' ').unwrap();
@@ -293,7 +300,7 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
         containerssh("keyed", webhook_port, json!({}), Some(&proxy_key)).await;
     let eve_key = key_file(&w.eve.key);
 
-    let refused = ssh(keyless_port, &[&eve_key], "eve+main")
+    let refused = ssh(keyless_port, &[&eve_key], "main.eve")
         .wait_with_output()
         .await
         .unwrap();
@@ -304,7 +311,7 @@ async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
         "{seen:#?}"
     );
 
-    let proxied = ssh(keyed_port, &[&eve_key], "eve+main")
+    let proxied = ssh(keyed_port, &[&eve_key], "main.eve")
         .wait_with_output()
         .await
         .unwrap();
@@ -328,10 +335,11 @@ async fn logs_in(
     keys: &[&NamedTempFile],
     backend: &mut mpsc::UnboundedReceiver<String>,
 ) -> bool {
-    let output = ssh(port, keys, "adam+main")
-        .wait_with_output()
-        .await
-        .unwrap();
+    reaches_backend(ssh(port, keys, "main.adam"), backend).await
+}
+
+async fn reaches_backend(login: Child, backend: &mut mpsc::UnboundedReceiver<String>) -> bool {
+    let output = login.wait_with_output().await.unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     if stderr.contains("Permission denied") {
         return false;
@@ -380,4 +388,37 @@ async fn containerssh_counts_a_failed_connection_once_however_many_keys_it_offer
     assert!(logs_in(port, &[&adam], &mut backend).await);
     assert!(!logs_in(port, &strangers, &mut backend).await);
     assert!(!logs_in(port, &[&adam], &mut backend).await);
+}
+
+#[tokio::test]
+async fn containerssh_takes_the_username_of_an_ssh_uri_as_written() {
+    let w = Fixture::new().await;
+    let (backend, backend_port) = listen().await;
+    let mut backend = first_lines(backend);
+    w.world.engine.set_target(
+        &w.adam.main.id,
+        SshTarget::SshServer {
+            host: GATEWAY.to_owned(),
+            port: backend_port,
+            username: "sandbox".to_owned(),
+            host_key_fingerprint: generate_key()
+                .public_key()
+                .fingerprint(HashAlg::Sha256)
+                .to_string(),
+        },
+    );
+    let webhook_port = serve_webhooks(&w).await;
+    let (_containerssh, port) = containerssh("uri", webhook_port, json!({}), None).await;
+    let adam = key_file(&w.adam.key);
+    let uri = |username: &str| format!("ssh://{username}@127.0.0.1:{port}");
+
+    // As Herdr connects: `hc machine add` hands ssh a URI, whose user OpenSSH percent-decodes.
+    assert!(reaches_backend(ssh_to(&[&adam], &[&uri("main.adam")]), &mut backend).await);
+    for refused in [uri("adam+main"), uri("adam%2Bmain"), uri("main+adam")] {
+        assert!(
+            !reaches_backend(ssh_to(&[&adam], &[&refused]), &mut backend).await,
+            "{refused}"
+        );
+    }
+    assert!(!reaches_backend(ssh(port, &[&adam], "adam+main"), &mut backend).await);
 }

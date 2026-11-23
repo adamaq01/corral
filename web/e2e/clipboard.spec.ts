@@ -16,7 +16,7 @@ const sandbox: Sandbox = {
 	image: 'dev',
 	size: 'small',
 	isDefault: true,
-	ssh: { username: 'bob+main', host: lan, port: 2222 },
+	ssh: { username: 'main.bob', host: lan, port: 2222 },
 	createdAt: '2026-11-02T09:30:00Z',
 	staleCredentials: false,
 	state: 'running'
@@ -54,7 +54,7 @@ test('copy buttons work on a plain HTTP origin', async ({ page, context, baseURL
 			'Host corral-main',
 			`  HostName ${lan}`,
 			'  Port 2222',
-			'  User bob+main',
+			'  User main.bob',
 			'  PreferredAuthentications publickey'
 		].join('\n')
 	);

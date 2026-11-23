@@ -106,7 +106,8 @@ export type SshEndpoint = { host: string, port: number, };
 export type SshKey = { id: string, label: string, publicKey: string, fingerprint: string, createdAt: string, };
 
 /**
- * `<handle>` or `<handle>+<sandbox>`.
+ * `<handle>`, or `<sandbox>.<handle>`. Neither part holds a dot, and nothing in either needs
+ * encoding in an `ssh://` URI.
  */
 export type SshUsername = string;
 

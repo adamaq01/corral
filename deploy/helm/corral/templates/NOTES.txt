@@ -8,7 +8,7 @@ Create the first admin; the password is read twice from the terminal, at least 1
 
 Users connect with:
 
-  ssh -p {{ .Values.ssh.publicPort }} <name>+<sandbox>@{{ .Values.ssh.publicHost }}
+  ssh -p {{ .Values.ssh.publicPort }} <sandbox>.<name>@{{ .Values.ssh.publicHost }}
 
 The host key fingerprint they see on first connect:
 

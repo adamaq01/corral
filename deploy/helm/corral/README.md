@@ -6,7 +6,7 @@ sandbox is an agent-sandbox `Sandbox` whose home is a PersistentVolumeClaim. Use
 with any SSH client:
 
 ```
-ssh -p 48291 <handle>+<sandbox>@<ssh.publicHost>
+ssh -p 48291 <sandbox>.<handle>@<ssh.publicHost>
 ```
 
 ## What it installs

@@ -100,12 +100,12 @@ mod tests {
     #[tokio::test]
     async fn cannot_reach_another_users_sandbox() {
         let (w, ..) = adam_and_eve().await;
-        assert!(!w.access.authenticate("adam+main", EVE_KEY).await.unwrap());
+        assert!(!w.access.authenticate("main.adam", EVE_KEY).await.unwrap());
         assert!(!w.access.authenticate("adam", EVE_KEY).await.unwrap());
-        assert!(!w.access.authenticate("eve+main", ADAM_KEY).await.unwrap());
-        assert!(w.access.authenticate("adam+main", ADAM_KEY).await.unwrap());
+        assert!(!w.access.authenticate("main.eve", ADAM_KEY).await.unwrap());
+        assert!(w.access.authenticate("main.adam", ADAM_KEY).await.unwrap());
         assert!(w.access.authenticate("adam", ADAM_KEY).await.unwrap());
-        assert!(w.access.authenticate("eve+main", EVE_KEY).await.unwrap());
+        assert!(w.access.authenticate("main.eve", EVE_KEY).await.unwrap());
     }
 
     #[tokio::test]
@@ -134,9 +134,9 @@ mod tests {
     async fn a_credential_the_users_provider_vouches_for_lets_only_that_user_in() {
         let (w, adam, _) = adam_and_eve().await;
         w.provider.vouch("adam", ADAM_CERT);
-        assert!(w.access.authenticate("adam+main", ADAM_CERT).await.unwrap());
+        assert!(w.access.authenticate("main.adam", ADAM_CERT).await.unwrap());
         assert!(w.access.authenticate("adam", ADAM_CERT).await.unwrap());
-        assert!(!w.access.authenticate("eve+main", ADAM_CERT).await.unwrap());
+        assert!(!w.access.authenticate("main.eve", ADAM_CERT).await.unwrap());
         assert!(!w.access.authenticate("nobody", ADAM_CERT).await.unwrap());
         let root = w.admin("root").await;
         w.accounts
@@ -144,7 +144,7 @@ mod tests {
             .await
             .unwrap();
         let asked = w.provider.asked();
-        assert!(!w.access.authenticate("adam+main", ADAM_CERT).await.unwrap());
+        assert!(!w.access.authenticate("main.adam", ADAM_CERT).await.unwrap());
         assert_eq!(w.provider.asked(), asked);
     }
 
@@ -184,12 +184,13 @@ mod tests {
     async fn unknown_disabled_or_malformed_are_refused() {
         let (w, adam, _) = adam_and_eve().await;
         for u in [
-            "nobody+main",
+            "main.nobody",
             "nobody",
-            "adam+missing",
+            "missing.adam",
             "ADAM",
-            "adam++x",
-            "adam+main+x",
+            "main..adam",
+            "x.main.adam",
+            "adam+main",
             " adam",
             "",
         ] {
@@ -200,7 +201,7 @@ mod tests {
             .set_enabled(&admin_proof(&root), adam.id, false)
             .await
             .unwrap();
-        assert!(!w.access.authenticate("adam+main", ADAM_KEY).await.unwrap());
+        assert!(!w.access.authenticate("main.adam", ADAM_KEY).await.unwrap());
         assert!(!w.access.authenticate("adam", ADAM_KEY).await.unwrap());
     }
 
@@ -218,7 +219,7 @@ mod tests {
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
         w.engine.set_waking(true);
         assert_eq!(
-            w.access.route("adam+main").await.unwrap(),
+            w.access.route("main.adam").await.unwrap(),
             Readiness::Waking
         );
         assert!(matches!(
@@ -239,11 +240,11 @@ mod tests {
         let calls_before = w.engine.calls().len();
         for u in [
             "nobody",
-            "adam+missing",
+            "missing.adam",
             "eve",
-            "eve+main",
+            "main.eve",
             "ADAM",
-            "adam++x",
+            "main..adam",
         ] {
             assert!(
                 matches!(w.access.route(u).await, Err(Error::Forbidden)),
@@ -265,7 +266,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            w.access.route("adam+main").await.unwrap(),
+            w.access.route("main.adam").await.unwrap(),
             Readiness::Ready(_)
         ));
         assert_eq!(

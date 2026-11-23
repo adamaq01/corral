@@ -88,10 +88,10 @@ async fn disable(w: &Fixture, member: &Member) {
 async fn pubkey_accepts_the_owners_key() {
     let w = Fixture::new().await;
     let app = w.router();
-    for username in ["adam", "adam+main"] {
+    for username in ["adam", "main.adam"] {
         assert!(accepted(&app, username, &w.adam.public_key(), "1.2.3.4:50022").await);
     }
-    assert!(accepted(&app, "eve+main", &w.eve.public_key(), "1.2.3.4:50022").await);
+    assert!(accepted(&app, "main.eve", &w.eve.public_key(), "1.2.3.4:50022").await);
 }
 
 #[tokio::test]
@@ -99,8 +99,8 @@ async fn pubkey_accepts_a_certificate_the_owners_provider_vouches_for() {
     let w = Fixture::new().await;
     w.world.provider.vouch("adam", ADAM_CERT);
     let app = w.router();
-    assert!(accepted(&app, "adam+main", ADAM_CERT, "1.2.3.4:50022").await);
-    assert!(!accepted(&app, "eve+main", ADAM_CERT, "1.2.3.4:50022").await);
+    assert!(accepted(&app, "main.adam", ADAM_CERT, "1.2.3.4:50022").await);
+    assert!(!accepted(&app, "main.eve", ADAM_CERT, "1.2.3.4:50022").await);
 }
 
 #[tokio::test]
@@ -111,14 +111,14 @@ async fn pubkey_denies_with_200_and_false() {
     let eve = w.eve.public_key();
     let stranger = public_line(&generate_key());
     for (username, key) in [
-        ("adam+main", stranger.as_str()),
-        ("adam+main", eve.as_str()),
+        ("main.adam", stranger.as_str()),
+        ("main.adam", eve.as_str()),
         ("adam", eve.as_str()),
-        ("eve+main", adam.as_str()),
+        ("main.eve", adam.as_str()),
         ("nobody", adam.as_str()),
-        ("adam+missing", adam.as_str()),
+        ("missing.adam", adam.as_str()),
         ("ADAM", adam.as_str()),
-        ("adam+main", "not a key"),
+        ("main.adam", "not a key"),
     ] {
         assert!(
             !accepted(&app, username, key, "1.2.3.4:50022").await,
@@ -126,7 +126,7 @@ async fn pubkey_denies_with_200_and_false() {
         );
     }
     disable(&w, &w.adam).await;
-    assert!(!accepted(&app, "adam+main", &adam, "1.2.3.4:50022").await);
+    assert!(!accepted(&app, "main.adam", &adam, "1.2.3.4:50022").await);
 }
 
 #[tokio::test(start_paused = true)]
@@ -217,7 +217,7 @@ async fn config_answers_each_target_kind() {
         },
     );
 
-    let (status, body) = config(&app, "adam+main", "adam+main").await;
+    let (status, body) = config(&app, "main.adam", "main.adam").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body,
@@ -245,7 +245,7 @@ async fn config_answers_each_target_kind() {
 async fn config_routes_the_authenticated_username() {
     let w = Fixture::new().await;
     let app = w.router();
-    let (status, body) = config(&app, "eve+main", "adam+main").await;
+    let (status, body) = config(&app, "main.eve", "main.adam").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body["config"]["kubernetes"]["pod"]["metadata"]["name"],
@@ -266,14 +266,14 @@ async fn config_returns_503_while_waking() {
     w.world.engine.set_waking(true);
     let starts = w.starts(&main.id);
     assert_eq!(
-        config(&app, "adam+main", "adam+main").await,
+        config(&app, "main.adam", "main.adam").await,
         (StatusCode::SERVICE_UNAVAILABLE, json!({}))
     );
     assert_eq!(w.starts(&main.id), starts + 1);
     assert_eq!(w.starts(&w.eve.main.id), 1);
     w.world.engine.set_waking(false);
     assert_eq!(
-        config(&app, "adam+main", "adam+main").await.0,
+        config(&app, "main.adam", "main.adam").await.0,
         StatusCode::OK
     );
 }
@@ -283,7 +283,7 @@ async fn config_refuses_unknown_disabled_or_missing_with_403() {
     let w = Fixture::new().await;
     let app = w.router();
     disable(&w, &w.eve).await;
-    for username in ["nobody", "adam+missing", "eve", "eve+main", "ADAM", ""] {
+    for username in ["nobody", "missing.adam", "eve", "main.eve", "ADAM", ""] {
         assert_eq!(
             config(&app, username, username).await,
             (StatusCode::FORBIDDEN, json!({})),
@@ -338,12 +338,12 @@ async fn store_errors_never_become_success() {
     let adam = w.adam.public_key();
     for _ in 0..12 {
         assert_eq!(
-            pubkey(&app, "adam+main", &adam, "1.2.3.4:50022", "c1").await,
+            pubkey(&app, "main.adam", &adam, "1.2.3.4:50022", "c1").await,
             (StatusCode::INTERNAL_SERVER_ERROR, json!({}))
         );
     }
     assert_eq!(
-        config(&app, "adam+main", "adam+main").await,
+        config(&app, "main.adam", "main.adam").await,
         (StatusCode::INTERNAL_SERVER_ERROR, json!({}))
     );
 }

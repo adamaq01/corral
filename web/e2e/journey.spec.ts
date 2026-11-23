@@ -122,7 +122,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await page.getByRole('button', { name: 'Copy SSH', exact: true }).click();
 		await expect(page.getByText('Copied')).toBeVisible();
 		sshCommand = await page.evaluate(() => navigator.clipboard.readText());
-		expect(sshCommand).toMatch(/^ssh -p \d+ dora\+main@127\.0\.0\.1$/);
+		expect(sshCommand).toMatch(/^ssh -p \d+ main\.dora@127\.0\.0\.1$/);
 	});
 
 	await test.step('SSH in with the copied command and the added key', async () => {

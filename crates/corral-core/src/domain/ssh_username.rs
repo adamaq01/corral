@@ -6,7 +6,8 @@ use ts_rs::TS;
 use super::{Handle, SandboxName};
 use crate::{Error, Result};
 
-/// `<handle>` or `<handle>+<sandbox>`.
+/// `<handle>`, or `<sandbox>.<handle>`. Neither part holds a dot, and nothing in either needs
+/// encoding in an `ssh://` URI.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(type = "string")]
@@ -17,9 +18,9 @@ pub struct SshUsername {
 
 impl SshUsername {
     pub fn parse(value: &str) -> Result<Self> {
-        let (handle, sandbox) = match value.split_once('+') {
-            Some((handle, sandbox)) => (handle, Some(SandboxName::parse(sandbox)?)),
-            None => (value, None),
+        let (sandbox, handle) = match value.split_once('.') {
+            Some((sandbox, handle)) => (Some(SandboxName::parse(sandbox)?), handle),
+            None => (None, value),
         };
         Ok(Self {
             handle: Handle::parse(handle)?,
@@ -31,7 +32,7 @@ impl SshUsername {
 impl fmt::Display for SshUsername {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.sandbox {
-            Some(sandbox) => write!(f, "{}+{sandbox}", self.handle),
+            Some(sandbox) => write!(f, "{sandbox}.{}", self.handle),
             None => write!(f, "{}", self.handle),
         }
     }
@@ -57,7 +58,7 @@ mod tests {
 
     #[test]
     fn ssh_username_with_sandbox() {
-        let u = SshUsername::parse("adam+main").unwrap();
+        let u = SshUsername::parse("main.adam").unwrap();
         assert_eq!(u.handle.as_str(), "adam");
         assert_eq!(u.sandbox.unwrap().as_str(), "main");
     }
@@ -71,11 +72,14 @@ mod tests {
     fn ssh_username_rejects_bad_input() {
         for bad in [
             "",
-            "+main",
-            "adam+",
-            "Adam+main",
-            "adam+ma in",
-            "a+b+c",
+            ".adam",
+            "main.",
+            "main.Adam",
+            "ma in.adam",
+            "a.b.c",
+            "adam+main",
+            "main+adam",
+            "adam main",
             &"a".repeat(33),
         ] {
             assert!(SshUsername::parse(bad).is_err(), "{bad}");
@@ -84,7 +88,7 @@ mod tests {
 
     #[test]
     fn displays_and_serializes_as_the_login_string() {
-        for login in ["adam", "adam+main"] {
+        for login in ["adam", "main.adam"] {
             let u = SshUsername::parse(login).unwrap();
             assert_eq!(u.to_string(), login);
             assert_eq!(serde_json::to_string(&u).unwrap(), format!("\"{login}\""));
@@ -93,6 +97,6 @@ mod tests {
                 u
             );
         }
-        assert!(serde_json::from_str::<SshUsername>(r#""a+b+c""#).is_err());
+        assert!(serde_json::from_str::<SshUsername>(r#""a.b.c""#).is_err());
     }
 }

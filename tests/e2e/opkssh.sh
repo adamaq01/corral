@@ -288,19 +288,19 @@ approvals() {
 }
 
 [[ ! -e "$cert" ]] || fail "a certificate before the first login"
-expect "ssh with no certificate yet" sandbox "$(login_as auth-admin+main)"
+expect "ssh with no certificate yet" sandbox "$(login_as main.auth-admin)"
 [[ -s "$cert" ]] || fail "the hook wrote no certificate"
 expect "browser logins" 1 "$(approvals)"
 ok "with no certificate, the page's Match exec hook ran opkssh login, the browser step completed by itself, and ssh got in"
 
 before=$(sha256sum <"$cert")
-expect "ssh with a fresh certificate" sandbox "$(login_as auth-admin+main)"
+expect "ssh with a fresh certificate" sandbox "$(login_as main.auth-admin)"
 expect "the certificate after a fresh ssh" "$before" "$(sha256sum <"$cert")"
 expect "browser logins" 1 "$(approvals)"
 ok "with a fresh certificate, ssh connects without logging in again"
 
 touch -d '2 days ago' "$cert"
-expect "ssh with a stale certificate" sandbox "$(login_as auth-admin+main)"
+expect "ssh with a stale certificate" sandbox "$(login_as main.auth-admin)"
 [[ "$(sha256sum <"$cert")" != "$before" ]] || fail "the stale certificate was not renewed"
 expect "browser logins" 2 "$(approvals)"
 ok "with a certificate older than its lifetime less an hour, the hook renewed it before connecting"
@@ -309,7 +309,7 @@ key=$work/home/.ssh/corral-opkssh
 mv "$key" "$work/kept"
 mv "$cert" "$work/kept-cert.pub"
 denied_at=$SECONDS
-OPKSSH_E2E_PROFILE=$work/no-session refused auth-admin+main
+OPKSSH_E2E_PROFILE=$work/no-session refused main.auth-admin
 took=$((SECONDS - denied_at))
 ((took <= 45)) || fail "with no VoidAuth session, ssh took ${took}s"
 expect "browser logins" 2 "$(approvals)"
@@ -331,17 +331,17 @@ denied() {
   [[ "$output" == *"Permission denied"* ]] || fail "$1 with $2: unexpected error: $output"
 }
 
-expect "the certificate without the hook" sandbox "$(plain_ssh auth-admin+main "$key")"
-denied eve+main "$key"
-ok "auth_admin's certificate is refused for eve+main, another user's sandbox"
-denied nobody+main "$key"
+expect "the certificate without the hook" sandbox "$(plain_ssh main.auth-admin "$key")"
+denied main.eve "$key"
+ok "auth_admin's certificate is refused for main.eve, another user's sandbox"
+denied main.nobody "$key"
 ok "a certificate for a user Corral does not know is refused"
 
 auth_admin_id=$(api GET api/admin/users | jq -r '.[] | select(.handle == "auth-admin") | .id')
 api POST "api/admin/users/$auth_admin_id/disable" >/dev/null
-denied auth-admin+main "$key"
+denied main.auth-admin "$key"
 api POST "api/admin/users/$auth_admin_id/enable" >/dev/null
-expect "after enabling auth-admin again" sandbox "$(plain_ssh auth-admin+main "$key")"
+expect "after enabling auth-admin again" sandbox "$(plain_ssh main.auth-admin "$key")"
 ok "a disabled user's valid certificate is refused, and works once enabled"
 
 cat >>"$work/home/.opk/config.yml" <<EOF
@@ -352,24 +352,24 @@ cat >>"$work/home/.opk/config.yml" <<EOF
     prompt: ""
 EOF
 (HOME=$work/home opkssh login other -i "$work/other" >>"$log" 2>&1)
-denied auth-admin+main "$work/other"
+denied main.auth-admin "$work/other"
 ok "a real certificate for VoidAuth's other client (wrong audience) is refused"
 
 sub=$(node "$helpers/mint.mjs" subject "$cert")
 node "$helpers/mint.mjs" retoken "$cert" "$key" "$work/tampered" exp
-denied auth-admin+main "$work/tampered"
+denied main.auth-admin "$work/tampered"
 ok "auth_admin's certificate with its token's exp changed, re-signed by its key, is refused"
 ssh-keygen -q -t ecdsa -N '' -f "$work/thief"
 node "$helpers/mint.mjs" retoken "$cert" "$work/thief" "$work/thief-cert" ""
-denied auth-admin+main "$work/thief-cert"
+denied main.auth-admin "$work/thief-cert"
 ok "auth_admin's valid token in a certificate for another key is refused"
 
 garbage=$(jq -cn --arg k "ecdsa-sha2-nistp256-cert-v01@openssh.com AAAAKGVjZHNh$(head -c 600 /dev/urandom | base64 -w0)" \
-  '{username: "auth-admin+main", remoteAddress: "127.0.0.1:1", connectionId: "e2e", clientVersion: "SSH-2.0-e2e", publicKey: $k}')
+  '{username: "main.auth-admin", remoteAddress: "127.0.0.1:1", connectionId: "e2e", clientVersion: "SSH-2.0-e2e", publicKey: $k}')
 answer=$(docker compose exec -T containerssh wget -q -O - --header 'Content-Type: application/json' \
   --post-data "$garbage" http://corral:8081/pubkey)
 expect "/pubkey for a mangled certificate" false "$(jq -r .success <<<"$answer")"
-expect "a login after the mangled certificate" sandbox "$(plain_ssh auth-admin+main "$key")"
+expect "a login after the mangled certificate" sandbox "$(plain_ssh main.auth-admin "$key")"
 ok "a mangled certificate gets success false from /pubkey, and the webhook keeps answering"
 
 if docker compose logs --no-color corral 2>&1 | grep -qF "$(cut -d' ' -f2 "$cert" | head -c 80)"; then
@@ -404,13 +404,13 @@ expect "Corral's providers as uid 65532" "$mint_issuer opkssh 24h" \
 ok "corral recreated as uid 65532 for the stand-in issuer $mint_issuer"
 
 node "$helpers/mint.mjs" cert "$work/mint" "$mint_issuer" opkssh "$sub" 0 "$work/minted"
-expect "a minted certificate" sandbox "$(plain_ssh auth-admin+main "$work/minted")"
+expect "a minted certificate" sandbox "$(plain_ssh main.auth-admin "$work/minted")"
 ok "as uid 65532, a fresh token from the stand-in issuer lets auth_admin in: the minter matches opkssh"
 node "$helpers/mint.mjs" cert "$work/mint" "$mint_issuer" opkssh "$sub" $((25 * 3600)) "$work/expired"
-denied auth-admin+main "$work/expired"
+denied main.auth-admin "$work/expired"
 ok "a token issued 25 hours ago is refused under the 24h policy"
 node "$helpers/mint.mjs" cert "$work/mint" https://elsewhere.example opkssh "$sub" 0 "$work/elsewhere"
-denied auth-admin+main "$work/elsewhere"
+denied main.auth-admin "$work/elsewhere"
 ok "a token from another issuer is refused"
 [[ -n "$(docker compose cp corral:/var/cache/opkssh - | tar -t | grep -v '/$')" ]] || fail "no JWKS cache as 65532"
 ok "as uid 65532, opkssh caches the JWKS"

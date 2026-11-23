@@ -55,6 +55,8 @@ mod tests {
             "ad am",
             "adam_x",
             "adam+main",
+            "main.adam",
+            ".",
             "é",
             &"a".repeat(33),
         ] {

@@ -195,7 +195,7 @@ login
 expect "GET /api/me" "adam admin" "$(api GET api/me | jq -r '"\(.handle) \(.role)"')"
 ssh-keygen -q -t ed25519 -N '' -C adam -f "$work/adam"
 api POST api/keys "$(jq -cn --arg k "$(cat "$work/adam.pub")" '{label: "e2e", publicKey: $k}')" >/dev/null
-expect "sandbox ssh username" "adam+main" "$(api POST api/sandboxes '{"name":"main"}' | jq -r .ssh.username)"
+expect "sandbox ssh username" "main.adam" "$(api POST api/sandboxes '{"name":"main"}' | jq -r .ssh.username)"
 ok "adam signs in over the API, registers a key and creates sandbox main"
 
 sandbox_id=$(kubectl --namespace "$sandboxes" get sandboxes -o jsonpath='{.items[0].metadata.name}')
@@ -228,19 +228,19 @@ as() {
   ssh -F "$work/ssh_config" "$1@corral-e2e" "$2" </dev/null
 }
 
-expect "ssh adam+main id -un" sandbox "$(as adam+main 'id -un')"
-as adam+main 'echo kept >~/marker'
-ok "ssh adam+main through the ContainerSSH Service runs as sandbox, the chart's host key pinned"
+expect "ssh main.adam id -un" sandbox "$(as main.adam 'id -un')"
+as main.adam 'echo kept >~/marker'
+ok "ssh main.adam through the ContainerSSH Service runs as sandbox, the chart's host key pinned"
 
 if ssh -F "$work/ssh_config" -o BatchMode=no -o PreferredAuthentications=password,keyboard-interactive \
-  -o NumberOfPasswordPrompts=0 adam+main@corral-e2e true </dev/null >/dev/null 2>&1; then
+  -o NumberOfPasswordPrompts=0 main.adam@corral-e2e true </dev/null >/dev/null 2>&1; then
   fail "a password login was let in"
 fi
 ok "password and keyboard-interactive logins are refused"
 
-as adam+main 'nohup node -e "require(\"http\").createServer((q, r) => q.url === \"/hold\" ? r.writeHead(200).write(\"held\") : r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" >/dev/null 2>&1 &'
+as main.adam 'nohup node -e "require(\"http\").createServer((q, r) => q.url === \"/hold\" ? r.writeHead(200).write(\"held\") : r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" >/dev/null 2>&1 &'
 ssh -F "$work/ssh_config" -o ExitOnForwardFailure=yes -N \
-  -L "127.0.0.1:$forward_port:127.0.0.1:8000" adam+main@corral-e2e </dev/null &
+  -L "127.0.0.1:$forward_port:127.0.0.1:8000" main.adam@corral-e2e </dev/null &
 tunnel=$!
 body=
 for _ in $(seq 50); do
@@ -254,8 +254,8 @@ ok "ssh -L $forward_port:127.0.0.1:8000 reaches a server inside the sandbox"
 
 if [[ -z "${CORRAL_E2E_SKIP_NETWORK_POLICY:-}" ]]; then
   expect "Corral's web port from the sandbox" 200 \
-    "$(as adam+main "curl -s -m 5 -o /dev/null -w %{http_code} http://$release.$namespace.svc:8080/healthz")"
-  code=$(as adam+main "curl -s -m 5 -o /dev/null http://$release-webhooks.$namespace.svc:8081/healthz; echo \$?")
+    "$(as main.adam "curl -s -m 5 -o /dev/null -w %{http_code} http://$release.$namespace.svc:8080/healthz")"
+  code=$(as main.adam "curl -s -m 5 -o /dev/null http://$release-webhooks.$namespace.svc:8081/healthz; echo \$?")
   [[ "$code" != 0 ]] || fail "the sandbox reached Corral's webhook port"
   ok "the NetworkPolicy keeps the sandbox off Corral's webhook port (curl exit $code)"
 fi
@@ -283,14 +283,14 @@ kubectl --namespace "$sandboxes" wait --for=delete "pod/$sandbox_id" --timeout=6
 ok "with the forwarded connection closed and its agent left behind, main slept within ${waited}s"
 
 woke_at=$SECONDS
-expect "the home after a wake" kept "$(as adam+main 'cat ~/marker')"
+expect "the home after a wake" kept "$(as main.adam 'cat ~/marker')"
 ok "ssh woke main in $((SECONDS - woke_at))s, home kept"
 
 pod() {
   kubectl --namespace "$namespace" get pods -l app.kubernetes.io/component=server -o jsonpath='{.items[0].metadata.uid}'
 }
 before=$(pod)
-as adam+main 'sleep 30; echo survived' >"$work/session.out" &
+as main.adam 'sleep 30; echo survived' >"$work/session.out" &
 session=$!
 sleep 2
 install --set limits.maxRunning=7
@@ -302,7 +302,7 @@ expect "the keys Secret after an upgrade" "$keys" "$(secret_data "$release-keys"
 expect "the host key Secret after an upgrade" "$host_key" "$(secret_data "$release-containerssh-host-key")"
 login
 expect "keys after the upgrade" 1 "$(api GET api/keys | jq length)"
-expect "the home after the upgrade" kept "$(as adam+main 'cat ~/marker')"
+expect "the home after the upgrade" kept "$(as main.adam 'cat ~/marker')"
 ok "helm upgrade restarted Corral with new config; an open SSH session, data, generated keys and host key survived"
 
 stop_forwards
@@ -319,7 +319,7 @@ expect "the keys Secret after a reinstall" "$keys" "$(secret_data "$release-keys
 expect "the host key Secret after a reinstall" "$host_key" "$(secret_data "$release-containerssh-host-key")"
 login
 expect "sandboxes after a reinstall" main "$(api GET api/sandboxes | jq -r '.[].name')"
-expect "the home after a reinstall" kept "$(as adam+main 'cat ~/marker')"
+expect "the home after a reinstall" kept "$(as main.adam 'cat ~/marker')"
 ok "helm install over the kept data: same admin, same sandbox and home, same host key"
 
 install --set keepOnUninstall=false

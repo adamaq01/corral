@@ -564,7 +564,7 @@ mod tests {
                 .unwrap()
                 .into_iter()
                 .filter(|view| view.stale_credentials)
-                .map(|view| format!("{}+{}", view.owner.handle, view.sandbox.name))
+                .map(|view| format!("{}.{}", view.sandbox.name, view.owner.handle))
                 .collect();
             let adams: Vec<String> = w
                 .sandboxes
@@ -573,7 +573,7 @@ mod tests {
                 .unwrap()
                 .into_iter()
                 .filter(|view| view.stale_credentials)
-                .map(|view| format!("adam+{}", view.sandbox.name))
+                .map(|view| format!("{}.adam", view.sandbox.name))
                 .collect();
             assert!(adams.iter().all(|name| seen.contains(name)), "{adams:?}");
             assert_eq!(
@@ -582,7 +582,7 @@ mod tests {
                     .await
                     .unwrap()
                     .stale_credentials,
-                seen.contains(&"adam+main".to_owned())
+                seen.contains(&"main.adam".to_owned())
             );
             seen.sort();
             seen
@@ -593,17 +593,17 @@ mod tests {
             .set(adam.id, &gh, SecretString::from("one"))
             .await
             .unwrap();
-        assert_eq!(stale().await, ["adam+main"]);
+        assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.wake(&adam, &main.name).await.unwrap();
-        w.access.route("adam+main").await.unwrap();
-        assert_eq!(stale().await, ["adam+main"]);
+        w.access.route("main.adam").await.unwrap();
+        assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.restart(&adam, &main.name).await.unwrap();
         assert_eq!(stale().await, [] as [&str; 0]);
 
         w.credentials.remove(adam.id, &gh).await.unwrap();
-        assert_eq!(stale().await, ["adam+main"]);
+        assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
-        w.access.route("adam+main").await.unwrap();
+        w.access.route("main.adam").await.unwrap();
         w.sandboxes.wake(&adam, &dev.name).await.unwrap();
         assert_eq!(stale().await, [] as [&str; 0]);
     }

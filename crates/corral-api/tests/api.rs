@@ -580,7 +580,7 @@ async fn create_then_list_shows_the_ssh_username() {
         "size": "small",
         "isDefault": true,
         "state": "running",
-        "ssh": { "username": "adam+main", "host": "corral.example.com", "port": 48291 },
+        "ssh": { "username": "main.adam", "host": "corral.example.com", "port": 48291 },
         "createdAt": created["createdAt"],
         "staleCredentials": false,
     });
@@ -754,11 +754,11 @@ async fn admins_list_users_and_all_sandboxes() {
         [
             (
                 json!({ "handle": "adam", "picture": picture }),
-                json!("adam+main")
+                json!("main.adam")
             ),
             (
                 json!({ "handle": "root", "picture": null }),
-                json!("root+main")
+                json!("main.root")
             ),
         ]
     );

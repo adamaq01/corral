@@ -22,7 +22,16 @@ mod tests {
     fn parse_accepts_only_lowercase_slugs_up_to_32() {
         assert_eq!(SandboxName::parse("main-2").unwrap().as_str(), "main-2");
         assert!(SandboxName::parse(&"m".repeat(32)).is_ok());
-        for bad in ["", "Main", "ma in", "main_x", "a+b", &"m".repeat(33)] {
+        for bad in [
+            "",
+            "Main",
+            "ma in",
+            "main_x",
+            "a+b",
+            "main.adam",
+            ".",
+            &"m".repeat(33),
+        ] {
             assert!(
                 matches!(SandboxName::parse(bad), Err(Error::Invalid(_))),
                 "{bad}"

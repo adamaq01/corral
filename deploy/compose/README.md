@@ -5,7 +5,7 @@ Docker engine) and [ContainerSSH](https://containerssh.io) (the SSH front door).
 Docker container with its home on a named volume. Users reach a sandbox with any SSH client:
 
 ```
-ssh -p 48291 <handle>+<sandbox>@<public_host>
+ssh -p 48291 <sandbox>.<handle>@<public_host>
 ```
 
 ## Install
@@ -64,7 +64,7 @@ Open `base_url` in a browser and sign in with the admin account from step 6. The
 3. Copy a command from the sandbox's page and connect:
 
    ```sh
-   ssh -p 48291 <name>+main@<public_host>
+   ssh -p 48291 main.<name>@<public_host>
    ```
 
 The sandbox's page also shows the Herdr command (`hc machine add ...`) and an `~/.ssh/config`
@@ -72,7 +72,7 @@ block, and wakes, stops, restarts or deletes the sandbox.
 
 - `ssh -p 48291 <name>@<public_host>` opens the default sandbox: the first one created, or the
   one set with **Make default** on its page.
-- Port forwarding works: `ssh -p 48291 -L 3000:127.0.0.1:3000 <name>+main@<public_host>`.
+- Port forwarding works: `ssh -p 48291 -L 3000:127.0.0.1:3000 main.<name>@<public_host>`.
 - **Credentials** stores secrets such as LLM API keys, encrypted with `CORRAL_SECRETS_KEY`. Each
   reaches SSH sessions as an environment variable from the sandbox's next wake or restart on.
   Values are never shown again.
@@ -149,7 +149,7 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
 ## Known limitation: one-shot commands
 
 ContainerSSH 0.6.1 relays sessions to Docker sandboxes with its `sshproxy` backend, which can cut
-off a command that prints and then exits (`ssh <name>+main@<public_host> <command>`):
+off a command that prints and then exits (`ssh main.<name>@<public_host> <command>`):
 
 - It ends the session as soon as the client's input ends, so `ssh -n` or `< /dev/null` usually
   kills the command before it prints.

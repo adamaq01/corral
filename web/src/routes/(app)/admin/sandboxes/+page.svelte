@@ -60,7 +60,7 @@
 						<TableSkeleton {columns} />
 					{:else}
 						{@const { sandboxes, catalog } = listing.current.value}
-						{#each sandboxes as sandbox (`${sandbox.owner.handle}+${sandbox.name}`)}
+						{#each sandboxes as sandbox (sandbox.ssh.username)}
 							{@const image = choiceLabel(catalog.images, sandbox.image)}
 							{@const size = choiceLabel(catalog.sizes, sandbox.size)}
 							<Table.Row>

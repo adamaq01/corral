@@ -437,7 +437,7 @@ mod tests {
             w.accounts.require_active(eve.id).await,
             Err(Error::Inactive(_))
         ));
-        assert!(!w.access.authenticate("eve+dev", EVE_KEY).await.unwrap());
+        assert!(!w.access.authenticate("dev.eve", EVE_KEY).await.unwrap());
         assert_eq!(w.sandboxes.list(&eve).await.unwrap().len(), 1);
 
         w.engine.fail_deletes_after(None);
@@ -479,7 +479,7 @@ mod tests {
         let again = owning_everything(&w, "eve", EVE_KEY).await;
         assert_ne!(again.id, eve.id);
         assert_eq!(again.handle, eve.handle);
-        assert!(w.access.authenticate("eve+main", EVE_KEY).await.unwrap());
+        assert!(w.access.authenticate("main.eve", EVE_KEY).await.unwrap());
     }
 
     #[tokio::test]
@@ -550,9 +550,9 @@ mod tests {
             w.accounts.require_active(eve.id).await,
             Err(Error::Inactive(_))
         ));
-        assert!(!w.access.authenticate("eve+main", EVE_KEY).await.unwrap());
+        assert!(!w.access.authenticate("main.eve", EVE_KEY).await.unwrap());
         assert!(matches!(
-            w.access.route("eve+main").await,
+            w.access.route("main.eve").await,
             Err(Error::Forbidden)
         ));
         for enabled in [true, false] {

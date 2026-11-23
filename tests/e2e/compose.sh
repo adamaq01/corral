@@ -181,7 +181,7 @@ for name in adam bob stranger; do
   ssh-keygen -q -t ed25519 -N '' -C "$name" -f "keys/$name"
 done
 add_key adam
-expect "sandbox ssh username" "adam+main" \
+expect "sandbox ssh username" "main.adam" \
   "$(api adam POST api/sandboxes '{"name":"main"}' | jq -r .ssh.username)"
 adam_container=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_network" \
   --filter label=corral.adamaq01.fr/owner=adam)
@@ -222,25 +222,25 @@ refused() {
   [[ "$output" == *"Permission denied"* ]] || fail "$2 with $1's key: unexpected error: $output"
 }
 
-expect "ssh adam+main id -un" sandbox "$(as adam adam+main "id -un")"
-as adam adam+main 'echo adam >~/owner'
-ok "ssh adam+main@127.0.0.1 -p $ssh_port runs as sandbox, ContainerSSH's host key pinned"
+expect "ssh main.adam id -un" sandbox "$(as adam main.adam "id -un")"
+as adam main.adam 'echo adam >~/owner'
+ok "ssh main.adam@127.0.0.1 -p $ssh_port runs as sandbox, ContainerSSH's host key pinned"
 
 printf '#!/bin/sh\ntouch "%s/asked"\necho guess\n' "$work" >askpass
 chmod 700 askpass
 if output=$(SSH_ASKPASS=$work/askpass SSH_ASKPASS_REQUIRE=force ssh -F ssh_config -o BatchMode=no \
   -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=1 \
-  adam+main@corral-e2e true 2>&1 <&3); then
+  main.adam@corral-e2e true 2>&1 <&3); then
   fail "a password login was let in"
 fi
 [[ "$output" == *"Permission denied"* ]] || fail "password login: unexpected error: $output"
 [[ -e asked ]] || fail "ssh never offered a password"
 ok "password and keyboard-interactive logins are refused"
 
-refused stranger adam+main
+refused stranger main.adam
 ok "an unregistered key is refused"
 
-refused adam adam+missing
+refused adam missing.adam
 ok "a nonexistent sandbox is refused"
 
 bob_password=$(head -c 18 /dev/urandom | base64)
@@ -251,30 +251,30 @@ add_key bob
 api bob POST api/sandboxes '{"name":"main"}' >/dev/null
 bob_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' \
   "$(docker ps --quiet --filter "network=$sandbox_network" --filter label=corral.adamaq01.fr/owner=bob)")
-expect "ssh bob+main id -un" sandbox "$(as bob bob+main "id -un")"
-expect "bob's home" none "$(as bob bob+main 'cat ~/owner 2>/dev/null || echo none')"
+expect "ssh main.bob id -un" sandbox "$(as bob main.bob "id -un")"
+expect "bob's home" none "$(as bob main.bob 'cat ~/owner 2>/dev/null || echo none')"
 ok "bob, added with the admin API, reaches his own sandbox and home"
 
-refused adam bob+main
-ok "adam's key is refused for bob+main"
+refused adam main.bob
+ok "adam's key is refused for main.bob"
 
 mkdir -m 700 hc-home hc-run
 # ssh reads ~/.ssh/config from the passwd home, not $HOME, so hc gets the e2e's ssh command.
 hc_local machine add --name e2e --install \
-  --via "ssh -F $work/ssh_config -i $work/keys/adam adam+main@corral-e2e" >>"$log"
+  --via "ssh -F $work/ssh_config -i $work/keys/adam main.adam@corral-e2e" >>"$log"
 expect "hc exec --on e2e echo ok" ok "$(hc_local exec --on e2e echo ok)"
 hc_local server stop >>"$log"
 ok "hc machine add over ContainerSSH, then hc exec --on e2e echo ok prints ok"
 
-as adam adam+main 'nohup node -e "require(\"http\").createServer((q, r) => r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" </dev/null >/dev/null 2>&1 &'
+as adam main.adam 'nohup node -e "require(\"http\").createServer((q, r) => r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" </dev/null >/dev/null 2>&1 &'
 inside=
 for _ in $(seq 50); do
-  inside=$(as adam adam+main 'curl -s http://127.0.0.1:8000/') && break
+  inside=$(as adam main.adam 'curl -s http://127.0.0.1:8000/') && break
   sleep 0.2
 done
 expect "the server inside the sandbox" forwarded "$inside"
 ssh -F ssh_config -i keys/adam -o ExitOnForwardFailure=yes -N \
-  -L "127.0.0.1:$forward_port:127.0.0.1:8000" adam+main@corral-e2e &
+  -L "127.0.0.1:$forward_port:127.0.0.1:8000" main.adam@corral-e2e &
 forward=$!
 body=
 for _ in $(seq 50); do
@@ -290,7 +290,7 @@ corral_ip=$(docker inspect --format \
   "{{(index .NetworkSettings.Networks \"${project}_corral\").IPAddress}}" "$project-corral-1")
 codes=
 for url in http://corral:8081/healthz "http://$corral_ip:8081/healthz" "http://$corral_ip:8080/healthz"; do
-  code=$(as adam adam+main "curl -s -m 5 -o /dev/null $url; echo \$?")
+  code=$(as adam main.adam "curl -s -m 5 -o /dev/null $url; echo \$?")
   [[ "$code" =~ ^[0-9]+$ && "$code" != 0 ]] || fail "from the sandbox, $url answered (curl exit [$code])"
   codes+=" $code"
 done
@@ -305,7 +305,7 @@ listed=$(api adam GET api/credentials)
 expect "GET /api/credentials" E2E_TOKEN "$(jq -r '.[].name' <<<"$listed")"
 [[ "$listed" != *"$token"* ]] || fail "GET /api/credentials returned the value"
 woke_at=$SECONDS
-expect "after the wake" "$token adam" "$(as adam adam+main 'echo "$E2E_TOKEN $(cat ~/owner)"')"
+expect "after the wake" "$token adam" "$(as adam main.adam 'echo "$E2E_TOKEN $(cat ~/owner)"')"
 ok "a credential set while main slept reached SSH on the wake ($((SECONDS - woke_at))s), home kept"
 
 if docker compose logs --no-color 2>&1 | grep -qF "$token"; then
@@ -316,7 +316,7 @@ ok "the credential value is in neither service's logs"
 bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
 expect "bob's status once disabled" disabled \
   "$(api adam POST "api/admin/users/$bob_id/disable" | jq -r .status)"
-refused bob bob+main
+refused bob main.bob
 expect "disabled bob's GET /api/me" 403 "$(http_status bob GET api/me)"
 ok "a disabled user is refused over SSH and by the API"
 
@@ -326,14 +326,14 @@ login adam "$admin_password"
 expect "keys after the restart" 1 "$(api adam GET api/keys | jq length)"
 expect "sandboxes after the restart" main "$(api adam GET api/sandboxes | jq -r '.[].name')"
 expect "credentials after the restart" E2E_TOKEN "$(api adam GET api/credentials | jq -r '.[].name')"
-expect "ssh after the restart" sandbox "$(as adam adam+main "id -un")"
+expect "ssh after the restart" sandbox "$(as adam main.adam "id -un")"
 api adam POST api/sandboxes/main/restart >/dev/null
-expect "the credential after an API restart" "$token" "$(as adam adam+main 'printenv E2E_TOKEN')"
+expect "the credential after an API restart" "$token" "$(as adam main.adam 'printenv E2E_TOKEN')"
 ok "after docker compose restart corral, the user, key, sandbox and credential persist"
 
 docker compose restart containerssh >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
-expect "ssh after a ContainerSSH restart" sandbox "$(as adam adam+main "id -un")"
+expect "ssh after a ContainerSSH restart" sandbox "$(as adam main.adam "id -un")"
 ok "after docker compose restart containerssh, the pinned host key still matches"
 
 for _ in 1 2 3 4 5; do
@@ -373,27 +373,27 @@ sleeps_within() {
   echo "$waited"
 }
 
-as adam adam+idle 'sleep 6'
+as adam idle.adam 'sleep 6'
 expect "after a 6s SSH session" running "$(state)"
 ok "an SSH session longer than the idle timeout keeps idle awake"
 slept=$(sleeps_within 15)
 ok "with nothing running, idle slept ${slept}s after the session ended"
 
-as adam adam+idle 'sudo mv /usr/bin/pgrep /usr/bin/pgrep.off'
+as adam idle.adam 'sudo mv /usr/bin/pgrep /usr/bin/pgrep.off'
 sleep 6
 expect "6s after breaking the probes" running "$(state)"
 if ! docker compose logs --no-color corral 2>&1 | grep "activity probe failed, keeping the sandbox awake" \
   | grep -qF "${idle#corral-}"; then
   fail "no log line for idle's failed activity probe"
 fi
-as adam adam+idle 'sudo mv /usr/bin/pgrep.off /usr/bin/pgrep'
+as adam idle.adam 'sudo mv /usr/bin/pgrep.off /usr/bin/pgrep'
 slept=$(sleeps_within 15)
 ok "a failing activity probe keeps idle awake; once fixed, it slept ${slept}s later"
 
-as adam adam+idle 'hc run --bg "sleep 300" >/dev/null 2>&1'
+as adam idle.adam 'hc run --bg "sleep 300" >/dev/null 2>&1'
 sleep 6
 expect "6s after starting a Herdr terminal" running "$(state)"
-as adam adam+idle 'sudo mv /usr/local/bin/hc /usr/local/bin/hc.off'
+as adam idle.adam 'sudo mv /usr/local/bin/hc /usr/local/bin/hc.off'
 slept=$(sleeps_within 15)
 ok "a live Herdr terminal keeps idle awake; with hc missing (exit 127) it slept ${slept}s later"
 
@@ -404,13 +404,13 @@ cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$adam_container")
 docker update --cpus 0.01 "$adam_container" >/dev/null
 called=$(date +%s)
 answer=$(docker compose exec containerssh wget -q -O /dev/null --header 'Content-Type: application/json' \
-  --post-data '{"username":"adam+main","authenticatedUsername":"adam+main","remoteAddress":"127.0.0.1:1","connectionId":"e2e","clientVersion":"SSH-2.0-e2e"}' \
+  --post-data '{"username":"main.adam","authenticatedUsername":"main.adam","remoteAddress":"127.0.0.1:1","connectionId":"e2e","clientVersion":"SSH-2.0-e2e"}' \
   http://corral:8081/config 2>&1 || true)
 answered=$(($(date +%s) - called))
 [[ "$answer" == *" 503 "* ]] || fail "/config during a slow wake answered: $answer"
 ((answered <= 5)) || fail "/config took ${answered}s to answer 503"
 woke_at=$SECONDS
-as adam adam+main "id -un" >slow-login.out &
+as adam main.adam "id -un" >slow-login.out &
 slow_login=$!
 sleep 3
 docker update --cpus "$(awk -v n="$cpus" 'BEGIN { print n / 1e9 }')" "$adam_container" >/dev/null
@@ -431,7 +431,7 @@ expect "bob's containers after deleting bob" "" \
 if docker volume inspect "$bob_home" >/dev/null 2>&1; then
   fail "$bob_home survived deleting bob"
 fi
-refused bob bob+main
+refused bob main.bob
 expect "deleted bob's GET /api/me" 403 "$(http_status bob GET api/me)"
 expect "bob in the user list" "" "$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')"
 ok "deleting bob removed his container and home, and his key is refused over SSH"
@@ -443,7 +443,7 @@ expect "the new bob's sandboxes, keys and credentials" "0 0 0" "$(for listing in
   api bob GET "api/$listing" | jq length; done | xargs)"
 new_bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
 [[ -n "$new_bob_id" && "$new_bob_id" != "$bob_id" ]] || fail "the new bob reused id [$new_bob_id]"
-refused bob bob+main
+refused bob main.bob
 ok "recreating the local account bob gives a new, empty user"
 
 api adam DELETE api/sandboxes/main >/dev/null

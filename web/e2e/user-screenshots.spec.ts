@@ -35,7 +35,7 @@ function sandbox(
 		image: 'dev',
 		size: 'small',
 		isDefault: false,
-		ssh: { username: `bob+${name}`, host: 'corral.example.lan', port: 48291 },
+		ssh: { username: `${name}.bob`, host: 'corral.example.lan', port: 48291 },
 		createdAt: '2026-11-02T09:30:00Z',
 		staleCredentials: false,
 		...status,

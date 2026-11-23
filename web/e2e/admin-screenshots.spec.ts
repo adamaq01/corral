@@ -144,7 +144,7 @@ function sandbox(
 		image,
 		size,
 		isDefault,
-		ssh: { username: `${owner}+${name}`, host: 'corral.example.com', port: 2222 },
+		ssh: { username: `${name}.${owner}`, host: 'corral.example.com', port: 2222 },
 		createdAt: days(age),
 		staleCredentials: false,
 		...status

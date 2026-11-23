@@ -79,7 +79,7 @@ test('a refused key fails at once, with no password prompt, under either config 
 		image: 'dev',
 		size: 'small',
 		isDefault: true,
-		ssh: { username: 'bob+main', host: '127.0.0.1', port: Number(port) },
+		ssh: { username: 'main.bob', host: '127.0.0.1', port: Number(port) },
 		createdAt: '2026-11-02T09:30:00Z',
 		staleCredentials: false,
 		state: 'running'
@@ -130,7 +130,7 @@ test('a refused key fails at once, with no password prompt, under either config 
 	mkdirSync(join(home, '.ssh'));
 	writeFileSync(join(home, '.ssh', 'corral-opkssh-cert.pub'), '');
 
-	const unknownSandbox = ['-p', port, 'bob+nosuch@127.0.0.1'];
+	const unknownSandbox = ['-p', port, 'nosuch.bob@127.0.0.1'];
 	for (const [refused, args] of [
 		['the sandbox alias', ['corral-main']],
 		['the opkssh block alone', unknownSandbox]
