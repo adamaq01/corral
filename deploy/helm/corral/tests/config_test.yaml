@@ -34,6 +34,14 @@ tests:
           path: data["config.toml"]
           pattern: 'oidc|catalog'
 
+  - it: gives sandboxes the API at the in-cluster Service, and people the base URL
+    set:
+      service.port: 8090
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[http\]\s+base_url = "http://corral\.example\.lan:8080"\s+sandbox_base_url = "http://corral\.corral\.svc:8090"'
+
   - it: names the storage class and namespace it is given
     set:
       sandboxes.storageClass: fast-nvme

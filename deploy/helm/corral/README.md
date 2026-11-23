@@ -234,6 +234,9 @@ latter.
   and wakes on the next SSH login. A connection that only forwards ports (`ssh -N -L`) keeps a
   sandbox awake while a forwarded connection through it is open, such as a page holding a dev
   server's live-reload socket, and not while the tunnel carries nothing.
+- The `corral` command in a sandbox (`corral status`, `restart`, `stop`, `delete --confirm`)
+  reaches Corral's API at its Service, `http://<release>.<namespace>.svc`, which the
+  NetworkPolicy leaves open on the HTTP port.
 - Behind an Ingress controller or Gateway, set `trustForwardedFor: true` so password-login limits
   count each client, not the proxy.
 - With `database.kind: cnpg`, the operator's PodDisruptionBudgets keep a node drain from evicting

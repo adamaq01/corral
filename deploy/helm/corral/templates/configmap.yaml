@@ -52,8 +52,9 @@
 {{- $catalog := dict }}
 {{- with $images }}{{ $_ := set $catalog "images" . }}{{ end }}
 {{- with $sizes }}{{ $_ := set $catalog "sizes" . }}{{ end }}
+{{- $sandboxBaseUrl := printf "http://%s.%s.svc:%d" (include "corral.fullname" .) .Release.Namespace (int .Values.service.port) }}
 {{- $config := dict
-  "http" (dict "base_url" .Values.baseUrl "trust_forwarded_for" .Values.trustForwardedFor)
+  "http" (dict "base_url" .Values.baseUrl "sandbox_base_url" $sandboxBaseUrl "trust_forwarded_for" .Values.trustForwardedFor)
   "identity" $identity
   "secrets" $secrets
   "engine" $engine
