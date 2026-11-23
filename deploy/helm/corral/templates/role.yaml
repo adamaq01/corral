@@ -15,10 +15,14 @@ rules:
     verbs: [get, create, patch, delete]
   - apiGroups: [""]
     resources: [persistentvolumeclaims]
-    verbs: [list, deletecollection]
+    verbs: [get, list, deletecollection]
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list]
+  # Admins see the recent events of a sandbox's objects in the web UI.
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list]
   # The idle sweep execs a probe in each running sandbox. A WebSocket exec is a GET, which
   # newer API servers also authorize as create.
   - apiGroups: [""]

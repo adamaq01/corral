@@ -11,7 +11,9 @@ use bollard::{Docker, body_full};
 use corral_activity::{ActivityLock, Exec};
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{
+    CredentialMap, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+};
 use corral_core::{Error, Result};
 use ssh_key::PublicKey;
 use tracing::warn;
@@ -20,7 +22,7 @@ use crate::container;
 use crate::docker_error::is_not_found;
 use crate::docker_exec::DockerExec;
 use crate::host_key::HostKey;
-use crate::{DockerConfig, image, session_files, status};
+use crate::{DockerConfig, image, inspection, session_files, status};
 
 const SSH_PORT: u16 = 22;
 const SSH_USER: &str = "sandbox";
@@ -227,5 +229,11 @@ impl SandboxEngine for DockerEngine {
                     warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
                 }
             })
+    }
+
+    async fn inspect(&self, id: &SandboxId) -> Result<Inspection> {
+        inspection::observe(&self.docker, id)
+            .await
+            .map(inspection::describe)
     }
 }

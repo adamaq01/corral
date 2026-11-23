@@ -6,6 +6,7 @@ mod engine;
 mod host_key;
 mod idle;
 mod image;
+mod inspection;
 mod session_files;
 mod status;
 

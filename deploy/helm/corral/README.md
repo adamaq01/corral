@@ -37,8 +37,8 @@ In the release namespace:
 In the sandbox namespace (`<release>-sandboxes` by default, created by the chart unless
 `sandboxes.namespace.create` is false):
 
-- A Role for Corral: Sandboxes, Secrets and PersistentVolumeClaims, reading Pods, and exec into
-  Pods for the idle check. A Role for ContainerSSH: reading Pods and exec into them.
+- A Role for Corral: Sandboxes, Secrets and PersistentVolumeClaims, reading Pods and Events, and
+  exec into Pods for the idle check. A Role for ContainerSSH: reading Pods and exec into them.
 - The ServiceAccount sandboxes run as, with no token mounted.
 
 Neither Corral nor ContainerSSH has rights outside the sandbox namespace, and users never get

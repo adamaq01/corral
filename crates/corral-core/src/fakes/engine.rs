@@ -3,10 +3,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use chrono::Utc;
 
 use super::lock;
 use crate::domain::{SandboxId, SandboxStatus};
-use crate::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use crate::ports::{
+    CredentialMap, EngineEvent, EventKind, Fact, Inspection, Readiness, SandboxEngine, SandboxSpec,
+    SshTarget,
+};
 use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
@@ -36,6 +40,8 @@ struct State {
     deletes_before_failing: Option<usize>,
     sandboxes: BTreeMap<SandboxId, FakeSandbox>,
     targets: BTreeMap<SandboxId, SshTarget>,
+    /// The most recent first.
+    events: BTreeMap<SandboxId, Vec<EngineEvent>>,
     calls: Vec<EngineCall>,
 }
 
@@ -90,6 +96,19 @@ impl FakeEngine {
             .sandboxes
             .get(id)
             .map(|sandbox| sandbox.env.clone())
+    }
+
+    /// Records an event about the sandbox, which its inspection then lists first.
+    pub fn record_event(&self, id: &SandboxId, kind: EventKind, reason: &str, message: &str) {
+        let event = EngineEvent {
+            at: Some(Utc::now()),
+            kind,
+            object: format!("Sandbox {}", id.0),
+            reason: reason.to_owned(),
+            message: message.to_owned(),
+        };
+        let mut state = lock(&self.state);
+        state.events.entry(id.clone()).or_default().insert(0, event);
     }
 
     #[must_use]
@@ -165,5 +184,23 @@ impl SandboxEngine for FakeEngine {
 
     async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
         Ok(lock(&self.state).sandbox(id)?.status.clone())
+    }
+
+    async fn inspect(&self, id: &SandboxId) -> Result<Inspection> {
+        let state = lock(&self.state);
+        let Some(sandbox) = state.sandboxes.get(id) else {
+            return Ok(Inspection {
+                facts: vec![Fact::new("Sandbox", None), Fact::new("Pod", None)],
+                events: Vec::new(),
+            });
+        };
+        let running = sandbox.status == SandboxStatus::Running;
+        Ok(Inspection {
+            facts: vec![
+                Fact::new("Sandbox", id.0.clone()),
+                Fact::new("Pod", running.then(|| id.0.clone())),
+            ],
+            events: state.events.get(id).cloned().unwrap_or_default(),
+        })
     }
 }

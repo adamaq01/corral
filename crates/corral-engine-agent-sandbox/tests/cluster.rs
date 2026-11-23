@@ -9,7 +9,9 @@ use corral_core::domain::{
     Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
 };
 use corral_core::ports::labels::SANDBOX_ID;
-use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{
+    CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
@@ -348,6 +350,95 @@ async fn concurrent_starts_never_exceed_max_running(cluster: &Cluster) {
         true
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn inspection_shows_what_runs_a_sandbox() {
+    let _namespace = NAMESPACE.lock().await;
+    let Some(cluster) = Cluster::connect(1).await else {
+        return;
+    };
+    let cluster = Arc::new(cluster);
+    let id = cluster.create("inspected").await;
+    let scenario = tokio::spawn(inspection(cluster.clone(), id.clone())).await;
+    cluster.engine.delete(&id).await.unwrap();
+    if let Err(failure) = scenario {
+        std::panic::resume_unwind(failure.into_panic());
+    }
+    wait_until("the inspected sandbox removed", GONE_WITHIN, || async {
+        cluster.sandboxes.get_opt(&id.0).await.unwrap().is_none()
+    })
+    .await;
+    let gone = cluster.engine.inspect(&id).await.unwrap();
+    assert_eq!(fact(&gone, "Namespace"), Some(cluster.namespace.as_str()));
+    for label in ["Sandbox", "Pod", "Image"] {
+        assert_eq!(fact(&gone, label), None, "{label}");
+    }
+}
+
+async fn inspection(cluster: Arc<Cluster>, id: SandboxId) {
+    let claim = format!("home-{}", id.0);
+    let image = spec("inspected").image;
+    let asleep = cluster.engine.inspect(&id).await.unwrap();
+    assert_eq!(fact(&asleep, "Sandbox"), Some(id.0.as_str()));
+    assert_eq!(fact(&asleep, "Pod"), None);
+    assert_eq!(fact(&asleep, "Node"), None);
+    assert_eq!(fact(&asleep, "Image"), Some(image.as_str()));
+
+    cluster.wake(&id, &[]).await;
+    let running = cluster.engine.inspect(&id).await.unwrap();
+    for (label, value) in [
+        ("Namespace", cluster.namespace.as_str()),
+        ("Sandbox", &id.0),
+        ("Pod", &id.0),
+        ("Node", "corral-dev-control-plane"),
+        ("Phase", "Running"),
+        ("Restarts", "0"),
+        ("Image", &image),
+        ("Home volume claim", &claim),
+        ("Home volume phase", "Bound"),
+        ("Condition Ready", "True"),
+    ] {
+        assert_eq!(fact(&running, label), Some(value), "{label}: {running:#?}");
+    }
+    let present = |label: &str| fact(&running, label).unwrap_or_else(|| panic!("no {label}"));
+    assert!(present("Sandbox ready").starts_with("True: DependenciesReady"));
+    assert!(present("Container state").starts_with("Running since "));
+    assert!(present("Pod started").ends_with(" UTC"));
+    assert!(present("Image digest").starts_with("sha256:"));
+    assert!(present("Home volume").starts_with("pvc-"));
+    assert_eq!(fact(&running, "Home volume size"), Some("1Gi"));
+    assert!(
+        running
+            .facts
+            .iter()
+            .all(|fact| fact.label != "Last termination")
+    );
+    present("Storage class");
+
+    let times: Vec<_> = running.events.iter().map(|event| event.at).collect();
+    assert!(times.is_sorted_by(|a, b| a >= b), "{times:?}");
+    let pod = format!("Pod {}", id.0);
+    assert!(
+        running.events.iter().any(|event| event.object == pod
+            && event.reason == "Started"
+            && event.kind == EventKind::Normal),
+        "{:#?}",
+        running.events
+    );
+
+    cluster.engine.stop(&id).await.unwrap();
+    let stopped = cluster.engine.inspect(&id).await.unwrap();
+    assert_eq!(fact(&stopped, "Pod"), None);
+    assert_eq!(fact(&stopped, "Home volume claim"), Some(claim.as_str()));
+}
+
+fn fact<'a>(inspection: &'a Inspection, label: &str) -> Option<&'a str> {
+    inspection
+        .facts
+        .iter()
+        .find(|fact| fact.label == label)
+        .and_then(|fact| fact.value.as_deref())
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -31,6 +31,12 @@ pub fn secret_name(id: &SandboxId) -> String {
     format!("{}-env", id.0)
 }
 
+/// The claim agent-sandbox makes for the home volume, named after its template and the Sandbox.
+#[must_use]
+pub fn home_claim_name(id: &SandboxId) -> String {
+    format!("{HOME_VOLUME}-{}", id.0)
+}
+
 #[must_use]
 pub fn build(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Sandbox {
     let labels = labels::of(id, spec);

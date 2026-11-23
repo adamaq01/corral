@@ -4,6 +4,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use secrecy::SecretString;
 
+use super::Inspection;
 use crate::Result;
 use crate::domain::{CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus};
 
@@ -54,4 +55,6 @@ pub trait SandboxEngine: Send + Sync {
     async fn stop(&self, id: &SandboxId) -> Result<()>;
     async fn delete(&self, id: &SandboxId) -> Result<()>;
     async fn status(&self, id: &SandboxId) -> Result<SandboxStatus>;
+    /// What runs the sandbox, as far as it exists. Missing pieces are facts without a value.
+    async fn inspect(&self, id: &SandboxId) -> Result<Inspection>;
 }

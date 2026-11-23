@@ -3,6 +3,7 @@ mod crd;
 mod engine;
 mod error;
 mod idle;
+mod inspection;
 mod manifest;
 mod pod_exec;
 mod status;

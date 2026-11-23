@@ -4,9 +4,11 @@ use async_trait::async_trait;
 use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{
+    CredentialMap, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+};
 use corral_core::{Error, Result};
-use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
+use k8s_openapi::api::core::v1::{Event, PersistentVolumeClaim, Pod, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, Client};
 use serde_json::json;
@@ -16,6 +18,7 @@ use tracing::warn;
 use crate::AgentSandboxConfig;
 use crate::crd::{OperatingMode, Sandbox};
 use crate::error::kube_error;
+use crate::inspection::{self, Observed};
 use crate::manifest;
 use crate::status;
 
@@ -27,6 +30,7 @@ pub struct AgentSandboxEngine {
     secrets: Api<Secret>,
     claims: Api<PersistentVolumeClaim>,
     pub(crate) pods: Api<Pod>,
+    events: Api<Event>,
     pub(crate) config: AgentSandboxConfig,
     max_running: usize,
     pub(crate) activity: ActivityLock,
@@ -40,7 +44,8 @@ impl AgentSandboxEngine {
             sandboxes: Api::namespaced(client.clone(), namespace),
             secrets: Api::namespaced(client.clone(), namespace),
             claims: Api::namespaced(client.clone(), namespace),
-            pods: Api::namespaced(client, namespace),
+            pods: Api::namespaced(client.clone(), namespace),
+            events: Api::namespaced(client, namespace),
             config,
             max_running,
             activity: ActivityLock::default(),
@@ -199,5 +204,22 @@ impl SandboxEngine for AgentSandboxEngine {
                 warn!(sandbox = id.0.as_str(), error = %err, "could not read sandbox status");
             }
         })
+    }
+
+    async fn inspect(&self, id: &SandboxId) -> Result<Inspection> {
+        let claim = manifest::home_claim_name(id);
+        // The pod is named after its Sandbox, so one selector finds the events of both.
+        let mut events = Vec::new();
+        for name in [&id.0, &claim] {
+            let about = ListParams::default().fields(&format!("involvedObject.name={name}"));
+            events.extend(self.events.list(&about).await.map_err(kube_error)?.items);
+        }
+        Ok(inspection::describe(Observed {
+            namespace: self.config.namespace.clone(),
+            sandbox: self.sandboxes.get_opt(&id.0).await.map_err(kube_error)?,
+            pod: self.pods.get_opt(&id.0).await.map_err(kube_error)?,
+            claim: self.claims.get_opt(&claim).await.map_err(kube_error)?,
+            events,
+        }))
     }
 }

@@ -7,7 +7,9 @@ use corral_core::Error;
 use corral_core::domain::{
     Allocation, CredentialName, Handle, Resources, SandboxId, SandboxName, SandboxStatus,
 };
-use corral_core::ports::{CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget};
+use corral_core::ports::{
+    CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+};
 use corral_engine_docker::{DockerConfig, DockerEngine};
 use secrecy::SecretString;
 use ssh_key::PublicKey;
@@ -534,4 +536,77 @@ async fn connect_refuses_a_missing_network() {
         "{:?}",
         refused.err()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspection_shows_the_container_its_image_home_and_events() {
+    let Some(lab) = Lab::open("inspection") else {
+        return;
+    };
+    let engine = lab.engine(10).await;
+    let id = lab.create(&engine, "main").await;
+    let name = container_name(&id);
+    let volume = format!("corral-home-{}", id.0);
+    let image_id = docker_ok(&["image", "inspect", "--format", "{{.Id}}", &image()]);
+    let container_id = docker_ok(&["inspect", "--format", "{{.Id}}", &name]);
+
+    let created = engine.inspect(&id).await.unwrap();
+    for (label, value) in [
+        ("Container", Some(name.as_str())),
+        ("Container ID", Some(&container_id)),
+        ("State", Some("created")),
+        ("Started", None),
+        ("Exit code", None),
+        ("Network", Some(&lab.network)),
+        ("Image", Some(&image())),
+        ("Image ID", Some(&image_id)),
+        ("Home volume", Some(&volume)),
+        ("Volume driver", Some("local")),
+    ] {
+        assert_eq!(fact(&created, label), value, "{label}: {created:#?}");
+    }
+
+    wake(&engine, &id, CredentialMap::new()).await;
+    let running = engine.inspect(&id).await.unwrap();
+    assert_eq!(fact(&running, "State"), Some("running"));
+    assert!(fact(&running, "Started").is_some_and(|at| at.ends_with(" UTC")));
+    assert_eq!(fact(&running, "Finished"), None);
+
+    engine.stop(&id).await.unwrap();
+    let stopped = engine.inspect(&id).await.unwrap();
+    assert_eq!(fact(&stopped, "State"), Some("exited"));
+    assert!(fact(&stopped, "Exit code").is_some(), "{stopped:#?}");
+    assert!(fact(&stopped, "Finished").is_some(), "{stopped:#?}");
+    let events: Vec<(&str, EventKind)> = stopped
+        .events
+        .iter()
+        .map(|event| (event.reason.as_str(), event.kind))
+        .collect();
+    let started = events
+        .iter()
+        .position(|event| *event == ("Started", EventKind::Normal));
+    let exited = events
+        .iter()
+        .position(|event| *event == ("Exited", EventKind::Normal));
+    assert!(
+        matches!((exited, started), (Some(exited), Some(started)) if exited < started),
+        "a stop's exit is normal and newer than the start: {events:?}"
+    );
+    let object = format!("Container {name}");
+    assert!(stopped.events.iter().all(|event| event.object == object));
+
+    engine.delete(&id).await.unwrap();
+    let gone = engine.inspect(&id).await.unwrap();
+    assert!(
+        gone.facts.iter().all(|fact| fact.value.is_none()),
+        "{gone:#?}"
+    );
+}
+
+fn fact<'a>(inspection: &'a Inspection, label: &str) -> Option<&'a str> {
+    inspection
+        .facts
+        .iter()
+        .find(|fact| fact.label == label)
+        .and_then(|fact| fact.value.as_deref())
 }
