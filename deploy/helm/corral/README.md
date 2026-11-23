@@ -9,6 +9,10 @@ with any SSH client:
 ssh -p 48291 <sandbox>.<handle>@<ssh.publicHost>
 ```
 
+A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
+makes that sandbox, from the image and size set in their profile, then opens it, unless they
+already have as many as `limits.maxSandboxesPerUser` allows (5 by default).
+
 ## What it installs
 
 In the release namespace:

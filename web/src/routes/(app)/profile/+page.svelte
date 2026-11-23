@@ -82,7 +82,9 @@
 		<Card.Header>
 			<Card.Title>New sandboxes</Card.Title>
 			<Card.Description>
-				The image and size a new sandbox gets unless you pick others.
+				The image and size a new sandbox gets unless you pick others. Connecting over SSH as
+				<code class="font-mono text-xs wrap-anywhere">&lt;name&gt;.{user.handle}</code>
+				with a name you have not used yet makes a sandbox with them too.
 			</Card.Description>
 		</Card.Header>
 		{#if catalog.current.state === 'failed'}

@@ -18,6 +18,7 @@ test('the defaults a member saves in their profile preselect the new sandbox dia
 
 	await page.goto('/profile');
 	const card = page.locator('[data-slot=card]').filter({ hasText: 'New sandboxes' });
+	await expect(card).toContainText('as <name>.fern with a name');
 	await expect(card.getByLabel('Image')).toHaveValue('dev');
 	await expect(card.getByLabel('Size')).toHaveValue('small');
 	await card.getByLabel('Image').selectOption({ label: 'Local build, again' });

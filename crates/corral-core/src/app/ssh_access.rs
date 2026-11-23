@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::Sandboxes;
-use crate::domain::{Sandbox, SshPublicKey, SshUsername, User, UserStatus};
+use crate::domain::{SshPublicKey, SshUsername, User, UserStatus};
 use crate::ports::{IdentityProvider, KeyRepo, Readiness, UserRepo};
 use crate::{Error, Result};
 
@@ -28,7 +28,8 @@ impl SshAccess {
         }
     }
 
-    /// Lets in a key the user registered, or a credential their identity provider vouches for.
+    /// Lets in a key the user registered, or a credential their identity provider vouches for,
+    /// whether or not the sandbox the login names exists yet.
     pub async fn authenticate(&self, username: &str, presented: &str) -> Result<bool> {
         let Some((user, _)) = self.locate(username).await? else {
             return Ok(false);
@@ -48,24 +49,28 @@ impl SshAccess {
         Ok(false)
     }
 
+    /// Wakes the sandbox the login names, creating it first when the user has none by that name.
     pub async fn route(&self, username: &str) -> Result<Readiness> {
-        let (_, sandbox) = self.locate(username).await?.ok_or(Error::Forbidden)?;
+        let (user, login) = self.locate(username).await?.ok_or(Error::Forbidden)?;
+        let reached = match &login.sandbox {
+            Some(name) => self.sandboxes.find_or_create(&user, name).await,
+            None => self.sandboxes.resolve(&user, None).await,
+        };
+        let sandbox = reached.map_err(|error| match error {
+            Error::NotFound(_) | Error::LimitReached(_) => Error::Forbidden,
+            error => error,
+        })?;
         self.sandboxes.start(&sandbox).await
     }
 
-    async fn locate(&self, username: &str) -> Result<Option<(User, Sandbox)>> {
+    async fn locate(&self, username: &str) -> Result<Option<(User, SshUsername)>> {
         let Ok(login) = SshUsername::parse(username) else {
             return Ok(None);
         };
         let user = self.users.by_handle(&login.handle).await?;
-        let Some(user) = user.filter(|user| user.status == UserStatus::Active) else {
-            return Ok(None);
-        };
-        match self.sandboxes.resolve(&user, login.sandbox.as_ref()).await {
-            Ok(sandbox) => Ok(Some((user, sandbox))),
-            Err(Error::NotFound(_)) => Ok(None),
-            Err(error) => Err(error),
-        }
+        Ok(user
+            .filter(|user| user.status == UserStatus::Active)
+            .map(|user| (user, login)))
     }
 }
 
@@ -81,8 +86,8 @@ mod tests {
     use crate::domain::User;
     use crate::fakes::EngineCall;
     use crate::fakes::{
-        ADAM_CERT, ADAM_KEY, EVE_KEY, RSA_KEY, WAKE_DEADLINE, World, admin_proof,
-        algorithm_and_blob, credential, exposed,
+        ADAM_CERT, ADAM_KEY, EVE_KEY, MAX_SANDBOXES, RSA_KEY, WAKE_DEADLINE, World, admin_proof,
+        algorithm_and_blob, credential, defaults, exposed, sandbox_name,
     };
     use crate::ports::{IdentityProvider, Readiness, SshTarget};
 
@@ -186,7 +191,6 @@ mod tests {
         for u in [
             "main.nobody",
             "nobody",
-            "missing.adam",
             "ADAM",
             "main..adam",
             "x.main.adam",
@@ -203,6 +207,86 @@ mod tests {
             .unwrap();
         assert!(!w.access.authenticate("main.adam", ADAM_KEY).await.unwrap());
         assert!(!w.access.authenticate("adam", ADAM_KEY).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_key_lets_its_owner_in_before_the_sandbox_it_names_exists_and_makes_nothing() {
+        let (w, adam, _) = adam_and_eve().await;
+        let calls = w.engine.calls().len();
+        assert!(w.access.authenticate("new.adam", ADAM_KEY).await.unwrap());
+        assert!(!w.access.authenticate("new.adam", EVE_KEY).await.unwrap());
+        assert_eq!(w.engine.calls().len(), calls);
+        assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn route_makes_the_sandbox_a_login_names_from_the_owners_defaults_then_wakes_it() {
+        let (w, adam, _) = adam_and_eve().await;
+        w.sandboxes
+            .set_defaults(&adam, &defaults("tools", "large"))
+            .await
+            .unwrap();
+        w.engine.set_waking(true);
+        let calls = w.engine.calls().len();
+        assert_eq!(
+            w.access.route("scratch.adam").await.unwrap(),
+            Readiness::Waking
+        );
+        let scratch = w
+            .sandboxes
+            .get(&adam, &sandbox_name("scratch"))
+            .await
+            .unwrap()
+            .sandbox;
+        assert_eq!(
+            (scratch.image.as_str(), scratch.size.as_str()),
+            ("tools", "large")
+        );
+        let made = w.engine.calls().split_off(calls);
+        let [
+            EngineCall::Create { id, spec },
+            EngineCall::Start {
+                id: started,
+                deadline,
+                ..
+            },
+        ] = made.as_slice()
+        else {
+            panic!("{made:?}");
+        };
+        assert_eq!((id, started), (&scratch.id, &scratch.id));
+        assert_eq!(spec.image, "ghcr.io/adamaq01/corral-tools:2");
+        assert_eq!(*deadline, WAKE_DEADLINE);
+
+        w.engine.set_waking(false);
+        assert!(matches!(
+            w.access.route("scratch.adam").await.unwrap(),
+            Readiness::Ready(SshTarget::KubernetesPod { pod, .. }) if pod == scratch.id.0
+        ));
+        assert!(
+            !w.engine.calls()[calls + 2..]
+                .iter()
+                .any(|call| matches!(call, EngineCall::Create { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn route_refuses_a_new_sandbox_past_the_owners_limit() {
+        let (w, adam, _) = adam_and_eve().await;
+        for n in 1..MAX_SANDBOXES {
+            w.sandbox(&adam, &format!("box-{n}")).await;
+        }
+        let calls = w.engine.calls().len();
+        assert!(matches!(
+            w.access.route("extra.adam").await,
+            Err(Error::Forbidden)
+        ));
+        assert_eq!(w.engine.calls().len(), calls);
+        assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), MAX_SANDBOXES);
+        assert!(matches!(
+            w.access.route("box-1.adam").await,
+            Ok(Readiness::Ready(_))
+        ));
     }
 
     #[tokio::test]
@@ -237,14 +321,22 @@ mod tests {
             .set_enabled(&admin_proof(&root), eve.id, false)
             .await
             .unwrap();
+        w.member("cain").await;
         let calls_before = w.engine.calls().len();
         for u in [
             "nobody",
-            "missing.adam",
+            "new.nobody",
             "eve",
             "main.eve",
+            "new.eve",
+            "cain",
             "ADAM",
             "main..adam",
+            "adam+main",
+            "main+adam",
+            "Main.adam",
+            "new_box.adam",
+            &format!("{}.adam", "n".repeat(33)),
         ] {
             assert!(
                 matches!(w.access.route(u).await, Err(Error::Forbidden)),

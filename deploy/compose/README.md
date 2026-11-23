@@ -8,6 +8,10 @@ Docker container with its home on a named volume. Users reach a sandbox with any
 ssh -p 48291 <sandbox>.<handle>@<public_host>
 ```
 
+A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
+makes that sandbox, from the image and size set in their profile, then opens it, unless they
+already have as many as `max_sandboxes_per_user` under `[limits]` allows (5 by default).
+
 ## Install
 
 You need Docker with the Compose plugin and `ssh-keygen`.
@@ -73,8 +77,9 @@ block, and wakes, stops, restarts or deletes the sandbox.
 - `ssh -p 48291 <name>@<public_host>` opens the default sandbox: the first one created, or the
   one set with **Make default** on its page.
 - Port forwarding works: `ssh -p 48291 -L 3000:127.0.0.1:3000 main.<name>@<public_host>`.
-- Your **Profile** sets the image and size a new sandbox gets unless you pick others. Until you
-  set them, they are the first image and size in `config.toml`'s catalog.
+- Your **Profile** sets the image and size a new sandbox gets unless you pick others, including
+  one made by connecting as `<sandbox>.<name>`. Until you set them, they are the first image and
+  size in `config.toml`'s catalog.
 - **Credentials** stores secrets such as LLM API keys, encrypted with `CORRAL_SECRETS_KEY`. Each
   reaches SSH sessions as an environment variable from the sandbox's next wake or restart on.
   Values are never shown again.

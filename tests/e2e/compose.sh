@@ -104,6 +104,9 @@ network = "$sandbox_network"
 [idle]
 probe_interval_secs = 1
 
+[limits]
+max_sandboxes_per_user = 2
+
 [[catalog.images]]
 key = "dev"
 label = "Local build"
@@ -240,8 +243,28 @@ ok "password and keyboard-interactive logins are refused"
 refused stranger main.adam
 ok "an unregistered key is refused"
 
-refused adam missing.adam
-ok "a nonexistent sandbox is refused"
+expect "ssh scratch.adam before scratch exists" sandbox "$(as adam scratch.adam "id -un")"
+expect "scratch's image and size" "dev small" \
+  "$(api adam GET api/sandboxes/scratch | jq -r '"\(.image) \(.size)"')"
+ok "ssh scratch.adam made sandbox scratch from adam's defaults, then opened it"
+
+expect "ssh ssh://main.adam@corral-e2e:$ssh_port" sandbox \
+  "$(ssh -F ssh_config -i keys/adam "ssh://main.adam@corral-e2e:$ssh_port" \
+    'id -un'$'\n''status=$?; sleep 0.2; exit $status' <&3)"
+ok "an ssh:// URI takes main.adam as written, as hc machine add passes it"
+
+refused adam adam+main
+refused adam Scratch_2.adam
+ok "adam+main and an invalid sandbox name are refused"
+
+if output=$(as adam extra.adam true 2>&1); then
+  fail "extra.adam let adam past his limit of 2 sandboxes"
+fi
+[[ "$output" == *"closed by remote host"* ]] || fail "extra.adam: unexpected error: $output"
+expect "adam's sandboxes at his limit" "main scratch" \
+  "$(api adam GET api/sandboxes | jq -r '.[].name' | xargs)"
+ok "ssh extra.adam past adam's limit is refused and makes nothing"
+api adam DELETE api/sandboxes/scratch >/dev/null
 
 bob_password=$(head -c 18 /dev/urandom | base64)
 api adam POST auth/local/accounts \

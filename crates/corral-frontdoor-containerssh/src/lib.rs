@@ -102,11 +102,13 @@ async fn config(
     let Ok(Json(request)) = request else {
         return failure(StatusCode::BAD_REQUEST);
     };
-    match front_door
-        .access
-        .route(&request.authenticated_username)
+    // ContainerSSH drops a request it stops waiting for, as it may while a new sandbox's image
+    // pulls. The routing runs on, so the sandbox it creates or wakes is whole for the next login.
+    let access = front_door.access.clone();
+    let routed = tokio::spawn(async move { access.route(&request.authenticated_username).await })
         .await
-    {
+        .unwrap_or_else(|failed| Err(Error::internal("route a login", failed)));
+    match routed {
         Ok(Readiness::Ready(target)) => Json(json!({"config": backend(&target)})).into_response(),
         Ok(Readiness::Waking) => failure(StatusCode::SERVICE_UNAVAILABLE),
         Err(Error::Forbidden) => failure(StatusCode::FORBIDDEN),

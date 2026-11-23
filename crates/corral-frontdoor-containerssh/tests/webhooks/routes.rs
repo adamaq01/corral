@@ -6,13 +6,20 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Method, Request, StatusCode, header};
 use chrono::{DateTime, Utc};
-use corral_core::app::SshAccess;
-use corral_core::domain::{Handle, SandboxDefaults, User, UserId};
-use corral_core::fakes::{ADAM_CERT, FakeEngine, MemoryKeyRepo, admin_proof};
-use corral_core::ports::{SshTarget, UserRepo};
+use corral_core::app::{Credentials, Limits, Sandboxes, SshAccess};
+use corral_core::domain::{Handle, SandboxDefaults, SandboxId, SandboxStatus, User, UserId};
+use corral_core::fakes::{
+    ADAM_CERT, EngineCall, FakeEngine, MAX_SANDBOXES, MemoryKeyRepo, MemorySandboxRepo,
+    MemorySecretStore, WAKE_DEADLINE, World, admin_proof, catalog, sandbox_name,
+};
+use corral_core::ports::{
+    CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget, UserRepo,
+};
 use corral_core::{Error, Result};
 use corral_frontdoor_containerssh::{Cidr, ContainerSshConfig, router};
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tower::ServiceExt;
 
 use crate::common::{Fixture, Member, generate_key, public_line};
@@ -88,7 +95,7 @@ async fn disable(w: &Fixture, member: &Member) {
 async fn pubkey_accepts_the_owners_key() {
     let w = Fixture::new().await;
     let app = w.router();
-    for username in ["adam", "main.adam"] {
+    for username in ["adam", "main.adam", "new.adam"] {
         assert!(accepted(&app, username, &w.adam.public_key(), "1.2.3.4:50022").await);
     }
     assert!(accepted(&app, "main.eve", &w.eve.public_key(), "1.2.3.4:50022").await);
@@ -116,7 +123,8 @@ async fn pubkey_denies_with_200_and_false() {
         ("adam", eve.as_str()),
         ("main.eve", adam.as_str()),
         ("nobody", adam.as_str()),
-        ("missing.adam", adam.as_str()),
+        ("new.adam", eve.as_str()),
+        ("adam+main", adam.as_str()),
         ("ADAM", adam.as_str()),
         ("main.adam", "not a key"),
     ] {
@@ -283,13 +291,132 @@ async fn config_refuses_unknown_disabled_or_missing_with_403() {
     let w = Fixture::new().await;
     let app = w.router();
     disable(&w, &w.eve).await;
-    for username in ["nobody", "missing.adam", "eve", "main.eve", "ADAM", ""] {
+    for username in [
+        "nobody",
+        "eve",
+        "main.eve",
+        "new.eve",
+        "ADAM",
+        "adam+main",
+        "new_box.adam",
+        "",
+    ] {
         assert_eq!(
             config(&app, username, username).await,
             (StatusCode::FORBIDDEN, json!({})),
             "{username}"
         );
     }
+}
+
+#[tokio::test]
+async fn config_makes_the_sandbox_a_login_names_within_the_owners_limit() {
+    let w = Fixture::new().await;
+    let app = w.router();
+    let (status, body) = config(&app, "scratch.adam", "scratch.adam").await;
+    assert_eq!(status, StatusCode::OK);
+    let scratch = w
+        .world
+        .sandboxes
+        .get(&w.adam.user, &sandbox_name("scratch"))
+        .await
+        .unwrap();
+    assert_eq!(
+        body["config"]["kubernetes"]["pod"]["metadata"]["name"],
+        scratch.sandbox.id.0
+    );
+
+    for n in 2..MAX_SANDBOXES {
+        w.world.sandbox(&w.adam.user, &format!("box-{n}")).await;
+    }
+    assert_eq!(
+        config(&app, "extra.adam", "extra.adam").await,
+        (StatusCode::FORBIDDEN, json!({}))
+    );
+    let names: Vec<String> = w
+        .world
+        .sandboxes
+        .list(&w.adam.user)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|view| view.sandbox.name.to_string())
+        .collect();
+    assert_eq!(names, ["main", "scratch", "box-2"]);
+}
+
+/// Holds every create until the test adds a permit, as an image pull would.
+struct SlowCreates {
+    engine: FakeEngine,
+    pulled: Semaphore,
+}
+
+#[async_trait]
+impl SandboxEngine for SlowCreates {
+    async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()> {
+        drop(self.pulled.acquire().await.unwrap());
+        self.engine.create(id, spec).await
+    }
+    async fn start(
+        &self,
+        id: &SandboxId,
+        env: CredentialMap,
+        deadline: Duration,
+    ) -> Result<Readiness> {
+        self.engine.start(id, env, deadline).await
+    }
+    async fn stop(&self, id: &SandboxId) -> Result<()> {
+        self.engine.stop(id).await
+    }
+    async fn delete(&self, id: &SandboxId) -> Result<()> {
+        self.engine.delete(id).await
+    }
+    async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
+        self.engine.status(id).await
+    }
+}
+
+#[tokio::test]
+async fn a_sandbox_a_login_creates_is_finished_after_containerssh_stops_waiting() {
+    let engine = Arc::new(SlowCreates {
+        engine: FakeEngine::default(),
+        pulled: Semaphore::new(0),
+    });
+    let w = World::new();
+    w.member("adam").await;
+    let users = w.users.clone();
+    let sandboxes = Sandboxes::new(
+        Arc::new(MemorySandboxRepo::default()),
+        users.clone(),
+        engine.clone(),
+        Credentials::new(Arc::new(MemorySecretStore::default()), users.clone()),
+        catalog(),
+        Limits {
+            max_sandboxes_per_user: MAX_SANDBOXES,
+            wake_deadline: WAKE_DEADLINE,
+        },
+    );
+    let access = SshAccess::new(users, Arc::new(MemoryKeyRepo::default()), sandboxes, vec![]);
+    let app = router(Arc::new(access), ContainerSshConfig::default());
+
+    let given_up = timeout(
+        Duration::from_millis(200),
+        config(&app, "new.adam", "new.adam"),
+    );
+    assert!(given_up.await.is_err());
+    engine.pulled.add_permits(1);
+    let finished = async {
+        while !engine
+            .engine
+            .calls()
+            .iter()
+            .any(|call| matches!(call, EngineCall::Start { .. }))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    timeout(Duration::from_secs(5), finished).await.unwrap();
+    assert_eq!(config(&app, "new.adam", "new.adam").await.0, StatusCode::OK);
 }
 
 struct BrokenUsers;

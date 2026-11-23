@@ -130,10 +130,10 @@ test('a refused key fails at once, with no password prompt, under either config 
 	mkdirSync(join(home, '.ssh'));
 	writeFileSync(join(home, '.ssh', 'corral-opkssh-cert.pub'), '');
 
-	const unknownSandbox = ['-p', port, 'nosuch.bob@127.0.0.1'];
+	const withoutAlias = ['-p', port, 'main.bob@127.0.0.1'];
 	for (const [refused, args] of [
 		['the sandbox alias', ['corral-main']],
-		['the opkssh block alone', unknownSandbox]
+		['the opkssh block alone', withoutAlias]
 	] as const) {
 		const attempt = login(config, [...args]);
 		expect(attempt.prompts, refused).toEqual([]);
@@ -142,7 +142,7 @@ test('a refused key fails at once, with no password prompt, under either config 
 	}
 
 	const prompting = login(config.replaceAll('  PreferredAuthentications publickey\n', ''), [
-		...unknownSandbox
+		...withoutAlias
 	]);
 	expect(prompting.prompts.length, prompting.stderr).toBeGreaterThan(0);
 });

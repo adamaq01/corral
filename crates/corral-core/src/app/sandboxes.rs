@@ -105,6 +105,33 @@ impl Sandboxes {
     }
 
     pub async fn create(&self, owner: &User, request: CreateSandbox) -> Result<SandboxView> {
+        let mut sandbox = self.provision(owner, request).await?;
+        // The sandbox exists whether or not it starts; its view reports where the start got.
+        let _ = self.start_within(&mut sandbox, Duration::ZERO).await;
+        let is_default = self.is_default(&sandbox).await?;
+        let changed = self.credentials.changed_at(owner.id).await?;
+        Ok(self.view(sandbox, owner.clone(), is_default, changed).await)
+    }
+
+    /// The owner's sandbox `name`, provisioned from their defaults, unstarted, when they have none
+    /// by that name.
+    pub async fn find_or_create(&self, owner: &User, name: &SandboxName) -> Result<Sandbox> {
+        if let Some(sandbox) = self.repo.by_name(owner.id, name).await? {
+            return Ok(sandbox);
+        }
+        let request = CreateSandbox {
+            name: name.clone(),
+            image: None,
+            size: None,
+        };
+        match self.provision(owner, request).await {
+            // Another login made it first.
+            Err(Error::Conflict(_)) => self.find(owner, name).await,
+            provisioned => provisioned,
+        }
+    }
+
+    async fn provision(&self, owner: &User, request: CreateSandbox) -> Result<Sandbox> {
         let defaults = self.defaults(owner).await?;
         let image = self
             .catalog
@@ -112,7 +139,7 @@ impl Sandboxes {
         let size = self
             .catalog
             .size(Some(request.size.as_ref().unwrap_or(&defaults.size)))?;
-        let mut sandbox = Sandbox {
+        let sandbox = Sandbox {
             id: SandboxId::generate(),
             owner: owner.id,
             name: request.name,
@@ -135,11 +162,7 @@ impl Sandboxes {
             self.repo.delete(owner.id, &sandbox.name).await?;
             return Err(error);
         }
-        // The sandbox exists whether or not it starts; its view reports where the start got.
-        let _ = self.start_within(&mut sandbox, Duration::ZERO).await;
-        let is_default = self.is_default(&sandbox).await?;
-        let changed = self.credentials.changed_at(owner.id).await?;
-        Ok(self.view(sandbox, owner.clone(), is_default, changed).await)
+        Ok(sandbox)
     }
 
     pub async fn list(&self, owner: &User) -> Result<Vec<SandboxView>> {
