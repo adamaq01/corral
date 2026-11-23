@@ -17,7 +17,7 @@ use corral_api::{
 use corral_core::app::Credentials;
 use corral_core::domain::{CredentialName, Role, UserId};
 use corral_core::fakes::{ADAM_KEY, EngineCall, MAX_SANDBOXES, PROVIDER, World};
-use corral_core::ports::{CredentialMap, Identity, SecretStore};
+use corral_core::ports::{CredentialMap, EventKind, Identity, SecretStore};
 use corral_core::{Error, Result};
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -511,6 +511,7 @@ const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
         None,
     ),
     ("GET", "/api/admin/sandboxes", None),
+    ("GET", "/api/admin/sandboxes/adam/main", None),
 ];
 
 #[tokio::test]
@@ -814,6 +815,89 @@ async fn admins_list_users_and_all_sandboxes() {
     assert_eq!(handles, ["root", "adam"]);
     assert_eq!(users[1]["role"], "member");
     assert_eq!(users[1]["status"], "active");
+}
+
+#[tokio::test]
+async fn admins_see_what_runs_any_sandbox() {
+    let corral = Corral::new();
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let calls = corral.world.engine.calls();
+    let Some(EngineCall::Create { id, .. }) = calls.first() else {
+        panic!("{calls:?}");
+    };
+    let engine = &corral.world.engine;
+    engine.record_event(id, EventKind::Normal, "Scheduled", "on node-1");
+    engine.record_event(id, EventKind::Warning, "BackOff", "restarting");
+
+    let details = root.get("/api/admin/sandboxes/adam/main").await;
+    assert_eq!(details.status, StatusCode::OK, "{}", details.text());
+    let details = details.json();
+    assert_eq!(
+        details["sandbox"],
+        root.get("/api/admin/sandboxes").await.json()[0]
+    );
+    assert_eq!(
+        details["facts"],
+        json!([
+            { "label": "Sandbox", "value": id.0 },
+            { "label": "Pod", "value": id.0 },
+        ])
+    );
+    let events = details["events"].as_array().unwrap();
+    let summary: Vec<(&Value, &Value, &Value, &Value)> = events
+        .iter()
+        .map(|event| {
+            (
+                &event["kind"],
+                &event["object"],
+                &event["reason"],
+                &event["message"],
+            )
+        })
+        .collect();
+    let object = json!(format!("Sandbox {}", id.0));
+    assert_eq!(
+        summary,
+        [
+            (
+                &json!("warning"),
+                &object,
+                &json!("BackOff"),
+                &json!("restarting")
+            ),
+            (
+                &json!("normal"),
+                &object,
+                &json!("Scheduled"),
+                &json!("on node-1")
+            ),
+        ]
+    );
+    let at = events[0]["at"].as_str().unwrap();
+    assert!(DateTime::parse_from_rfc3339(at).is_ok(), "{at}");
+
+    adam.post("/api/sandboxes/main/stop", json!({})).await;
+    let asleep = root.get("/api/admin/sandboxes/adam/main").await.json();
+    assert_eq!(asleep["sandbox"]["state"], "sleeping");
+    assert_eq!(asleep["facts"][1], json!({ "label": "Pod", "value": null }));
+
+    for missing in [
+        "/api/admin/sandboxes/adam/spare",
+        "/api/admin/sandboxes/root/main",
+        "/api/admin/sandboxes/nobody/main",
+    ] {
+        assert_eq!(
+            root.get(missing).await.status,
+            StatusCode::NOT_FOUND,
+            "{missing}"
+        );
+    }
+    assert_eq!(
+        root.get("/api/admin/sandboxes/adam/Main").await.status,
+        StatusCode::BAD_REQUEST
+    );
 }
 
 fn user_id(users: &Value, handle: &str) -> String {

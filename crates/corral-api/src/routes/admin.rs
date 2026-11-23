@@ -2,11 +2,11 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use corral_core::domain::UserId;
+use corral_core::domain::{Handle, SandboxName, UserId};
 use uuid::Uuid;
 
 use crate::auth::CurrentAdmin;
-use crate::dto::{OwnedSandbox, UserDto};
+use crate::dto::{OwnedSandbox, SandboxDetailsDto, UserDto};
 use crate::error::ApiError;
 use crate::extract::PathParam;
 use crate::state::AppState;
@@ -18,6 +18,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/admin/users/{id}/enable", post(enable))
         .route("/api/admin/users/{id}/disable", post(disable))
         .route("/api/admin/sandboxes", get(sandboxes))
+        .route("/api/admin/sandboxes/{handle}/{name}", get(sandbox))
 }
 
 async fn users(
@@ -69,4 +70,13 @@ async fn sandboxes(
             .map(|view| OwnedSandbox::new(view, &state.ssh))
             .collect(),
     ))
+}
+
+async fn sandbox(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+    PathParam((handle, name)): PathParam<(Handle, SandboxName)>,
+) -> Result<Json<SandboxDetailsDto>, ApiError> {
+    let details = state.sandboxes.inspect(&admin, &handle, &name).await?;
+    Ok(Json(SandboxDetailsDto::new(details, &state.ssh)))
 }

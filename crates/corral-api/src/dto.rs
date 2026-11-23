@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
-use corral_core::app::{Catalog, SandboxView};
+use corral_core::app::{Catalog, SandboxDetails, SandboxView};
 use corral_core::domain::{
     CredentialName, Handle, ImageKey, PictureUrl, Role, SandboxDefaults, SandboxName,
     SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus,
 };
+use corral_core::ports::{EngineEvent, EventKind, Fact};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -167,6 +168,82 @@ impl OwnedSandbox {
                 picture: view.owner.picture.clone(),
             },
             sandbox: SandboxDto::new(view, ssh),
+        }
+    }
+}
+
+/// A sandbox with what its engine reports about how it runs, for admins.
+#[derive(Serialize, TS)]
+#[ts(rename = "SandboxDetails")]
+pub(crate) struct SandboxDetailsDto {
+    sandbox: OwnedSandbox,
+    facts: Vec<FactDto>,
+    /// The most recent first.
+    events: Vec<EngineEventDto>,
+}
+
+impl SandboxDetailsDto {
+    pub(crate) fn new(details: SandboxDetails, ssh: &SshEndpoint) -> Self {
+        let SandboxDetails { view, inspection } = details;
+        Self {
+            sandbox: OwnedSandbox::new(view, ssh),
+            facts: inspection.facts.into_iter().map(FactDto::from).collect(),
+            events: inspection
+                .events
+                .into_iter()
+                .map(EngineEventDto::from)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+#[ts(rename = "Fact")]
+pub(crate) struct FactDto {
+    label: String,
+    /// Null for what does not exist right now, such as the pod of a sleeping sandbox.
+    value: Option<String>,
+}
+
+impl From<Fact> for FactDto {
+    fn from(fact: Fact) -> Self {
+        Self {
+            label: fact.label,
+            value: fact.value,
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename = "EventKind")]
+pub(crate) enum EventKindDto {
+    Normal,
+    Warning,
+}
+
+#[derive(Serialize, TS)]
+#[ts(rename = "EngineEvent")]
+pub(crate) struct EngineEventDto {
+    at: Option<DateTime<Utc>>,
+    kind: EventKindDto,
+    /// What the event is about, such as `Pod sbx-0123456789ab`.
+    object: String,
+    reason: String,
+    message: String,
+}
+
+impl From<EngineEvent> for EngineEventDto {
+    fn from(event: EngineEvent) -> Self {
+        Self {
+            at: event.at,
+            kind: match event.kind {
+                EventKind::Normal => EventKindDto::Normal,
+                EventKind::Warning => EventKindDto::Warning,
+            },
+            object: event.object,
+            reason: event.reason,
+            message: event.message,
         }
     }
 }

@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use ts_rs::{Config, TS, TypeVisitor};
 
 use crate::dto::{
-    CatalogDto, CredentialDto, CredentialValue, KeyDto, Me, NewKey, OwnedSandbox, SandboxDto,
-    UserDto, Wake,
+    CatalogDto, CredentialDto, CredentialValue, KeyDto, Me, NewKey, OwnedSandbox,
+    SandboxDetailsDto, SandboxDto, UserDto, Wake,
 };
 use crate::error::ErrorBody;
 use crate::provider::ProviderListing;
@@ -35,6 +35,7 @@ impl TypeScript {
             .add::<SandboxStatus>()
             .add::<Wake>()
             .add::<OwnedSandbox>()
+            .add::<SandboxDetailsDto>()
             .add::<NewKey>()
             .add::<KeyDto>()
             .add::<CredentialDto>()

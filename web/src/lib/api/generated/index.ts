@@ -24,10 +24,24 @@ export type CredentialName = string;
 
 export type CredentialValue = { value: string, };
 
+export type EngineEvent = { at: string | null, kind: EventKind,
+/**
+ * What the event is about, such as `Pod sbx-0123456789ab`.
+ */
+object: string, reason: string, message: string, };
+
 /**
  * What every error answers with.
  */
 export type ErrorBody = { error: string, };
+
+export type EventKind = "normal" | "warning";
+
+export type Fact = { label: string,
+/**
+ * Null for what does not exist right now, such as the pod of a sleeping sandbox.
+ */
+value: string | null, };
 
 export type Handle = string;
 
@@ -102,6 +116,15 @@ staleCredentials: boolean, } & ({ "state": "starting" } | { "state": "running" }
  * The image and size a user's new sandbox gets when its creation names none.
  */
 export type SandboxDefaults = { image: ImageKey, size: SizeKey, };
+
+/**
+ * A sandbox with what its engine reports about how it runs, for admins.
+ */
+export type SandboxDetails = { sandbox: OwnedSandbox, facts: Array<Fact>,
+/**
+ * The most recent first.
+ */
+events: Array<EngineEvent>, };
 
 export type SandboxName = string;
 

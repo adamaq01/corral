@@ -9,10 +9,10 @@ use ts_rs::TS;
 
 use super::{Catalog, Credentials};
 use crate::domain::{
-    Admin, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName, SandboxStatus, SizeKey,
-    User, UserId,
+    Admin, Handle, ImageKey, Sandbox, SandboxDefaults, SandboxId, SandboxName, SandboxStatus,
+    SizeKey, User, UserId,
 };
-use crate::ports::{Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
+use crate::ports::{Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo};
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +39,13 @@ pub struct SandboxView {
     pub status: SandboxStatus,
     /// Runs without its owner's latest credential change, which a restart applies.
     pub stale_credentials: bool,
+}
+
+/// A sandbox with what its engine reports about how it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxDetails {
+    pub view: SandboxView,
+    pub inspection: Inspection,
 }
 
 #[derive(Clone)]
@@ -216,6 +223,22 @@ impl Sandboxes {
         Ok(views)
     }
 
+    pub async fn inspect(
+        &self,
+        _: &Admin,
+        owner: &Handle,
+        name: &SandboxName,
+    ) -> Result<SandboxDetails> {
+        let owner = self
+            .users
+            .by_handle(owner)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("sandbox {name}.{owner}")))?;
+        let view = self.get(&owner, name).await?;
+        let inspection = self.engine.inspect(&view.sandbox.id).await?;
+        Ok(SandboxDetails { view, inspection })
+    }
+
     pub async fn delete(&self, owner: &User, name: &SandboxName) -> Result<()> {
         let sandbox = self.find(owner, name).await?;
         self.engine.delete(&sandbox.id).await?;
@@ -351,13 +374,14 @@ mod tests {
 
     use super::SandboxView;
     use crate::Error;
+    use crate::domain::Handle;
     use crate::domain::{Sandbox, SandboxStatus, SizeKey};
     use crate::fakes::EngineCall;
     use crate::fakes::{
         MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, catalog, credential, default_names,
         defaults, exposed, request, sandbox_name,
     };
-    use crate::ports::{Readiness, SandboxEngine, SshTarget, UserRepo};
+    use crate::ports::{EventKind, Fact, Readiness, SandboxEngine, SshTarget, UserRepo};
 
     #[tokio::test]
     async fn create_provisions_from_the_catalog_then_starts_without_waiting() {
@@ -795,5 +819,86 @@ mod tests {
             w.sandboxes.defaults(&adam).await.unwrap(),
             defaults("base", "large")
         );
+    }
+
+    #[tokio::test]
+    async fn admins_inspect_any_sandbox_with_its_view_and_what_its_engine_reports() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let admin = admin_proof(&w.admin("root").await);
+        let main = w.sandbox(&adam, "main").await;
+        w.sandbox(&adam, "dev").await;
+        w.engine
+            .record_event(&main.id, EventKind::Normal, "Scheduled", "on node-1");
+        w.engine
+            .record_event(&main.id, EventKind::Warning, "BackOff", "restarting");
+        let inspect = async || {
+            w.sandboxes
+                .inspect(&admin, &adam.handle, &main.name)
+                .await
+                .unwrap()
+        };
+
+        let running = inspect().await;
+        assert_eq!(
+            running.view,
+            w.sandboxes.get(&adam, &main.name).await.unwrap()
+        );
+        assert_eq!(
+            running.inspection.facts,
+            [
+                Fact::new("Sandbox", main.id.0.clone()),
+                Fact::new("Pod", main.id.0.clone())
+            ]
+        );
+        let events: Vec<(EventKind, &str)> = running
+            .inspection
+            .events
+            .iter()
+            .map(|event| (event.kind, event.reason.as_str()))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                (EventKind::Warning, "BackOff"),
+                (EventKind::Normal, "Scheduled")
+            ]
+        );
+
+        w.sandboxes.stop(&adam, &main.name).await.unwrap();
+        let asleep = inspect().await;
+        assert_eq!(asleep.view.status, SandboxStatus::Sleeping);
+        assert_eq!(asleep.inspection.facts[1], Fact::new("Pod", None));
+
+        w.engine.delete(&main.id).await.unwrap();
+        let gone = inspect().await;
+        assert_eq!(
+            gone.view.status,
+            SandboxStatus::Failed("engine status unavailable".to_owned())
+        );
+        assert_eq!(
+            gone.inspection.facts,
+            [Fact::new("Sandbox", None), Fact::new("Pod", None)]
+        );
+    }
+
+    #[tokio::test]
+    async fn inspecting_a_sandbox_its_owner_does_not_have_is_not_found() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let root = w.admin("root").await;
+        let main = w.sandbox(&root, "main").await;
+        let admin = admin_proof(&root);
+        let nobody = Handle::parse("nobody").unwrap();
+        for (owner, name) in [
+            (&adam.handle, &main.name),
+            (&nobody, &main.name),
+            (&root.handle, &sandbox_name("missing")),
+        ] {
+            assert!(matches!(
+                w.sandboxes.inspect(&admin, owner, name).await,
+                Err(Error::NotFound(_))
+            ));
+        }
     }
 }

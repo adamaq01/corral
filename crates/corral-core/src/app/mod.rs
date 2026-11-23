@@ -11,5 +11,5 @@ pub use catalog::{Catalog, ImageOption, SizePreset};
 pub use credentials::Credentials;
 pub use failure_window::{Attempt, FailureWindow, Network};
 pub use keys::Keys;
-pub use sandboxes::{CreateSandbox, Limits, SandboxView, Sandboxes};
+pub use sandboxes::{CreateSandbox, Limits, SandboxDetails, SandboxView, Sandboxes};
 pub use ssh_access::SshAccess;
