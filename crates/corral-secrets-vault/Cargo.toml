@@ -19,7 +19,7 @@ base64.workspace = true
 corral-core = { path = "../corral-core", features = ["contract"] }
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "time"] }
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
 
 [lints]
