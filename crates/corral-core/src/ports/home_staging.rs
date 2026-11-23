@@ -1,4 +1,4 @@
-//! How an engine hands home files to the sandbox image, whose `corral-home-init` writes them into
+//! How an engine hands home files to the Corral overlay's `corral-init`, which writes them into
 //! the home as the sandbox user at every start: a directory holding a `manifest` and each file's
 //! bytes under its key. The manifest has a `<key> <mode> <path>` line per file, the mode in octal.
 

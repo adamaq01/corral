@@ -118,14 +118,15 @@ async fn config(
 
 fn backend(target: &SshTarget) -> Value {
     match target {
-        // Without persistent mode ContainerSSH reads metadata.name as the pod to create. Its
-        // default shell is a plain /bin/bash, which reads no profile, unlike an sshd login.
+        // Without persistent mode ContainerSSH reads metadata.name as the pod to create. The
+        // shell and sftp come from the Corral overlay every sandbox mounts, as on Docker.
         SshTarget::KubernetesPod { namespace, pod } => json!({
             "backend": "kubernetes",
             "kubernetes": {"pod": {
                 "metadata": {"name": pod, "namespace": namespace},
                 "mode": "persistent",
-                "shellCommand": ["/bin/bash", "-l"],
+                "shellCommand": ["/opt/corral/bin/corral-shell"],
+                "subsystems": {"sftp": "/opt/corral/libexec/sftp-server"},
             }},
         }),
         // ContainerSSH merges this over its own config, which holds the privateKey.

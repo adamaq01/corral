@@ -25,6 +25,10 @@ fn image() -> String {
     std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned())
 }
 
+fn overlay() -> String {
+    std::env::var("CORRAL_OVERLAY_IMAGE").unwrap_or_else(|_| "corral-overlay:dev".to_owned())
+}
+
 fn docker(args: &[&str]) -> Output {
     Command::new("docker")
         .args(args)
@@ -104,15 +108,18 @@ struct Lab {
 impl Lab {
     fn open(test: &str) -> Option<Self> {
         let image = image();
-        if !docker_answers(&["image", "inspect", &image]) {
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "CI needs a Docker daemon and image {image}"
-            );
-            eprintln!(
-                "skipped: no Docker daemon or image {image} (build it with images/sandbox/test.sh)"
-            );
-            return None;
+        for needed in [&image, &overlay()] {
+            if !docker_answers(&["image", "inspect", needed]) {
+                assert!(
+                    std::env::var_os("CI").is_none(),
+                    "CI needs a Docker daemon and image {needed}"
+                );
+                eprintln!(
+                    "skipped: no Docker daemon or image {needed} (build them with \
+                     images/sandbox/test.sh and images/overlay/test.sh)"
+                );
+                return None;
+            }
         }
         let network = format!("corral-test-docker-{test}-{}", std::process::id());
         let mut lab = Self {
@@ -140,9 +147,14 @@ impl Lab {
     }
 
     async fn engine(&self, max_running: usize) -> Arc<DockerEngine> {
+        self.engine_with(max_running, &overlay()).await
+    }
+
+    async fn engine_with(&self, max_running: usize, overlay: &str) -> Arc<DockerEngine> {
         let engine = DockerEngine::connect(
             DockerConfig {
                 network: self.network.clone(),
+                overlay_image: overlay.to_owned(),
             },
             self.proxy_public_key.clone().unwrap(),
             max_running,
@@ -511,7 +523,13 @@ impl Tags {
 
     /// The sandbox image under a new ID, tagged `tag`; returns that ID.
     fn variant(&self, tag: &str) -> String {
-        let source = docker_ok(&["create", &image()]);
+        self.variant_of(&image(), tag)
+    }
+
+    /// The image `reference` names under a new ID, tagged `tag`; returns that ID.
+    fn variant_of(&self, reference: &str, tag: &str) -> String {
+        // The overlay has no command of its own, and a create needs one, never run.
+        let source = docker_ok(&["create", reference, "/bin/true"]);
         docker_ok(&[
             "commit",
             "--change",
@@ -677,6 +695,40 @@ async fn a_start_from_stopped_remakes_the_sandbox_from_the_spec_it_is_given() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_start_from_stopped_mounts_the_overlay_the_engine_pinned() {
+    let tags = Tags::default();
+    let Some(lab) = Lab::open("overlay") else {
+        return;
+    };
+    let newer = Tags::named("overlay", "newer");
+    let newer_id = tags.variant_of(&overlay(), &newer);
+    let overlay_id = image_id(&overlay());
+    let engine = lab.engine(10).await;
+    let id = lab.create(&engine, "main").await;
+    let name = container_name(&id);
+    let target = wake(&engine, &id, CredentialMap::new()).await;
+    lab.pin_host_key(&target);
+    lab.ssh(&name, "echo kept > ~/kept");
+    let first = inspect(&name, "{{.Id}}");
+    let mounts = inspect(&name, "{{json .HostConfig.Mounts}}");
+    assert!(mounts.contains(&overlay_id), "{mounts}");
+
+    let upgraded = lab.engine_with(10, &newer).await;
+    wake(&upgraded, &id, CredentialMap::new()).await;
+    assert_eq!(
+        inspect(&name, "{{.Id}}"),
+        first,
+        "a running sandbox keeps its overlay"
+    );
+    upgraded.stop(&id).await.unwrap();
+    assert_eq!(wake(&upgraded, &id, CredentialMap::new()).await, target);
+    let mounts = inspect(&name, "{{json .HostConfig.Mounts}}");
+    assert!(mounts.contains(&newer_id), "{mounts}");
+    assert_ne!(inspect(&name, "{{.Id}}"), first);
+    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_remake_cut_short_finishes_at_the_next_start() {
     let tags = Tags::default();
     let Some(lab) = Lab::open("remake") else {
@@ -794,15 +846,16 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     lab.pin_host_key(&targets[1]);
     lab.ssh_in_background(&container_name(&ssh), "sleep 120");
     let started = Instant::now();
-    while !docker(&[
+    while !docker_ok(&[
         "exec",
         &container_name(&ssh),
-        "pgrep",
-        "-f",
-        "sshd: sandbox",
+        "/opt/corral/bin/busybox",
+        "ps",
+        "-o",
+        "args",
     ])
-    .status
-    .success()
+    .lines()
+    .any(|args| args.starts_with("sshd-session: sandbox@"))
     {
         assert!(
             started.elapsed() < Duration::from_secs(20),
@@ -812,8 +865,10 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     }
     docker_ok(&[
         "exec",
+        "--user",
+        "1000",
         &container_name(&herdr),
-        "hc",
+        "/opt/corral/bin/hc",
         "run",
         "--bg",
         "sleep",
@@ -870,6 +925,7 @@ async fn connect_refuses_a_missing_network() {
     let refused = DockerEngine::connect(
         DockerConfig {
             network: missing.clone(),
+            ..DockerConfig::default()
         },
         key,
         1,

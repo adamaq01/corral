@@ -58,8 +58,9 @@ impl PodExec {
 #[async_trait]
 impl Exec for PodExec {
     async fn run(&self, argv: &[&str]) -> Result<ExecOutput> {
-        // Exec of a missing binary is an API error; through sh it is exit 127, which probes read.
-        let argv: Vec<&str> = ["sh", "-c", "exec \"$@\"", "sh"]
+        // Exec of a missing binary is an API error; through a shell it is exit 127, which probes
+        // read. The overlay's shell is there whatever the image.
+        let argv: Vec<&str> = ["/opt/corral/bin/sh", "-c", "exec \"$@\"", "sh"]
             .iter()
             .chain(argv)
             .copied()

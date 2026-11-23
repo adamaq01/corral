@@ -23,7 +23,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.toml"]
-          pattern: '\[engine\]\s+agent_image = "containerssh/agent:v0.11.0"\s+kind = "agent-sandbox"\s+namespace = "corral-sandboxes"\s+service_account = "corral-sandbox"\s+\['
+          pattern: '\[engine\]\s+agent_image = "containerssh/agent:v0.11.0"\s+kind = "agent-sandbox"\s+namespace = "corral-sandboxes"\s+overlay_image = "ghcr.io/adamaq01/corral-overlay:latest"\s+service_account = "corral-sandbox"\s+\['
       - notMatchRegex:
           path: data["config.toml"]
           pattern: storage_class
@@ -49,7 +49,25 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.toml"]
-          pattern: 'namespace = "homes"\s+service_account = "corral-sandbox"\s+storage_class = "fast-nvme"'
+          pattern: 'namespace = "homes"\s+overlay_image = "[^"]+"\s+service_account = "corral-sandbox"\s+storage_class = "fast-nvme"'
+
+  - it: mounts the overlay of the chart's appVersion unless told otherwise
+    chart:
+      appVersion: sha-0123abc
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'overlay_image = "ghcr.io/adamaq01/corral-overlay:sha-0123abc"'
+
+  - it: mounts the overlay image it is given
+    set:
+      sandboxes.overlayImage:
+        repository: registry.example.lan/corral-overlay
+        tag: v1
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: 'overlay_image = "registry.example.lan/corral-overlay:v1"'
 
   - it: maps OIDC values to the [identity.oidc] keys, without local accounts when they are off
     set:

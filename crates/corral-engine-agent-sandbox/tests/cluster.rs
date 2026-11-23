@@ -66,6 +66,8 @@ impl Cluster {
             storage_class: None,
             agent_image: std::env::var("CORRAL_AGENT_IMAGE")
                 .unwrap_or_else(|_| "containerssh/agent:v0.11.0".to_owned()),
+            overlay_image: std::env::var("CORRAL_OVERLAY_IMAGE")
+                .unwrap_or_else(|_| "corral-overlay:dev".to_owned()),
         };
         let sandbox = ApiResource::from_gvk_with_plural(
             &GroupVersionKind::gvk("agents.x-k8s.io", "v1beta1", "Sandbox"),
@@ -216,6 +218,26 @@ async fn sessions_run_as_the_sandbox_user_with_credentials(cluster: &Cluster, id
     assert_eq!(
         cluster.exec(id, &["id", "-u"]).await,
         (0, "1000\n".to_owned())
+    );
+    assert_eq!(
+        cluster
+            .exec(id, &["sh", "-c", "id -un; echo $HOME; sudo -n id -un; pwd"])
+            .await,
+        (
+            0,
+            "sandbox\n/home/sandbox\nroot\n/home/sandbox\n".to_owned()
+        ),
+        "the overlay's account files make uid 1000 the sandbox user, with passwordless sudo"
+    );
+    assert_eq!(
+        cluster
+            .exec(id, &["sh", "-c", "corral help | head -n 1"])
+            .await,
+        (
+            0,
+            "corral acts on the Corral sandbox it runs in.\n".to_owned()
+        ),
+        "the overlay's commands are on PATH"
     );
     assert_eq!(
         cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,

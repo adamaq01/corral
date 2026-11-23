@@ -26,7 +26,8 @@
   "kind" "agent-sandbox"
   "namespace" (include "corral.sandboxNamespace" .)
   "service_account" (include "corral.sandboxServiceAccount" .)
-  "agent_image" .Values.sandboxes.agentImage }}
+  "agent_image" .Values.sandboxes.agentImage
+  "overlay_image" (printf "%s:%s" .Values.sandboxes.overlayImage.repository (.Values.sandboxes.overlayImage.tag | default .Chart.AppVersion)) }}
 {{- with .Values.sandboxes.storageClass }}
 {{- $_ := set $engine "storage_class" . }}
 {{- end }}

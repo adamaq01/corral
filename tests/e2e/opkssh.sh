@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # opkssh logins end to end: VoidAuth (upstream, behind TLS) as the issuer, Corral's image and
 # ContainerSSH from deploy/compose, the real opkssh client, and Playwright for every browser step.
-# CORRAL_SERVER_IMAGE and CORRAL_SANDBOX_IMAGE name prebuilt images, as for compose.sh. Needs
-# web/node_modules (npm ci) and Playwright's Chromium (npx playwright install chromium).
+# CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images, as for
+# compose.sh. Needs web/node_modules (npm ci) and Playwright's Chromium (npx playwright install
+# chromium).
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -89,14 +90,18 @@ export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-play
 
 server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
 sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
+overlay_image=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
 if [[ -z "${CORRAL_SERVER_IMAGE:-}" ]]; then
   docker build --file "$repo/images/server/Dockerfile" --tag "$server_image" "$repo" >>"$log" 2>&1
 fi
 if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
   docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo" >>"$log" 2>&1
 fi
+if [[ -z "${CORRAL_OVERLAY_IMAGE:-}" ]]; then
+  docker build --file "$repo/images/overlay/Dockerfile" --tag "$overlay_image" "$repo" >>"$log" 2>&1
+fi
 docker pull --quiet "$voidauth_image" >>"$log"
-ok "images: server $server_image, sandbox $sandbox_image, issuer $voidauth_image"
+ok "images: server $server_image, sandbox $sandbox_image, overlay $overlay_image, issuer $voidauth_image"
 
 mkdir -m 700 "$work/bin" "$work/home" "$work/home/.ssh" "$work/home/.opk" "$work/mint"
 version=$(sed -n 's/^ARG OPKSSH_VERSION=//p' "$repo/images/server/Dockerfile")
@@ -169,6 +174,7 @@ client_id = "opkssh"
 [engine]
 kind = "docker"
 network = "$sandbox_network"
+overlay_image = "$overlay_image"
 
 [[catalog.images]]
 key = "dev"

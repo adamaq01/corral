@@ -9,6 +9,7 @@ node=$cluster-control-plane
 namespace=corral-dev
 agent_sandbox_version=v1.0.11
 sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
+overlay_image=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
 agent_image=${CORRAL_AGENT_IMAGE:-containerssh/agent:v0.11.0}
 proxy_ca=/usr/local/share/ca-certificates/proxy-ca.crt
 
@@ -43,15 +44,22 @@ metadata:
 automountServiceAccountToken: false
 EOF
 
-if ! docker image inspect "$sandbox_image" >/dev/null 2>&1; then
-  docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo"
-fi
-sandbox_image_id=$(docker image inspect --format '{{.Id}}' "$sandbox_image")
-if ! docker exec "$node" ctr --namespace=k8s.io images ls | grep -F "$sandbox_image_id" >/dev/null; then
-  if ! kind load docker-image "$sandbox_image" --name "$cluster"; then
-    docker save "$sandbox_image" | docker exec -i "$node" ctr --namespace=k8s.io images import -
+# Loads a local image into the node unless it holds that image already, building it first from
+# images/<directory> when Docker does not have it.
+load() {
+  if ! docker image inspect "$1" >/dev/null 2>&1; then
+    docker build --file "$repo/images/$2/Dockerfile" --tag "$1" "$repo"
   fi
-fi
+  local id
+  id=$(docker image inspect --format '{{.Id}}' "$1")
+  if ! docker exec "$node" ctr --namespace=k8s.io images ls | grep -F "$id" >/dev/null; then
+    if ! kind load docker-image "$1" --name "$cluster"; then
+      docker save "$1" | docker exec -i "$node" ctr --namespace=k8s.io images import -
+    fi
+  fi
+}
+load "$sandbox_image" sandbox
+load "$overlay_image" overlay
 docker exec "$node" crictl pull "$agent_image" >/dev/null
 # The volume provisioner's helper image ships packed, so the prune below would drop its layers.
 helper_image=$(kubectl --context "$context" -n local-path-storage get configmap local-path-config \
@@ -60,4 +68,4 @@ docker exec "$node" crictl pull "$helper_image" >/dev/null
 # The node only needs the unpacked snapshots; dropping the layer blobs saves about 1 GB of Docker disk.
 docker exec "$node" ctr --namespace=k8s.io content prune references
 
-echo "kind cluster $cluster is ready: namespace $namespace, images $sandbox_image and $agent_image"
+echo "kind cluster $cluster is ready: namespace $namespace, images $sandbox_image, $overlay_image and $agent_image"

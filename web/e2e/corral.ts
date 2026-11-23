@@ -87,6 +87,7 @@ class Run {
 		const binary = serverBinary();
 		const config = join(this.dir, 'config.toml');
 		const sandboxImage = process.env.CORRAL_SANDBOX_IMAGE ?? 'corral-sandbox:dev';
+		const overlayImage = process.env.CORRAL_OVERLAY_IMAGE ?? 'corral-overlay:dev';
 		writeFileSync(
 			config,
 			`[http]
@@ -104,6 +105,7 @@ public_port = ${sshPort}
 [engine]
 kind = "docker"
 network = "${this.network}"
+overlay_image = "${overlayImage}"
 
 [[catalog.images]]
 key = "dev"

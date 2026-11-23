@@ -2,7 +2,9 @@ use std::collections::HashSet;
 
 use corral_core::Result;
 
-use crate::{Exec, pgrep};
+use crate::Exec;
+use crate::exec::unexpected_exit;
+use crate::processes::BUSYBOX;
 
 const ESTABLISHED: &str = "01";
 
@@ -12,14 +14,14 @@ pub(crate) async fn any_open(exec: &dyn Exec, pids: &[&str]) -> Result<bool> {
         return Ok(false);
     }
     let fds: Vec<String> = pids.iter().map(|pid| format!("/proc/{pid}/fd")).collect();
-    let mut argv = vec!["ls", "-l"];
+    let mut argv = vec![BUSYBOX, "ls", "-l"];
     argv.extend(fds.iter().map(String::as_str));
     let listing = list(exec, &argv).await?;
     let held = sockets(&listing);
     if held.is_empty() {
         return Ok(false);
     }
-    let tables = list(exec, &["cat", "/proc/net/tcp", "/proc/net/tcp6"]).await?;
+    let tables = list(exec, &[BUSYBOX, "cat", "/proc/net/tcp", "/proc/net/tcp6"]).await?;
     Ok(established(&tables).any(|inode| held.contains(inode)))
 }
 
@@ -29,7 +31,7 @@ async fn list(exec: &dyn Exec, argv: &[&str]) -> Result<String> {
     let output = exec.run(argv).await?;
     match output.code {
         0..=2 => Ok(output.stdout),
-        code => Err(pgrep::unexpected_exit(argv, code)),
+        code => Err(unexpected_exit(argv, code)),
     }
 }
 

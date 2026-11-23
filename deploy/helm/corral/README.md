@@ -2,7 +2,9 @@
 
 Runs Corral on Kubernetes, with [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
 as the sandbox engine and [ContainerSSH](https://containerssh.io) as the SSH front door. Each
-sandbox is an agent-sandbox `Sandbox` whose home is a PersistentVolumeClaim. Users reach a sandbox
+sandbox is an agent-sandbox `Sandbox` whose home is a PersistentVolumeClaim, from any image: the
+Corral overlay, mounted into every sandbox, brings the sandbox user, sudo, the login shell, sftp,
+Herdr and the `corral` command ([docs/images.md](../../../docs/images.md)). Users reach a sandbox
 with any SSH client:
 
 ```
@@ -46,7 +48,8 @@ cluster access. The chart does not install agent-sandbox or the CloudNativePG op
 
 ## Prerequisites
 
-- Kubernetes 1.35 or later: sandboxes mount the ContainerSSH agent as an image volume.
+- Kubernetes 1.35 or later: sandboxes mount the ContainerSSH agent and the Corral overlay as
+  image volumes.
 - agent-sandbox v1.0.11. `helm install` fails until it is installed:
 
   ```sh
@@ -206,6 +209,9 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
 ```
 
 - Generated keys and the host key are read back from the cluster and kept.
+- The overlay is `sandboxes.overlayImage`, of the chart's appVersion unless its tag says
+  otherwise, so each chart version brings its own. A sandbox mounts it from its next start from
+  sleep on; a running sandbox keeps the one it started with.
 - A change to Corral's or ContainerSSH's config restarts its pods. Corral runs one replica and
   is replaced, not rolled, so the web UI and new SSH logins pause while it restarts; open SSH
   sessions continue.
@@ -236,6 +242,11 @@ latter.
   and wakes on the next SSH login. A connection that only forwards ports (`ssh -N -L`) keeps a
   sandbox awake while a forwarded connection through it is open, such as a page holding a dev
   server's live-reload socket, and not while the tunnel carries nothing.
+- A sandbox pod's init container runs as root, only the overlay's static `corral-init`, which
+  writes the sandbox user's account files; the sandbox container runs as uid 1000. The sandbox
+  namespace enforces the `baseline` Pod Security level, which allows both.
+- ContainerSSH runs an SSH command (`ssh host <command>`) through the image's `/bin/sh`, so an
+  image without `/bin/sh` takes interactive logins and sftp only.
 - The `corral` command in a sandbox (`corral status`, `restart`, `stop`, `delete --confirm`)
   reaches Corral's API at its Service, `http://<release>.<namespace>.svc`, which the
   NetworkPolicy leaves open on the HTTP port.

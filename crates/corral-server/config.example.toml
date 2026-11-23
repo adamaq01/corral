@@ -37,6 +37,8 @@ namespace = "corral-sandboxes"
 service_account = "corral-sandbox"
 storage_class = "tns-csi-nvmeof"
 agent_image = "containerssh/agent:v0.11.0"
+# The Corral overlay every sandbox mounts at /opt/corral, whatever its image.
+overlay_image = "ghcr.io/adamaq01/corral-overlay:latest"
 
 # A sandbox with no SSH session and no Herdr terminal at work sleeps after timeout_secs.
 [idle]

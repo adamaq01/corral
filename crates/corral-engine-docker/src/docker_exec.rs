@@ -10,6 +10,7 @@ use corral_core::{Error, Result};
 use futures_util::TryStreamExt;
 
 const TIMEOUT: Duration = Duration::from_secs(30);
+const SANDBOX_USER: &str = "1000:1000";
 
 pub struct DockerExec {
     docker: Docker,
@@ -24,6 +25,7 @@ impl DockerExec {
     async fn run_to_exit(&self, argv: &[&str]) -> Result<ExecOutput> {
         let config = ExecConfig {
             cmd: Some(argv.iter().map(|arg| (*arg).to_owned()).collect()),
+            user: Some(SANDBOX_USER.to_owned()),
             attach_stdout: Some(true),
             ..ExecConfig::default()
         };

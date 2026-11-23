@@ -401,6 +401,19 @@
         "agentImage": {
           "type": "string",
           "minLength": 1
+        },
+        "overlayImage": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string"
+            }
+          }
         }
       }
     },

@@ -2,7 +2,9 @@
 
 Two containers run the whole service: Corral (the web UI and API, local accounts, SQLite and the
 Docker engine) and [ContainerSSH](https://containerssh.io) (the SSH front door). Each sandbox is a
-Docker container with its home on a named volume. Users reach a sandbox with any SSH client:
+Docker container with its home on a named volume, from any image: the Corral overlay, mounted into
+every sandbox, brings the sandbox user, sudo, SSH, Herdr and the `corral` command
+([docs/images.md](../../docs/images.md)). Users reach a sandbox with any SSH client:
 
 ```
 ssh -p 48291 <sandbox>.<handle>@<public_host>
@@ -18,7 +20,8 @@ all their output, and Kubernetes terminals get no stray bytes and end when the c
 
 ## Install
 
-You need Docker with the Compose plugin and `ssh-keygen`.
+You need Docker Engine 28 or later, whose image mounts bring the overlay into sandboxes, with the
+Compose plugin, and `ssh-keygen`.
 
 1. Copy this directory to the host and keep it private, since it will hold the key that opens
    every sandbox and the key that decrypts every stored secret:
@@ -67,8 +70,9 @@ Open `base_url` in a browser and sign in with the admin account from step 6. The
 
 1. Under **SSH keys**, add your public key, such as the contents of `~/.ssh/id_ed25519.pub`.
 2. Under **Sandboxes**, create a sandbox. The first one is called `main` unless you name it
-   otherwise, and it pulls the sandbox image (`ghcr.io/adamaq01/corral-sandbox`, about 2 GB
-   unpacked), so it can take a few minutes to start.
+   otherwise, and it pulls the sandbox image (`ghcr.io/adamaq01/corral-sandbox`, Ubuntu with
+   Node.js, Claude Code, Codex and Python, about 2 GB unpacked), so it can take a few minutes to
+   start.
 3. Copy a command from the sandbox's page and connect:
 
    ```sh
@@ -166,6 +170,9 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
   sandbox can reach it.
 - Every sandbox on `corral-sandboxes` can reach every other sandbox's ports. Users have
   passwordless sudo inside their own sandbox. Both are accepted for a group of trusted users.
+- A sandbox's container starts as root, running only the overlay's static `corral-init`, which
+  writes the sandbox user and starts sshd; the image's own entrypoint never runs, and every
+  session runs as the sandbox user, uid 1000.
 - Put the web UI and API behind your existing HTTPS reverse proxy and use an `https://`
   `base_url`: the session cookie is marked `Secure` exactly then. Behind a proxy, set
   `trust_forwarded_for = true` under `[http]`, so password-login limits count each client, not
@@ -192,6 +199,10 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
   `config.toml` together.
 - Upgrade: `docker compose pull && docker compose up -d --wait`. `CORRAL_VERSION` in `.env`
   pins the Corral image tag (`latest` when unset).
+- The overlay: Corral pulls `overlay_image` under `[engine]`
+  (`ghcr.io/adamaq01/corral-overlay:latest` by default) each time it starts, and uses the copy
+  Docker has when the pull fails. Each sandbox mounts the overlay Corral pulled, from its next
+  start from sleep on; a running sandbox keeps the one it started with.
 - `docker compose down` stops Corral and ContainerSSH only. Sandbox containers are not part of
   the Compose project: running ones keep running, and they hold the `corral-sandboxes` network
   until they are deleted in the web UI.

@@ -106,11 +106,12 @@ mod tests {
     use std::sync::Mutex as SyncMutex;
 
     use super::*;
+    use crate::processes::tests::{LIST, listing};
     use crate::testing::ScriptedExec;
 
-    const SSHD: &str = "pgrep -f sshd: sandbox";
-    const HERDR_CORE: &str = "pgrep -x herdr-core";
-    const HERDR_LIST: &str = "hc ls --json";
+    const HERDR_LIST: &str = "/opt/corral/bin/hc ls --json";
+    const CORE: (u32, u32, &str) = (35, 1, "/opt/corral/bin/herdr-core serve");
+    const SESSION: (u32, u32, &str) = (42, 7, "sshd-session: sandbox@notty");
 
     struct Engine {
         activity: ActivityLock,
@@ -158,21 +159,20 @@ mod tests {
         }
     }
 
+    fn listed(processes: &[(u32, u32, &str)]) -> ScriptedExec {
+        ScriptedExec::default().exits(LIST, 0, &listing(processes))
+    }
+
     fn idle() -> ScriptedExec {
-        ScriptedExec::default()
-            .exits(SSHD, 1, "")
-            .exits(HERDR_CORE, 1, "")
+        listed(&[])
     }
 
     fn herdr(terminal_status: &str) -> ScriptedExec {
-        ScriptedExec::default()
-            .exits(SSHD, 1, "")
-            .exits(HERDR_CORE, 0, "35\n")
-            .exits(
-                HERDR_LIST,
-                0,
-                &format!(r#"{{"terminals":[{{"state":"live","status":"{terminal_status}"}}]}}"#),
-            )
+        listed(&[CORE]).exits(
+            HERDR_LIST,
+            0,
+            &format!(r#"{{"terminals":[{{"state":"live","status":"{terminal_status}"}}]}}"#),
+        )
     }
 
     async fn suspended_after_a_sweep(engine: &Engine, timeout: Duration) -> Vec<String> {
@@ -199,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn only_idle_sandboxes_sleep() {
         let engine = engine(vec![
-            ("session", ScriptedExec::default().exits(SSHD, 0, "42\n")),
+            ("session", listed(&[SESSION])),
             ("working", herdr("working")),
             ("idle", idle()),
             ("waiting", herdr("done")),
@@ -214,14 +214,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_probe_keeps_the_sandbox_awake() {
         let engine = engine(vec![
-            ("no-exec", ScriptedExec::default().fails(SSHD)),
-            (
-                "broken-herdr",
-                ScriptedExec::default()
-                    .exits(SSHD, 1, "")
-                    .exits(HERDR_CORE, 0, "35\n")
-                    .fails(HERDR_LIST),
-            ),
+            ("no-exec", ScriptedExec::default().fails(LIST)),
+            ("broken-herdr", listed(&[CORE]).fails(HERDR_LIST)),
         ]);
 
         assert_eq!(

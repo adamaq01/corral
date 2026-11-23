@@ -1,9 +1,11 @@
 use corral_core::{Error, Result};
 use serde::Deserialize;
 
-use crate::{Exec, pgrep};
+use crate::Exec;
+use crate::exec::unexpected_exit;
+use crate::processes::Process;
 
-const COMMAND_NOT_FOUND: i32 = 127;
+const LIST: [&str; 3] = ["/opt/corral/bin/hc", "ls", "--json"];
 
 #[derive(Deserialize)]
 struct Listing {
@@ -22,22 +24,21 @@ impl Terminal {
     }
 }
 
-pub(crate) async fn is_working(exec: &dyn Exec) -> Result<bool> {
-    // `hc ls` starts a core when none is running, so check for one first.
-    if !pgrep::matches(exec, &["pgrep", "-x", "herdr-core"]).await? {
+pub(crate) async fn is_working(processes: &[Process], exec: &dyn Exec) -> Result<bool> {
+    // `hc ls` starts a core when none is running, so it runs only beside one.
+    if !processes
+        .iter()
+        .any(|process| process.program() == "herdr-core")
+    {
         return Ok(false);
     }
-    let argv = ["hc", "ls", "--json"];
-    let output = exec.run(&argv).await?;
-    match output.code {
-        0 => {
-            let listing: Listing = serde_json::from_str(&output.stdout)
-                .map_err(|err| Error::internal("unreadable `hc ls --json` output", err))?;
-            Ok(listing.terminals.iter().any(Terminal::is_active))
-        }
-        COMMAND_NOT_FOUND => Ok(false),
-        code => Err(pgrep::unexpected_exit(&argv, code)),
+    let output = exec.run(&LIST).await?;
+    if output.code != 0 {
+        return Err(unexpected_exit(&LIST, output.code));
     }
+    let listing: Listing = serde_json::from_str(&output.stdout)
+        .map_err(|err| Error::internal("unreadable `hc ls --json` output", err))?;
+    Ok(listing.terminals.iter().any(Terminal::is_active))
 }
 
 #[cfg(test)]
@@ -45,16 +46,19 @@ mod tests {
     use super::*;
     use crate::testing::ScriptedExec;
 
-    const CORE_RUNNING: &str = "pgrep -x herdr-core";
-    const LIST: &str = "hc ls --json";
+    const LIST: &str = "/opt/corral/bin/hc ls --json";
 
-    fn core_running() -> ScriptedExec {
-        ScriptedExec::default().exits(CORE_RUNNING, 0, "35\n39\n")
+    fn core() -> Vec<Process> {
+        vec![Process {
+            pid: 35,
+            ppid: 1,
+            args: "/opt/corral/bin/herdr-core serve".to_owned(),
+        }]
     }
 
     async fn herdr_active_result(listing: &str) -> Result<bool> {
-        let exec = core_running().exits(LIST, 0, listing);
-        is_working(&exec).await
+        let exec = ScriptedExec::default().exits(LIST, 0, listing);
+        is_working(&core(), &exec).await
     }
 
     async fn herdr_active(listing: &str) -> bool {
@@ -88,49 +92,33 @@ mod tests {
 
     #[tokio::test]
     async fn no_herdr_core_is_inactive_without_running_hc() {
-        let exec = ScriptedExec::default().exits(CORE_RUNNING, 1, "");
+        let exec = ScriptedExec::default();
+        let other = vec![Process {
+            pid: 40,
+            ppid: 1,
+            args: "/usr/bin/herdr-core-helper serve".to_owned(),
+        }];
 
-        let active = is_working(&exec).await;
-
-        assert!(!active.unwrap());
-        assert_eq!(exec.calls(), [CORE_RUNNING]);
+        assert!(!is_working(&[], &exec).await.unwrap());
+        assert!(!is_working(&other, &exec).await.unwrap());
+        assert_eq!(exec.calls(), Vec::<String>::new());
     }
 
     #[tokio::test]
-    async fn missing_hc_is_inactive_not_error() {
-        let exec = core_running().exits(LIST, COMMAND_NOT_FOUND, "");
+    async fn a_failing_or_missing_hc_is_an_error() {
+        for code in [1, 127] {
+            let exec = ScriptedExec::default().exits(LIST, code, "");
 
-        let active = is_working(&exec).await;
+            let message = is_working(&core(), &exec).await.unwrap_err().to_string();
 
-        assert!(!active.unwrap());
-    }
-
-    #[tokio::test]
-    async fn failing_hc_is_an_error() {
-        let exec = core_running().exits(LIST, 1, "");
-
-        let active = is_working(&exec).await;
-
-        let message = active.unwrap_err().to_string();
-        assert!(message.contains("code 1"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn missing_pgrep_is_an_error() {
-        let exec = ScriptedExec::default().exits(CORE_RUNNING, COMMAND_NOT_FOUND, "");
-
-        let active = is_working(&exec).await;
-
-        let message = active.unwrap_err().to_string();
-        assert!(message.contains("code 127"), "{message}");
+            assert!(message.contains(&format!("code {code}")), "{message}");
+        }
     }
 
     #[tokio::test]
     async fn failed_exec_is_an_error() {
-        let exec = core_running().fails(LIST);
+        let exec = ScriptedExec::default().fails(LIST);
 
-        let active = is_working(&exec).await;
-
-        assert!(active.is_err());
+        assert!(is_working(&core(), &exec).await.is_err());
     }
 }

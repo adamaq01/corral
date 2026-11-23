@@ -133,6 +133,13 @@ sandboxes:
   storageClass: ""
   # sandboxes.agentImage is the ContainerSSH agent image, mounted into every sandbox.
   agentImage: containerssh/agent:v0.11.0
+  # sandboxes.overlayImage is the Corral overlay, mounted into every sandbox at /opt/corral: the
+  # sandbox user, sudo, the login shell, sftp, Herdr and the corral command, for any image.
+  overlayImage:
+    # sandboxes.overlayImage.repository is the overlay image.
+    repository: ghcr.io/adamaq01/corral-overlay
+    # sandboxes.overlayImage.tag defaults to the chart's appVersion.
+    tag: ""
 
 # keepOnUninstall keeps the database volume or CNPG Cluster and the chart-created sandbox
 # namespace, with every sandbox and home in it, when the release is uninstalled or its Argo CD

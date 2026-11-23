@@ -28,11 +28,19 @@ const SSH_PORT: u16 = 22;
 const SSH_USER: &str = "sandbox";
 const READY_POLL: Duration = Duration::from_millis(250);
 // sshd shows up in the process list before it listens; a TCP connect proves it accepts logins.
-const SSHD_ACCEPTS: [&str; 3] = ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/22"];
+const SSHD_ACCEPTS: [&str; 3] = [
+    "/opt/corral/bin/bash",
+    "-c",
+    "exec 3<>/dev/tcp/127.0.0.1/22",
+];
+// Image mounts, which bring the overlay into every sandbox, came with Docker Engine 28.
+const IMAGE_MOUNTS: (u32, u32) = (1, 48);
 
 pub struct DockerEngine {
     pub(crate) docker: Docker,
     config: DockerConfig,
+    /// The image ID of the overlay, pinned when the engine connected.
+    overlay: String,
     proxy_public_key: PublicKey,
     max_running: usize,
     pub(crate) activity: ActivityLock,
@@ -60,9 +68,25 @@ impl DockerEngine {
             }
             Err(err) => return Err(Error::internal("reach the Docker daemon", err)),
         }
+        let version = docker
+            .version()
+            .await
+            .map_err(|err| Error::internal("read the Docker daemon's version", err))?;
+        let api = version.api_version.unwrap_or_default();
+        if api_version(&api).is_none_or(|api| api < IMAGE_MOUNTS) {
+            return Err(Error::internal(
+                "the Docker daemon",
+                format!(
+                    "speaks API {api}: Corral needs Docker Engine 28 or later (API 1.48), whose \
+                     image mounts bring the Corral overlay into sandboxes"
+                ),
+            ));
+        }
+        let overlay = image::refresh(&docker, &config.overlay_image).await?;
         Ok(Self {
             docker,
             config,
+            overlay,
             proxy_public_key,
             max_running,
             activity: ActivityLock::default(),
@@ -131,7 +155,7 @@ impl DockerEngine {
             None => recorded,
         };
         let image_id = image::ensure_present(&self.docker, &definition.image).await?;
-        let body = container::body(id, &definition, &self.config.network);
+        let body = container::body(id, &definition, &self.wiring());
         if container::is_made_from(&current, &body, &image_id) {
             return Ok(current);
         }
@@ -141,6 +165,13 @@ impl DockerEngine {
         self.remove(&name, false).await?;
         self.rename(&replacement, &name).await?;
         self.inspect(id).await?.ok_or_else(|| missing(id))
+    }
+
+    fn wiring(&self) -> container::Wiring<'_> {
+        container::Wiring {
+            network: &self.config.network,
+            overlay: &self.overlay,
+        }
     }
 
     async fn create_container(&self, name: &str, body: ContainerCreateBody) -> Result<()> {
@@ -217,6 +248,11 @@ impl DockerEngine {
     }
 }
 
+fn api_version(version: &str) -> Option<(u32, u32)> {
+    let (major, minor) = version.split_once('.')?;
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
 fn missing(id: &SandboxId) -> Error {
     Error::NotFound(format!("sandbox {}", id.0))
 }
@@ -233,7 +269,7 @@ impl SandboxEngine for DockerEngine {
             .create_volume(container::volume(id, spec))
             .await
             .map_err(|err| Error::internal("create home volume", err))?;
-        let body = container::body(id, &definition, &self.config.network);
+        let body = container::body(id, &definition, &self.wiring());
         self.create_container(&container::name(id), body).await
     }
 

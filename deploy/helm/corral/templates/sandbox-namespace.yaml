@@ -6,7 +6,8 @@ metadata:
   labels:
     {{- include "corral.labels" . | nindent 4 }}
     app.kubernetes.io/component: sandboxes
-    # Sandboxes run as uid 1000 with sudo, which baseline allows and restricted does not.
+    # Sandboxes run as uid 1000 with sudo after a root init container writes their accounts,
+    # which baseline allows and restricted does not.
     pod-security.kubernetes.io/enforce: baseline
   {{- with include "corral.keepOnUninstall" . }}
   annotations:

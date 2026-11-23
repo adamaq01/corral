@@ -19,6 +19,15 @@ const DEFINITION: &str = "corral.adamaq01.fr/definition";
 const HOST_KEY_ENV: &str = "CORRAL_SSH_HOST_KEY=";
 
 const HOME: &str = "/home/sandbox";
+const OVERLAY: &str = "/opt/corral";
+// The image's own entrypoint never runs: root at start runs only the overlay's static code.
+const ENTRYPOINT: [&str; 4] = [
+    "/opt/corral/bin/tini",
+    "--",
+    "/opt/corral/bin/corral-init",
+    "docker",
+];
+const ROOT: &str = "0:0";
 const NANOS_PER_MILLI: u64 = 1_000_000;
 
 pub(crate) fn name(id: &SandboxId) -> String {
@@ -111,23 +120,43 @@ impl Definition {
     }
 }
 
+/// What a sandbox's container runs on besides its definition: the engine's network, and the
+/// image ID of the overlay it mounts.
+pub(crate) struct Wiring<'a> {
+    pub(crate) network: &'a str,
+    pub(crate) overlay: &'a str,
+}
+
 /// Credentials stay out of the container's config, which `docker inspect` shows, and arrive with
-/// the session files before each start. A label records a digest of the rest, by which a start
-/// tells a container the engine would now make differently.
-pub(crate) fn body(id: &SandboxId, definition: &Definition, network: &str) -> ContainerCreateBody {
+/// the session files before each start. A label records a digest of the rest, the overlay's image
+/// ID included, by which a start tells a container the engine would now make differently.
+pub(crate) fn body(
+    id: &SandboxId,
+    definition: &Definition,
+    wiring: &Wiring,
+) -> ContainerCreateBody {
     let mut labels = definition.identity.clone();
     labels.insert(
         HOST_KEY_FINGERPRINT.to_owned(),
         definition.host_key.fingerprint(),
     );
     let host_config = HostConfig {
-        mounts: Some(vec![Mount {
-            target: Some(HOME.to_owned()),
-            source: Some(volume_name(id)),
-            typ: Some(MountTypeEnum::VOLUME),
-            ..Mount::default()
-        }]),
-        network_mode: Some(network.to_owned()),
+        mounts: Some(vec![
+            Mount {
+                target: Some(HOME.to_owned()),
+                source: Some(volume_name(id)),
+                typ: Some(MountTypeEnum::VOLUME),
+                ..Mount::default()
+            },
+            Mount {
+                target: Some(OVERLAY.to_owned()),
+                source: Some(wiring.overlay.to_owned()),
+                typ: Some(MountTypeEnum::IMAGE),
+                read_only: Some(true),
+                ..Mount::default()
+            },
+        ]),
+        network_mode: Some(wiring.network.to_owned()),
         restart_policy: Some(RestartPolicy {
             name: Some(RestartPolicyNameEnum::NO),
             maximum_retry_count: None,
@@ -138,10 +167,12 @@ pub(crate) fn body(id: &SandboxId, definition: &Definition, network: &str) -> Co
     };
     let mut body = ContainerCreateBody {
         image: Some(definition.image.clone()),
-        env: Some(vec![
-            "CORRAL_SSHD=1".to_owned(),
-            format!("{HOST_KEY_ENV}{}", definition.host_key.private_openssh()),
-        ]),
+        user: Some(ROOT.to_owned()),
+        entrypoint: Some(ENTRYPOINT.map(ToOwned::to_owned).to_vec()),
+        env: Some(vec![format!(
+            "{HOST_KEY_ENV}{}",
+            definition.host_key.private_openssh()
+        )]),
         labels: Some(labels),
         host_config: Some(host_config),
         ..ContainerCreateBody::default()
@@ -222,12 +253,16 @@ mod tests {
     use corral_core::ports::SandboxSpec;
 
     use super::{
-        Definition, body, host_key_fingerprint, is_made_from, name, replacement_name, volume,
-        volume_name,
+        Definition, Wiring, body, host_key_fingerprint, is_made_from, name, replacement_name,
+        volume, volume_name,
     };
     use crate::host_key::HostKey;
 
     const NETWORK: &str = "corral-sandboxes";
+    const WIRING: Wiring = Wiring {
+        network: NETWORK,
+        overlay: "sha256:overlay-one",
+    };
 
     fn spec() -> SandboxSpec {
         SandboxSpec {
@@ -277,7 +312,7 @@ mod tests {
         let host_key = HostKey::generate();
         let (private, fingerprint) = (host_key.private_openssh(), host_key.fingerprint());
         let definition = Definition::new(&id(), &spec(), host_key).unwrap();
-        let body = body(&id(), &definition, NETWORK);
+        let body = body(&id(), &definition, &WIRING);
 
         assert_eq!(name(&id()), "corral-sbx-0123456789ab");
         assert_eq!(replacement_name(&id()), "corral-sbx-0123456789ab-next");
@@ -288,20 +323,32 @@ mod tests {
         );
         assert_eq!(
             body.env.clone().unwrap(),
+            [format!("CORRAL_SSH_HOST_KEY={private}")]
+        );
+        assert_eq!(body.user.as_deref(), Some("0:0"));
+        assert_eq!(
+            body.entrypoint.clone().unwrap(),
             [
-                "CORRAL_SSHD=1".to_owned(),
-                format!("CORRAL_SSH_HOST_KEY={private}"),
+                "/opt/corral/bin/tini",
+                "--",
+                "/opt/corral/bin/corral-init",
+                "docker"
             ]
         );
+        assert_eq!(body.cmd, None);
         let host = body.host_config.clone().unwrap();
         let mounts = host.mounts.unwrap();
-        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts.len(), 2);
         assert_eq!(mounts[0].typ, Some(MountTypeEnum::VOLUME));
         assert_eq!(
             mounts[0].source.as_deref(),
             Some("corral-home-sbx-0123456789ab")
         );
         assert_eq!(mounts[0].target.as_deref(), Some("/home/sandbox"));
+        assert_eq!(mounts[1].typ, Some(MountTypeEnum::IMAGE));
+        assert_eq!(mounts[1].source.as_deref(), Some("sha256:overlay-one"));
+        assert_eq!(mounts[1].target.as_deref(), Some("/opt/corral"));
+        assert_eq!(mounts[1].read_only, Some(true));
         assert_eq!(host.network_mode.as_deref(), Some(NETWORK));
         assert_eq!(
             host.restart_policy.unwrap().name,
@@ -336,11 +383,11 @@ mod tests {
 
     #[test]
     fn a_container_reads_back_as_the_definition_it_was_made_from() {
-        let original = body(&id(), &definition(), NETWORK);
+        let original = body(&id(), &definition(), &WIRING);
         let container = made(&original, "sha256:one");
 
         let recorded = Definition::recorded(&id(), &container).unwrap();
-        let again = body(&id(), &recorded, NETWORK);
+        let again = body(&id(), &recorded, &WIRING);
 
         assert_eq!(
             serde_json::to_value(&again).unwrap(),
@@ -351,15 +398,29 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_engine_or_image_makes_the_container_stale() {
-        let original = body(&id(), &definition(), NETWORK);
+    fn a_changed_engine_image_or_overlay_makes_the_container_stale() {
+        let original = body(&id(), &definition(), &WIRING);
         let container = made(&original, "sha256:one");
         let recorded = Definition::recorded(&id(), &container).unwrap();
+        let elsewhere = Wiring {
+            network: "elsewhere",
+            ..WIRING
+        };
+        let newer_overlay = Wiring {
+            overlay: "sha256:overlay-two",
+            ..WIRING
+        };
 
         assert!(!is_made_from(&container, &original, "sha256:two"));
         assert!(!is_made_from(
             &container,
-            &body(&id(), &recorded, "elsewhere"),
+            &body(&id(), &recorded, &elsewhere),
+            "sha256:one"
+        ));
+        let recorded = Definition::recorded(&id(), &container).unwrap();
+        assert!(!is_made_from(
+            &container,
+            &body(&id(), &recorded, &newer_overlay),
             "sha256:one"
         ));
 
@@ -371,7 +432,7 @@ mod tests {
 
     #[test]
     fn a_remade_definition_takes_the_spec_and_keeps_the_host_key() {
-        let original = body(&id(), &definition(), NETWORK);
+        let original = body(&id(), &definition(), &WIRING);
         let container = made(&original, "sha256:one");
         let mut changed = spec();
         changed.image = "ghcr.io/adamaq01/corral-sandbox:2.0".to_owned();
@@ -381,7 +442,7 @@ mod tests {
             .unwrap()
             .remade(&id(), &changed)
             .unwrap();
-        let again = body(&id(), &remade, NETWORK);
+        let again = body(&id(), &remade, &WIRING);
 
         assert!(!is_made_from(&container, &again, "sha256:one"));
         assert_eq!(
@@ -400,15 +461,15 @@ mod tests {
             .unwrap();
         assert!(is_made_from(
             &container,
-            &body(&id(), &unchanged, NETWORK),
+            &body(&id(), &unchanged, &WIRING),
             "sha256:one"
         ));
     }
 
     #[test]
     fn a_container_without_its_host_key_cannot_be_read_back() {
-        let mut container = made(&body(&id(), &definition(), NETWORK), "sha256:one");
-        container.config.as_mut().unwrap().env = Some(vec!["CORRAL_SSHD=1".to_owned()]);
+        let mut container = made(&body(&id(), &definition(), &WIRING), "sha256:one");
+        container.config.as_mut().unwrap().env = Some(vec!["PATH=/usr/bin".to_owned()]);
         assert!(Definition::recorded(&id(), &container).is_err());
     }
 

@@ -60,10 +60,10 @@ jobs:
       # Every test but the agent-sandbox cluster tests, which need a kind cluster: engine-kind runs them.
       - run: cargo test --workspace --all-features --exclude corral-engine-agent-sandbox
       - run: cargo test --package corral-engine-agent-sandbox --all-features --lib
-      - name: Install hc, the version and checksum the sandbox image pins
+      - name: Install hc, the version and checksum the overlay pins
         run: |
-          version=$(sed -n 's/^ARG HERDR_CORE_VERSION=//p' images/sandbox/Dockerfile)
-          sha256=$(sed -n 's/^ARG HERDR_CORE_SHA256_AMD64=//p' images/sandbox/Dockerfile)
+          version=$(sed -n 's/^ARG HERDR_CORE_VERSION=//p' images/overlay/Dockerfile)
+          sha256=$(sed -n 's/^ARG HERDR_CORE_SHA256_AMD64=//p' images/overlay/Dockerfile)
           curl -fsSL -o "$RUNNER_TEMP/herdr-core.tar.gz" \
             "https://releases.herdr.dev/core/$version/herdr-core-linux-x86_64.tar.gz"
           echo "$sha256  $RUNNER_TEMP/herdr-core.tar.gz" | sha256sum -c -
@@ -91,6 +91,7 @@ jobs:
         working-directory: web
     env:
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
       # The runner's preinstalled SDKs leave too little disk for the sandbox image plus the build.
       - name: Free disk space
@@ -108,6 +109,13 @@ jobs:
           load: true
           tags: corral-sandbox:e2e
           cache-from: type=gha,scope=corral-sandbox
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/overlay/Dockerfile
+          load: true
+          tags: corral-overlay:e2e
+          cache-from: type=gha,scope=corral-overlay
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -147,6 +155,7 @@ jobs:
     env:
       CORRAL_SERVER_IMAGE: corral-server:e2e
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
       # The sandbox image is loaded into the kind node too, which needs room for a second copy.
       - name: Free disk space
@@ -169,6 +178,13 @@ jobs:
           load: true
           tags: corral-sandbox:e2e
           cache-from: type=gha,scope=corral-sandbox
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/overlay/Dockerfile
+          load: true
+          tags: corral-overlay:e2e
+          cache-from: type=gha,scope=corral-overlay
       - name: Install kind and the chart tools
         run: |
           curl -fsSL -o "$RUNNER_TEMP/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
@@ -184,6 +200,7 @@ jobs:
     env:
       CI: "1"
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
       CORRAL_TEST_KUBE_NAMESPACE: corral-dev
     steps:
       # The sandbox image is loaded into the kind node too, which needs room for a second copy.
@@ -201,6 +218,13 @@ jobs:
           load: true
           tags: corral-sandbox:e2e
           cache-from: type=gha,scope=corral-sandbox
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: images/overlay/Dockerfile
+          load: true
+          tags: corral-overlay:e2e
+          cache-from: type=gha,scope=corral-overlay
       - name: Install kind
         run: |
           curl -fsSL -o "$RUNNER_TEMP/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64

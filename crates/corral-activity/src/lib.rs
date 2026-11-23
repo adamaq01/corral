@@ -2,8 +2,8 @@ mod decide;
 mod exec;
 mod forward;
 mod herdr;
-mod pgrep;
 mod probe;
+mod processes;
 mod sweep;
 #[cfg(test)]
 mod testing;

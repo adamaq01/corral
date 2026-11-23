@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# CORRAL_SERVER_IMAGE and CORRAL_SANDBOX_IMAGE name prebuilt images; when unset, both are built
-# from images/.
+# CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images; when
+# unset, each is built from images/.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -82,13 +82,17 @@ log=$work/run.log
 
 server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
 sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
+overlay_image=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
 if [[ -z "${CORRAL_SERVER_IMAGE:-}" ]]; then
   docker build --file "$repo/images/server/Dockerfile" --tag "$server_image" "$repo" >>"$log" 2>&1
 fi
 if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
   docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo" >>"$log" 2>&1
 fi
-ok "images: server $server_image, sandbox $sandbox_image"
+if [[ -z "${CORRAL_OVERLAY_IMAGE:-}" ]]; then
+  docker build --file "$repo/images/overlay/Dockerfile" --tag "$overlay_image" "$repo" >>"$log" 2>&1
+fi
+ok "images: server $server_image, sandbox $sandbox_image, overlay $overlay_image"
 
 cp -R "$repo/deploy/compose/." "$work/"
 cd "$work"
@@ -102,6 +106,7 @@ public_port = $ssh_port
 [engine]
 kind = "docker"
 network = "$sandbox_network"
+overlay_image = "$overlay_image"
 
 [idle]
 probe_interval_secs = 1
@@ -516,23 +521,26 @@ ok "an SSH session longer than the idle timeout keeps idle awake"
 slept=$(sleeps_within 15)
 ok "with nothing running, idle slept ${slept}s after the session ended"
 
-as adam idle.adam 'sudo mv /usr/bin/pgrep /usr/bin/pgrep.off'
+# A core started by an SSH command ends with it, so this one starts as the probe runs, outside SSH,
+# once an SSH login has woken idle.
+as adam idle.adam true
+docker exec --user 1000 "$idle" /opt/corral/bin/hc run --bg "sleep 300" >/dev/null 2>&1
+sleep 6
+expect "6s after starting a Herdr terminal" running "$(state)"
+ok "a live Herdr terminal keeps idle awake"
+
+# Herdr's state unreadable, the probe's hc fails beside a running core.
+docker exec --user 1000 "$idle" /opt/corral/bin/busybox chmod 000 /home/sandbox/.local/state/herdr-core
 sleep 6
 expect "6s after breaking the probes" running "$(state)"
 if ! docker compose logs --no-color corral 2>&1 | grep "activity probe failed, keeping the sandbox awake" \
   | grep -qF "${idle#corral-}"; then
   fail "no log line for idle's failed activity probe"
 fi
-as adam idle.adam 'sudo mv /usr/bin/pgrep.off /usr/bin/pgrep'
+docker exec --user 1000 "$idle" /opt/corral/bin/busybox sh -c \
+  'chmod 700 ~/.local/state/herdr-core && /opt/corral/bin/hc kill t1' >/dev/null 2>&1
 slept=$(sleeps_within 15)
-ok "a failing activity probe keeps idle awake; once fixed, it slept ${slept}s later"
-
-as adam idle.adam 'hc run --bg "sleep 300" >/dev/null 2>&1'
-sleep 6
-expect "6s after starting a Herdr terminal" running "$(state)"
-as adam idle.adam 'sudo mv /usr/local/bin/hc /usr/local/bin/hc.off'
-slept=$(sleeps_within 15)
-ok "a live Herdr terminal keeps idle awake; with hc missing (exit 127) it slept ${slept}s later"
+ok "a failing activity probe keeps idle awake; once fixed, with no terminal at work, it slept ${slept}s later"
 
 # main keeps the default idle timeout, so the reaper leaves its slow wake alone. Starved of CPU,
 # it cannot wake within the deadline; the CPU comes back while ContainerSSH waits to retry.

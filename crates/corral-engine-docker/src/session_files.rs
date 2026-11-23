@@ -11,7 +11,7 @@ const SANDBOX_USER: u64 = 1000;
 
 /// A tar archive, to extract at `/`, of what the sandbox reads when it starts: the key the front
 /// door logs in with and the credentials its sessions see, both for sshd, and the home files,
-/// staged for `corral-home-init` where only the sandbox user may read them.
+/// staged for `corral-init` where only the sandbox user may read them.
 pub(crate) fn archive(proxy_key: &PublicKey, boot: &Boot) -> Vec<u8> {
     let authorized_key = format!(
         "{}\n",

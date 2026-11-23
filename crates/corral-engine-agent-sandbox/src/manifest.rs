@@ -7,10 +7,10 @@ use corral_core::ports::{CredentialMap, SandboxSpec};
 use corral_core::{Error, Result};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
-    Container, EnvFromSource, ImageVolumeSource, PersistentVolumeClaimSpec,
-    PersistentVolumeClaimTemplate, PodSecurityContext, PodSpec, PodTemplateSpec,
-    ResourceRequirements, Secret, SecretEnvSource, SecretVolumeSource, SecurityContext, Volume,
-    VolumeMount, VolumeResourceRequirements,
+    Container, EmptyDirVolumeSource, EnvFromSource, EnvVar, ImageVolumeSource,
+    PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate, PodSecurityContext, PodSpec,
+    PodTemplateSpec, ResourceRequirements, Secret, SecretEnvSource, SecretVolumeSource,
+    SecurityContext, Volume, VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -22,12 +22,29 @@ use crate::crd::{self, FailedPodPolicy, OperatingMode, Sandbox};
 pub const CONTAINER: &str = "sandbox";
 
 const SANDBOX_UID: i64 = 1000;
+const ROOT: i64 = 0;
 const HOME_VOLUME: &str = "home";
 const HOME_PATH: &str = "/home/sandbox";
 const AGENT_VOLUME: &str = "containerssh-agent";
 const AGENT_PATH: &str = "/opt/containerssh-agent";
-const HOME_INIT: &str = "/usr/local/bin/corral-home-init";
+const OVERLAY_VOLUME: &str = "corral-overlay";
+const OVERLAY_PATH: &str = "/opt/corral";
+const CORRAL_INIT: &str = "/opt/corral/bin/corral-init";
+const TINI: &str = "/opt/corral/bin/tini";
 const HOME_FILES_VOLUME: &str = "home-files";
+/// Where the init container writes the account files the sandbox container mounts.
+const ACCOUNTS_VOLUME: &str = "corral-accounts";
+const ACCOUNTS_PATH: &str = "/run/corral-accounts";
+const ACCOUNT_FILES: [(&str, &str); 5] = [
+    ("passwd", "/etc/passwd"),
+    ("group", "/etc/group"),
+    ("shadow", "/etc/shadow"),
+    ("sudoers", "/etc/sudoers.d/corral-sandbox"),
+    ("profile.sh", "/etc/profile.d/corral.sh"),
+];
+// ContainerSSH runs a command through /bin/sh with the container's environment, so the
+// overlay's commands are on this PATH, which an sshd session on Docker gets too.
+const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback";
 // Kubernetes refuses a Secret whose data is larger.
 const SECRET_LIMIT: usize = 1 << 20;
 
@@ -142,7 +159,7 @@ pub fn env_secret(id: &SandboxId, env: &CredentialMap, namespace: &str) -> Secre
     secret(id, secret_name(id), namespace, data)
 }
 
-/// The home files as `corral-home-init` reads them, staged by key; refused beyond what a Secret
+/// The home files as `corral-init` reads them, staged by key; refused beyond what a Secret
 /// holds.
 pub fn home_secret(id: &SandboxId, files: &HomeFiles, namespace: &str) -> Result<Secret> {
     let Staged { manifest, files } = home_staging::stage(files);
@@ -189,6 +206,9 @@ fn secret(
     }
 }
 
+/// The image's own entrypoint never runs. A root init container, running only the overlay's
+/// static code, writes the sandbox user's account files and prepares the home as that user; the
+/// sandbox container runs as that user, with the account files mounted over the image's.
 fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> PodSpec {
     PodSpec {
         service_account_name: Some(cfg.service_account.clone()),
@@ -199,54 +219,14 @@ fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> Po
             fs_group: Some(SANDBOX_UID),
             ..PodSecurityContext::default()
         }),
-        init_containers: Some(vec![Container {
-            name: "home-init".to_owned(),
-            image: Some(workload.image.clone()),
-            command: Some(vec![HOME_INIT.to_owned()]),
-            volume_mounts: Some(vec![
-                home_mount(),
-                VolumeMount {
-                    name: HOME_FILES_VOLUME.to_owned(),
-                    mount_path: home_staging::DIR.to_owned(),
-                    read_only: Some(true),
-                    ..VolumeMount::default()
-                },
-            ]),
-            ..Container::default()
-        }]),
-        containers: vec![Container {
-            name: CONTAINER.to_owned(),
-            image: Some(workload.image.clone()),
-            env_from: Some(vec![EnvFromSource {
-                secret_ref: Some(SecretEnvSource {
-                    name: secret_name(id),
-                    optional: None,
-                }),
-                ..EnvFromSource::default()
-            }]),
-            resources: Some(workload.resources.clone()),
-            security_context: Some(SecurityContext {
-                allow_privilege_escalation: Some(true),
-                ..SecurityContext::default()
-            }),
-            volume_mounts: Some(vec![
-                home_mount(),
-                VolumeMount {
-                    name: AGENT_VOLUME.to_owned(),
-                    mount_path: AGENT_PATH.to_owned(),
-                    read_only: Some(true),
-                    ..VolumeMount::default()
-                },
-            ]),
-            ..Container::default()
-        }],
+        init_containers: Some(vec![init_container(workload)]),
+        containers: vec![sandbox_container(id, workload)],
         volumes: Some(vec![
+            image_volume(AGENT_VOLUME, &cfg.agent_image),
+            image_volume(OVERLAY_VOLUME, &cfg.overlay_image),
             Volume {
-                name: AGENT_VOLUME.to_owned(),
-                image: Some(ImageVolumeSource {
-                    reference: Some(cfg.agent_image.clone()),
-                    pull_policy: Some("IfNotPresent".to_owned()),
-                }),
+                name: ACCOUNTS_VOLUME.to_owned(),
+                empty_dir: Some(EmptyDirVolumeSource::default()),
                 ..Volume::default()
             },
             Volume {
@@ -264,11 +244,105 @@ fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> Po
     }
 }
 
+fn init_container(workload: &Workload) -> Container {
+    Container {
+        name: "corral-init".to_owned(),
+        image: Some(workload.image.clone()),
+        command: Some(argv(&[CORRAL_INIT, "prepare", ACCOUNTS_PATH])),
+        security_context: Some(SecurityContext {
+            run_as_user: Some(ROOT),
+            run_as_group: Some(ROOT),
+            ..SecurityContext::default()
+        }),
+        volume_mounts: Some(vec![
+            home_mount(),
+            read_only(HOME_FILES_VOLUME, home_staging::DIR),
+            read_only(OVERLAY_VOLUME, OVERLAY_PATH),
+            VolumeMount {
+                name: ACCOUNTS_VOLUME.to_owned(),
+                mount_path: ACCOUNTS_PATH.to_owned(),
+                ..VolumeMount::default()
+            },
+        ]),
+        ..Container::default()
+    }
+}
+
+fn sandbox_container(id: &SandboxId, workload: &Workload) -> Container {
+    let mut mounts = vec![
+        home_mount(),
+        read_only(AGENT_VOLUME, AGENT_PATH),
+        read_only(OVERLAY_VOLUME, OVERLAY_PATH),
+    ];
+    mounts.extend(ACCOUNT_FILES.map(|(file, path)| VolumeMount {
+        sub_path: Some(file.to_owned()),
+        ..read_only(ACCOUNTS_VOLUME, path)
+    }));
+    let env = [
+        ("HOME", HOME_PATH),
+        ("USER", "sandbox"),
+        ("LOGNAME", "sandbox"),
+        ("PATH", PATH),
+    ];
+    Container {
+        name: CONTAINER.to_owned(),
+        image: Some(workload.image.clone()),
+        command: Some(argv(&[TINI, "--", CORRAL_INIT, "idle"])),
+        working_dir: Some(HOME_PATH.to_owned()),
+        env: Some(
+            env.map(|(name, value)| EnvVar {
+                name: name.to_owned(),
+                value: Some(value.to_owned()),
+                ..EnvVar::default()
+            })
+            .to_vec(),
+        ),
+        env_from: Some(vec![EnvFromSource {
+            secret_ref: Some(SecretEnvSource {
+                name: secret_name(id),
+                optional: None,
+            }),
+            ..EnvFromSource::default()
+        }]),
+        resources: Some(workload.resources.clone()),
+        security_context: Some(SecurityContext {
+            allow_privilege_escalation: Some(true),
+            ..SecurityContext::default()
+        }),
+        volume_mounts: Some(mounts),
+        ..Container::default()
+    }
+}
+
+fn argv(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|part| (*part).to_owned()).collect()
+}
+
 fn home_mount() -> VolumeMount {
     VolumeMount {
         name: HOME_VOLUME.to_owned(),
         mount_path: HOME_PATH.to_owned(),
         ..VolumeMount::default()
+    }
+}
+
+fn read_only(volume: &str, path: &str) -> VolumeMount {
+    VolumeMount {
+        name: volume.to_owned(),
+        mount_path: path.to_owned(),
+        read_only: Some(true),
+        ..VolumeMount::default()
+    }
+}
+
+fn image_volume(name: &str, reference: &str) -> Volume {
+    Volume {
+        name: name.to_owned(),
+        image: Some(ImageVolumeSource {
+            reference: Some(reference.to_owned()),
+            pull_policy: Some("IfNotPresent".to_owned()),
+        }),
+        ..Volume::default()
     }
 }
 
@@ -368,6 +442,7 @@ mod tests {
             service_account: "corral-sandbox".to_owned(),
             storage_class: Some("tns-csi-nvmeof".to_owned()),
             agent_image: "containerssh/agent:v0.11.0".to_owned(),
+            overlay_image: "ghcr.io/adamaq01/corral-overlay:sha-1".to_owned(),
         }
     }
 
@@ -410,15 +485,21 @@ mod tests {
             json!({"runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000})
         );
         let home = json!({"name": "home", "mountPath": "/home/sandbox"});
+        let overlay =
+            json!({"name": "corral-overlay", "mountPath": "/opt/corral", "readOnly": true});
+        let account = |file: &str, path: &str| json!({"name": "corral-accounts", "mountPath": path, "readOnly": true, "subPath": file});
         assert_eq!(
             pod["initContainers"],
             json!([{
-                "name": "home-init",
+                "name": "corral-init",
                 "image": "ghcr.io/adamaq01/corral-sandbox:1",
-                "command": ["/usr/local/bin/corral-home-init"],
+                "command": ["/opt/corral/bin/corral-init", "prepare", "/run/corral-accounts"],
+                "securityContext": {"runAsUser": 0, "runAsGroup": 0},
                 "volumeMounts": [
                     home,
                     {"name": "home-files", "mountPath": "/etc/corral/home-files", "readOnly": true},
+                    overlay,
+                    {"name": "corral-accounts", "mountPath": "/run/corral-accounts"},
                 ],
             }])
         );
@@ -427,6 +508,14 @@ mod tests {
             json!([{
                 "name": "sandbox",
                 "image": "ghcr.io/adamaq01/corral-sandbox:1",
+                "command": ["/opt/corral/bin/tini", "--", "/opt/corral/bin/corral-init", "idle"],
+                "workingDir": "/home/sandbox",
+                "env": [
+                    {"name": "HOME", "value": "/home/sandbox"},
+                    {"name": "USER", "value": "sandbox"},
+                    {"name": "LOGNAME", "value": "sandbox"},
+                    {"name": "PATH", "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback"},
+                ],
                 "envFrom": [{"secretRef": {"name": "sbx-0123456789ab-env"}}],
                 "resources": {
                     "requests": {"cpu": "500m", "memory": "1073741824"},
@@ -436,9 +525,22 @@ mod tests {
                 "volumeMounts": [
                     home,
                     {"name": "containerssh-agent", "mountPath": "/opt/containerssh-agent", "readOnly": true},
+                    overlay,
+                    account("passwd", "/etc/passwd"),
+                    account("group", "/etc/group"),
+                    account("shadow", "/etc/shadow"),
+                    account("sudoers", "/etc/sudoers.d/corral-sandbox"),
+                    account("profile.sh", "/etc/profile.d/corral.sh"),
                 ],
             }])
         );
+    }
+
+    #[test]
+    fn manifest_mounts_the_agent_and_the_overlay_and_claims_the_home() {
+        let (sandbox, _) = manifests();
+        let pod = &sandbox["spec"]["podTemplate"]["spec"];
+        let labels = &sandbox["metadata"]["labels"];
         assert_eq!(
             pod["volumes"],
             json!([
@@ -446,6 +548,11 @@ mod tests {
                     "name": "containerssh-agent",
                     "image": {"reference": "containerssh/agent:v0.11.0", "pullPolicy": "IfNotPresent"},
                 },
+                {
+                    "name": "corral-overlay",
+                    "image": {"reference": "ghcr.io/adamaq01/corral-overlay:sha-1", "pullPolicy": "IfNotPresent"},
+                },
+                {"name": "corral-accounts", "emptyDir": {}},
                 {
                     "name": "home-files",
                     "secret": {"secretName": "sbx-0123456789ab-home", "defaultMode": 0o440},

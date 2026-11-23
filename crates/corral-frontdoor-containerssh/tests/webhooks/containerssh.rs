@@ -6,6 +6,7 @@ use corral_core::ports::SshTarget;
 use serde_json::{Value, json};
 use ssh_key::{HashAlg, PrivateKey};
 use tempfile::NamedTempFile;
+use testcontainers::bollard::models::{Mount, MountTypeEnum};
 use testcontainers::core::{Host, IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
@@ -245,30 +246,44 @@ async fn containerssh_accepts_our_answers_for_both_target_kinds() {
 async fn containerssh_logs_in_to_a_sandbox_with_the_key_from_its_own_config() {
     let image =
         std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned());
-    let available = std::process::Command::new("docker")
-        .args(["image", "inspect", &image])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !available {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "CI needs a Docker daemon and image {image}"
-        );
-        eprintln!(
-            "skipped: no Docker daemon or image {image} (build it with images/sandbox/test.sh)"
-        );
-        return;
+    let overlay =
+        std::env::var("CORRAL_OVERLAY_IMAGE").unwrap_or_else(|_| "corral-overlay:dev".to_owned());
+    for needed in [&image, &overlay] {
+        let available = std::process::Command::new("docker")
+            .args(["image", "inspect", needed])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !available {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI needs a Docker daemon and image {needed}"
+            );
+            eprintln!("skipped: no Docker daemon or image {needed}");
+            return;
+        }
     }
     let (name, tag) = image.rsplit_once(':').unwrap_or((&image, "latest"));
     let w = Fixture::new().await;
     let proxy_key = generate_key();
     let host_key = generate_key();
+    // As the Docker engine starts a sandbox: the overlay mounted, its corral-init as root.
     let sandbox = GenericImage::new(name, tag)
+        .with_entrypoint("/opt/corral/bin/tini")
         .with_exposed_port(22.tcp())
         .with_wait_for(WaitFor::message_on_stderr("Server listening on"))
-        .with_env_var("CORRAL_SSHD", "1")
+        .with_cmd(["--", "/opt/corral/bin/corral-init", "docker"])
+        .with_user("0:0")
+        .with_host_config_modifier(move |host| {
+            host.mounts.get_or_insert_default().push(Mount {
+                target: Some("/opt/corral".to_owned()),
+                source: Some(overlay.clone()),
+                typ: Some(MountTypeEnum::IMAGE),
+                read_only: Some(true),
+                ..Mount::default()
+            });
+        })
         .with_env_var("CORRAL_SSH_HOST_KEY", private_pem(&host_key))
         .with_copy_to(
             "/etc/ssh/corral_authorized_keys",
