@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 // Docker adds and removes a network interface on the host as a sandbox starts and stops, and
 // Chromium then fails loads in flight with ERR_NETWORK_CHANGED. Tests that start sandboxes run
 // after the others, one at a time.
-const startsSandboxes = /(admin|journey)\.spec\.ts$/;
+const startsSandboxes = /(admin|journey|lifecycle)\.spec\.ts$/;
 
 export default defineConfig({
 	testDir: 'e2e',

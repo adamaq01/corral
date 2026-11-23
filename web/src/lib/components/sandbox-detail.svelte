@@ -31,6 +31,7 @@
 	} from '#lib/connect.js';
 	import { choiceLabel } from '#lib/catalog.js';
 	import { Remote, pollWhile } from '#lib/remote.svelte.js';
+	import { powerInFlight, runPower, unsettled } from '#lib/sandbox-actions.svelte.js';
 	import { states, type Power } from '#lib/sandbox-status.js';
 
 	let { name, handle }: { name: string; handle: string } = $props();
@@ -45,18 +46,18 @@
 		Action,
 		{ label: string; pending: string; icon: typeof PowerIcon; run: () => Promise<unknown> }
 	> = {
-		wake: { label: 'Wake', pending: 'Waking…', icon: PowerIcon, run: () => sandboxes.wake(name) },
+		wake: { label: 'Wake', pending: 'Waking…', icon: PowerIcon, run: () => runPower(name, 'wake') },
 		stop: {
 			label: 'Stop',
 			pending: 'Stopping…',
 			icon: SquareIcon,
-			run: () => sandboxes.stop(name)
+			run: () => runPower(name, 'stop')
 		},
 		restart: {
 			label: 'Restart',
 			pending: 'Restarting…',
 			icon: RotateCwIcon,
-			run: () => sandboxes.restart(name)
+			run: () => runPower(name, 'restart')
 		},
 		default: {
 			label: 'Make default',
@@ -66,24 +67,22 @@
 		}
 	};
 
-	let running = $state<Action | null>(null);
+	let defaulting = $state(false);
+	const running = $derived<Action | null>(powerInFlight(name) ?? (defaulting ? 'default' : null));
 	let failure = $state<{ action: Action; message: string } | null>(null);
 	let deleting = $state(false);
 
-	pollWhile(
-		() => running === 'wake' || (sandbox.value ? states[sandbox.value.state].settling : false),
-		sandbox
-	);
+	pollWhile(() => (sandbox.value ? unsettled(sandbox.value) : false), sandbox);
 
 	async function act(action: Action) {
-		running = action;
+		defaulting = action === 'default';
 		failure = null;
 		try {
 			await actions[action].run();
 		} catch (error) {
 			failure = { action, message: failureMessage(error) };
 		} finally {
-			running = null;
+			defaulting = false;
 		}
 		await sandbox.reload();
 	}

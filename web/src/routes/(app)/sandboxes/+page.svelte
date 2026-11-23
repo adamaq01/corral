@@ -16,11 +16,11 @@
 	import * as Item from '#lib/components/ui/item/index.js';
 	import { choiceLabel } from '#lib/catalog.js';
 	import { Remote, pollWhile } from '#lib/remote.svelte.js';
-	import { states } from '#lib/sandbox-status.js';
+	import { unsettled } from '#lib/sandbox-actions.svelte.js';
 
 	const list = new Remote(sandboxes.list);
 	const catalog = new Remote(sandboxes.catalog);
-	pollWhile(() => list.value?.some((sandbox) => states[sandbox.state].settling) ?? false, list);
+	pollWhile(() => list.value?.some(unsettled) ?? false, list);
 
 	let creating = $state(false);
 
