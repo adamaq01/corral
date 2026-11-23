@@ -139,7 +139,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		const dialog = page.getByRole('dialog', { name: 'Add a credential' });
 		await dialog.getByLabel('Name').fill('journey_token');
 		await expect(dialog.getByLabel('Name')).toHaveValue('JOURNEY_TOKEN');
-		await dialog.getByLabel('Value').fill(token);
+		await dialog.getByLabel('Value', { exact: true }).fill(token);
 		await dialog.getByRole('button', { name: 'Save credential' }).click();
 		await expect(dialog).toBeHidden();
 		await expect(page.getByRole('listitem').filter({ hasText: 'JOURNEY_TOKEN' })).toBeVisible();

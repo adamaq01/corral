@@ -181,7 +181,10 @@ inEveryView((look) => {
 		await look(page, 'credentials');
 
 		await page.getByRole('button', { name: 'Add credential' }).click();
-		await page.getByRole('dialog').getByLabel('Name').fill('github_token');
+		const dialog = page.getByRole('dialog');
+		await dialog.getByLabel('Name').fill('github_token');
+		await dialog.getByLabel('Value', { exact: true }).fill('ghp_example0123456789');
+		await dialog.getByRole('button', { name: 'Show the value' }).click();
 		await look(page, 'credentials-add', { fullPage: false });
 	});
 

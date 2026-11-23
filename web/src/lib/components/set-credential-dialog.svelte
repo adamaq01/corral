@@ -1,7 +1,10 @@
 <script lang="ts">
+	import EyeIcon from '@lucide/svelte/icons/eye';
+	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
 	import { untrack } from 'svelte';
 	import { credentials } from '#lib/api/credentials.js';
 	import FormDialog from '#lib/components/form-dialog.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 
@@ -20,12 +23,14 @@
 
 	let name = $state('');
 	let value = $state('');
+	let shown = $state(false);
 
 	$effect(() => {
 		if (open) {
 			untrack(() => {
 				name = replacing ?? '';
 				value = '';
+				shown = false;
 			});
 		}
 	});
@@ -77,13 +82,32 @@
 	{/if}
 	<Field.Field>
 		<Field.Label for="credential-value">Value</Field.Label>
-		<Input
-			id="credential-value"
-			type="password"
-			bind:value
-			required
-			autocomplete="off"
-			spellcheck={false}
-		/>
+		<div class="flex gap-2">
+			<Input
+				id="credential-value"
+				type={shown ? 'text' : 'password'}
+				bind:value
+				required
+				autocomplete="off"
+				autocapitalize="off"
+				spellcheck={false}
+				class="font-mono"
+			/>
+			<Button
+				type="button"
+				variant="outline"
+				size="icon"
+				aria-label="Show the value"
+				aria-pressed={shown}
+				aria-controls="credential-value"
+				onclick={() => (shown = !shown)}
+			>
+				{#if shown}
+					<EyeOffIcon />
+				{:else}
+					<EyeIcon />
+				{/if}
+			</Button>
+		</div>
 	</Field.Field>
 </FormDialog>
