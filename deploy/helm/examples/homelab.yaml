@@ -1,6 +1,7 @@
 # OIDC login, a CloudNativePG database, credentials in OpenBao with Kubernetes auth, the web UI
 # behind a Gateway, and ContainerSSH on a MetalLB address for the LAN and behind a rathole tunnel
-# from the pod network for the internet.
+# from the pod network for the internet. The keys and host key come from existing Secrets, as
+# under Argo CD, which renders with helm template.
 baseUrl: https://corral.example.com
 trustForwardedFor: true
 ssh:
@@ -17,6 +18,8 @@ identity:
       key: client-secret
     opkssh:
       enabled: true
+keys:
+  existingSecret: corral-keys
 secretStore:
   kind: vault
   vault:
@@ -60,6 +63,8 @@ httpRoute:
     - name: public
       namespace: gateway
 containerssh:
+  hostKey:
+    existingSecret: corral-host-key
   lockoutExemptNetworks: [10.42.0.0/16]
   service:
     annotations:

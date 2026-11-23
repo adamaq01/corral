@@ -69,8 +69,9 @@ identity:
       policy: 24h
 
 # keys.existingSecret names a Secret with CORRAL_SESSION_KEY and CORRAL_SECRETS_KEY, as printed by
-# `corral-server keys generate`. Empty: the chart generates both once and keeps them across
+# `corral-server keys generate`. Empty: `helm install` generates both once and keeps them across
 # upgrades, and `helm uninstall` leaves that Secret behind, since stored credentials need it.
+# Required where the chart is rendered without a cluster, as by helm template or Argo CD.
 keys:
   existingSecret: ""
 
@@ -222,8 +223,9 @@ containerssh:
   # containerssh.replicas is the number of ContainerSSH pods.
   replicas: 1
   # containerssh.hostKey.existingSecret names a Secret whose `host_key` is the SSH host private
-  # key. Empty: the chart generates an ed25519 key once, keeps it across upgrades, and
-  # `helm uninstall` leaves it behind, so known_hosts entries stay valid.
+  # key. Empty: `helm install` generates an ed25519 key once, keeps it across upgrades, and
+  # `helm uninstall` leaves it behind, so known_hosts entries stay valid. Required where the
+  # chart is rendered without a cluster, as by helm template or Argo CD.
   hostKey:
     existingSecret: ""
   # containerssh.lockoutExemptNetworks are networks, in CIDR notation, whose SSH connections are

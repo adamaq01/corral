@@ -4,6 +4,18 @@ release:
   namespace: corral
 values:
   - ../../examples/minimal.yaml
+# Rendered as helm install renders it: against a cluster, with agent-sandbox installed.
+capabilities:
+  apiVersions: [agents.x-k8s.io/v1beta1]
+kubernetesProvider:
+  scheme:
+    "v1/Namespace":
+      gvr: { version: v1, resource: namespaces }
+      namespaced: false
+  objects:
+    - apiVersion: v1
+      kind: Namespace
+      metadata: { name: kube-system }
 tests:
   - it: puts SQLite on a volume at the server's default path, deleted on uninstall by default
     templates:

@@ -1,4 +1,16 @@
-{{- /* lookup finds kube-system only against a live cluster, so helm template and lint skip this. */}}
-{{- if and (lookup "v1" "Namespace" "" "kube-system") (not (.Capabilities.APIVersions.Has "agents.x-k8s.io/v1beta1")) }}
+{{- if include "corral.live" . }}
+{{- if not (.Capabilities.APIVersions.Has "agents.x-k8s.io/v1beta1") }}
 {{- fail "agent-sandbox is not installed: kubectl apply --server-side -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.11/sandbox.yaml" }}
+{{- end }}
+{{- else }}
+{{- $generated := list }}
+{{- if not .Values.keys.existingSecret }}
+{{- $generated = append $generated "keys.existingSecret" }}
+{{- end }}
+{{- if not .Values.containerssh.hostKey.existingSecret }}
+{{- $generated = append $generated "containerssh.hostKey.existingSecret" }}
+{{- end }}
+{{- with $generated }}
+{{- fail (printf "set %s: rendered without a cluster, as by helm template or Argo CD, the chart cannot read back the keys it generates, so they would change on every render. Name existing Secrets (README: GitOps), or preview with helm install --dry-run=server" (join " and " .)) }}
+{{- end }}
 {{- end }}

@@ -52,6 +52,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- .Values.containerssh.hostKey.existingSecret | default (printf "%s-host-key" (include "corral.containersshName" .)) }}
 {{- end }}
 
+{{/*
+"true" when the chart is rendered against a cluster, else empty: lookup finds nothing under
+helm template, helm lint or Argo CD.
+*/}}
+{{- define "corral.live" -}}
+{{- if lookup "v1" "Namespace" "" "kube-system" }}true{{ end }}
+{{- end }}
+
 {{- define "corral.baseHost" -}}
 {{- (urlParse .Values.baseUrl).hostname }}
 {{- end }}

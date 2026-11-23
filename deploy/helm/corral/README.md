@@ -21,8 +21,9 @@ In the release namespace:
   deadline. Its Service is a LoadBalancer by default.
 - The database: SQLite on a PersistentVolumeClaim by default, an existing Postgres server, or a
   CloudNativePG `Cluster`.
-- Secrets: Corral's session and secrets keys and ContainerSSH's host key, generated once unless
-  you name existing Secrets.
+- Secrets: Corral's session and secrets keys and ContainerSSH's host key, generated once by
+  `helm install` unless you name existing Secrets, which GitOps tools need (see
+  [GitOps](#gitops-argo-cd-flux)).
 - A NetworkPolicy that lets only ContainerSSH reach Corral's webhook port.
 
 In the sandbox namespace (`<release>-sandboxes` by default, created by the chart unless
@@ -123,6 +124,69 @@ your values file and in the release history; prefer `existingSecret`.
 one made from `corral-server keys generate`. `containerssh.hostKey.existingSecret` names a Secret
 whose `host_key` is an SSH host private key, such as the `containerssh_host_key` of a Compose
 install, so clients keep trusting the same host.
+
+## GitOps (Argo CD, Flux)
+
+Argo CD renders the chart with `helm template` and applies the result, so there is no Helm
+release and Helm's `lookup` finds nothing in the cluster. The chart generates the keys and host
+key once and reads them back with `lookup` on every upgrade; under Argo CD it would make new ones
+at every render, leaving stored credentials unreadable and every client facing a new host key.
+Rendered without a cluster, the chart therefore fails until `keys.existingSecret` and
+`containerssh.hostKey.existingSecret` name existing Secrets. A `helm template` preview needs them
+too, or use `helm install --dry-run=server` against the cluster instead.
+
+Create the two Secrets once in the release namespace, outside the chart, so that neither a sync
+nor deleting the Application touches them. Keep their values in a secret store, since losing
+`CORRAL_SECRETS_KEY` makes every stored credential unreadable. With the
+[External Secrets Operator](https://external-secrets.io), store `CORRAL_SESSION_KEY` and
+`CORRAL_SECRETS_KEY` from `docker run --rm ghcr.io/adamaq01/corral keys generate`, and a
+`host_key` from `ssh-keygen -q -t ed25519 -N '' -C containerssh -f host_key`, under one key of
+the store, then sync them into the release namespace:
+
+```yaml
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: corral-keys
+  namespace: corral
+spec:
+  secretStoreRef: { kind: ClusterSecretStore, name: openbao }
+  data:
+    - secretKey: CORRAL_SESSION_KEY
+      remoteRef: { key: corral, property: CORRAL_SESSION_KEY }
+    - secretKey: CORRAL_SECRETS_KEY
+      remoteRef: { key: corral, property: CORRAL_SECRETS_KEY }
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: corral-host-key
+  namespace: corral
+spec:
+  secretStoreRef: { kind: ClusterSecretStore, name: openbao }
+  data:
+    - secretKey: host_key
+      remoteRef: { key: corral, property: host_key }
+```
+
+```yaml
+keys:
+  existingSecret: corral-keys
+containerssh:
+  hostKey:
+    existingSecret: corral-host-key
+```
+
+Without a secret store, save the output of `keys generate` to a file and make the same Secrets
+with `kubectl create secret generic`: `--from-env-file` for the keys, `--from-file=host_key` for
+the host key.
+
+The rest of the chart works under Argo CD as under Helm, including `keepOnUninstall` (see
+[Uninstall](#uninstall)). The agent-sandbox check runs only against a live cluster, so Argo CD
+does not make it.
+
+Flux's helm-controller runs Helm's own install and upgrade against the cluster, so `lookup` reads
+the generated Secrets back as with `helm install`, and existing Secrets are optional there.
 
 ## Upgrade
 
@@ -228,7 +292,8 @@ the pod CIDR of the one node the client is pinned to, exempts less.
 
 - `deploy/helm/tools.sh <dir>` installs the pinned helm, kubeconform and helm-unittest.
 - `deploy/helm/test.sh` lints the chart, checks the schema against `../schema-tests/` and the
-  examples, validates the rendered manifests against the Kubernetes schemas, checks the rendered
-  config with `corral-server config check`, and runs the unit tests in `tests/`.
+  examples, checks that `helm template` refuses to generate keys, validates the rendered
+  manifests against the Kubernetes schemas, checks the rendered config with
+  `corral-server config check`, and runs the unit tests in `tests/`.
 - `deploy/helm/e2e.sh` installs the chart into a kind cluster with agent-sandbox and walks
   through sign-in, SSH, port forwarding, idle sleep and wake, upgrade and uninstall.

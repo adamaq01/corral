@@ -36,14 +36,18 @@ render() {
     --api-versions agents.x-k8s.io/v1beta1 "$@"
 }
 
+# Without a cluster the chart cannot read back keys it generates, so it renders only with
+# existing Secrets for them.
+existing=(--set keys.existingSecret=corral-keys --set containerssh.hostKey.existingSecret=corral-host-key)
+
 for example in "$here"/examples/*.yaml; do
   name=$(basename "$example")
-  if output=$(helm lint --strict "$chart" --values "$example" 2>&1); then
+  if output=$(helm lint --strict "$chart" --values "$example" "${existing[@]}" 2>&1); then
     pass "helm lint --strict with $name"
   else
     failed "helm lint --strict with $name: $output"
   fi
-  if ! render --values "$example" >"$work/$name" 2>"$work/$name.err"; then
+  if ! render --values "$example" "${existing[@]}" >"$work/$name" 2>"$work/$name.err"; then
     failed "$name does not render: $(cat "$work/$name.err")"
     continue
   fi
@@ -55,7 +59,7 @@ for example in "$here"/examples/*.yaml; do
   else
     failed "kubeconform with $name: $output"
   fi
-  render --values "$example" --show-only templates/configmap.yaml \
+  render --values "$example" "${existing[@]}" --show-only templates/configmap.yaml \
     | awk '/^  config.toml: \|/ { body = 1; next } body { sub(/^    /, ""); print }' >"$work/$name.toml"
   if output=$("$server" --config "$work/$name.toml" config check 2>&1); then
     pass "corral-server config check accepts the config rendered from $name"
@@ -70,6 +74,20 @@ elif [[ "$output" != *"missing property 'baseUrl'"* || "$output" != *"at '/ssh':
   failed "the chart's own defaults failed for another reason: $output"
 else
   pass "the chart's own defaults are rejected until baseUrl and ssh.publicHost are set"
+fi
+
+if output=$(render --values "$here/examples/minimal.yaml" 2>&1); then
+  failed "helm template generated keys it cannot read back"
+elif [[ "$output" != *"set keys.existingSecret and containerssh.hostKey.existingSecret: rendered without a cluster"* ]]; then
+  failed "helm template without existing Secrets failed for another reason: $output"
+else
+  pass "helm template refuses to generate keys it cannot read back"
+fi
+
+if output=$(render --values "$here/examples/homelab.yaml" 2>&1 >/dev/null); then
+  pass "homelab.yaml, with existing Secrets for the keys, renders with helm template as it is"
+else
+  failed "homelab.yaml does not render with helm template as it is: $output"
 fi
 
 awk -v dir="$work" '

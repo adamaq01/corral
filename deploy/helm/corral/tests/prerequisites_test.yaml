@@ -1,0 +1,57 @@
+suite: rendering with a cluster, as helm install does, and without one, as helm template and Argo CD do
+templates:
+  - templates/prerequisites.yaml
+release:
+  name: corral
+  namespace: corral
+values:
+  - ../../examples/minimal.yaml
+tests:
+  - it: refuses to install into a cluster without agent-sandbox
+    kubernetesProvider: &cluster
+      scheme:
+        "v1/Namespace":
+          gvr: { version: v1, resource: namespaces }
+          namespaced: false
+      objects:
+        - apiVersion: v1
+          kind: Namespace
+          metadata: { name: kube-system }
+    asserts:
+      - failedTemplate:
+          errorPattern: "agent-sandbox is not installed"
+
+  - it: installs into a cluster with agent-sandbox without existing Secrets for the keys
+    capabilities:
+      apiVersions: [agents.x-k8s.io/v1beta1]
+    kubernetesProvider: *cluster
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: refuses to render without a cluster while it would generate the keys and host key
+    asserts:
+      - failedTemplate:
+          errorMessage: "set keys.existingSecret and containerssh.hostKey.existingSecret: rendered without a cluster, as by helm template or Argo CD, the chart cannot read back the keys it generates, so they would change on every render. Name existing Secrets (README: GitOps), or preview with helm install --dry-run=server"
+
+  - it: names only the host key when the keys come from an existing Secret
+    set:
+      keys.existingSecret: corral-keys
+    asserts:
+      - failedTemplate:
+          errorPattern: "^set containerssh.hostKey.existingSecret: rendered without a cluster"
+
+  - it: names only the keys when the host key comes from an existing Secret
+    set:
+      containerssh.hostKey.existingSecret: corral-host-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "^set keys.existingSecret: rendered without a cluster"
+
+  - it: renders without a cluster when both come from existing Secrets
+    set:
+      keys.existingSecret: corral-keys
+      containerssh.hostKey.existingSecret: corral-host-key
+    asserts:
+      - hasDocuments:
+          count: 0

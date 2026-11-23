@@ -6,6 +6,18 @@ release:
   namespace: corral
 values:
   - ../../examples/minimal.yaml
+# Rendered as helm install renders it: against a cluster, with agent-sandbox installed.
+capabilities:
+  apiVersions: [agents.x-k8s.io/v1beta1]
+kubernetesProvider:
+  scheme:
+    "v1/Namespace":
+      gvr: { version: v1, resource: namespaces }
+      namespaced: false
+  objects:
+    - apiVersion: v1
+      kind: Namespace
+      metadata: { name: kube-system }
 tests:
   - it: runs the agent-sandbox engine in the sandbox namespace, on the cluster's default storage class
     asserts:
