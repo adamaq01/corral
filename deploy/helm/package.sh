@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Packages the chart into the directory given, versioned like the Corral image CI publishes for
-# the same commit: on a tag, the tag; otherwise <Chart.yaml version>-sha-<7-character commit>,
-# running the image tagged sha-<7-character commit>.
+# Packages the chart into the directory given. On a tag it is versioned as the tag; otherwise as
+# <Chart.yaml version>-main.<CI run number>, so newer builds sort higher, running the image CI
+# tagged sha-<7-character commit> for the same commit.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -15,7 +15,7 @@ if [[ "$ref_type" == tag ]]; then
   version=${ref_name#v}
 else
   app_version=sha-${sha:0:7}
-  version=$(sed -n 's/^version: //p' "$here/corral/Chart.yaml")-$app_version
+  version=$(sed -n 's/^version: //p' "$here/corral/Chart.yaml")-main.${GITHUB_RUN_NUMBER:-0}
 fi
 mkdir -p "$out"
 helm package "$here/corral" --version "$version" --app-version "$app_version" --destination "$out"

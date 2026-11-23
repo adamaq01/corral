@@ -55,8 +55,10 @@ cluster access. The chart does not install agent-sandbox or the CloudNativePG op
 ## Install
 
 The chart is published as an OCI artifact. Each build of `main` is version
-`0.1.0-sha-<commit>` and runs the Corral image `ghcr.io/adamaq01/corral:sha-<commit>` from the
-same commit.
+`<chart version>-main.<CI run number>`, so a newer build always sorts higher, and runs the Corral
+image `ghcr.io/adamaq01/corral:sha-<commit>` from the same commit. To follow `main`, use the
+version range `>=0.0.0-0` (it includes these prerelease versions); `--devel` does the same for a
+plain `helm install` without `--version`.
 
 1. Write a values file with at least the two required values:
 
