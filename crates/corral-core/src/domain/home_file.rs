@@ -5,8 +5,10 @@ use secrecy::SecretSlice;
 use crate::{Error, Result};
 
 const MAX_LEN: usize = 1024;
+/// What people write before a path in the home, all of which mean the home itself.
+const HOME_PREFIXES: [&str; 5] = ["~/", "$HOME/", "${HOME}/", "/home/sandbox/", "./"];
 
-validated_string!(HomePath, check);
+validated_string!(HomePath, check, normalize = relative);
 
 impl HomePath {
     /// Whether the two are one path, or one is a directory the other sits in.
@@ -52,6 +54,17 @@ impl FileMode {
     }
 }
 
+/// The path relative to the home, without the prefixes that name the home.
+fn relative(mut value: String) -> String {
+    while let Some(prefix) = HOME_PREFIXES
+        .iter()
+        .find(|prefix| value.starts_with(**prefix))
+    {
+        value.drain(..prefix.len());
+    }
+    value
+}
+
 /// Relative to the home and inside it: no leading slash, no empty, `.` or `..` part, no control
 /// character, and no leading or trailing space.
 fn check(value: &str) -> Result<()> {
@@ -86,6 +99,16 @@ mod tests {
         ] {
             assert_eq!(HomePath::parse(good).unwrap().as_str(), good);
         }
+        for (written, path) in [
+            ("~/.config/tool", ".config/tool"),
+            ("$HOME/notes", "notes"),
+            ("${HOME}/notes", "notes"),
+            ("/home/sandbox/.ssh/config", ".ssh/config"),
+            ("./bin/tool", "bin/tool"),
+            ("~/./x", "x"),
+        ] {
+            assert_eq!(HomePath::parse(written).unwrap().as_str(), path);
+        }
         let long = "a".repeat(1025);
         for bad in [
             "",
@@ -99,6 +122,9 @@ mod tests {
             "nul\0byte",
             " leading",
             "trailing ",
+            "~/",
+            "/home/sandbox",
+            "/home/other/x",
             long.as_str(),
         ] {
             assert!(

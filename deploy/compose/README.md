@@ -95,17 +95,24 @@ block, and wakes, stops, restarts or deletes the sandbox.
   next start from sleep, its home kept; a running sandbox keeps what it has until then. A
   sandbox whose image or size is no longer in the catalog keeps running as it was made. Docker
   volumes have no size, so `home_size` does nothing here.
-- **Environment** holds your variables (`NAME=value` in every SSH session) and files (written
-  into the home at every start, replacing what is at their path, missing directories made).
-  Either can be secret: a secret value is encrypted with `CORRAL_SECRETS_KEY` and never shown
-  again, only its length, first 4 and last 2 characters once it has 16 or more (a file only its
-  size), and a secret file is readable by the sandbox user alone. A file marked as a template
-  takes the value of each variable attached to the same sandbox in place of its `{{ NAME }}`.
-  A file holds at most 256 KiB, and a sandbox's files and its variables at most 1 MiB each.
+- **Environment** holds your variables (`NAME=value` in every SSH session, upper or lower case)
+  and files (written into the home at every start, replacing what is at their path, missing
+  directories made). Each name or path is yours once. Either can be secret: a secret value is
+  encrypted with `CORRAL_SECRETS_KEY` and never shown again, only its length, first 4 and last 2
+  characters once it has 16 or more (a file only its size), and a secret file is readable by the
+  sandbox user alone. A file can be executable. A file marked as a template takes the value of
+  each variable attached to the same sandbox in place of each `{{ NAME }}`, `NAME` an upper-case
+  variable name; any other `{{` stays as written, so Go, Jinja or Helm files pass through. A
+  variable takes at most 128 KiB, a file 256 KiB, and a sandbox's files and its variables at
+  most 1 MiB each.
+- An entry's name or path, kind (variable or file) and secrecy can change later; it keeps its
+  sandboxes and their overrides. Corral refuses a change, a detach or a deletion that would keep
+  a sandbox, or new sandboxes, from starting, such as removing a variable a template attached
+  there refers to, and says why.
 - A sandbox gets the variables and files attached to it: each new sandbox those marked
-  **Apply to new sandboxes**, and on its page you attach or detach others, or give one a value
-  for that sandbox alone. Changes reach a sandbox from its next wake or restart on, and a running
-  sandbox shows **Restart to apply** until then.
+  **Apply to new sandboxes**, and on its page you attach or detach others, or override one with
+  a value for that sandbox alone. Changes reach a sandbox from its next wake or restart on, and a
+  running sandbox shows **Restart to apply** until then.
 - Admins add, reset and delete local accounts under **Local accounts**, and disable, enable or
   delete users under **Users**. **All sandboxes** lists every user's sandboxes.
 - Deleting a user, as an admin or from your own **Profile**, deletes their sandboxes with their

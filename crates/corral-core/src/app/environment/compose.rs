@@ -3,14 +3,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 
 use crate::domain::{
-    Entry, FileMode, HomeFile, HomeFiles, HomePath, Kept, SandboxName, SecretId, StoredValue,
-    Target, Template, VariableName,
+    Entry, FileMode, HomeFile, HomeFiles, HomePath, Kept, SecretId, StoredValue, Target, Template,
+    VariableName,
 };
 use crate::ports::{Boot, VariableMap, home_staging};
 use crate::{Error, Result};
 
 /// The most a file may hold, rendered.
 pub const FILE_LIMIT: usize = 256 << 10;
+/// The most one variable may take as `NAME=value` with its terminating NUL: Linux refuses to
+/// start a program with a longer environment string (`MAX_ARG_STRLEN`).
+pub const VARIABLE_LIMIT: usize = 128 << 10;
 /// The most a sandbox's files may take once staged for its start, which an engine may keep in
 /// one Kubernetes Secret.
 pub const FILES_LIMIT: usize = 1 << 20;
@@ -19,6 +22,8 @@ pub const FILES_LIMIT: usize = 1 << 20;
 pub const VARIABLES_LIMIT: usize = 1 << 20;
 
 const PLAIN_FILE: u32 = 0o644;
+const PLAIN_PROGRAM: u32 = 0o755;
+const SECRET_PROGRAM: u32 = 0o700;
 
 /// A sandbox's boot, and the names each of its template files refers to that are not variables
 /// attached to it. Such a file is left unrendered.
@@ -27,16 +32,16 @@ pub(super) struct Composed {
     pub unknown: BTreeMap<HomePath, BTreeSet<VariableName>>,
 }
 
-/// What the entries attached to a sandbox give it, each with the value it has there, next to the
-/// file Corral itself writes. A secret file, or a template that takes a secret, is readable by
-/// the sandbox user alone.
+/// What the entries of `whose`, such as `sandbox main`, give it, each with the value it has there,
+/// next to the file Corral itself writes. A secret file, or a template that takes a secret, is
+/// readable by the sandbox user alone.
 pub(super) fn compose(
-    sandbox: &SandboxName,
+    whose: &str,
     effective: &[(&Entry, &StoredValue)],
     secrets: &BTreeMap<SecretId, SecretSlice<u8>>,
     own_file: (HomePath, HomeFile),
 ) -> Result<Composed> {
-    check_collisions(sandbox, effective)?;
+    check_collisions(whose, effective)?;
     let mut env = VariableMap::new();
     let mut secret_variables = BTreeSet::new();
     let mut files = Vec::new();
@@ -47,12 +52,12 @@ pub(super) fn compose(
                 let text = std::str::from_utf8(bytes).map_err(|_| {
                     Error::internal("environment", format!("variable {name} is not text"))
                 })?;
-                if entry.is_secret() {
+                if entry.is_secret() || value.is_secret() {
                     secret_variables.insert(name.clone());
                 }
                 env.insert(name.clone(), SecretString::from(text));
             }
-            Target::File(path) => files.push((path, *entry, bytes)),
+            Target::File(path) => files.push((path, *entry, *value, bytes)),
         }
     }
     let variables: usize = env
@@ -61,20 +66,22 @@ pub(super) fn compose(
         .sum();
     if variables > VARIABLES_LIMIT {
         return Err(Error::LimitReached(format!(
-            "the variables of sandbox {sandbox} take {variables} bytes, more than the {} a \
-             sandbox's variables may take",
+            "the variables of {whose} take {variables} bytes, more than the {} a sandbox's \
+             variables may take",
             amount(VARIABLES_LIMIT)
         )));
     }
 
     let mut home = HomeFiles::new();
     let mut unknown = BTreeMap::new();
-    for (path, entry, bytes) in files {
-        let mut secret = entry.is_secret();
+    for (path, entry, value, bytes) in files {
+        let mut secret = entry.is_secret() || value.is_secret();
         let content = if entry.template {
             let template = std::str::from_utf8(bytes)
-                .map_err(|_| Error::internal("environment", format!("template {path} is not text")))
-                .and_then(Template::parse)?;
+                .map(Template::parse)
+                .map_err(|_| {
+                    Error::internal("environment", format!("template {path} is not text"))
+                })?;
             secret |= template
                 .names()
                 .iter()
@@ -91,16 +98,16 @@ pub(super) fn compose(
         };
         if content.len() > FILE_LIMIT {
             return Err(Error::LimitReached(format!(
-                "file {path} takes {} bytes in sandbox {sandbox}, more than the {} a file may \
-                 hold",
+                "file {path} takes {} bytes in {whose}, more than the {} a file may hold",
                 content.len(),
                 amount(FILE_LIMIT)
             )));
         }
-        let mode = if secret {
-            FileMode::OWNER_ONLY
-        } else {
-            FileMode::new(PLAIN_FILE)?
+        let mode = match (secret, entry.executable) {
+            (false, false) => FileMode::new(PLAIN_FILE)?,
+            (false, true) => FileMode::new(PLAIN_PROGRAM)?,
+            (true, false) => FileMode::OWNER_ONLY,
+            (true, true) => FileMode::new(SECRET_PROGRAM)?,
         };
         home.insert(
             path.clone(),
@@ -115,8 +122,8 @@ pub(super) fn compose(
     let staged = home_staging::stage(&home).size();
     if staged > FILES_LIMIT {
         return Err(Error::LimitReached(format!(
-            "the files of sandbox {sandbox} take {staged} bytes once staged, more than the {} a \
-             sandbox's files may take",
+            "the files of {whose} take {staged} bytes once staged, more than the {} a sandbox's \
+             files may take",
             amount(FILES_LIMIT)
         )));
     }
@@ -126,19 +133,63 @@ pub(super) fn compose(
     })
 }
 
-fn check_collisions(sandbox: &SandboxName, effective: &[(&Entry, &StoredValue)]) -> Result<()> {
+fn check_collisions(whose: &str, effective: &[(&Entry, &StoredValue)]) -> Result<()> {
     for (index, (entry, _)) in effective.iter().enumerate() {
         if let Some((other, _)) = effective[index + 1..]
             .iter()
             .find(|(other, _)| other.target.collides(&entry.target))
         {
             return Err(Error::Conflict(format!(
-                "{} and {} cannot both be attached to sandbox {sandbox}",
+                "{} and {} cannot both be attached to {whose}",
                 entry.target, other.target
             )));
         }
     }
     Ok(())
+}
+
+/// The variables each template among `effective` refers to that are not among `effective`. A
+/// secret missing from `secrets` counts as text without references.
+pub(super) fn unresolved(
+    effective: &[(&Entry, &StoredValue)],
+    secrets: &BTreeMap<SecretId, SecretSlice<u8>>,
+) -> BTreeMap<HomePath, BTreeSet<VariableName>> {
+    let variables: BTreeSet<&VariableName> = effective
+        .iter()
+        .filter_map(|(entry, _)| match &entry.target {
+            Target::Variable(name) => Some(name),
+            Target::File(_) => None,
+        })
+        .collect();
+    effective
+        .iter()
+        .filter_map(|(entry, value)| match &entry.target {
+            Target::File(path) if entry.template => {
+                let missing: BTreeSet<VariableName> = template_of(value, secrets)
+                    .names()
+                    .into_iter()
+                    .filter(|name| !variables.contains(name))
+                    .cloned()
+                    .collect();
+                (!missing.is_empty()).then(|| (path.clone(), missing))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The value read as a template.
+pub(super) fn template_of(
+    value: &StoredValue,
+    secrets: &BTreeMap<SecretId, SecretSlice<u8>>,
+) -> Template {
+    let bytes = match &value.kept {
+        Kept::Plain(content) => content.as_slice(),
+        Kept::Secret(secret) => secrets
+            .get(&secret.id)
+            .map_or(&[][..], ExposeSecret::expose_secret),
+    };
+    Template::parse(&String::from_utf8_lossy(bytes))
 }
 
 fn bytes_of<'a>(
@@ -179,8 +230,8 @@ mod tests {
     use super::{FILE_LIMIT, FILES_LIMIT, VARIABLES_LIMIT, compose};
     use crate::Error;
     use crate::domain::{
-        Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, SandboxName, SecretId,
-        SecretRef, StoredValue, Target, UserId, VariableName,
+        Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, SecretId, SecretRef,
+        StoredValue, Target, UserId, VariableName,
     };
     use crate::fakes::exposed;
 
@@ -218,6 +269,7 @@ mod tests {
                 owner: UserId(uuid::Uuid::nil()),
                 target,
                 template,
+                executable: false,
                 apply_to_new: true,
                 value: value.clone(),
                 created_at: Utc::now(),
@@ -228,12 +280,8 @@ mod tests {
         fn compose(&self) -> crate::Result<super::Composed> {
             let effective: Vec<(&Entry, &StoredValue)> =
                 self.entries.iter().map(|(e, v)| (e, v)).collect();
-            compose(&name(), &effective, &self.secrets, own_file())
+            compose("sandbox main", &effective, &self.secrets, own_file())
         }
-    }
-
-    fn name() -> SandboxName {
-        SandboxName::parse("main").unwrap()
     }
 
     fn own_file() -> (HomePath, HomeFile) {

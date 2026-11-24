@@ -9,8 +9,8 @@ use super::{
     MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
 };
 use crate::app::{
-    Accounts, Catalog, CreateSandbox, Environment, ImageOption, Keys, Limits, NewEntry,
-    SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
+    Accounts, Catalog, CreateSandbox, EntryChange, Environment, ImageOption, Keys, Limits,
+    NewEntry, SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{
     Admin, Allocation, Entry, HomePath, ImageKey, Resources, Role, Sandbox, SandboxDefaults,
@@ -81,8 +81,22 @@ pub fn entry(target: Target, value: &str) -> NewEntry {
         target,
         secret: false,
         template: false,
+        executable: false,
         apply_to_new: true,
         value: bytes(value),
+    }
+}
+
+/// A change that leaves the entry as it is.
+#[must_use]
+pub fn unchanged(entry: &Entry) -> EntryChange {
+    EntryChange {
+        target: entry.target.clone(),
+        secret: entry.is_secret(),
+        template: entry.template,
+        executable: entry.executable,
+        apply_to_new: entry.apply_to_new,
+        value: None,
     }
 }
 

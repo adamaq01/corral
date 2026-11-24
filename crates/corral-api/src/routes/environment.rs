@@ -6,7 +6,9 @@ use corral_core::domain::{EntryId, SandboxName};
 use uuid::Uuid;
 
 use crate::auth::CurrentUser;
-use crate::environment_dto::{AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, ValueInput};
+use crate::environment_dto::{
+    AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, PreviewDto, ValueInput,
+};
 use crate::error::ApiError;
 use crate::extract::{JsonBody, PathParam};
 use crate::state::AppState;
@@ -26,6 +28,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route(
             "/api/sandboxes/{name}/environment/{id}/override",
             put(set_override).delete(clear_override),
+        )
+        .route(
+            "/api/sandboxes/{name}/environment/{id}/preview",
+            get(preview),
         )
 }
 
@@ -68,7 +74,8 @@ async fn change(
     Ok(Json(EntryDto::from(view)))
 }
 
-/// Detaches the entry from every sandbox, which loses it at its next start.
+/// Detaches the entry from every sandbox, which loses it at its next start. Refused while a
+/// template that stays refers to it.
 async fn remove(
     CurrentUser(user): CurrentUser,
     State(state): State<AppState>,
@@ -128,4 +135,13 @@ async fn clear_override(
         .set_override(&user, &name, EntryId(id), None)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn preview(
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    PathParam((name, id)): PathParam<(SandboxName, Uuid)>,
+) -> Result<Json<PreviewDto>, ApiError> {
+    let preview = state.environment.preview(&user, &name, EntryId(id)).await?;
+    Ok(Json(PreviewDto::from(preview)))
 }

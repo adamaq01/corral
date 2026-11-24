@@ -38,12 +38,13 @@ impl Environment {
                     id: EntryId::generate(),
                     owner: user,
                     template: false,
+                    executable: false,
                     apply_to_new: true,
                     value: self.keep(user, &target, true, &value).await?,
                     target,
                     created_at: Utc::now(),
                 };
-                self.settle(user, &entry.value, self.repo.insert(&entry))
+                self.settle(user, [&entry.value], self.repo.insert(&entry))
                     .await?;
                 made += 1;
                 entry.id

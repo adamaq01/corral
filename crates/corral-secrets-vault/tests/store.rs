@@ -196,8 +196,8 @@ async fn malformed_secrets_fail_without_quoting_values(server: Server) {
     for (data, culprit) in [
         (json!({"A_KEY": "sk-quoted-1", "B_KEY": 42}), "B_KEY"),
         (
-            json!({"A_KEY": "sk-quoted-1", "lower": "sk-quoted-2"}),
-            "lower",
+            json!({"A_KEY": "sk-quoted-1", "bad-name": "sk-quoted-2"}),
+            "bad-name",
         ),
     ] {
         kv2::set(&kv.root, MOUNT, &owner_path(adam), &data)

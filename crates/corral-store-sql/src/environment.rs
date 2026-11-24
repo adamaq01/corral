@@ -21,6 +21,7 @@ struct EntryRow {
     kind: String,
     target: String,
     template: bool,
+    executable: bool,
     apply_to_new: bool,
     content: Option<Vec<u8>>,
     secret_id: Option<Uuid>,
@@ -134,6 +135,7 @@ impl TryFrom<EntryRow> for Entry {
             owner: UserId(row.owner),
             target,
             template: row.template,
+            executable: row.executable,
             apply_to_new: row.apply_to_new,
             value: Columns {
                 content: row.content,
@@ -187,7 +189,7 @@ fn kind_and_target(target: &Target) -> (&'static str, &str) {
 macro_rules! entry_columns {
     () => {
         "id, owner, kind, target, template, apply_to_new, content, secret_id, size, \
-         glimpse_length, glimpse_head, glimpse_tail, set_at, created_at"
+         glimpse_length, glimpse_head, glimpse_tail, set_at, created_at, executable"
     };
 }
 
@@ -215,7 +217,7 @@ impl EnvironmentRepo for Store {
             sqlx::query(concat!(
                 "insert into environment_entries (",
                 entry_columns!(),
-                ") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)"
+                ") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
             ))
             .bind(entry.id.0)
             .bind(entry.owner.0)
@@ -231,6 +233,7 @@ impl EnvironmentRepo for Store {
             .bind(&value.glimpse_tail)
             .bind(value.set_at)
             .bind(entry.created_at)
+            .bind(entry.executable)
             .execute(pool)
             .await
             .map(drop)
@@ -238,17 +241,27 @@ impl EnvironmentRepo for Store {
         .map_err(db_error)
     }
 
-    async fn update(&self, entry: &Entry) -> Result<bool> {
+    async fn update(&self, entry: &Entry, overrides: &[Attachment]) -> Result<bool> {
+        let (kind, target) = kind_and_target(&entry.target);
         let value = Columns::of(&entry.value);
-        let updated = on_pool!(self.pool, |pool| {
-            sqlx::query(
-                "update environment_entries set template = $3, apply_to_new = $4, content = $5, \
-                 secret_id = $6, size = $7, glimpse_length = $8, glimpse_head = $9, \
-                 glimpse_tail = $10, set_at = $11 where id = $1 and owner = $2",
+        let overrides: Vec<(&Attachment, Option<Columns>)> = overrides
+            .iter()
+            .map(|attachment| (attachment, attachment.overriding.as_ref().map(Columns::of)))
+            .collect();
+        on_pool!(self.pool, |pool| async {
+            let mut tx = pool.begin().await?;
+            let updated = sqlx::query(
+                "update environment_entries set kind = $3, target = $4, template = $5, \
+                 executable = $6, apply_to_new = $7, content = $8, secret_id = $9, size = $10, \
+                 glimpse_length = $11, glimpse_head = $12, glimpse_tail = $13, set_at = $14 \
+                 where id = $1 and owner = $2",
             )
             .bind(entry.id.0)
             .bind(entry.owner.0)
+            .bind(kind)
+            .bind(target)
             .bind(entry.template)
+            .bind(entry.executable)
             .bind(entry.apply_to_new)
             .bind(&value.content)
             .bind(value.secret_id)
@@ -257,12 +270,37 @@ impl EnvironmentRepo for Store {
             .bind(&value.glimpse_head)
             .bind(&value.glimpse_tail)
             .bind(value.set_at)
-            .execute(pool)
-            .await
-            .map(|done| done.rows_affected())
-        })
-        .map_err(db_error)?;
-        Ok(updated > 0)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            if updated == 0 {
+                return Ok(false);
+            }
+            for (attachment, value) in &overrides {
+                let value = value.as_ref();
+                sqlx::query(
+                    "update environment_attachments set override_content = $3, \
+                     override_secret_id = $4, override_size = $5, override_glimpse_length = $6, \
+                     override_glimpse_head = $7, override_glimpse_tail = $8, \
+                     override_set_at = $9 where sandbox_id = $1 and entry_id = $2",
+                )
+                .bind(&attachment.sandbox.0)
+                .bind(attachment.entry.0)
+                .bind(value.and_then(|value| value.content.as_ref()))
+                .bind(value.and_then(|value| value.secret_id))
+                .bind(value.map(|value| value.size))
+                .bind(value.and_then(|value| value.glimpse_length))
+                .bind(value.and_then(|value| value.glimpse_head.as_ref()))
+                .bind(value.and_then(|value| value.glimpse_tail.as_ref()))
+                .bind(value.map(|value| value.set_at))
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(true)
+        }
+        .await)
+        .map_err(db_error)
     }
 
     async fn delete(&self, owner: UserId, id: EntryId) -> Result<bool> {

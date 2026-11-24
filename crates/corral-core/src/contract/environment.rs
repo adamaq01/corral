@@ -14,7 +14,7 @@ pub async fn environment_repo(
     environment: &dyn EnvironmentRepo,
 ) {
     entries_round_trip_per_owner(users, environment).await;
-    update_keeps_what_an_entry_is(users, environment).await;
+    update_changes_an_entry_in_place(users, sandboxes, environment).await;
     attachments_hold_any_override(users, sandboxes, environment).await;
     deleting_an_entry_detaches_it(users, sandboxes, environment).await;
     fresh_users_await_no_adoption(users, environment).await;
@@ -44,6 +44,7 @@ fn entry(owner: UserId, target: Target, value: StoredValue, created: i64) -> Ent
         owner,
         target,
         template: false,
+        executable: false,
         apply_to_new: true,
         value,
         created_at: at(created),
@@ -113,6 +114,16 @@ async fn entries_round_trip_per_owner(users: &dyn UserRepo, environment: &dyn En
             apply_to_new: false,
             ..entry(adam.id, file(".gitconfig"), plain(b"{{ PLAIN }}", 3), 3)
         },
+        Entry {
+            executable: true,
+            ..entry(adam.id, file("bin/tool"), plain(b"#!/bin/sh", 3), 3)
+        },
+        entry(
+            adam.id,
+            variable("http_proxy"),
+            plain(b"http://proxy", 3),
+            3,
+        ),
         entry(adam.id, file("a dir/key"), plain(&[0, 255, 10], 4), 4),
         entry(adam.id, file(".ssh/id"), secret(411, None, 5), 5),
         entry(adam.id, file("empty"), plain(b"", 6), 6),
@@ -134,44 +145,67 @@ async fn entries_round_trip_per_owner(users: &dyn UserRepo, environment: &dyn En
     );
 }
 
-async fn update_keeps_what_an_entry_is(users: &dyn UserRepo, environment: &dyn EnvironmentRepo) {
+async fn update_changes_an_entry_in_place(
+    users: &dyn UserRepo,
+    sandboxes: &dyn SandboxRepo,
+    environment: &dyn EnvironmentRepo,
+) {
     let adam = seed_user(users, "adam").await;
+    let (main, dev) = (
+        sandbox(sandboxes, adam.id, "main").await,
+        sandbox(sandboxes, adam.id, "dev").await,
+    );
     let original = entry(adam.id, file("notes"), plain(b"one", 1), 1);
     environment.insert(&original).await.unwrap();
+    let attach = |sandbox: &Sandbox, overriding: Option<StoredValue>| Attachment {
+        sandbox: sandbox.id.clone(),
+        entry: original.id,
+        overriding,
+    };
+    environment
+        .attach(&attach(&main, Some(plain(b"main's", 1))))
+        .await
+        .unwrap();
+    environment.attach(&attach(&dev, None)).await.unwrap();
+
     let changed = Entry {
+        target: variable("notes"),
         template: true,
+        executable: true,
         apply_to_new: false,
-        value: plain(b"two", 2),
+        value: secret(3, None, 2),
         ..original.clone()
     };
-    let moved = Entry {
-        target: file("elsewhere"),
+    let moved = attach(&main, Some(secret(6, None, 2)));
+    let recreated = Entry {
         created_at: at(9),
         ..changed.clone()
     };
-    assert!(environment.update(&moved).await.unwrap());
+    assert!(
+        environment
+            .update(&recreated, std::slice::from_ref(&moved))
+            .await
+            .unwrap()
+    );
     assert_eq!(
         environment.entries(adam.id).await.unwrap(),
         std::slice::from_ref(&changed)
     );
-
-    let secret_now = Entry {
-        value: secret(3, None, 3),
-        ..changed.clone()
-    };
-    assert!(environment.update(&secret_now).await.unwrap());
-    assert_eq!(environment.entries(adam.id).await.unwrap(), [secret_now]);
+    assert_eq!(
+        sorted_attachments(environment.attachments(adam.id).await.unwrap()),
+        sorted_attachments(vec![moved, attach(&dev, None)])
+    );
 
     let stranger = Entry {
         owner: UserId(Uuid::new_v4()),
         ..changed.clone()
     };
-    assert!(!environment.update(&stranger).await.unwrap());
+    assert!(!environment.update(&stranger, &[]).await.unwrap());
     let missing = Entry {
         id: EntryId::generate(),
         ..changed
     };
-    assert!(!environment.update(&missing).await.unwrap());
+    assert!(!environment.update(&missing, &[]).await.unwrap());
 }
 
 async fn attachments_hold_any_override(

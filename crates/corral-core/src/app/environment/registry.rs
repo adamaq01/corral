@@ -1,6 +1,4 @@
-use std::collections::BTreeSet;
-
-use crate::domain::{Attachment, Entry, EntryId, SandboxId, StoredValue, Target, VariableName};
+use crate::domain::{Attachment, Entry, EntryId, SandboxId, StoredValue};
 use crate::{Error, Result};
 
 /// One user's entries and where they are attached, loaded together so that a change can be
@@ -12,9 +10,17 @@ pub(super) struct Registry {
     pub attachments: Vec<Attachment>,
 }
 
+/// Whose entries a composition takes: one sandbox's, or those a new sandbox gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Scope<'a> {
+    Sandbox(&'a SandboxId),
+    New,
+}
+
 impl Registry {
     pub fn new(mut entries: Vec<Entry>, attachments: Vec<Attachment>) -> Self {
-        entries.sort_by(|a, b| (&a.target, a.created_at).cmp(&(&b.target, b.created_at)));
+        entries
+            .sort_by(|a, b| (&a.target, a.created_at, a.id).cmp(&(&b.target, b.created_at, b.id)));
         Self {
             entries,
             attachments,
@@ -48,41 +54,35 @@ impl Registry {
             .collect()
     }
 
-    /// What each entry attached to the sandbox gives it: its override there, or its own value.
-    pub fn effective(&self, sandbox: &SandboxId) -> Vec<(&Entry, &StoredValue)> {
-        self.attached(sandbox)
-            .into_iter()
-            .map(|(entry, attachment)| {
-                (
-                    entry,
-                    attachment.overriding.as_ref().unwrap_or(&entry.value),
-                )
-            })
-            .collect()
-    }
-
-    pub fn variables(&self) -> BTreeSet<&VariableName> {
-        self.entries
-            .iter()
-            .filter_map(|entry| match &entry.target {
-                Target::Variable(name) => Some(name),
-                Target::File(_) => None,
-            })
-            .collect()
-    }
-
-    /// Refuses to let two entries that collide both apply to new sandboxes, which would attach
-    /// both to each.
-    pub fn check_applies_to_new(&self, target: &Target, except: Option<EntryId>) -> Result<()> {
-        match self.entries.iter().find(|entry| {
-            entry.apply_to_new && Some(entry.id) != except && entry.target.collides(target)
-        }) {
-            Some(other) => Err(Error::Conflict(format!(
-                "another entry, {}, already applies to new sandboxes; only one of the two can",
-                other.target
-            ))),
-            None => Ok(()),
+    /// What each entry of the scope gives it: its override there, or its own value.
+    pub fn effective(&self, scope: Scope<'_>) -> Vec<(&Entry, &StoredValue)> {
+        match scope {
+            Scope::Sandbox(sandbox) => self
+                .attached(sandbox)
+                .into_iter()
+                .map(|(entry, attachment)| {
+                    (
+                        entry,
+                        attachment.overriding.as_ref().unwrap_or(&entry.value),
+                    )
+                })
+                .collect(),
+            Scope::New => self
+                .entries
+                .iter()
+                .filter(|entry| entry.apply_to_new)
+                .map(|entry| (entry, &entry.value))
+                .collect(),
         }
+    }
+
+    /// Whether an entry made earlier has the same target, as only entries made before targets
+    /// were unique can.
+    pub fn is_duplicate(&self, entry: &Entry) -> bool {
+        self.entries.iter().any(|other| {
+            other.target == entry.target
+                && (other.created_at, other.id) < (entry.created_at, entry.id)
+        })
     }
 
     pub fn put_entry(&mut self, entry: Entry) {
@@ -92,9 +92,18 @@ impl Registry {
         }
     }
 
+    pub fn remove_entry(&mut self, id: EntryId) {
+        self.entries.retain(|entry| entry.id != id);
+        self.attachments.retain(|attachment| attachment.entry != id);
+    }
+
     pub fn put_attachment(&mut self, attachment: Attachment) {
-        self.attachments
-            .retain(|held| !(held.sandbox == attachment.sandbox && held.entry == attachment.entry));
+        self.remove_attachment(&attachment.sandbox.clone(), attachment.entry);
         self.attachments.push(attachment);
+    }
+
+    pub fn remove_attachment(&mut self, sandbox: &SandboxId, entry: EntryId) {
+        self.attachments
+            .retain(|held| !(held.sandbox == *sandbox && held.entry == entry));
     }
 }

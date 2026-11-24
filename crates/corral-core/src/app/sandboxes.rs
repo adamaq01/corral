@@ -476,18 +476,17 @@ mod tests {
     use crate::app::EntryChange;
     use crate::app::{Catalog, NamedImages};
     use crate::domain::Handle;
-    use crate::domain::{Sandbox, SandboxStatus, SizeKey, User};
+    use crate::domain::{Entry, Sandbox, SandboxStatus, SizeKey, User};
     use crate::fakes::EngineCall;
     use crate::fakes::{
         MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, bytes, catalog, default_names, defaults,
-        exposed, file, request, sandbox_name, variable,
+        exposed, file, request, sandbox_name, unchanged, variable,
     };
 
-    fn change(value: Option<&str>) -> EntryChange {
+    fn change(entry: &Entry, value: Option<&str>) -> EntryChange {
         EntryChange {
             value: value.map(bytes),
-            template: false,
-            apply_to_new: true,
+            ..unchanged(entry)
         }
     }
     use crate::ports::{EventKind, Fact, Readiness, SandboxEngine, SshTarget, UserRepo};
@@ -695,7 +694,7 @@ mod tests {
         let main = w.sandbox(&adam, "main").await;
         let set = async |value: &str| {
             w.environment
-                .change(&adam, gh.id, change(Some(value)))
+                .change(&adam, gh.id, change(&gh, Some(value)))
                 .await
                 .unwrap();
         };
@@ -900,7 +899,7 @@ mod tests {
         assert_eq!(stale().await, [] as [&str; 0]);
 
         w.environment
-            .change(&adam, gh.id, change(Some("one")))
+            .change(&adam, gh.id, change(&gh, Some("one")))
             .await
             .unwrap();
         assert_eq!(stale().await, ["main.adam"]);
@@ -915,7 +914,7 @@ mod tests {
                 gh.id,
                 EntryChange {
                     apply_to_new: false,
-                    ..change(None)
+                    ..change(&gh, None)
                 },
             )
             .await
@@ -939,7 +938,7 @@ mod tests {
         assert_eq!(stale().await, ["main.adam"]);
         fresh().await;
         w.environment
-            .change(&adam, later.id, change(Some("everyone's")))
+            .change(&adam, later.id, change(&later, Some("everyone's")))
             .await
             .unwrap();
         assert_eq!(stale().await, [] as [&str; 0], "main keeps its override");

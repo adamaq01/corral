@@ -8,9 +8,9 @@ use crate::domain::{Attachment, Entry, EntryId, SandboxId, UserId};
 pub trait EnvironmentRepo: Send + Sync {
     async fn entries(&self, owner: UserId) -> Result<Vec<Entry>>;
     async fn insert(&self, entry: &Entry) -> Result<()>;
-    /// Replaces the entry's value and flags; its owner, target and creation stay. Whether the
-    /// entry exists.
-    async fn update(&self, entry: &Entry) -> Result<bool>;
+    /// Replaces the entry, all but its owner and creation, and the overrides of `overrides`,
+    /// all at once. Whether the entry exists.
+    async fn update(&self, entry: &Entry, overrides: &[Attachment]) -> Result<bool>;
     /// Deletes the entry with its attachments. Whether it existed.
     async fn delete(&self, owner: UserId, id: EntryId) -> Result<bool>;
     /// Every attachment of the owner's entries.

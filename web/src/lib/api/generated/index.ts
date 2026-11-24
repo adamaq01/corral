@@ -50,11 +50,26 @@ export type EngineEvent = { at: string | null, kind: EventKind,
 object: string, reason: string, message: string, };
 
 /**
- * An entry's flags, and its value when given; without one, the value stays.
+ * What an entry becomes, its attachments and overrides kept, and its value when given;
+ * without one, the value stays.
  */
-export type EntryChange = { template: boolean, applyToNew: boolean, value?: ValueInput, };
+export type EntryChange = { kind: EntryKind, target: string, secret: boolean, template: boolean, executable: boolean, applyToNew: boolean, value?: ValueInput, };
 
 export type EntryKind = "variable" | "file";
+
+/**
+ * An entry's attachment to one sandbox.
+ */
+export type EntryUse = { sandbox: SandboxName,
+/**
+ * Whether the sandbox has a value of its own in place of the entry's.
+ */
+overridden: boolean,
+/**
+ * For a template: the variables it refers to there that are not attached to the sandbox,
+ * which keep the sandbox from starting.
+ */
+unresolved: Array<VariableName>, };
 
 export type EnvironmentEntry = { id: string, kind: EntryKind,
 /**
@@ -67,13 +82,26 @@ target: string, secret: boolean,
  */
 template: boolean,
 /**
+ * For a file: whether it is written executable.
+ */
+executable: boolean,
+/**
  * Whether each new sandbox is attached to it.
  */
 applyToNew: boolean, value: StoredValue, createdAt: string,
 /**
- * The sandboxes it is attached to.
+ * The sandboxes it is attached to, by name.
  */
-sandboxes: Array<SandboxName>, };
+sandboxes: Array<EntryUse>,
+/**
+ * For a template: the variables its own value refers to.
+ */
+references: Array<VariableName>,
+/**
+ * Whether an entry made earlier has the same target, as only entries made before targets
+ * were unique can.
+ */
+duplicate: boolean, };
 
 /**
  * What every error answers with.
@@ -132,9 +160,9 @@ export type NewAccount = { username: Handle, password: string, role: Role, };
  */
 export type NewEntry = { kind: EntryKind,
 /**
- * The variable's name, or the file's path relative to the home.
+ * The variable's name, or the file's path relative to the home, which may start with `~/`.
  */
-target: string, secret: boolean, template: boolean, applyToNew: boolean, value: ValueInput, };
+target: string, secret: boolean, template?: boolean, executable?: boolean, applyToNew: boolean, value: ValueInput, };
 
 export type NewKey = { label: string, publicKey: string, };
 
@@ -243,6 +271,15 @@ export type StoredValue = { setAt: string,
  */
 size: number, } & ({ "shown": "text", text: string, } | { "shown": "binary", base64: string, } | { "shown": "masked", length: number, head: string | null, tail: string | null, } | { "shown": "hidden" });
 
+/**
+ * A template as one sandbox would get it at its next start, each secret variable masked.
+ */
+export type TemplatePreview = { text: string,
+/**
+ * The variables it refers to that are not attached to the sandbox, left as written.
+ */
+unresolved: Array<VariableName>, };
+
 export type User = { id: string, handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, status: UserStatus, createdAt: string, };
 
 /**
@@ -252,8 +289,15 @@ export type User = { id: string, handle: Handle, email: string | null, picture: 
 export type UserStatus = "active" | "disabled" | "deleting";
 
 /**
+ * The most bytes one variable may take as `NAME=value` with a terminating NUL.
+ */
+export const VARIABLE_LIMIT = 131072;
+
+/**
  * A value as someone sends it: text, or any bytes in standard base64.
  */
 export type ValueInput = { "text": string } | { "base64": string };
+
+export type VariableName = string;
 
 export type Wake = { ready: boolean, };

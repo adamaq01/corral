@@ -25,13 +25,13 @@ impl SandboxLinks {
     /// that start, readable only by the sandbox user.
     pub(super) fn sandbox_file(
         &self,
-        sandbox: &Sandbox,
+        sandbox: &SandboxName,
         token: &SandboxToken,
     ) -> (HomePath, HomeFile) {
         let contents = json!({
             "api": self.api,
             "web": self.web,
-            "sandbox": sandbox.name,
+            "sandbox": sandbox,
             "token": token.expose(),
         });
         let path = HomePath::parse(SANDBOX_FILE).expect("a valid home path");

@@ -41,7 +41,7 @@ impl EnvironmentRepo for MemoryEnvironmentRepo {
         Ok(())
     }
 
-    async fn update(&self, entry: &Entry) -> Result<bool> {
+    async fn update(&self, entry: &Entry, overrides: &[Attachment]) -> Result<bool> {
         let mut entries = lock(&self.entries);
         let Some(held) = entries
             .iter_mut()
@@ -52,10 +52,18 @@ impl EnvironmentRepo for MemoryEnvironmentRepo {
         *held = Entry {
             id: held.id,
             owner: held.owner,
-            target: held.target.clone(),
             created_at: held.created_at,
             ..entry.clone()
         };
+        let mut attachments = lock(&self.attachments);
+        for attachment in overrides {
+            if let Some(held) = attachments
+                .iter_mut()
+                .find(|held| held.sandbox == attachment.sandbox && held.entry == attachment.entry)
+            {
+                held.overriding.clone_from(&attachment.overriding);
+            }
+        }
         Ok(true)
     }
 

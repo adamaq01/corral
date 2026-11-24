@@ -12,8 +12,8 @@ pub use accounts::Accounts;
 pub use catalog::{Catalog, ImageOption, NamedImages, SizePreset};
 pub use deletion::DELETION_GRACE;
 pub use environment::{
-    Attached, EntryChange, EntryView, Environment, FILE_LIMIT, FILES_LIMIT, NewEntry,
-    VARIABLES_LIMIT,
+    Attached, EntryChange, EntryView, Environment, FILE_LIMIT, FILES_LIMIT, NewEntry, Preview, Use,
+    VARIABLE_LIMIT, VARIABLES_LIMIT,
 };
 pub use failure_window::{Attempt, FailureWindow, Network};
 pub use inside::{CallingSandbox, SANDBOX_FILE, SandboxLinks};

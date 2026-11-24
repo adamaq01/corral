@@ -1,7 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
-use corral_core::app::{Attached, EntryChange, EntryView, NewEntry};
+use corral_core::app::{Attached, EntryChange, EntryView, NewEntry, Preview, Use};
 use corral_core::domain::{Entry, HomePath, Kept, SandboxName, StoredValue, Target, VariableName};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
@@ -24,6 +24,16 @@ pub(crate) enum ValueInput {
     Base64(#[ts(type = "string")] SecretString),
 }
 
+impl EntryKind {
+    /// The variable named `target`, or the file at the path `target` in the home.
+    fn target(self, target: &str) -> Result<Target> {
+        Ok(match self {
+            Self::Variable => Target::Variable(VariableName::parse(target)?),
+            Self::File => Target::File(HomePath::parse(target)?),
+        })
+    }
+}
+
 impl ValueInput {
     pub(crate) fn bytes(self) -> Result<SecretSlice<u8>> {
         match self {
@@ -40,39 +50,47 @@ impl ValueInput {
 #[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "NewEntry")]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct NewEntryDto {
     kind: EntryKind,
-    /// The variable's name, or the file's path relative to the home.
+    /// The variable's name, or the file's path relative to the home, which may start with `~/`.
     target: String,
     secret: bool,
     #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
     template: bool,
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    executable: bool,
     apply_to_new: bool,
     value: ValueInput,
 }
 
 impl NewEntryDto {
     pub(crate) fn parse(self) -> Result<NewEntry> {
-        let target = match self.kind {
-            EntryKind::Variable => Target::Variable(VariableName::parse(&self.target)?),
-            EntryKind::File => Target::File(HomePath::parse(&self.target)?),
-        };
         Ok(NewEntry {
-            target,
+            target: self.kind.target(&self.target)?,
             secret: self.secret,
             template: self.template,
+            executable: self.executable,
             apply_to_new: self.apply_to_new,
             value: self.value.bytes()?,
         })
     }
 }
 
-/// An entry's flags, and its value when given; without one, the value stays.
+/// What an entry becomes, its attachments and overrides kept, and its value when given;
+/// without one, the value stays.
 #[derive(Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "EntryChange")]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct EntryChangeDto {
+    kind: EntryKind,
+    target: String,
+    secret: bool,
     template: bool,
+    executable: bool,
     apply_to_new: bool,
     #[ts(optional)]
     value: Option<ValueInput>,
@@ -81,9 +99,12 @@ pub(crate) struct EntryChangeDto {
 impl EntryChangeDto {
     pub(crate) fn parse(self) -> Result<EntryChange> {
         Ok(EntryChange {
-            value: self.value.map(ValueInput::bytes).transpose()?,
+            target: self.kind.target(&self.target)?,
+            secret: self.secret,
             template: self.template,
+            executable: self.executable,
             apply_to_new: self.apply_to_new,
+            value: self.value.map(ValueInput::bytes).transpose()?,
         })
     }
 }
@@ -152,6 +173,7 @@ impl From<&StoredValue> for StoredValueDto {
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "EnvironmentEntry")]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct EntryDto {
     id: Uuid,
     kind: EntryKind,
@@ -161,21 +183,75 @@ pub(crate) struct EntryDto {
     /// For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
     /// the same sandbox.
     template: bool,
+    /// For a file: whether it is written executable.
+    executable: bool,
     /// Whether each new sandbox is attached to it.
     apply_to_new: bool,
     value: StoredValueDto,
     created_at: DateTime<Utc>,
-    /// The sandboxes it is attached to.
-    sandboxes: Vec<SandboxName>,
+    /// The sandboxes it is attached to, by name.
+    sandboxes: Vec<EntryUseDto>,
+    /// For a template: the variables its own value refers to.
+    references: Vec<VariableName>,
+    /// Whether an entry made earlier has the same target, as only entries made before targets
+    /// were unique can.
+    duplicate: bool,
+}
+
+/// An entry's attachment to one sandbox.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "EntryUse")]
+pub(crate) struct EntryUseDto {
+    sandbox: SandboxName,
+    /// Whether the sandbox has a value of its own in place of the entry's.
+    overridden: bool,
+    /// For a template: the variables it refers to there that are not attached to the sandbox,
+    /// which keep the sandbox from starting.
+    unresolved: Vec<VariableName>,
+}
+
+impl From<Use> for EntryUseDto {
+    fn from(attached: Use) -> Self {
+        Self {
+            sandbox: attached.sandbox,
+            overridden: attached.overridden,
+            unresolved: attached.unresolved.into_iter().collect(),
+        }
+    }
+}
+
+/// A template as one sandbox would get it at its next start, each secret variable masked.
+#[derive(Serialize, TS)]
+#[ts(rename = "TemplatePreview")]
+pub(crate) struct PreviewDto {
+    text: String,
+    /// The variables it refers to that are not attached to the sandbox, left as written.
+    unresolved: Vec<VariableName>,
+}
+
+impl From<Preview> for PreviewDto {
+    fn from(preview: Preview) -> Self {
+        Self {
+            text: preview.text,
+            unresolved: preview.unresolved.into_iter().collect(),
+        }
+    }
 }
 
 impl From<EntryView> for EntryDto {
     fn from(view: EntryView) -> Self {
-        let EntryView { entry, sandboxes } = view;
+        let EntryView {
+            entry,
+            sandboxes,
+            references,
+            duplicate,
+        } = view;
         let Entry {
             id,
             target,
             template,
+            executable,
             apply_to_new,
             value,
             created_at,
@@ -191,10 +267,13 @@ impl From<EntryView> for EntryDto {
             target,
             secret: entry.is_secret(),
             template: *template,
+            executable: *executable,
             apply_to_new: *apply_to_new,
             value: StoredValueDto::from(value),
             created_at: *created_at,
-            sandboxes,
+            sandboxes: sandboxes.into_iter().map(EntryUseDto::from).collect(),
+            references: references.into_iter().collect(),
+            duplicate,
         }
     }
 }

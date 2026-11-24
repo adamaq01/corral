@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { failureMessage } from '#lib/api/client.js';
 	import { environment } from '#lib/api/environment.js';
-	import type { EnvironmentEntry, ValueInput } from '#lib/api/generated/index.js';
+	import type { EntryChange, EnvironmentEntry, ValueInput } from '#lib/api/generated/index.js';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import SetValueDialog from '#lib/components/set-value-dialog.svelte';
@@ -15,7 +15,7 @@
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
-	import { where } from '#lib/environment.js';
+	import { settings, where } from '#lib/environment.js';
 	import { Remote } from '#lib/remote.svelte.js';
 
 	let { id }: { id: string } = $props();
@@ -27,14 +27,11 @@
 	let saving = $state(false);
 	let saved = $state<{ ok: boolean; message: string } | null>(null);
 
-	async function setFlags(current: EnvironmentEntry, change: Partial<EnvironmentEntry>) {
+	async function setFlags(current: EnvironmentEntry, change: Partial<EntryChange>) {
 		saving = true;
 		saved = null;
 		try {
-			const changed = await environment.change(id, {
-				template: change.template ?? current.template,
-				applyToNew: change.applyToNew ?? current.applyToNew
-			});
+			const changed = await environment.change(id, { ...settings(current), ...change });
 			entry.update(() => changed);
 			saved = { ok: true, message: 'Saved' };
 		} catch (failure) {
@@ -46,11 +43,7 @@
 	}
 
 	async function replace(current: EnvironmentEntry, value: ValueInput) {
-		const changed = await environment.change(id, {
-			template: current.template,
-			applyToNew: current.applyToNew,
-			value
-		});
+		const changed = await environment.change(id, { ...settings(current), value });
 		entry.update(() => changed);
 	}
 
@@ -204,7 +197,7 @@
 					<p class="text-sm text-muted-foreground">Attached to no sandbox.</p>
 				{:else}
 					<ul class="flex flex-wrap gap-2" aria-label="Attached to">
-						{#each current.sandboxes as sandbox (sandbox)}
+						{#each current.sandboxes.map((used) => used.sandbox) as sandbox (sandbox)}
 							<li>
 								<Button href="/sandboxes/{sandbox}" variant="outline" size="sm">{sandbox}</Button>
 							</li>

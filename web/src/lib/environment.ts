@@ -1,4 +1,9 @@
-import type { EnvironmentEntry, StoredValue, ValueInput } from '#lib/api/generated/index.js';
+import type {
+	EntryChange,
+	EnvironmentEntry,
+	StoredValue,
+	ValueInput
+} from '#lib/api/generated/index.js';
 
 const bytes = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 
@@ -32,6 +37,12 @@ export function summary(value: StoredValue): string {
 /** How the entry lands in a sandbox: `NAME` or `~/path`. */
 export function where(entry: EnvironmentEntry): string {
 	return entry.kind === 'variable' ? entry.target : `~/${entry.target}`;
+}
+
+/** A change that leaves the entry as it is, to spread a change over. */
+export function settings(entry: EnvironmentEntry): EntryChange {
+	const { kind, target, secret, template, executable, applyToNew } = entry;
+	return { kind, target, secret, template, executable, applyToNew };
 }
 
 /** The value a file input holds, as the API takes it. */

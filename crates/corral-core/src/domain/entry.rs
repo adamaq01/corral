@@ -22,6 +22,11 @@ pub enum Target {
 }
 
 impl Target {
+    #[must_use]
+    pub fn is_file(&self) -> bool {
+        matches!(self, Self::File(_))
+    }
+
     /// Whether two entries landing here could not both be attached to one sandbox: the same
     /// variable, or the same file or one inside the other.
     #[must_use]
@@ -52,9 +57,11 @@ pub struct Entry {
     /// For a file whose text is a template: each `{{ NAME }}` in it takes the value the variable
     /// `NAME` has in the sandbox.
     pub template: bool,
+    /// For a file: whether it is written executable.
+    pub executable: bool,
     /// Whether each new sandbox of the owner is attached to it.
     pub apply_to_new: bool,
-    /// Its value, which is secret or not for good: an override is kept the same way.
+    /// Its value. An override is kept as secret as the entry.
     pub value: StoredValue,
     pub created_at: DateTime<Utc>,
 }

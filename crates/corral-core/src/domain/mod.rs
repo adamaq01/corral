@@ -1,5 +1,8 @@
 macro_rules! validated_string {
     ($name:ident, $check:path) => {
+        validated_string!($name, $check, normalize = std::convert::identity);
+    };
+    ($name:ident, $check:path, normalize = $normalize:path) => {
         #[derive(
             Clone,
             Debug,
@@ -37,6 +40,7 @@ macro_rules! validated_string {
             type Error = crate::Error;
 
             fn try_from(value: String) -> crate::Result<Self> {
+                let value = $normalize(value);
                 $check(&value)?;
                 Ok(Self(value))
             }

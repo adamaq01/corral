@@ -10,17 +10,22 @@ use std::sync::Arc;
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretSlice};
 
-use compose::{Composed, amount, compose};
-pub use compose::{FILE_LIMIT, FILES_LIMIT, VARIABLES_LIMIT};
-use registry::Registry;
+use compose::{Composed, amount, compose, template_of, unresolved};
+pub use compose::{FILE_LIMIT, FILES_LIMIT, VARIABLE_LIMIT, VARIABLES_LIMIT};
+use registry::{Registry, Scope};
 
-use super::inside::{SANDBOX_FILE, SandboxLinks};
+use super::inside::SandboxLinks;
 use crate::domain::{
     Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxId, SandboxName,
     SandboxToken, SecretId, SecretRef, StoredValue, Target, Template, User, UserId, VariableName,
 };
 use crate::ports::{Boot, EnvironmentRepo, SandboxRepo, SecretStore};
 use crate::{Error, Result};
+
+/// The directory in the home where Corral keeps the sandbox's own files.
+const OWN_DIR: &str = ".config/corral";
+/// What a preview shows in place of a secret variable's value.
+const MASK: &str = "••••••••";
 
 /// Each user's variables and files, and the sandboxes they are attached to.
 #[derive(Clone)]
@@ -32,26 +37,47 @@ pub struct Environment {
 }
 
 /// An entry as its owner first gives it.
+#[allow(clippy::struct_excessive_bools)]
 pub struct NewEntry {
     pub target: Target,
     pub secret: bool,
     pub template: bool,
+    pub executable: bool,
     pub apply_to_new: bool,
     pub value: SecretSlice<u8>,
 }
 
-/// An entry's flags as its owner sets them, and its value unless `None`.
+/// What an entry becomes: its target, kind and flags as its owner sets them, and its value
+/// unless `None`. Its attachments and overrides stay.
+#[allow(clippy::struct_excessive_bools)]
 pub struct EntryChange {
-    pub value: Option<SecretSlice<u8>>,
+    pub target: Target,
+    pub secret: bool,
     pub template: bool,
+    pub executable: bool,
     pub apply_to_new: bool,
+    pub value: Option<SecretSlice<u8>>,
 }
 
 /// An entry with the sandboxes it is attached to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryView {
     pub entry: Entry,
-    pub sandboxes: Vec<SandboxName>,
+    pub sandboxes: Vec<Use>,
+    /// For a template: the variables its own value refers to.
+    pub references: BTreeSet<VariableName>,
+    /// Whether an entry made earlier has the same target, which only entries made before
+    /// targets were unique can have.
+    pub duplicate: bool,
+}
+
+/// An entry's attachment to one sandbox.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Use {
+    pub sandbox: SandboxName,
+    pub overridden: bool,
+    /// For a template: the variables it refers to there that are not attached to the sandbox.
+    pub unresolved: BTreeSet<VariableName>,
 }
 
 /// An entry attached to a sandbox, with any value it has there in place of its own.
@@ -59,6 +85,21 @@ pub struct EntryView {
 pub struct Attached {
     pub view: EntryView,
     pub overriding: Option<StoredValue>,
+}
+
+/// A template as one sandbox would get it, with each secret variable masked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preview {
+    pub text: String,
+    /// The variables it refers to that are not attached to the sandbox, left as written.
+    pub unresolved: BTreeSet<VariableName>,
+}
+
+/// Where a change lands: some of the owner's sandboxes, and new sandboxes.
+#[derive(Default)]
+struct Reach {
+    sandboxes: BTreeSet<SandboxId>,
+    new: bool,
 }
 
 impl Environment {
@@ -79,41 +120,26 @@ impl Environment {
 
     pub async fn list(&self, owner: &User) -> Result<Vec<EntryView>> {
         let registry = self.registry(owner.id).await?;
-        let sandboxes = self.sandboxes.list(owner.id).await?;
-        Ok(registry
-            .entries
-            .iter()
-            .map(|entry| view(&registry, &sandboxes, entry))
-            .collect())
+        self.views(owner.id, &registry, registry.entries.iter().map(|e| e.id))
+            .await
     }
 
     pub async fn get(&self, owner: &User, id: EntryId) -> Result<EntryView> {
         let registry = self.registry(owner.id).await?;
-        let sandboxes = self.sandboxes.list(owner.id).await?;
-        Ok(view(&registry, &sandboxes, registry.entry(id)?))
+        self.view(owner.id, &registry, id).await
     }
 
     /// Attached to no sandbox yet: with `apply_to_new`, to each one created from now on.
     pub async fn create(&self, owner: &User, new: NewEntry) -> Result<EntryView> {
-        check_value(&new.target, new.template, &new.value)?;
-        if let Target::File(path) = &new.target
-            && path.overlaps(&own_path())
-        {
-            return Err(Error::Invalid(format!(
-                "{path} is where Corral writes the sandbox's own settings, {SANDBOX_FILE}"
-            )));
-        }
         let registry = self.registry(owner.id).await?;
-        if new.template {
-            known_in_registry(&registry, &new.target, &new.value)?;
-        }
-        if new.apply_to_new {
-            registry.check_applies_to_new(&new.target, None)?;
-        }
+        check_target(&registry, &new.target, None)?;
+        check_shape(&new.target, new.template, new.executable)?;
+        check_content(&new.target, new.template, new.value.expose_secret())?;
         let entry = Entry {
             id: EntryId::generate(),
             owner: owner.id,
             template: new.template,
+            executable: new.executable,
             apply_to_new: new.apply_to_new,
             value: self
                 .keep(owner.id, &new.target, new.secret, &new.value)
@@ -121,16 +147,24 @@ impl Environment {
             target: new.target,
             created_at: Utc::now(),
         };
-        self.settle(owner.id, &entry.value, self.repo.insert(&entry))
-            .await?;
-        Ok(EntryView {
-            entry,
-            sandboxes: Vec::new(),
+        let mut proposed = registry.clone();
+        proposed.put_entry(entry.clone());
+        let reach = Reach {
+            new: entry.apply_to_new,
+            ..Reach::default()
+        };
+        self.settle(owner.id, [&entry.value], async {
+            self.validate(owner.id, &registry, &proposed, &reach)
+                .await?;
+            self.repo.insert(&entry).await
         })
+        .await?;
+        self.view(owner.id, &proposed, entry.id).await
     }
 
-    /// A new value reaches each sandbox attached without an override at its next start, and a
-    /// new template flag each one attached.
+    /// Changes the entry in place. Each sandbox attached to it, and new sandboxes when it
+    /// applies to them, must still start; each override must suit what the entry becomes, and
+    /// moves to or from the secret store with it.
     pub async fn change(
         &self,
         owner: &User,
@@ -139,89 +173,123 @@ impl Environment {
     ) -> Result<EntryView> {
         let registry = self.registry(owner.id).await?;
         let before = registry.entry(id)?.clone();
-        let content = match &change.value {
-            Some(value) => {
-                check_value(&before.target, change.template, value)?;
-                Some(SecretSlice::from(value.expose_secret().to_vec()))
-            }
-            None if change.template && !before.template => {
-                let current = self.content(owner.id, &before.value).await?;
-                check_value(&before.target, true, &current)?;
-                Some(current)
-            }
-            None => None,
+        check_target(&registry, &change.target, Some(id))?;
+        check_shape(&change.target, change.template, change.executable)?;
+        let shift = Shift {
+            kind: change.target.is_file() != before.target.is_file(),
+            secrecy: change.secret != before.is_secret(),
+            template: change.template && !before.template,
         };
-        if change.template
-            && let Some(content) = &content
-        {
-            known_in_registry(&registry, &before.target, content)?;
+        let mut rekept = Rekept::default();
+        let refitted = async {
+            let own = match &change.value {
+                Some(value) => {
+                    check_content(&change.target, change.template, value.expose_secret())?;
+                    let kept = self
+                        .keep(owner.id, &change.target, change.secret, value)
+                        .await?;
+                    rekept.record(&kept, &before.value);
+                    kept
+                }
+                None => self
+                    .refit(owner.id, &change, &shift, &before.value, &mut rekept)
+                    .await?
+                    .unwrap_or_else(|| before.value.clone()),
+            };
+            let overrides = self
+                .refit_overrides(owner.id, &registry, id, &change, &shift, &mut rekept)
+                .await?;
+            Ok((own, overrides))
         }
-        if change.apply_to_new && !before.apply_to_new {
-            registry.check_applies_to_new(&before.target, Some(id))?;
-        }
-        let mut after = Entry {
+        .await;
+        let (own, overrides) = match refitted {
+            Ok(refitted) => refitted,
+            Err(error) => {
+                self.forget_all(owner.id, rekept.kept.iter().map(StoredValue::secret_id))
+                    .await;
+                return Err(error);
+            }
+        };
+
+        let after = Entry {
+            target: change.target,
             template: change.template,
+            executable: change.executable,
             apply_to_new: change.apply_to_new,
+            value: own,
             ..before.clone()
         };
-        if let Some(value) = &change.value {
-            after.value = self
-                .keep(owner.id, &before.target, before.is_secret(), value)
-                .await?;
+        let mut proposed = registry.clone();
+        proposed.put_entry(after.clone());
+        for attachment in &overrides {
+            proposed.put_attachment(attachment.clone());
         }
-        let affected: Vec<SandboxId> = registry
+        let lands = after.target != before.target
+            || after.template != before.template
+            || after.executable != before.executable
+            || shift.secrecy;
+        let affected: BTreeSet<SandboxId> = registry
             .attachments_of(id)
             .filter(|attachment| {
-                after.template != before.template
-                    || (change.value.is_some() && attachment.overriding.is_none())
+                lands || (change.value.is_some() && attachment.overriding.is_none())
             })
             .map(|attachment| attachment.sandbox.clone())
             .collect();
-        let mut proposed = registry.clone();
-        proposed.put_entry(after.clone());
-        self.settle(owner.id, &after.value, async {
-            self.validate(owner.id, &proposed, &affected, id).await?;
-            if self.repo.update(&after).await? {
+        let reach = Reach {
+            sandboxes: affected.clone(),
+            new: before.apply_to_new || after.apply_to_new,
+        };
+        self.settle(owner.id, &rekept.kept, async {
+            self.validate(owner.id, &registry, &proposed, &reach)
+                .await?;
+            if self.repo.update(&after, &overrides).await? {
                 Ok(())
             } else {
                 Err(Error::NotFound(format!("environment entry {}", id.0)))
             }
         })
         .await?;
-        if change.value.is_some() {
-            self.forget(owner.id, before.value.secret_id()).await;
-        }
+        self.forget_all(owner.id, rekept.gone).await;
         self.changed(&affected).await?;
-        let sandboxes = self.sandboxes.list(owner.id).await?;
-        Ok(view(&proposed, &sandboxes, &after))
+        self.view(owner.id, &proposed, id).await
     }
 
-    /// Detaches the entry from every sandbox, which loses it at its next start.
+    /// Detaches the entry from every sandbox, which loses it at its next start. Refused while a
+    /// template that stays would refer to it.
     pub async fn delete(&self, owner: &User, id: EntryId) -> Result<()> {
         let registry = self.registry(owner.id).await?;
-        let entry = registry.entry(id)?;
-        let attachments: Vec<&Attachment> = registry.attachments_of(id).collect();
+        let entry = registry.entry(id)?.clone();
+        let attachments: Vec<Attachment> = registry.attachments_of(id).cloned().collect();
+        let mut proposed = registry.clone();
+        proposed.remove_entry(id);
+        let reach = Reach {
+            sandboxes: attachments.iter().map(|a| a.sandbox.clone()).collect(),
+            new: entry.apply_to_new,
+        };
+        self.validate(owner.id, &registry, &proposed, &reach)
+            .await?;
         if !self.repo.delete(owner.id, id).await? {
             return Err(Error::NotFound(format!("environment entry {}", id.0)));
         }
         self.forget(owner.id, entry.value.secret_id()).await;
-        for attachment in &attachments {
-            self.forget(owner.id, overriding_secret(attachment)).await;
-        }
-        let sandboxes: Vec<SandboxId> = attachments.iter().map(|a| a.sandbox.clone()).collect();
-        self.changed(&sandboxes).await
+        self.forget_all(owner.id, attachments.iter().map(overriding_secret))
+            .await;
+        self.changed(&reach.sandboxes).await
     }
 
     /// The entries attached to the owner's sandbox `name`.
     pub async fn of_sandbox(&self, owner: &User, name: &SandboxName) -> Result<Vec<Attached>> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
-        let sandboxes = self.sandboxes.list(owner.id).await?;
-        Ok(registry
-            .attached(&sandbox.id)
+        let attached = registry.attached(&sandbox.id);
+        let views = self
+            .views(owner.id, &registry, attached.iter().map(|(e, _)| e.id))
+            .await?;
+        Ok(views
             .into_iter()
-            .map(|(entry, attachment)| Attached {
-                view: view(&registry, &sandboxes, entry),
+            .zip(attached)
+            .map(|(view, (_, attachment))| Attached {
+                view,
                 overriding: attachment.overriding.clone(),
             })
             .collect())
@@ -240,22 +308,25 @@ impl Environment {
             entry: id,
             overriding: None,
         };
-        let mut proposed = registry;
+        let mut proposed = registry.clone();
         proposed.put_attachment(attachment.clone());
-        self.validate(owner.id, &proposed, std::slice::from_ref(&sandbox.id), id)
+        self.validate(owner.id, &registry, &proposed, &Reach::of(&sandbox))
             .await?;
         self.repo.attach(&attachment).await?;
         self.changed(&[sandbox.id]).await
     }
 
-    /// A template file attached to the sandbox that names the entry's variable then fails the
-    /// sandbox's next start, which reports it.
+    /// Refused while a template attached to the sandbox would refer to it.
     pub async fn detach(&self, owner: &User, name: &SandboxName, id: EntryId) -> Result<()> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
-        let attachment = attached(&registry, &sandbox, id)?;
+        let attachment = attached(&registry, &sandbox, id)?.clone();
+        let mut proposed = registry.clone();
+        proposed.remove_attachment(&sandbox.id, id);
+        self.validate(owner.id, &registry, &proposed, &Reach::of(&sandbox))
+            .await?;
         self.repo.detach(&sandbox.id, id).await?;
-        self.forget(owner.id, overriding_secret(attachment)).await;
+        self.forget(owner.id, overriding_secret(&attachment)).await;
         self.changed(&[sandbox.id]).await
     }
 
@@ -277,7 +348,7 @@ impl Environment {
         }
         let overriding = match &value {
             Some(value) => {
-                check_value(&entry.target, entry.template, value)?;
+                check_content(&entry.target, entry.template, value.expose_secret())?;
                 Some(
                     self.keep(owner.id, &entry.target, entry.is_secret(), value)
                         .await?,
@@ -291,27 +362,74 @@ impl Environment {
         };
         let mut proposed = registry.clone();
         proposed.put_attachment(after.clone());
-        let work = async {
-            self.validate(owner.id, &proposed, std::slice::from_ref(&sandbox.id), id)
+        self.settle(owner.id, after.overriding.iter(), async {
+            self.validate(owner.id, &registry, &proposed, &Reach::of(&sandbox))
                 .await?;
             self.repo.attach(&after).await
-        };
-        match &after.overriding {
-            Some(value) => self.settle(owner.id, value, work).await?,
-            None => work.await?,
-        }
+        })
+        .await?;
         self.forget(owner.id, overriding_secret(&before)).await;
         self.changed(&[sandbox.id]).await
+    }
+
+    /// The attached template as the sandbox would get it at a start, each secret variable it
+    /// takes masked. A secret template is never shown.
+    pub async fn preview(&self, owner: &User, name: &SandboxName, id: EntryId) -> Result<Preview> {
+        let sandbox = self.sandbox(owner, name).await?;
+        let registry = self.registry(owner.id).await?;
+        let entry = registry.entry(id)?;
+        let attachment = attached(&registry, &sandbox, id)?;
+        let value = attachment.overriding.as_ref().unwrap_or(&entry.value);
+        let text = match (&entry.target, &value.kept) {
+            (Target::File(_), Kept::Plain(text)) if entry.template => {
+                String::from_utf8_lossy(text).into_owned()
+            }
+            _ => {
+                return Err(Error::Invalid(format!(
+                    "only a template that is not secret has a preview, and {} is not one",
+                    entry.target
+                )));
+            }
+        };
+        let variables: BTreeMap<&VariableName, &StoredValue> = registry
+            .effective(Scope::Sandbox(&sandbox.id))
+            .into_iter()
+            .filter_map(|(entry, value)| match &entry.target {
+                Target::Variable(name) => Some((name, value)),
+                Target::File(_) => None,
+            })
+            .collect();
+        let mut unresolved = BTreeSet::new();
+        let text = Template::parse(&text).render_with(|name| match variables.get(name) {
+            Some(StoredValue {
+                kept: Kept::Plain(value),
+                ..
+            }) => String::from_utf8_lossy(value).into_owned(),
+            Some(_) => MASK.to_owned(),
+            None => {
+                unresolved.insert(name.clone());
+                format!("{{{{ {name} }}}}")
+            }
+        });
+        Ok(Preview { text, unresolved })
     }
 
     /// What the sandbox gets at a start that issues it `token`. Refuses when a template file
     /// attached to it names a variable that is not.
     pub(super) async fn boot(&self, sandbox: &Sandbox, token: &SandboxToken) -> Result<Boot> {
         let registry = self.registry(sandbox.owner).await?;
-        let composed = self.compose(&registry, sandbox, token).await?;
+        let composed = self
+            .compose(
+                sandbox.owner,
+                &registry,
+                Scope::Sandbox(&sandbox.id),
+                &sandbox.name,
+                token,
+            )
+            .await?;
         if let Some((path, names)) = composed.unknown.first_key_value() {
             return Err(Error::Invalid(format!(
-                "sandbox {} cannot start: template {path} refers to {}, not attached to it",
+                "sandbox {} cannot start: template ~/{path} refers to {}, not attached to it",
                 sandbox.name,
                 listed(names)
             )));
@@ -319,18 +437,34 @@ impl Environment {
         Ok(composed.boot)
     }
 
-    /// Attaches a new sandbox to each entry that applies to new sandboxes.
+    /// Attaches a new sandbox to each entry that applies to new sandboxes, refusing what would
+    /// keep it from starting.
     pub(super) async fn attach_new(&self, sandbox: &Sandbox) -> Result<()> {
-        for entry in self.repo.entries(sandbox.owner).await? {
-            if entry.apply_to_new {
-                self.repo
-                    .attach(&Attachment {
-                        sandbox: sandbox.id.clone(),
-                        entry: entry.id,
-                        overriding: None,
-                    })
-                    .await?;
-            }
+        let registry = self.registry(sandbox.owner).await?;
+        let composed = self
+            .compose(
+                sandbox.owner,
+                &registry,
+                Scope::New,
+                &sandbox.name,
+                &SandboxToken::generate()?,
+            )
+            .await?;
+        if let Some((path, names)) = composed.unknown.first_key_value() {
+            return Err(Error::Invalid(format!(
+                "template ~/{path} applies to new sandboxes but refers to {}, which {} not",
+                listed(names),
+                if names.len() == 1 { "does" } else { "do" }
+            )));
+        }
+        for (entry, _) in registry.effective(Scope::New) {
+            self.repo
+                .attach(&Attachment {
+                    sandbox: sandbox.id.clone(),
+                    entry: entry.id,
+                    overriding: None,
+                })
+                .await?;
         }
         Ok(())
     }
@@ -368,59 +502,254 @@ impl Environment {
             .ok_or_else(|| Error::NotFound(format!("sandbox {name}")))
     }
 
+    async fn sandbox_names(&self, owner: UserId) -> Result<BTreeMap<SandboxId, SandboxName>> {
+        Ok(self
+            .sandboxes
+            .list(owner)
+            .await?
+            .into_iter()
+            .map(|sandbox| (sandbox.id, sandbox.name))
+            .collect())
+    }
+
+    async fn view(&self, owner: UserId, registry: &Registry, id: EntryId) -> Result<EntryView> {
+        self.views(owner, registry, [id])
+            .await?
+            .pop()
+            .ok_or_else(|| Error::NotFound(format!("environment entry {}", id.0)))
+    }
+
+    /// The views of `ids`, in their order. Templates read their secret values to tell what they
+    /// refer to.
+    async fn views(
+        &self,
+        owner: UserId,
+        registry: &Registry,
+        ids: impl IntoIterator<Item = EntryId>,
+    ) -> Result<Vec<EntryView>> {
+        let ids: Vec<EntryId> = ids.into_iter().collect();
+        let names = self.sandbox_names(owner).await?;
+        let templates = registry.entries.iter().filter(|entry| entry.template);
+        let wanted = secret_ids(templates.flat_map(|entry| {
+            std::iter::once(&entry.value).chain(
+                registry
+                    .attachments_of(entry.id)
+                    .filter_map(|a| a.overriding.as_ref()),
+            )
+        }));
+        let secrets = self.secrets_of(owner, wanted).await?;
+        let mut unresolved_in = BTreeMap::new();
+        ids.into_iter()
+            .map(|id| {
+                let entry = registry.entry(id)?;
+                let path = match &entry.target {
+                    Target::File(path) if entry.template => Some(path),
+                    _ => None,
+                };
+                let mut sandboxes: Vec<Use> = registry
+                    .attachments_of(id)
+                    .filter_map(|attachment| {
+                        let sandbox = names.get(&attachment.sandbox)?;
+                        let missing = match path {
+                            Some(path) => unresolved_in
+                                .entry(attachment.sandbox.clone())
+                                .or_insert_with(|| {
+                                    unresolved(
+                                        &registry.effective(Scope::Sandbox(&attachment.sandbox)),
+                                        &secrets,
+                                    )
+                                })
+                                .get(path)
+                                .cloned()
+                                .unwrap_or_default(),
+                            None => BTreeSet::new(),
+                        };
+                        Some(Use {
+                            sandbox: sandbox.clone(),
+                            overridden: attachment.overriding.is_some(),
+                            unresolved: missing,
+                        })
+                    })
+                    .collect();
+                sandboxes.sort_by(|a, b| a.sandbox.cmp(&b.sandbox));
+                Ok(EntryView {
+                    references: match path {
+                        Some(_) => template_of(&entry.value, &secrets)
+                            .names()
+                            .into_iter()
+                            .cloned()
+                            .collect(),
+                        None => BTreeSet::new(),
+                    },
+                    duplicate: registry.is_duplicate(entry),
+                    entry: entry.clone(),
+                    sandboxes,
+                })
+            })
+            .collect()
+    }
+
     async fn compose(
         &self,
+        owner: UserId,
         registry: &Registry,
-        sandbox: &Sandbox,
+        scope: Scope<'_>,
+        name: &SandboxName,
         token: &SandboxToken,
     ) -> Result<Composed> {
-        let effective = registry.effective(&sandbox.id);
-        let ids: Vec<SecretId> = effective
-            .iter()
-            .filter_map(|(_, value)| value.secret_id())
-            .collect();
-        let secrets = if ids.is_empty() {
-            BTreeMap::default()
-        } else {
-            self.secrets.get(sandbox.owner, &ids).await?
-        };
+        let ids = secret_ids(registry.effective(scope).into_iter().map(|(_, v)| v));
+        let secrets = self.secrets_of(owner, ids).await?;
+        let effective = registry.effective(scope);
         compose(
-            &sandbox.name,
+            &whose(scope, name),
             &effective,
             &secrets,
-            self.links.sandbox_file(sandbox, token),
+            self.links.sandbox_file(name, token),
         )
     }
 
-    /// Refuses a change that would leave one of `sandboxes` with colliding entries, beyond a
-    /// limit, or with the entry `saved`, a template, naming a variable not attached to it.
+    /// Refuses a change that would leave a sandbox it reaches, or new sandboxes, with colliding
+    /// entries, beyond a limit, or with a template referring to a variable they do not get,
+    /// which the current state did not already do.
     async fn validate(
         &self,
         owner: UserId,
+        current: &Registry,
         proposed: &Registry,
-        sandboxes: &[SandboxId],
-        saved: EntryId,
+        reach: &Reach,
     ) -> Result<()> {
-        if sandboxes.is_empty() {
+        if reach.sandboxes.is_empty() && !reach.new {
             return Ok(());
         }
         // The token a start would issue is as long as any other, so the files it sizes are too.
         let token = SandboxToken::generate()?;
-        let theirs = self.sandboxes.list(owner).await?;
-        let target = &proposed.entry(saved)?.target;
-        for sandbox in theirs.iter().filter(|s| sandboxes.contains(&s.id)) {
-            let composed = self.compose(proposed, sandbox, &token).await?;
-            if let Target::File(path) = target
-                && let Some(names) = composed.unknown.get(path)
-            {
-                return Err(Error::Invalid(format!(
-                    "template {path} refers to {}, not attached to sandbox {}",
-                    listed(names),
-                    sandbox.name
-                )));
+        let names = self.sandbox_names(owner).await?;
+        let longest = SandboxName::parse(&"x".repeat(32)).expect("a valid sandbox name");
+        let mut scopes: Vec<(Scope<'_>, &SandboxName)> = reach
+            .sandboxes
+            .iter()
+            .filter_map(|id| Some((Scope::Sandbox(id), names.get(id)?)))
+            .collect();
+        if reach.new {
+            scopes.push((Scope::New, &longest));
+        }
+        let ids = secret_ids(scopes.iter().flat_map(|(scope, _)| {
+            current
+                .effective(*scope)
+                .into_iter()
+                .chain(proposed.effective(*scope))
+                .map(|(_, value)| value)
+        }));
+        let secrets = self.secrets_of(owner, ids).await?;
+        for (scope, name) in scopes {
+            let composed = compose(
+                &whose(scope, name),
+                &proposed.effective(scope),
+                &secrets,
+                self.links.sandbox_file(name, &token),
+            )?;
+            let before = unresolved(&current.effective(scope), &secrets);
+            for (path, names) in composed.unknown {
+                let new: BTreeSet<VariableName> = names
+                    .into_iter()
+                    .filter(|name| !before.get(&path).is_some_and(|old| old.contains(name)))
+                    .collect();
+                if new.is_empty() {
+                    continue;
+                }
+                let names = listed(&new);
+                return Err(Error::Invalid(match scope {
+                    Scope::Sandbox(_) => format!(
+                        "sandbox {name} could not start: template ~/{path} would refer to \
+                         {names}, not attached to it"
+                    ),
+                    Scope::New => format!(
+                        "new sandboxes could not start: template ~/{path} applies to them and \
+                         would refer to {names}, which would not"
+                    ),
+                }));
             }
         }
         Ok(())
+    }
+
+    /// The value as the changed entry keeps it, checked against what the entry becomes: kept
+    /// anew when it changes kind or secrecy, or `None` when it stays as it is.
+    async fn refit(
+        &self,
+        owner: UserId,
+        change: &EntryChange,
+        shift: &Shift,
+        value: &StoredValue,
+        rekept: &mut Rekept,
+    ) -> Result<Option<StoredValue>> {
+        if !(shift.kind || shift.secrecy || shift.template) {
+            check_size(&change.target, value.size())?;
+            return Ok(None);
+        }
+        let content = self.content(owner, value).await?;
+        check_content(&change.target, change.template, &content)?;
+        if !(shift.kind || shift.secrecy) {
+            return Ok(None);
+        }
+        let kept = self
+            .keep(
+                owner,
+                &change.target,
+                change.secret,
+                &SecretSlice::from(content),
+            )
+            .await?;
+        rekept.record(&kept, value);
+        Ok(Some(kept))
+    }
+
+    /// The overrides of the entry `id` as [`Self::refit`] keeps them, each that changes.
+    async fn refit_overrides(
+        &self,
+        owner: UserId,
+        registry: &Registry,
+        id: EntryId,
+        change: &EntryChange,
+        shift: &Shift,
+        rekept: &mut Rekept,
+    ) -> Result<Vec<Attachment>> {
+        let names = self.sandbox_names(owner).await?;
+        let mut overrides = Vec::new();
+        for attachment in registry.attachments_of(id) {
+            let Some(overriding) = &attachment.overriding else {
+                continue;
+            };
+            let sandbox = names.get(&attachment.sandbox).map_or("", |n| n.as_str());
+            let refitted = self
+                .refit(owner, change, shift, overriding, rekept)
+                .await
+                .map_err(|error| {
+                    reworded(error, |problem| {
+                        format!("the override in sandbox {sandbox} does not suit it: {problem}")
+                    })
+                })?;
+            if let Some(value) = refitted {
+                overrides.push(Attachment {
+                    overriding: Some(value),
+                    ..attachment.clone()
+                });
+            }
+        }
+        Ok(overrides)
+    }
+
+    /// The values the store holds for `ids`.
+    async fn secrets_of(
+        &self,
+        owner: UserId,
+        ids: BTreeSet<SecretId>,
+    ) -> Result<BTreeMap<SecretId, SecretSlice<u8>>> {
+        if ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let ids: Vec<SecretId> = ids.into_iter().collect();
+        self.secrets.get(owner, &ids).await
     }
 
     async fn keep(
@@ -451,16 +780,17 @@ impl Environment {
         })
     }
 
-    /// Runs `work`, removing the secret `kept` holds when it fails.
-    async fn settle<T>(
+    /// Runs `work`, removing the secrets `kept` holds when it fails.
+    async fn settle<'a, T>(
         &self,
         owner: UserId,
-        kept: &StoredValue,
+        kept: impl IntoIterator<Item = &'a StoredValue>,
         work: impl Future<Output = Result<T>>,
     ) -> Result<T> {
         let done = work.await;
         if done.is_err() {
-            self.forget(owner, kept.secret_id()).await;
+            self.forget_all(owner, kept.into_iter().map(StoredValue::secret_id))
+                .await;
         }
         done
     }
@@ -472,41 +802,81 @@ impl Environment {
         }
     }
 
-    async fn content(&self, owner: UserId, value: &StoredValue) -> Result<SecretSlice<u8>> {
+    async fn forget_all(&self, owner: UserId, ids: impl IntoIterator<Item = Option<SecretId>>) {
+        for id in ids {
+            self.forget(owner, id).await;
+        }
+    }
+
+    async fn content(&self, owner: UserId, value: &StoredValue) -> Result<Vec<u8>> {
         match &value.kept {
-            Kept::Plain(content) => Ok(SecretSlice::from(content.clone())),
+            Kept::Plain(content) => Ok(content.clone()),
             Kept::Secret(secret) => self
                 .secrets
                 .get(owner, &[secret.id])
                 .await?
                 .remove(&secret.id)
+                .map(|value| value.expose_secret().to_vec())
                 .ok_or_else(|| Error::internal("environment", "a secret value is missing")),
         }
     }
 
     // Recorded after the write, so a start that loaded the earlier values began before it.
-    async fn changed(&self, sandboxes: &[SandboxId]) -> Result<()> {
+    async fn changed<'a>(&self, sandboxes: impl IntoIterator<Item = &'a SandboxId>) -> Result<()> {
+        let sandboxes: Vec<SandboxId> = sandboxes.into_iter().cloned().collect();
         if sandboxes.is_empty() {
             return Ok(());
         }
         self.sandboxes
-            .record_environment_change(sandboxes, Utc::now())
+            .record_environment_change(&sandboxes, Utc::now())
             .await
     }
 }
 
-fn view(registry: &Registry, sandboxes: &[Sandbox], entry: &Entry) -> EntryView {
-    let attached: BTreeSet<&SandboxId> = registry
-        .attachments_of(entry.id)
-        .map(|attachment| &attachment.sandbox)
-        .collect();
-    EntryView {
-        entry: entry.clone(),
-        sandboxes: sandboxes
-            .iter()
-            .filter(|sandbox| attached.contains(&sandbox.id))
-            .map(|sandbox| sandbox.name.clone())
-            .collect(),
+/// What a change does to an entry beyond its target and value.
+struct Shift {
+    /// From a variable to a file, or back.
+    kind: bool,
+    /// To or from the secret store.
+    secrecy: bool,
+    /// Into a template.
+    template: bool,
+}
+
+/// The values a change keeps anew, and the secrets it then leaves behind.
+#[derive(Default)]
+struct Rekept {
+    kept: Vec<StoredValue>,
+    gone: Vec<Option<SecretId>>,
+}
+
+impl Rekept {
+    fn record(&mut self, kept: &StoredValue, replaced: &StoredValue) {
+        self.kept.push(kept.clone());
+        self.gone.push(replaced.secret_id());
+    }
+}
+
+impl Reach {
+    fn of(sandbox: &Sandbox) -> Self {
+        Self {
+            sandboxes: BTreeSet::from([sandbox.id.clone()]),
+            new: false,
+        }
+    }
+}
+
+fn secret_ids<'a>(values: impl IntoIterator<Item = &'a StoredValue>) -> BTreeSet<SecretId> {
+    values
+        .into_iter()
+        .filter_map(StoredValue::secret_id)
+        .collect()
+}
+
+fn whose(scope: Scope<'_>, name: &SandboxName) -> String {
+    match scope {
+        Scope::Sandbox(_) => format!("sandbox {name}"),
+        Scope::New => "new sandboxes".to_owned(),
     }
 }
 
@@ -527,21 +897,75 @@ fn overriding_secret(attachment: &Attachment) -> Option<SecretId> {
         .and_then(StoredValue::secret_id)
 }
 
-fn own_path() -> HomePath {
-    HomePath::parse(SANDBOX_FILE).expect("a valid home path")
+/// Refuses a target Corral keeps for itself, and one another entry of the owner already has.
+fn check_target(registry: &Registry, target: &Target, except: Option<EntryId>) -> Result<()> {
+    if let Target::File(path) = target
+        && path.overlaps(&HomePath::parse(OWN_DIR).expect("a valid home path"))
+    {
+        return Err(Error::Invalid(format!(
+            "~/{path} is where Corral keeps the sandbox's own files, in ~/{OWN_DIR}"
+        )));
+    }
+    if registry
+        .entries
+        .iter()
+        .any(|entry| Some(entry.id) != except && entry.target == *target)
+    {
+        return Err(Error::Conflict(format!(
+            "you already have {target}; to give one sandbox another value, override it there"
+        )));
+    }
+    Ok(())
 }
 
-/// Refuses a value its target cannot take: a variable takes one line of text, a file at most
-/// [`FILE_LIMIT`], and only a text file can be a template.
-fn check_value(target: &Target, template: bool, value: &SecretSlice<u8>) -> Result<()> {
-    let bytes = value.expose_secret();
+/// Refuses flags only a file takes on a variable.
+fn check_shape(target: &Target, template: bool, executable: bool) -> Result<()> {
+    if let Target::Variable(name) = target {
+        if template {
+            return Err(Error::Invalid(format!(
+                "variable {name} cannot be a template; only a file can"
+            )));
+        }
+        if executable {
+            return Err(Error::Invalid(format!(
+                "variable {name} cannot be executable; only a file can"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a value larger than its target takes: a variable [`VARIABLE_LIMIT`], a file
+/// [`FILE_LIMIT`].
+fn check_size(target: &Target, size: usize) -> Result<()> {
     match target {
         Target::Variable(name) => {
-            if template {
-                return Err(Error::Invalid(format!(
-                    "variable {name} cannot be a template; only a file can"
+            if name.as_str().len() + size + 2 > VARIABLE_LIMIT {
+                return Err(Error::LimitReached(format!(
+                    "variable {name} takes {size} bytes, more than the {} one variable may take \
+                     with its name; make it a file",
+                    amount(VARIABLE_LIMIT)
                 )));
             }
+        }
+        Target::File(path) => {
+            if size > FILE_LIMIT {
+                return Err(Error::LimitReached(format!(
+                    "file ~/{path} is {size} bytes, more than the {} a file may hold",
+                    amount(FILE_LIMIT)
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a value its target cannot take: a variable takes one line of text, and a template
+/// text.
+fn check_content(target: &Target, template: bool, bytes: &[u8]) -> Result<()> {
+    check_size(target, bytes.len())?;
+    match target {
+        Target::Variable(name) => {
             let one_line =
                 std::str::from_utf8(bytes).is_ok_and(|text| !text.contains(['\n', '\r', '\0']));
             if !one_line {
@@ -550,59 +974,24 @@ fn check_value(target: &Target, template: bool, value: &SecretSlice<u8>) -> Resu
                      base64-encode other values, or make them a file"
                 )));
             }
-            if name.as_str().len() + bytes.len() > VARIABLES_LIMIT {
-                return Err(Error::LimitReached(format!(
-                    "variable {name} takes more than the {} a sandbox's variables may take",
-                    amount(VARIABLES_LIMIT)
-                )));
-            }
         }
         Target::File(path) => {
-            if bytes.len() > FILE_LIMIT {
-                return Err(Error::LimitReached(format!(
-                    "file {path} is {} bytes, more than the {} a file may hold",
-                    bytes.len(),
-                    amount(FILE_LIMIT)
+            if template && std::str::from_utf8(bytes).is_err() {
+                return Err(Error::Invalid(format!(
+                    "template ~/{path} must be text, in UTF-8"
                 )));
-            }
-            if template {
-                let text = std::str::from_utf8(bytes).map_err(|_| {
-                    Error::Invalid(format!("template {path} must be text, in UTF-8"))
-                })?;
-                Template::parse(text).map_err(|error| match error {
-                    Error::Invalid(problem) => {
-                        Error::Invalid(format!("template {path}: {problem}"))
-                    }
-                    other => other,
-                })?;
             }
         }
     }
     Ok(())
 }
 
-/// Refuses a template naming anything but one of the owner's variables.
-fn known_in_registry(
-    registry: &Registry,
-    target: &Target,
-    content: &SecretSlice<u8>,
-) -> Result<()> {
-    let text = String::from_utf8_lossy(content.expose_secret());
-    let template = Template::parse(&text)?;
-    let variables = registry.variables();
-    let unknown: BTreeSet<VariableName> = template
-        .names()
-        .into_iter()
-        .filter(|name| !variables.contains(name))
-        .cloned()
-        .collect();
-    if unknown.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::Invalid(format!(
-            "{target} refers to {}, not among your variables",
-            listed(&unknown)
-        )))
+/// The error with its message rewritten by `with`.
+fn reworded(error: Error, with: impl FnOnce(String) -> String) -> Error {
+    match error {
+        Error::Invalid(problem) => Error::Invalid(with(problem)),
+        Error::LimitReached(problem) => Error::LimitReached(with(problem)),
+        other => other,
     }
 }
 

@@ -532,6 +532,10 @@ const API_ROUTES: &[(&str, &str)] = &[
         "DELETE",
         "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000/override",
     ),
+    (
+        "GET",
+        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000/preview",
+    ),
 ];
 
 const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
@@ -788,7 +792,15 @@ async fn a_running_sandbox_is_stale_from_an_environment_change_until_it_restarts
         .call(
             "PUT",
             &format!("/api/environment/{}", created["id"].as_str().unwrap()),
-            Some(json!({ "template": false, "applyToNew": true, "value": { "text": "ghp_2" } })),
+            Some(json!({
+                "kind": "variable",
+                "target": "GH_TOKEN",
+                "secret": false,
+                "template": false,
+                "executable": false,
+                "applyToNew": true,
+                "value": { "text": "ghp_2" },
+            })),
         )
         .await;
     assert_eq!(changed.status, StatusCode::OK, "{}", changed.text());
@@ -987,7 +999,12 @@ async fn entries_their_target_cannot_take_are_refused_with_the_reason() {
         (
             variable("GH_TOKEN", "again", false),
             StatusCode::CONFLICT,
-            "applies to new sandboxes",
+            "you already have variable GH_TOKEN",
+        ),
+        (
+            variable("BIG", &"x".repeat(128 * 1024), false),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "128 KiB",
         ),
     ] {
         let reply = adam.post("/api/environment", body).await;
@@ -996,18 +1013,18 @@ async fn entries_their_target_cannot_take_are_refused_with_the_reason() {
     }
 }
 
-/// Adam's main sandbox with a secret `GH_TOKEN`, a plain one, and a template naming it, none
-/// attached, and each entry's path under main.
+/// Adam's main sandbox with a secret `GH_TOKEN`, a file `~/tool` and a template at
+/// `~/tool/config.toml` naming the variable, none attached, and each entry's path under main.
 async fn three_entries(corral: &Corral) -> (Browser, [String; 3]) {
     let mut adam = corral.signed_in("adam", Role::Member).await;
     adam.post("/api/sandboxes", json!({ "name": "main" })).await;
     let mut paths = Vec::new();
     for mut body in [
         variable("GH_TOKEN", "ghp_everyone", true),
-        variable("GH_TOKEN", "ghp_other", false),
+        file("~/tool", false, &json!({ "text": "x" })),
         json!({
             "kind": "file",
-            "target": ".config/tool.toml",
+            "target": "tool/config.toml",
             "secret": false,
             "template": true,
             "value": { "text": "token = \"{{ GH_TOKEN }}\"" },
@@ -1075,27 +1092,96 @@ async fn a_sandbox_attaches_entries_that_fit_it() {
     assert_eq!(
         attached,
         [
-            (&json!("GH_TOKEN"), &json!(["main"])),
-            (&json!(".config/tool.toml"), &json!(["main"]))
+            (
+                &json!("GH_TOKEN"),
+                &json!([{ "sandbox": "main", "overridden": false, "unresolved": [] }])
+            ),
+            (
+                &json!("tool/config.toml"),
+                &json!([{ "sandbox": "main", "overridden": false, "unresolved": [] }])
+            )
         ]
     );
+    assert_eq!(listed[1]["entry"]["references"], json!(["GH_TOKEN"]));
 
-    let detached = adam.call("DELETE", &token, None).await;
-    assert_eq!(detached.status, StatusCode::NO_CONTENT);
-    let restart = adam.call("POST", "/api/sandboxes/main/restart", None).await;
-    assert_eq!(
-        restart.status,
-        StatusCode::BAD_REQUEST,
-        "{}",
-        restart.text()
-    );
+    let in_use = adam.call("DELETE", &token, None).await;
+    assert_eq!(in_use.status, StatusCode::BAD_REQUEST, "{}", in_use.text());
     assert!(
-        restart.text().contains(".config/tool.toml") && restart.text().contains("GH_TOKEN"),
+        in_use.text().contains("~/tool/config.toml") && in_use.text().contains("GH_TOKEN"),
         "{}",
-        restart.text()
+        in_use.text()
     );
+    let restart = adam.call("POST", "/api/sandboxes/main/restart", None).await;
+    assert_eq!(restart.status, StatusCode::NO_CONTENT, "{}", restart.text());
+    for path in [&config, &token] {
+        let detached = adam.call("DELETE", path, None).await;
+        assert_eq!(
+            detached.status,
+            StatusCode::NO_CONTENT,
+            "{}",
+            detached.text()
+        );
+    }
     let again = adam.call("DELETE", &token, None).await;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_entry_changes_in_place_and_a_template_previews_with_secrets_masked() {
+    let corral = Corral::new();
+    let (mut adam, [token, _, config]) = three_entries(&corral).await;
+    for path in [&token, &config] {
+        adam.call("PUT", path, None).await;
+    }
+    let id = token.rsplit('/').next().unwrap().to_owned();
+    let preview = adam.get(&format!("{config}/preview")).await;
+    assert_eq!(preview.status, StatusCode::OK, "{}", preview.text());
+    assert_eq!(
+        preview.json(),
+        json!({ "text": "token = \"••••••••\"", "unresolved": [] })
+    );
+
+    let change = |target: &str, secret: bool| {
+        json!({
+            "kind": "variable",
+            "target": target,
+            "secret": secret,
+            "template": false,
+            "executable": false,
+            "applyToNew": false,
+        })
+    };
+    let renamed = adam
+        .call(
+            "PUT",
+            &format!("/api/environment/{id}"),
+            Some(change("GITHUB_TOKEN", true)),
+        )
+        .await;
+    assert_eq!(
+        renamed.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        renamed.text()
+    );
+    assert!(renamed.text().contains("GH_TOKEN"), "{}", renamed.text());
+    let plain = adam
+        .call(
+            "PUT",
+            &format!("/api/environment/{id}"),
+            Some(change("GH_TOKEN", false)),
+        )
+        .await;
+    assert_eq!(plain.status, StatusCode::OK, "{}", plain.text());
+    assert_eq!(
+        shown(&plain.json(), &["shown", "text"]),
+        [json!("text"), json!("ghp_everyone")]
+    );
+    assert_eq!(plain.json()["sandboxes"][0]["sandbox"], "main");
+    assert_eq!(
+        adam.get(&format!("{config}/preview")).await.json()["text"],
+        "token = \"ghp_everyone\""
+    );
 }
 
 #[tokio::test]

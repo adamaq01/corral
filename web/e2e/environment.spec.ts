@@ -13,10 +13,13 @@ function entry(extra: Partial<EnvironmentEntry>): EnvironmentEntry {
 		target: 'GH_TOKEN',
 		secret: true,
 		template: false,
+		executable: false,
 		applyToNew: true,
 		value: { setAt, size: 40, shown: 'masked', length: 40, head: 'ghp_', tail: 'Xz' },
 		createdAt: setAt,
 		sandboxes: [],
+		references: [],
+		duplicate: false,
 		...extra
 	};
 }
@@ -145,7 +148,7 @@ test("an entry's settings save as they change", async ({ page }) => {
 		target: 'notes',
 		secret: false,
 		value: { setAt, size: 2, shown: 'text', text: 'hi' },
-		sandboxes: ['main']
+		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }]
 	});
 	const calls: Call[] = [];
 	await record(
@@ -180,7 +183,7 @@ test("an entry's settings save as they change", async ({ page }) => {
 });
 
 test('a sandbox attaches, overrides and detaches entries', async ({ page }) => {
-	const token = entry({ sandboxes: ['main'] });
+	const token = entry({ sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }] });
 	const notes = entry({
 		id: '6c4d5e6f-7a8b-4c9d-0e1f-2a3b4c5d6e7f',
 		kind: 'file',

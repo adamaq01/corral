@@ -38,7 +38,7 @@
 		if (count === 0) {
 			return 'Attached to no sandbox';
 		}
-		return `Attached to ${entry.sandboxes.join(', ')}`;
+		return `Attached to ${entry.sandboxes.map((used) => used.sandbox).join(', ')}`;
 	}
 </script>
 
