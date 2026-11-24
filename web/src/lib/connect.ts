@@ -11,11 +11,23 @@ export function hostAlias(sandbox: Sandbox): string {
 	return `corral-${sandbox.name}`;
 }
 
-/** How to reach a sandbox from an SSH client, from Herdr, and from an SSH config file. */
-export function connectSnippets(sandbox: Sandbox): ConnectSnippet[] {
+/** The command that reaches the sandbox over SSH. */
+export function sshCommand(sandbox: Sandbox): string {
+	const { username, host, port } = sandbox.ssh;
+	return `ssh -p ${port} ${username}@${host}`;
+}
+
+/**
+ * How to reach a sandbox from an SSH client, from Herdr, and from an SSH config file, and for the
+ * default sandbox, by its owner's `handle` alone.
+ */
+export function connectSnippets(sandbox: Sandbox, handle: string): ConnectSnippet[] {
 	const { username, host, port } = sandbox.ssh;
 	return [
-		{ label: 'SSH', text: `ssh -p ${port} ${username}@${host}` },
+		{ label: 'SSH', text: sshCommand(sandbox) },
+		...(sandbox.isDefault
+			? [{ label: 'SSH to your default sandbox', text: `ssh -p ${port} ${handle}@${host}` }]
+			: []),
 		{ label: 'Herdr', text: `hc machine add ${username}@${host}:${port} --name ${sandbox.name}` },
 		{
 			label: 'SSH config',

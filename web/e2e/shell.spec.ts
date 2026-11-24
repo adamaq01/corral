@@ -23,7 +23,8 @@ test.describe('a member', () => {
 		await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link')).toHaveText([
 			'Sandboxes',
 			'SSH keys',
-			'Environment'
+			'Environment',
+			'Profile'
 		]);
 		await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
 
@@ -63,6 +64,10 @@ test.describe('a member', () => {
 			await expect(page).toHaveURL('/keys');
 			await expect(nav).toBeHidden();
 			await expect(page.getByRole('heading', { name: 'SSH keys' })).toBeVisible();
+			const header = page.locator('header', {
+				has: page.getByRole('button', { name: 'Toggle Sidebar' })
+			});
+			await expect(header.getByText('SSH keys')).toBeVisible();
 		});
 	});
 });

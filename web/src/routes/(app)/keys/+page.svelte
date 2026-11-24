@@ -2,10 +2,13 @@
 	import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
+	import { toast } from 'svelte-sonner';
+	import { opksshLogin } from '#lib/api/auth.js';
 	import type { SshKey } from '#lib/api/generated/index.js';
 	import { keys } from '#lib/api/keys.js';
 	import AddKeyDialog from '#lib/components/add-key-dialog.svelte';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
+	import CopyButton from '#lib/components/copy-button.svelte';
 	import ListSkeleton from '#lib/components/list-skeleton.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
@@ -16,6 +19,7 @@
 	import { Remote } from '#lib/remote.svelte.js';
 
 	const list = new Remote(keys.list);
+	const opkssh = new Remote(opksshLogin);
 
 	let adding = $state(false);
 	let removing = $state<SshKey | null>(null);
@@ -29,8 +33,14 @@
 	async function remove() {
 		if (removing) {
 			await keys.remove(removing.id);
+			toast.success(`Deleted the key ${removing.label}`);
 			await list.reload();
 		}
+	}
+
+	async function added(label: string) {
+		toast.success(`Added the key ${label}`);
+		await list.reload();
 	}
 </script>
 
@@ -65,6 +75,10 @@
 				<Empty.Title>No SSH keys yet</Empty.Title>
 				<Empty.Description>
 					Add the public key of each computer you connect from. Corral never asks for a password.
+					{#if opkssh.value}
+						With opkssh, your single sign-on login can stand in for a key: each sandbox's page shows
+						how.
+					{/if}
 				</Empty.Description>
 			</Empty.Header>
 			<Empty.Content>
@@ -72,6 +86,12 @@
 			</Empty.Content>
 		</Empty.Root>
 	{:else}
+		{#if opkssh.value}
+			<p class="text-sm text-muted-foreground">
+				With opkssh, your single sign-on login can stand in for a key: each sandbox's page shows
+				how.
+			</p>
+		{/if}
 		<ul class="grid gap-2" aria-label="SSH keys">
 			{#each list.current.value as key (key.id)}
 				<li>
@@ -87,6 +107,7 @@
 							</Item.Description>
 						</Item.Content>
 						<Item.Actions>
+							<CopyButton text={key.publicKey} label="the public key {key.label}" />
 							<Button
 								variant="ghost"
 								size="icon-sm"
@@ -104,7 +125,7 @@
 	{/if}
 </div>
 
-<AddKeyDialog bind:open={adding} onAdded={() => list.reload()} />
+<AddKeyDialog bind:open={adding} onAdded={added} />
 
 <ConfirmDialog
 	bind:open={confirming}
@@ -113,5 +134,12 @@
 	onconfirm={remove}
 >
 	<p>New SSH connections with this key are refused from now on.</p>
+	{#if list.value?.length === 1}
+		<p class="font-medium text-destructive">
+			It is your last key. Without one, you cannot connect to your sandboxes over SSH{opkssh.value
+				? ' unless you use opkssh'
+				: ''}.
+		</p>
+	{/if}
 	<p class="font-mono text-xs break-all">{removing?.fingerprint}</p>
 </ConfirmDialog>

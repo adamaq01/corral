@@ -10,6 +10,7 @@
 		title,
 		description,
 		submit,
+		pendingLabel,
 		ready = true,
 		onsubmit,
 		children
@@ -19,6 +20,8 @@
 		description: string;
 		/** The submit button's label. */
 		submit: string;
+		/** The submit button's label while the form is sent, when sending may take a while. */
+		pendingLabel?: string;
 		/** Whether the form can be sent yet. */
 		ready?: boolean;
 		/** Sends the form; the dialog closes when it succeeds and shows the error when it fails. */
@@ -73,7 +76,7 @@
 					{#if pending}
 						<Spinner />
 					{/if}
-					{submit}
+					{pending ? (pendingLabel ?? submit) : submit}
 				</Button>
 			</Dialog.Footer>
 		</form>

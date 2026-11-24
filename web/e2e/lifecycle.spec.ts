@@ -45,12 +45,13 @@ test('the sandbox page and the list keep up with a power action while it runs an
 	const badge = (scope: Page | ReturnType<Page['getByRole']>, state: string) =>
 		scope.getByText(state, { exact: true });
 
-	await test.step('the sandbox page shows a stop done before its answer arrives', async () => {
+	await test.step('the sandbox page shows a sleep done before its answer arrives', async () => {
 		await page.goto('/sandboxes/main');
 		await expect(badge(page, 'Running')).toBeVisible({ timeout: 90_000 });
 		const release = await holdAnswers(page, '/api/sandboxes/main/stop');
-		await page.getByRole('button', { name: 'Stop' }).click();
-		await expect(page.getByRole('button', { name: 'Stopping…' })).toBeVisible();
+		await page.getByRole('button', { name: 'Sleep' }).click();
+		await expect(page.getByRole('button', { name: 'Going to sleep…' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Delete sandbox' })).toBeDisabled();
 		await expect(badge(page, 'Sleeping')).toBeVisible({ timeout: 60_000 });
 		const wake = page.getByRole('button', { name: 'Wake' });
 		await expect(wake).toBeDisabled();
@@ -62,6 +63,8 @@ test('the sandbox page and the list keep up with a power action while it runs an
 		const release = await hold(page, '/api/sandboxes/main/wake');
 		await page.getByRole('button', { name: 'Wake' }).click();
 		await expect(page.getByRole('button', { name: 'Waking…' })).toBeVisible();
+		await expect(page.getByText('Starting main. This usually takes under a minute.')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Make default' })).toHaveCount(0);
 		await page
 			.getByRole('navigation', { name: 'Main' })
 			.getByRole('link', { name: 'Sandboxes' })

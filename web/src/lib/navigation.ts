@@ -1,4 +1,5 @@
 import BoxesIcon from '@lucide/svelte/icons/boxes';
+import CircleUserRoundIcon from '@lucide/svelte/icons/circle-user-round';
 import KeyRoundIcon from '@lucide/svelte/icons/key-round';
 import SquareTerminalIcon from '@lucide/svelte/icons/square-terminal';
 import UserCogIcon from '@lucide/svelte/icons/user-cog';
@@ -14,7 +15,8 @@ export function navigation(user: Me, providers: Provider[]): Navigation {
 	const main = [
 		{ href: '/sandboxes', label: 'Sandboxes', icon: SquareTerminalIcon },
 		{ href: '/keys', label: 'SSH keys', icon: KeyRoundIcon },
-		{ href: '/environment', label: 'Environment', icon: VariableIcon }
+		{ href: '/environment', label: 'Environment', icon: VariableIcon },
+		{ href: '/profile', label: 'Profile', icon: CircleUserRoundIcon }
 	];
 	if (user.role !== 'admin') {
 		return { main, admin: null };
@@ -31,4 +33,11 @@ export function navigation(user: Me, providers: Provider[]): Navigation {
 /** Whether the item is the current page or one of its children. */
 export function isCurrent(item: NavItem, pathname: string): boolean {
 	return pathname === item.href || pathname.startsWith(`${item.href}/`);
+}
+
+/** The item the current page belongs to, if any. */
+export function currentItem(navigation: Navigation, pathname: string): NavItem | undefined {
+	return [...navigation.main, ...(navigation.admin ?? [])].find((item) =>
+		isCurrent(item, pathname)
+	);
 }

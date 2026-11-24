@@ -11,7 +11,7 @@ export const sandboxes = {
 	stop: (name: string) => api.post(`${path(name)}/stop`),
 	restart: (name: string) => api.post(`${path(name)}/restart`),
 	makeDefault: (name: string) => api.post(`${path(name)}/default`),
-	/** Cancels a deletion `corral delete` scheduled; the sandbox stays stopped. */
+	/** Cancels a deletion `corral delete` scheduled; the sandbox stays asleep. */
 	cancelDeletion: (name: string) => api.delete(`${path(name)}/deletion`),
 	remove: (name: string) => api.delete(path(name)),
 	catalog: () => api.get<Catalog>('/api/catalog')

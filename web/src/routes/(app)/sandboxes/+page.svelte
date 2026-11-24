@@ -9,23 +9,30 @@
 	import { failureMessage } from '#lib/api/client.js';
 	import type { Sandbox } from '#lib/api/generated/index.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
+	import CopyButton from '#lib/components/copy-button.svelte';
 	import CreateSandboxDialog from '#lib/components/create-sandbox-dialog.svelte';
 	import ListSkeleton from '#lib/components/list-skeleton.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
+	import RefreshStatus from '#lib/components/refresh-status.svelte';
 	import SandboxStateBadge from '#lib/components/sandbox-state-badge.svelte';
+	import StateAnnouncer from '#lib/components/state-announcer.svelte';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import * as Item from '#lib/components/ui/item/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { choiceLabel } from '#lib/catalog.js';
-	import { Remote, pollWhile } from '#lib/remote.svelte.js';
+	import { sshCommand } from '#lib/connect.js';
+	import { Remote, keepFresh } from '#lib/remote.svelte.js';
 	import { powerInFlight, runPower, unsettled } from '#lib/sandbox-actions.svelte.js';
+	import type { PageProps } from './$types';
+
+	let { data }: PageProps = $props();
 
 	const list = new Remote(sandboxes.list);
 	const catalog = new Remote(sandboxes.catalog);
-	pollWhile(() => list.value?.some(unsettled) ?? false, list);
+	keepFresh(list, () => list.value?.some(unsettled) ?? false);
 
 	let creating = $state(false);
 	const failures = new SvelteMap<string, string>();
@@ -63,11 +70,14 @@
 
 	{#if catalog.current.state === 'failed'}
 		<LoadFailed
-			title="Loading the catalog failed"
+			title="Loading the catalog failed, so you cannot create a sandbox yet"
 			error={catalog.current.error}
 			onretry={() => catalog.reload()}
 		/>
 	{/if}
+
+	<RefreshStatus remote={list} />
+	<StateAnnouncer sandboxes={list.value} />
 
 	{#if list.current.state === 'loading'}
 		<ListSkeleton what="sandboxes" />
@@ -96,38 +106,46 @@
 			{#each list.current.value as sandbox (sandbox.name)}
 				{@const stale = sandbox.staleEnvironment}
 				<li class="grid">
-					<Item.Root variant="outline" class={stale ? 'rounded-b-none' : undefined}>
-						{#snippet child({ props })}
-							<a href="/sandboxes/{sandbox.name}" {...props}>
-								<Item.Content class="min-w-0">
-									<Item.Title>
-										{sandbox.name}
-										{#if sandbox.isDefault}
-											<Badge variant="secondary">Default</Badge>
+					<div class="relative">
+						<Item.Root variant="outline" class={stale ? 'rounded-b-none' : undefined}>
+							{#snippet child({ props })}
+								<a href="/sandboxes/{sandbox.name}" {...props}>
+									<Item.Content class="min-w-0">
+										<Item.Title>
+											{sandbox.name}
+											{#if sandbox.isDefault}
+												<Badge variant="secondary">Default</Badge>
+											{/if}
+											{#if sandbox.deleteAt}
+												<Badge variant="destructive">Deletion scheduled</Badge>
+											{/if}
+										</Item.Title>
+										<Item.Description>
+											{choiceLabel(catalog.value?.images, sandbox.image)} · {choiceLabel(
+												catalog.value?.sizes,
+												sandbox.size
+											)}
+										</Item.Description>
+										{#if sandbox.state === 'failed'}
+											<p class="text-sm break-words text-destructive first-letter:uppercase">
+												{sandbox.detail}
+											</p>
 										{/if}
-										{#if sandbox.deleteAt}
-											<Badge variant="destructive">Deletion scheduled</Badge>
-										{/if}
-									</Item.Title>
-									<Item.Description>
-										{choiceLabel(catalog.value?.images, sandbox.image)} · {choiceLabel(
-											catalog.value?.sizes,
-											sandbox.size
-										)}
-									</Item.Description>
-									{#if sandbox.state === 'failed'}
-										<p class="text-sm break-words text-destructive first-letter:uppercase">
-											{sandbox.detail}
-										</p>
-									{/if}
-								</Item.Content>
-								<Item.Actions>
-									<SandboxStateBadge status={sandbox} />
-									<ChevronRightIcon class="size-4 text-muted-foreground" aria-hidden="true" />
-								</Item.Actions>
-							</a>
-						{/snippet}
-					</Item.Root>
+									</Item.Content>
+									<Item.Actions>
+										<SandboxStateBadge status={sandbox} />
+										<span class="size-7" aria-hidden="true"></span>
+										<ChevronRightIcon class="size-4 text-muted-foreground" aria-hidden="true" />
+									</Item.Actions>
+								</a>
+							{/snippet}
+						</Item.Root>
+						<CopyButton
+							class="absolute top-1/2 right-9 -translate-y-1/2"
+							text={sshCommand(sandbox)}
+							label="the SSH command for {sandbox.name}"
+						/>
+					</div>
 					{#if stale}
 						{@const failure = failures.get(sandbox.name)}
 						<div
@@ -169,6 +187,7 @@
 	<CreateSandboxDialog
 		bind:open={creating}
 		catalog={catalog.value}
+		handle={data.user.handle}
 		count={list.value.length}
 		onCreated={created}
 	/>

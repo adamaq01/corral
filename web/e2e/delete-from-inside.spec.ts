@@ -50,23 +50,19 @@ test('the profile turns corral delete on and off', async ({ page, baseURL }) => 
 	const card = page
 		.locator('[data-slot=card]')
 		.filter({ hasText: 'Deleting from inside a sandbox' });
-	const allow = card.getByRole('checkbox', { name: 'Allow corral delete in my sandboxes' });
+	const allow = card.getByRole('switch', { name: 'Allow corral delete in my sandboxes' });
 	await expect(card).toContainText('corral delete --confirm <name>');
 	await expect(allow).not.toBeChecked();
 	expect(await insideDeleteSetting(page.request)).toBe(false);
 
-	await allow.check();
-	await expect(card.getByRole('status')).toHaveText(
-		'Saved. corral delete works in your sandboxes.'
-	);
+	await allow.click();
+	await expect(page.getByText('corral delete now works in your sandboxes')).toBeVisible();
 	expect(await insideDeleteSetting(page.request)).toBe(true);
 	await page.reload();
 	await expect(allow).toBeChecked();
 
-	await allow.uncheck();
-	await expect(card.getByRole('status')).toHaveText(
-		'Saved. corral delete is refused in your sandboxes.'
-	);
+	await allow.click();
+	await expect(page.getByText('corral delete is now refused in your sandboxes')).toBeVisible();
 	await page.reload();
 	await expect(allow).not.toBeChecked();
 	expect(await insideDeleteSetting(page.request)).toBe(false);
@@ -100,11 +96,14 @@ test('a deletion corral delete scheduled shows with a Cancel button that keeps t
 	await inside.dispose();
 
 	await page.reload();
-	const alert = page.getByRole('alert').filter({ hasText: 'Deletes at' });
+	const alert = page.getByRole('alert').filter({ hasText: 'Deletion scheduled for' });
 	await expect(alert).toBeVisible();
 	await expect(alert).toContainText('corral delete in this sandbox scheduled its deletion');
 	await expect(page.getByText('Sleeping', { exact: true })).toBeVisible({ timeout: 60_000 });
 	await expect(page.getByRole('button', { name: 'Wake' })).toHaveCount(0);
+	await expect(
+		page.getByText('Connections are refused until you cancel the deletion.')
+	).toBeVisible();
 
 	await page
 		.getByRole('navigation', { name: 'Main' })
@@ -116,6 +115,7 @@ test('a deletion corral delete scheduled shows with a Cancel button that keeps t
 
 	expect((await (await page.request.get('/api/sandboxes/main')).json()).deleteAt).toBe(deleteAt);
 	await page.getByRole('button', { name: 'Cancel deletion' }).click();
+	await expect(page.getByText('Cancelled the deletion of main')).toBeVisible();
 	await expect(alert).toHaveCount(0);
 	await expect(page.getByRole('button', { name: 'Wake' })).toBeVisible();
 	const kept = await (await page.request.get('/api/sandboxes/main')).json();

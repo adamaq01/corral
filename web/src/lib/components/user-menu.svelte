@@ -2,8 +2,10 @@
 	import ChevronsUpDownIcon from '@lucide/svelte/icons/chevrons-up-down';
 	import CircleUserRoundIcon from '@lucide/svelte/icons/circle-user-round';
 	import LogOutIcon from '@lucide/svelte/icons/log-out';
+	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
 	import { signOut } from '#lib/api/auth.js';
+	import { failureMessage } from '#lib/api/client.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Sidebar from '#lib/components/ui/sidebar/index.js';
 	import UserAvatar from '#lib/components/user-avatar.svelte';
@@ -14,7 +16,13 @@
 	const sidebar = Sidebar.useSidebar();
 
 	async function leave() {
-		await signOut();
+		try {
+			await signOut();
+		} catch (error) {
+			// The menu that held the button is gone, so the failure has nowhere else to show.
+			toast.error(`Signing out failed: ${failureMessage(error)}`);
+			return;
+		}
 		await goto('/sign-in', { replace: true });
 	}
 </script>

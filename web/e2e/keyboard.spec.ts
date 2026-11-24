@@ -74,9 +74,9 @@ test.describe('an admin', () => {
 		const actions = page.getByRole('button', { name: 'Actions for bob' });
 		await tabTo(page, actions);
 		await page.keyboard.press('Enter');
-		await expect(page.getByRole('menuitem', { name: 'Disable' })).toBeFocused();
+		await expect(page.getByRole('menuitem', { name: 'Their sandboxes' })).toBeFocused();
 		await page.keyboard.press('End');
-		await expect(page.getByRole('menuitem', { name: 'Delete' })).toBeFocused();
+		await expect(page.getByRole('menuitem', { name: 'Delete user' })).toBeFocused();
 		await page.keyboard.press('Enter');
 		const confirm = page.getByRole('alertdialog', { name: 'Delete bob?' });
 		await expect

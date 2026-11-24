@@ -1,17 +1,17 @@
 <script lang="ts">
-	import CircleCheckIcon from '@lucide/svelte/icons/circle-check';
 	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import UserCogIcon from '@lucide/svelte/icons/user-cog';
+	import { toast } from 'svelte-sonner';
 	import { accounts } from '#lib/api/accounts.js';
 	import { MIN_PASSWORD_CHARS, type LocalAccount, type Role } from '#lib/api/generated/index.js';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import FormDialog from '#lib/components/form-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
+	import PasswordInput from '#lib/components/password-input.svelte';
 	import TableSkeleton from '#lib/components/table-skeleton.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
-	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
@@ -44,8 +44,6 @@
 	const api = $derived(accounts(url));
 	const list = new Remote(() => api.list());
 
-	let notice = $state<string | null>(null);
-
 	let creating = $state(false);
 	let username = $state('');
 	let password = $state('');
@@ -57,7 +55,6 @@
 	let newPassword = $state('');
 
 	function startCreating() {
-		notice = null;
 		username = '';
 		password = '';
 		role = 'member';
@@ -66,12 +63,11 @@
 
 	async function create() {
 		await api.create({ username, password, role });
+		toast.success(`Created ${username}, who can sign in now`);
 		await list.reload();
-		notice = `Created ${username}, who can sign in now.`;
 	}
 
 	function startResetting(account: LocalAccount) {
-		notice = null;
 		target = account;
 		newPassword = '';
 		resetting = true;
@@ -79,13 +75,12 @@
 
 	async function reset(account: LocalAccount) {
 		await api.setPassword(account.username, newPassword);
-		notice = account.yours
-			? 'Changed your password.'
-			: `Reset the password of ${account.username}.`;
+		toast.success(
+			account.yours ? 'Changed your password' : `Reset the password of ${account.username}`
+		);
 	}
 
 	function startDeleting(account: LocalAccount) {
-		notice = null;
 		target = account;
 		deleting = true;
 	}
@@ -93,7 +88,7 @@
 	async function remove(account: LocalAccount) {
 		await api.remove(account.username);
 		list.update((all) => all.filter((each) => each.username !== account.username));
-		notice = `Deleted ${account.username}.`;
+		toast.success(`Deleted ${account.username}`);
 	}
 </script>
 
@@ -109,13 +104,6 @@
 			{/if}
 		{/snippet}
 	</PageHeader>
-
-	{#if notice}
-		<Alert.Root role="status">
-			<CircleCheckIcon />
-			<Alert.Description>{notice}</Alert.Description>
-		</Alert.Root>
-	{/if}
 
 	{#if list.current.state === 'failed'}
 		<LoadFailed
@@ -190,7 +178,7 @@
 													variant="destructive"
 													onSelect={() => startDeleting(account)}
 												>
-													Delete
+													Delete user
 												</DropdownMenu.Item>
 											{/if}
 										</DropdownMenu.Content>
@@ -230,9 +218,8 @@
 	</Field.Field>
 	<Field.Field>
 		<Field.Label for="new-password">Password</Field.Label>
-		<Input
+		<PasswordInput
 			id="new-password"
-			type="password"
 			autocomplete="new-password"
 			minlength={MIN_PASSWORD_CHARS}
 			required
@@ -276,9 +263,8 @@
 	>
 		<Field.Field>
 			<Field.Label for="reset-password">New password</Field.Label>
-			<Input
+			<PasswordInput
 				id="reset-password"
-				type="password"
 				autocomplete="new-password"
 				minlength={MIN_PASSWORD_CHARS}
 				required
@@ -293,7 +279,8 @@
 	<ConfirmDialog
 		bind:open={deleting}
 		title="Delete {account.username}?"
-		action="Delete account"
+		action="Delete user"
+		confirmName={account.username}
 		onconfirm={() => remove(account)}
 	>
 		This deletes the account and the user who signs in with it, with their sandboxes, SSH keys and

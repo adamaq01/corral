@@ -11,11 +11,11 @@ test.describe('an admin', () => {
 		await page.getByRole('button', { name: 'New account' }).click();
 		const create = page.getByRole('dialog', { name: 'New local account' });
 		await create.getByLabel('Username').fill(carol.username);
-		await create.getByLabel('Password').fill(carol.password);
+		await create.getByLabel('Password', { exact: true }).fill(carol.password);
 		await expect(create.getByRole('radio', { name: /^Member/ })).toBeChecked();
 		await create.getByRole('button', { name: 'Create account' }).click();
 		await expect(create).toBeHidden();
-		await expect(page.getByRole('status')).toHaveText('Created carol, who can sign in now.');
+		await expect(page.getByText('Created carol, who can sign in now')).toBeVisible();
 		const accounts = page.getByRole('table', { name: 'Local accounts' });
 		await expect(accounts.getByRole('row', { name: /carol/ })).toContainText('Member');
 
@@ -36,7 +36,11 @@ test.describe('an admin', () => {
 		const users = page.getByRole('table', { name: 'Users' });
 		const user = users.getByRole('row', { name: /carol/ });
 		await expect(user).toContainText('Active');
-		await rowAction(page, 'carol', 'Disable');
+		await rowAction(page, 'carol', 'Disable user');
+		const disable = page.getByRole('alertdialog', { name: 'Disable carol?' });
+		await expect(disable).toContainText('Their sandboxes, SSH keys and environment stay');
+		await disable.getByRole('button', { name: 'Disable user' }).click();
+		await expect(disable).toBeHidden();
 		await expect(user).toContainText('Disabled');
 
 		await member.reload();
@@ -46,7 +50,7 @@ test.describe('an admin', () => {
 		await signIn(member, carol);
 		await expect(form.getByRole('alert')).toHaveText('this account is disabled');
 
-		await rowAction(page, 'carol', 'Enable');
+		await rowAction(page, 'carol', 'Enable user');
 		await expect(user).toContainText('Active');
 		await signIn(member, carol);
 		await expect(member).toHaveURL('/sandboxes');
@@ -58,7 +62,7 @@ test.describe('an admin', () => {
 		await reset.getByLabel('New password').fill(renewed.password);
 		await reset.getByRole('button', { name: 'Reset password' }).click();
 		await expect(reset).toBeHidden();
-		await expect(page.getByRole('status')).toHaveText('Reset the password of carol.');
+		await expect(page.getByText('Reset the password of carol')).toBeVisible();
 
 		await context.clearCookies();
 		await member.goto('/sign-in');
@@ -67,10 +71,13 @@ test.describe('an admin', () => {
 		await signIn(member, renewed);
 		await expect(member).toHaveURL('/sandboxes');
 
-		await rowAction(page, 'carol', 'Delete');
+		await rowAction(page, 'carol', 'Delete user');
 		const confirm = page.getByRole('alertdialog', { name: 'Delete carol?' });
 		await expect(confirm).toContainText('sandboxes, SSH keys and environment');
-		await confirm.getByRole('button', { name: 'Delete account' }).click();
+		const remove = confirm.getByRole('button', { name: 'Delete user' });
+		await expect(remove).toBeDisabled();
+		await confirm.getByLabel('Type carol to confirm').fill('carol');
+		await remove.click();
 		await expect(confirm).toBeHidden();
 		await expect(accounts.getByRole('row', { name: /carol/ })).toHaveCount(0);
 
@@ -146,7 +153,7 @@ test.describe('an admin', () => {
 
 		await page.getByRole('button', { name: `Actions for ${username}` }).click();
 		await expect(page.getByRole('menuitem', { name: 'Change password' })).toBeVisible();
-		await expect(page.getByRole('menuitem', { name: 'Delete', exact: true })).toHaveCount(0);
+		await expect(page.getByRole('menuitem', { name: 'Delete user', exact: true })).toHaveCount(0);
 		await page.getByRole('menuitem', { name: 'Delete from Profile' }).click();
 		await expect(page).toHaveURL('/profile');
 	});

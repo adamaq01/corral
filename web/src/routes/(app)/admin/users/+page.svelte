@@ -1,6 +1,8 @@
 <script lang="ts">
 	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
 	import UsersIcon from '@lucide/svelte/icons/users';
+	import { SvelteSet } from 'svelte/reactivity';
+	import { toast } from 'svelte-sonner';
 	import * as admin from '#lib/api/admin.js';
 	import { failureMessage } from '#lib/api/client.js';
 	import type { User, UserStatus } from '#lib/api/generated/index.js';
@@ -14,6 +16,7 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
+	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
 	import UserAvatar from '#lib/components/user-avatar.svelte';
 	import { Remote } from '#lib/remote.svelte.js';
@@ -34,28 +37,43 @@
 
 	let failure = $state<string | null>(null);
 	let target = $state<User | null>(null);
-	let confirming = $state(false);
+	let deleting = $state(false);
+	let disabling = $state(false);
+	/** The users whose enabling is in flight. */
+	const enabling = new SvelteSet<string>();
 
 	async function setEnabled(user: User, enabled: boolean) {
+		const changed = await admin.setEnabled(user, enabled);
+		users.update((list) => list.map((each) => (each.id === changed.id ? changed : each)));
+		toast.success(enabled ? `Enabled ${user.handle}` : `Disabled ${user.handle}`);
+	}
+
+	async function enable(user: User) {
 		failure = null;
+		enabling.add(user.id);
 		try {
-			const changed = await admin.setEnabled(user, enabled);
-			users.update((list) => list.map((each) => (each.id === changed.id ? changed : each)));
+			await setEnabled(user, true);
 		} catch (error) {
-			const verb = enabled ? 'Enabling' : 'Disabling';
-			failure = `${verb} ${user.handle} failed: ${failureMessage(error)}`;
+			failure = `Enabling ${user.handle} failed: ${failureMessage(error)}`;
+		} finally {
+			enabling.delete(user.id);
 		}
 	}
 
-	function confirmDelete(user: User) {
+	function confirm(user: User, action: 'disable' | 'delete') {
 		failure = null;
 		target = user;
-		confirming = true;
+		disabling = action === 'disable';
+		deleting = action === 'delete';
 	}
 
 	async function remove(user: User) {
-		await admin.deleteUser(user);
-		users.update((list) => list.filter((each) => each.id !== user.id));
+		try {
+			await admin.deleteUser(user);
+			toast.success(`Deleted ${user.handle}`);
+		} finally {
+			await users.reload();
+		}
 	}
 </script>
 
@@ -64,7 +82,7 @@
 
 	{#if failure}
 		<Alert.Root variant="destructive">
-			<Alert.Description>{failure}</Alert.Description>
+			<Alert.Description class="first-letter:uppercase">{failure}</Alert.Description>
 		</Alert.Root>
 	{/if}
 
@@ -108,7 +126,13 @@
 										<UserAvatar handle={user.handle} picture={user.picture} />
 										<div class="grid min-w-0">
 											<span class="flex items-center gap-2 font-medium">
-												{user.handle}
+												<a
+													href="/admin/sandboxes?owner={encodeURIComponent(user.handle)}"
+													class="rounded-sm underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+													title="Sandboxes of {user.handle}"
+												>
+													{user.handle}
+												</a>
 												{#if self}
 													<Badge variant="outline">You</Badge>
 												{/if}
@@ -126,7 +150,16 @@
 									</div>
 								</Table.Cell>
 								<Table.Cell class={wide}>{role}</Table.Cell>
-								<Table.Cell><Badge variant={status.variant}>{status.label}</Badge></Table.Cell>
+								<Table.Cell>
+									{#if enabling.has(user.id)}
+										<Badge variant="outline">
+											<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+											Enabling
+										</Badge>
+									{:else}
+										<Badge variant={status.variant}>{status.label}</Badge>
+									{/if}
+								</Table.Cell>
 								<Table.Cell class={wide}><Timestamp value={user.createdAt} /></Table.Cell>
 								<Table.Cell class="w-0 text-right">
 									{#if self}
@@ -146,20 +179,33 @@
 												{/snippet}
 											</DropdownMenu.Trigger>
 											<DropdownMenu.Content align="end">
+												<DropdownMenu.Item>
+													{#snippet child({ props })}
+														<a
+															href="/admin/sandboxes?owner={encodeURIComponent(user.handle)}"
+															{...props}
+														>
+															Their sandboxes
+														</a>
+													{/snippet}
+												</DropdownMenu.Item>
 												{#if user.status === 'active'}
-													<DropdownMenu.Item onSelect={() => setEnabled(user, false)}>
-														Disable
+													<DropdownMenu.Item onSelect={() => confirm(user, 'disable')}>
+														Disable user
 													</DropdownMenu.Item>
 												{:else if user.status === 'disabled'}
-													<DropdownMenu.Item onSelect={() => setEnabled(user, true)}>
-														Enable
+													<DropdownMenu.Item
+														disabled={enabling.has(user.id)}
+														onSelect={() => enable(user)}
+													>
+														Enable user
 													</DropdownMenu.Item>
 												{/if}
 												<DropdownMenu.Item
 													variant="destructive"
-													onSelect={() => confirmDelete(user)}
+													onSelect={() => confirm(user, 'delete')}
 												>
-													{user.status === 'deleting' ? 'Finish deleting' : 'Delete'}
+													{user.status === 'deleting' ? 'Finish deleting' : 'Delete user'}
 												</DropdownMenu.Item>
 											</DropdownMenu.Content>
 										</DropdownMenu.Root>
@@ -171,17 +217,37 @@
 				</Table.Body>
 			</Table.Root>
 		</div>
+		<p class="text-sm text-muted-foreground">
+			A role comes from how each person signs in: their single sign-on groups, or their local
+			account.
+		</p>
 	{/if}
 </div>
 
 {#if target}
 	{@const user = target}
 	<ConfirmDialog
-		bind:open={confirming}
+		bind:open={deleting}
 		title="Delete {user.handle}?"
 		action="Delete user"
+		confirmName={user.handle}
 		onconfirm={() => remove(user)}
 	>
 		This deletes {user.handle} with their sandboxes, SSH keys and environment. It cannot be undone.
+	</ConfirmDialog>
+	<ConfirmDialog
+		bind:open={disabling}
+		title="Disable {user.handle}?"
+		action="Disable user"
+		onconfirm={() => setEnabled(user, false)}
+	>
+		<p>
+			{user.handle} can no longer sign in or open new SSH connections, and their open sessions in Corral
+			end.
+		</p>
+		<p>
+			Their sandboxes, SSH keys and environment stay. Sandboxes running now keep running until they
+			go to sleep. You can enable {user.handle} again at any time.
+		</p>
 	</ConfirmDialog>
 {/if}

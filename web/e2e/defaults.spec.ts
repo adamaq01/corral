@@ -21,19 +21,44 @@ test('the defaults a member saves in their profile preselect the new sandbox dia
 	await expect(card).toContainText('as <name>.fern with a name');
 	await expect(card.getByLabel('Image')).toHaveValue('dev');
 	await expect(card.getByLabel('Size')).toHaveValue('small');
+	const save = card.getByRole('button', { name: 'Save defaults' });
+	const reset = card.getByRole('button', { name: 'Reset' });
+	await expect(save).toBeDisabled();
+	await expect(reset).toHaveCount(0);
+
 	await card.getByLabel('Image').selectOption({ label: 'Local build, again' });
+	await expect(card.getByRole('status')).toHaveText('Unsaved changes');
+	await reset.click();
+	await expect(card.getByLabel('Image')).toHaveValue('dev');
+	await expect(card.getByRole('status')).toHaveText('');
+	await expect(save).toBeDisabled();
+
+	await card.getByLabel('Image').selectOption({ label: 'Local build, again' });
+	const sandboxesLink = page
+		.getByRole('navigation', { name: 'Main' })
+		.getByRole('link', { name: 'Sandboxes' });
+	await sandboxesLink.click();
+	const leave = page.getByRole('alertdialog', { name: 'Leave without saving?' });
+	await leave.getByRole('button', { name: 'Stay' }).click();
+	await expect(page).toHaveURL('/profile');
+	await expect(card.getByLabel('Image')).toHaveValue('dev-again');
+
 	await card.getByLabel('Size').selectOption({ label: 'Roomy' });
-	await card.getByRole('button', { name: 'Save defaults' }).click();
-	await expect(card.getByRole('status')).toHaveText('Saved. New sandboxes start from these.');
+	await save.click();
+	await expect(
+		page.getByText('Saved your defaults. New sandboxes start from these.')
+	).toBeVisible();
+	await expect(save).toBeDisabled();
+	await expect(card.getByRole('status')).toHaveText('');
 
 	await page.reload();
 	await expect(card.getByLabel('Image')).toHaveValue('dev-again');
 	await expect(card.getByLabel('Size')).toHaveValue('roomy');
 
-	await page
-		.getByRole('navigation', { name: 'Main' })
-		.getByRole('link', { name: 'Sandboxes' })
-		.click();
+	await card.getByLabel('Size').selectOption({ label: 'Small' });
+	await sandboxesLink.click();
+	await leave.getByRole('button', { name: 'Leave' }).click();
+	await expect(page).toHaveURL('/sandboxes');
 	await page.getByRole('button', { name: 'New sandbox' }).click();
 	const dialog = page.getByRole('dialog', { name: 'New sandbox' });
 	await expect(dialog.getByLabel('Image')).toHaveValue('dev-again');

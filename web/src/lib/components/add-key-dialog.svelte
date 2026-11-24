@@ -6,7 +6,10 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
 
-	let { open = $bindable(), onAdded }: { open: boolean; onAdded: () => Promise<void> } = $props();
+	let {
+		open = $bindable(),
+		onAdded
+	}: { open: boolean; onAdded: (label: string) => Promise<void> } = $props();
 
 	let label = $state('');
 	let publicKey = $state('');
@@ -31,7 +34,7 @@
 
 	async function add() {
 		await keys.add({ label: label.trim(), publicKey: publicKey.trim() });
-		await onAdded();
+		await onAdded(label.trim());
 	}
 </script>
 

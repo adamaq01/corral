@@ -8,7 +8,7 @@ import type {
 	SandboxStatus,
 	SshKey
 } from '../src/lib/api/generated/index.js';
-import { test } from './fixtures';
+import { expect, test } from './fixtures';
 import { inEveryView } from './views';
 
 const catalog: Catalog = {
@@ -30,7 +30,9 @@ const catalog: Catalog = {
 function sandbox(
 	name: string,
 	status: SandboxStatus,
-	extra: Partial<Pick<Sandbox, 'image' | 'size' | 'isDefault' | 'staleEnvironment'>> = {}
+	extra: Partial<
+		Pick<Sandbox, 'image' | 'size' | 'isDefault' | 'staleEnvironment' | 'deleteAt'>
+	> = {}
 ): Sandbox {
 	return {
 		name,
@@ -213,6 +215,34 @@ inEveryView((look) => {
 		await look(page, 'sandbox-delete', { fullPage: false });
 	});
 
+	test('a sandbox scheduled for deletion', async ({ page }) => {
+		const doomed = sandbox('docs', { state: 'sleeping' }, { deleteAt: '2026-11-24T18:40:00Z' });
+		await serve(page, { '/api/sandboxes/docs': doomed, '/api/catalog': catalog });
+		await page.goto('/sandboxes/docs');
+		const alert = page.getByRole('alert').filter({ hasText: 'Deletion scheduled for' });
+		await alert.waitFor();
+		const box = await alert.boundingBox();
+		const button = await alert.getByRole('button', { name: 'Cancel deletion' }).boundingBox();
+		expect(box && button).toBeTruthy();
+		expect(button!.x + button!.width).toBeLessThanOrEqual(box!.x + box!.width);
+		expect(button!.y + button!.height).toBeLessThanOrEqual(box!.y + box!.height);
+		await look(page, 'sandbox-deletion-scheduled');
+	});
+
+	test('a page that does not exist', async ({ page }) => {
+		await page.goto('/nowhere/at/all');
+		await page.getByText('There is no such page').waitFor();
+		await look(page, 'not-found');
+	});
+
+	test('a page Corral cannot answer for', async ({ page }) => {
+		await page.route('**/api/me', (route) => route.abort());
+		await page.goto('/sandboxes');
+		await page.getByText('Corral could not load this page').waitFor();
+		await expect(page.getByText('Corral cannot be reached')).toBeVisible();
+		await look(page, 'unreachable');
+	});
+
 	test('a sandbox missing an environment change', async ({ page }) => {
 		await serve(page, {
 			'/api/sandboxes/agents': sandboxes[1],
@@ -365,6 +395,18 @@ inEveryView((look) => {
 		await page.getByRole('button', { name: 'Delete account' }).click();
 		await page.getByRole('alertdialog').getByLabel('Type bob to confirm').fill('bo');
 		await look(page, 'profile-delete', { fullPage: false });
+	});
+
+	test('profile, with unsaved defaults, one no longer offered', async ({ page }) => {
+		await serve(page, {
+			'/api/me': me(),
+			'/api/catalog': { ...catalog, defaultsWithdrawn: true }
+		});
+		await page.goto('/profile');
+		await page.getByText('Your saved default is no longer offered').waitFor();
+		await page.getByLabel('Image').selectOption('python');
+		await page.getByText('Unsaved changes').waitFor();
+		await look(page, 'profile-unsaved');
 	});
 
 	test('profile, with initials', async ({ page }) => {

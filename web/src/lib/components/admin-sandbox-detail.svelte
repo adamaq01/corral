@@ -9,6 +9,7 @@
 	import EngineEvents from '#lib/components/engine-events.svelte';
 	import EngineFacts from '#lib/components/engine-facts.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
+	import RefreshStatus from '#lib/components/refresh-status.svelte';
 	import SandboxStateBadge from '#lib/components/sandbox-state-badge.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
@@ -19,7 +20,7 @@
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import UserAvatar from '#lib/components/user-avatar.svelte';
-	import { Remote, pollWhile } from '#lib/remote.svelte.js';
+	import { Remote, keepFresh } from '#lib/remote.svelte.js';
 	import { states } from '#lib/sandbox-status.js';
 
 	let { handle, name }: { handle: string; name: string } = $props();
@@ -28,7 +29,7 @@
 	const catalog = new Remote(sandboxes.catalog);
 	let refreshing = $state(false);
 
-	pollWhile(() => (details.value ? states[details.value.sandbox.state].settling : false), details);
+	keepFresh(details, () => (details.value ? states[details.value.sandbox.state].settling : false));
 
 	async function refresh() {
 		refreshing = true;
@@ -59,6 +60,12 @@
 					{#if details.value.sandbox.isDefault}
 						<Badge variant="secondary">Default</Badge>
 					{/if}
+					{#if details.value.sandbox.deleteAt}
+						<Badge variant="destructive">Deletion scheduled</Badge>
+					{/if}
+					{#if details.value.sandbox.staleEnvironment}
+						<Badge variant="outline">Restart pending</Badge>
+					{/if}
 				{/if}
 			</div>
 			<p class="flex items-center gap-2 text-sm">
@@ -68,7 +75,13 @@
 					size="sm"
 					class="shrink-0"
 				/>
-				<span class="font-medium break-all">{handle}</span>
+				<a
+					href="/admin/sandboxes?owner={encodeURIComponent(handle)}"
+					class="rounded-sm font-medium break-all underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+					title="Sandboxes of {handle}"
+				>
+					{handle}
+				</a>
 			</p>
 			{#if details.value}
 				{@const { sandbox } = details.value}
@@ -78,18 +91,27 @@
 						sandbox.size
 					)} · Created <Timestamp value={sandbox.createdAt} />
 				</p>
+				<p class="text-sm text-muted-foreground">
+					SSH username
+					<code class="font-mono text-xs wrap-anywhere text-foreground">
+						{sandbox.ssh.username}
+					</code>
+				</p>
 			{/if}
 		</div>
 		{#if details.value}
-			<Button variant="outline" disabled={refreshing} onclick={refresh}>
-				{#if refreshing}
-					<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
-					Refreshing…
-				{:else}
-					<RefreshCwIcon />
-					Refresh
-				{/if}
-			</Button>
+			<div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+				<RefreshStatus remote={details} time />
+				<Button variant="outline" disabled={refreshing} onclick={refresh}>
+					{#if refreshing}
+						<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+						Refreshing…
+					{:else}
+						<RefreshCwIcon />
+						Refresh
+					{/if}
+				</Button>
+			</div>
 		{/if}
 	</header>
 

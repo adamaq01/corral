@@ -11,11 +11,14 @@
 	let {
 		open = $bindable(),
 		catalog,
+		handle,
 		count,
 		onCreated
 	}: {
 		open: boolean;
 		catalog: Catalog;
+		/** The signed-in user's handle, the second half of each sandbox's SSH username. */
+		handle: string;
 		/** How many sandboxes the user has now. */
 		count: number;
 		onCreated: (sandbox: Sandbox) => Promise<void>;
@@ -44,6 +47,11 @@
 
 	const named = $derived(catalog.namedImages && image === NAMED ? catalog.namedImages : undefined);
 
+	const NAME_PATTERN = /^[a-z0-9-]{1,32}$/;
+	const preview = $derived(
+		`ssh -p ${catalog.ssh.port} ${NAME_PATTERN.test(name) ? name : '<name>'}.${handle}@${catalog.ssh.host}`
+	);
+
 	async function create() {
 		const choice = named ? { imageReference: reference.trim() } : { image };
 		await onCreated(await sandboxes.create({ name, ...choice, size }));
@@ -57,6 +65,7 @@
 		? `You have ${count} of ${catalog.maxSandboxes} sandboxes, the most you can have. Delete one to make room.`
 		: `A persistent machine with its own home directory. You have ${count} of ${catalog.maxSandboxes} sandboxes.`}
 	submit="Create sandbox"
+	pendingLabel={named ? 'Checking the image…' : 'Creating…'}
 	ready={!full}
 	onsubmit={create}
 >
@@ -68,13 +77,15 @@
 			bind:value={name}
 			required
 			maxlength={32}
+			pattern={NAME_PATTERN.source.slice(1, -1)}
 			autocomplete="off"
 			autocapitalize="none"
 			spellcheck={false}
 			disabled={full}
 		/>
 		<Field.Description id="sandbox-name-hint">
-			Lowercase letters, digits and dashes. It becomes part of the SSH user name.
+			Up to 32 lowercase letters, digits and dashes. You then connect with
+			<code class="font-mono text-xs wrap-anywhere">{preview}</code>.
 		</Field.Description>
 	</Field.Field>
 	<Field.Field>

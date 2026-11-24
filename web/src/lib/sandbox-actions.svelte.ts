@@ -3,7 +3,7 @@ import type { Sandbox } from '#lib/api/generated/index.js';
 import { sandboxes } from '#lib/api/sandboxes.js';
 import { states, type Power, type State } from '#lib/sandbox-status.js';
 
-const calls: Record<Power, (name: string) => Promise<unknown>> = {
+const calls: Record<Power, (name: string) => Promise<{ ready: boolean } | void>> = {
 	wake: sandboxes.wake,
 	stop: sandboxes.stop,
 	restart: sandboxes.restart
@@ -21,13 +21,14 @@ const watched = new SvelteMap<string, Watch>();
 
 /**
  * Asks Corral to `power` the sandbox, which every page showing it then watches until it reaches
- * the state the power leads to.
+ * the state the power leads to. False when Corral answered before a wake finished.
  */
-export async function runPower(name: string, power: Power) {
+export async function runPower(name: string, power: Power): Promise<boolean> {
 	const running: Watch = { power, inFlight: true };
 	watched.set(name, running);
+	let ready: boolean;
 	try {
-		await calls[power](name);
+		ready = (await calls[power](name))?.ready ?? true;
 	} catch (error) {
 		if (watched.get(name) === running) {
 			watched.delete(name);
@@ -43,6 +44,7 @@ export async function runPower(name: string, power: Power) {
 			}
 		}, WATCH_MS);
 	}
+	return ready;
 }
 
 /** The power whose request for the sandbox is still in flight. */

@@ -28,8 +28,14 @@ const accounts: LocalAccount[] = [
 
 const sandboxes: OwnedSandbox[] = [
 	sandbox('ada', 'main', 'dev', 'small', true, { state: 'running' }, 39),
-	sandbox('ada', 'scratch', 'dev', 'small', false, { state: 'sleeping' }, 20),
-	sandbox('bob', 'main', 'dev', 'small', true, { state: 'starting' }, 1),
+	{
+		...sandbox('ada', 'scratch', 'dev', 'small', false, { state: 'sleeping' }, 20),
+		deleteAt: '2026-11-24T18:40:00Z'
+	},
+	{
+		...sandbox('bob', 'main', 'dev', 'small', true, { state: 'starting' }, 1),
+		staleEnvironment: true
+	},
 	sandbox(
 		'grace-hopper',
 		'compiler',
@@ -168,9 +174,16 @@ inEveryView((look) => {
 		await look(page, 'admin-users');
 
 		await page.getByRole('button', { name: 'Actions for bob' }).click();
-		await page.getByRole('menuitem', { name: 'Delete' }).click();
+		await page.getByRole('menuitem', { name: 'Delete user' }).click();
 		await page.getByRole('alertdialog').waitFor();
 		await look(page, 'admin-users-delete');
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Actions for bob' }).click();
+		await page.getByRole('menuitem', { name: 'Disable user' }).click();
+		await page.getByRole('alertdialog').waitFor();
+		await look(page, 'admin-users-disable');
 	});
 
 	test('users, empty', async ({ page }) => {

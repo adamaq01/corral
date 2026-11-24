@@ -103,7 +103,10 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await dialog.getByLabel('Label').fill('laptop');
 		await dialog.getByRole('button', { name: 'Add key' }).click();
 		await expect(dialog).toBeHidden();
-		const row = page.getByRole('listitem').filter({ hasText: 'laptop' });
+		const row = page
+			.getByRole('list', { name: 'SSH keys' })
+			.getByRole('listitem')
+			.filter({ hasText: 'laptop' });
 		await expect(row).toContainText(fingerprint);
 	});
 
@@ -216,8 +219,12 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await page.getByRole('button', { name: 'Delete sandbox' }).click();
 		const dialog = page.getByRole('alertdialog', { name: 'Delete main?' });
 		await expect(dialog).toContainText('remove the machine from Herdr');
-		await dialog.getByRole('button', { name: 'Delete sandbox' }).click();
+		const confirm = dialog.getByRole('button', { name: 'Delete sandbox' });
+		await expect(confirm).toBeDisabled();
+		await dialog.getByLabel('Type main to confirm').fill('main');
+		await confirm.click();
 		await expect(page).toHaveURL('/sandboxes');
+		await expect(page.getByText('Deleted main')).toBeVisible();
 		await expect(page.getByText('No sandboxes yet')).toBeVisible();
 		expect(containersOf('dora')).toEqual([]);
 	});

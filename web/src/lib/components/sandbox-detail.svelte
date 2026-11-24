@@ -5,13 +5,14 @@
 <script lang="ts">
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
+	import MoonIcon from '@lucide/svelte/icons/moon';
 	import PowerIcon from '@lucide/svelte/icons/power';
 	import RotateCwIcon from '@lucide/svelte/icons/rotate-cw';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
-	import SquareIcon from '@lucide/svelte/icons/square';
 	import StarIcon from '@lucide/svelte/icons/star';
 	import Trash2Icon from '@lucide/svelte/icons/trash-2';
 	import VariableIcon from '@lucide/svelte/icons/variable';
+	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
 	import { opksshLogin } from '#lib/api/auth.js';
 	import { failureMessage } from '#lib/api/client.js';
@@ -19,8 +20,10 @@
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import CopySnippet from '#lib/components/copy-snippet.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
+	import RefreshStatus from '#lib/components/refresh-status.svelte';
 	import SandboxEnvironment from '#lib/components/sandbox-environment.svelte';
 	import SandboxStateBadge from '#lib/components/sandbox-state-badge.svelte';
+	import StateAnnouncer from '#lib/components/state-announcer.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
@@ -37,7 +40,7 @@
 		opksshSnippets
 	} from '#lib/connect.js';
 	import { choiceLabel } from '#lib/catalog.js';
-	import { Remote, pollWhile } from '#lib/remote.svelte.js';
+	import { Remote, keepFresh } from '#lib/remote.svelte.js';
 	import { powerInFlight, runPower, unsettled } from '#lib/sandbox-actions.svelte.js';
 	import { states, type Power } from '#lib/sandbox-status.js';
 
@@ -47,47 +50,51 @@
 	const catalog = new Remote(sandboxes.catalog);
 	const opkssh = new Remote(opksshLogin);
 
-	type Action = Power | 'default';
+	keepFresh(sandbox, () => (sandbox.value ? unsettled(sandbox.value) : false));
 
-	const actions: Record<
-		Action,
-		{ label: string; pending: string; icon: typeof PowerIcon; run: () => Promise<unknown> }
-	> = {
-		wake: { label: 'Wake', pending: 'Waking…', icon: PowerIcon, run: () => runPower(name, 'wake') },
-		stop: {
-			label: 'Stop',
-			pending: 'Stopping…',
-			icon: SquareIcon,
-			run: () => runPower(name, 'stop')
-		},
-		restart: {
-			label: 'Restart',
-			pending: 'Restarting…',
-			icon: RotateCwIcon,
-			run: () => runPower(name, 'restart')
-		},
-		default: {
-			label: 'Make default',
-			pending: 'Saving…',
-			icon: StarIcon,
-			run: () => sandboxes.makeDefault(name)
-		}
+	const powers: Record<Power, { label: string; pending: string; icon: typeof PowerIcon }> = {
+		wake: { label: 'Wake', pending: 'Waking…', icon: PowerIcon },
+		stop: { label: 'Sleep', pending: 'Going to sleep…', icon: MoonIcon },
+		restart: { label: 'Restart', pending: 'Restarting…', icon: RotateCwIcon }
 	};
 
+	const inFlight = $derived(powerInFlight(name));
+	const starting = $derived(inFlight === 'wake' || inFlight === 'restart');
+	let failure = $state<{ action: string; message: string } | null>(null);
+	let stillStarting = $state(false);
 	let defaulting = $state(false);
-	const running = $derived<Action | null>(powerInFlight(name) ?? (defaulting ? 'default' : null));
-	let failure = $state<{ action: Action; message: string } | null>(null);
 	let deleting = $state(false);
 
-	pollWhile(() => (sandbox.value ? unsettled(sandbox.value) : false), sandbox);
+	let elapsed = $state(0);
+	$effect(() => {
+		if (!starting) {
+			return;
+		}
+		const since = Date.now();
+		elapsed = 0;
+		const timer = setInterval(() => (elapsed = Math.floor((Date.now() - since) / 1000)), 1000);
+		return () => clearInterval(timer);
+	});
 
-	async function act(action: Action) {
-		defaulting = action === 'default';
+	async function power(power: Power) {
+		failure = null;
+		stillStarting = false;
+		try {
+			stillStarting = !(await runPower(name, power));
+		} catch (error) {
+			failure = { action: powers[power].label, message: failureMessage(error) };
+		}
+		await sandbox.reload();
+	}
+
+	async function makeDefault() {
+		defaulting = true;
 		failure = null;
 		try {
-			await actions[action].run();
+			await sandboxes.makeDefault(name);
+			toast.success(`${name} is now your default sandbox`);
 		} catch (error) {
-			failure = { action, message: failureMessage(error) };
+			failure = { action: 'Make default', message: failureMessage(error) };
 		} finally {
 			defaulting = false;
 		}
@@ -96,6 +103,7 @@
 
 	async function remove() {
 		await sandboxes.remove(name);
+		toast.success(`Deleted ${name}`);
 		await goto('/sandboxes', { replace: true });
 	}
 
@@ -107,6 +115,7 @@
 		cancelFailure = null;
 		try {
 			await sandboxes.cancelDeletion(name);
+			toast.success(`Cancelled the deletion of ${name}`);
 		} catch (error) {
 			cancelFailure = failureMessage(error);
 		} finally {
@@ -120,15 +129,15 @@
 	<title>{name} · Corral</title>
 </svelte:head>
 
-{#snippet actionButton(action: Action, variant: 'default' | 'outline')}
-	{@const Icon = actions[action].icon}
-	<Button {variant} disabled={running !== null} onclick={() => act(action)}>
-		{#if running === action}
+{#snippet powerButton(action: Power, variant: 'default' | 'outline')}
+	{@const Icon = powers[action].icon}
+	<Button {variant} disabled={inFlight !== null} onclick={() => power(action)}>
+		{#if inFlight === action}
 			<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
-			{actions[action].pending}
+			{powers[action].pending}
 		{:else}
 			<Icon />
-			{actions[action].label}
+			{powers[action].label}
 		{/if}
 	</Button>
 {/snippet}
@@ -159,8 +168,17 @@
 					sandbox.value.size
 				)} · Created <Timestamp value={sandbox.value.createdAt} />
 			</p>
+			<p class="text-sm text-muted-foreground">
+				SSH username
+				<code class="font-mono text-xs wrap-anywhere text-foreground">
+					{sandbox.value.ssh.username}
+				</code>
+			</p>
 		{/if}
+		<RefreshStatus remote={sandbox} />
 	</header>
+
+	<StateAnnouncer sandboxes={sandbox.value ? [sandbox.value] : undefined} />
 
 	{#if sandbox.current.state === 'loading'}
 		<div class="grid gap-4" role="status" aria-label="Loading the sandbox">
@@ -197,37 +215,31 @@
 			</Alert.Root>
 		{/if}
 
-		{#if failure}
-			<Alert.Root variant="destructive">
-				<CircleAlertIcon />
-				<Alert.Title>{actions[failure.action].label} failed</Alert.Title>
-				<Alert.Description class="first-letter:uppercase">{failure.message}</Alert.Description>
-			</Alert.Root>
-		{/if}
-
 		{#if current.deleteAt}
 			<Alert.Root variant="destructive">
 				<Trash2Icon />
-				<Alert.Title>Deletes at {moment.format(new Date(current.deleteAt))}</Alert.Title>
-				<Alert.Description>
+				<Alert.Title>
+					Deletion scheduled for {moment.format(new Date(current.deleteAt))}
+				</Alert.Title>
+				<Alert.Description class="grid gap-3">
 					<p>
 						<code class="font-mono text-xs">corral delete</code> in this sandbox scheduled its deletion,
-						with everything in its home directory. It stays stopped until then, unless you cancel.
+						with everything in its home directory. It stays asleep until then, unless you cancel.
 					</p>
 					{#if cancelFailure}
-						<p class="text-destructive first-letter:uppercase" role="alert">{cancelFailure}</p>
+						<p class="first-letter:uppercase" role="alert">{cancelFailure}</p>
 					{/if}
+					<div>
+						<Button variant="outline" size="sm" disabled={cancelling} onclick={cancelDeletion}>
+							{#if cancelling}
+								<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+								Cancelling…
+							{:else}
+								Cancel deletion
+							{/if}
+						</Button>
+					</div>
 				</Alert.Description>
-				<Alert.Action>
-					<Button variant="outline" size="sm" disabled={cancelling} onclick={cancelDeletion}>
-						{#if cancelling}
-							<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
-							Cancelling…
-						{:else}
-							Cancel deletion
-						{/if}
-					</Button>
-				</Alert.Action>
 			</Alert.Root>
 		{/if}
 
@@ -243,15 +255,42 @@
 		{/if}
 
 		{#if presentation.manageable && !current.deleteAt}
-			{@const powers = current.staleEnvironment
+			{@const available = current.staleEnvironment
 				? (['restart', 'stop'] as const)
 				: presentation.powers}
-			<div class="flex flex-wrap gap-2">
-				{#each powers as power, index (power)}
-					{@render actionButton(power, index === 0 ? 'default' : 'outline')}
-				{/each}
-				{#if !current.isDefault}
-					{@render actionButton('default', 'outline')}
+			<div class="grid gap-3">
+				<div class="flex flex-wrap gap-2">
+					{#each available as action, index (action)}
+						{@render powerButton(action, index === 0 ? 'default' : 'outline')}
+					{/each}
+					{#if !current.isDefault}
+						<Button variant="outline" disabled={defaulting} onclick={makeDefault}>
+							{#if defaulting}
+								<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+								Saving…
+							{:else}
+								<StarIcon />
+								Make default
+							{/if}
+						</Button>
+					{/if}
+				</div>
+				{#if starting}
+					<p class="text-sm text-muted-foreground">
+						<span role="status">Starting {name}. This usually takes under a minute.</span>
+						<span aria-hidden="true">{elapsed} s so far.</span>
+					</p>
+				{:else if stillStarting && current.state === 'starting'}
+					<p class="text-sm text-muted-foreground" role="status">
+						{name} is still starting. This page updates when it is up.
+					</p>
+				{/if}
+				{#if failure}
+					<Alert.Root variant="destructive">
+						<CircleAlertIcon />
+						<Alert.Title>{failure.action} failed</Alert.Title>
+						<Alert.Description class="first-letter:uppercase">{failure.message}</Alert.Description>
+					</Alert.Root>
 				{/if}
 			</div>
 		{/if}
@@ -262,23 +301,22 @@
 				<Card.Description>
 					Any SSH client works with a key from <a class="underline underline-offset-4" href="/keys">
 						SSH keys
-					</a>. Connecting wakes a sleeping sandbox.
+					</a>.
+					{current.deleteAt
+						? 'Connections are refused until you cancel the deletion.'
+						: 'Connecting wakes a sleeping sandbox.'}
 				</Card.Description>
 			</Card.Header>
 			<Card.Content class="grid grid-cols-1 gap-4">
-				{#each connectSnippets(current) as snippet (snippet.label)}
+				{#each connectSnippets(current, handle) as snippet (snippet.label)}
 					<CopySnippet label={snippet.label} text={snippet.text} />
 				{/each}
 				<p class="text-sm text-muted-foreground">
 					With the SSH config block in <code class="font-mono text-xs">~/.ssh/config</code>,
 					<code class="font-mono text-xs">ssh {hostAlias(current)}</code> is enough.
-					{#if current.isDefault}
-						As your default sandbox, it also answers to
-						<code class="font-mono text-xs wrap-anywhere">
-							ssh -p {current.ssh.port}
-							{handle}@{current.ssh.host}
-						</code>.
-					{/if}
+					<a class="underline underline-offset-4" href="https://herdr.dev/">Herdr</a>, the app for
+					coding agents, shows the agents running in this sandbox once you add it with the Herdr
+					command.
 				</p>
 			</Card.Content>
 		</Card.Root>
@@ -309,6 +347,15 @@
 					</p>
 				</Card.Content>
 			</Card.Root>
+		{:else if opkssh.current.state === 'failed'}
+			<p class="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
+				<span class="first-letter:uppercase">
+					Checking for opkssh sign-in failed: {opkssh.current.error}.
+				</span>
+				<Button variant="link" size="sm" class="h-auto p-0" onclick={() => opkssh.reload()}>
+					Retry
+				</Button>
+			</p>
 		{/if}
 
 		<SandboxEnvironment sandbox={name} onchanged={() => sandbox.reload()} />
@@ -319,8 +366,19 @@
 					<Card.Title>Delete this sandbox</Card.Title>
 					<Card.Description>Deletes the sandbox and its home directory for good.</Card.Description>
 				</Card.Header>
-				<Card.Footer>
-					<Button variant="destructive" onclick={() => (deleting = true)}>Delete sandbox</Button>
+				<Card.Footer class="flex-wrap gap-3">
+					<Button
+						variant="destructive"
+						disabled={inFlight !== null}
+						onclick={() => (deleting = true)}
+					>
+						Delete sandbox
+					</Button>
+					{#if inFlight !== null}
+						<p class="text-sm text-muted-foreground">
+							You can delete it once {powers[inFlight].label} finishes.
+						</p>
+					{/if}
 				</Card.Footer>
 			</Card.Root>
 		{/if}
@@ -331,6 +389,7 @@
 	bind:open={deleting}
 	title="Delete {name}?"
 	action="Delete sandbox"
+	confirmName={name}
 	onconfirm={remove}
 >
 	<p>This deletes the sandbox and everything in its home directory. It cannot be undone.</p>

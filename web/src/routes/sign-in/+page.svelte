@@ -38,6 +38,12 @@
 					<Alert.Description class="first-letter:uppercase">{data.error}</Alert.Description>
 				</Alert.Root>
 			{/if}
+			{#if data.providers.length === 0}
+				<p class="text-sm text-muted-foreground">
+					No sign-in method is configured. Whoever runs Corral can turn on local accounts or a
+					single sign-on provider in its config.
+				</p>
+			{/if}
 			{#each data.providers as provider, index (provider.id)}
 				{#if index > 0}
 					<div class="flex items-center gap-3 text-xs text-muted-foreground uppercase">
