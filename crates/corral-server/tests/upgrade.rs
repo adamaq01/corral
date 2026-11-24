@@ -170,6 +170,7 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
                 &sandbox.id,
                 &SandboxSpec {
                     owner: owner.handle.clone(),
+                    user: owner.id,
                     name: sandbox.name.clone(),
                     image: "base".to_owned(),
                     resources: catalog().size(None).unwrap().resources,

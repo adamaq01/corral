@@ -38,7 +38,14 @@ does not reach sessions, so install tools into one of those directories, or add 
 a file under `/etc/profile.d/`.
 
 Only `/home/sandbox` survives sleep. The home files and variables of a sandbox's environment are
-written at every start.
+written at every start. `corral-init` records what it wrote in `~/.config/corral/home-files`,
+removes a file it wrote earlier that is no longer attached unless it was changed since, and lists
+what it could not do in `~/.config/corral/notices`, which the motd of an interactive login and
+`corral status` show.
+
+Every session's `SHELL` names the bash a login runs, the image's when it has one, else the
+overlay's: on Kubernetes through the link `/run/corral-accounts/bash`. The sandbox user is in its
+own group alone, whatever the image's `/etc/group` lists for uid 1000 or for `sandbox`.
 
 ## Who picks the image
 

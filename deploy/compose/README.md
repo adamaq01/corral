@@ -112,7 +112,9 @@ block, and wakes, stops, restarts or deletes the sandbox.
 - A sandbox gets the variables and files attached to it: each new sandbox those marked
   **Apply to new sandboxes**, and on its page you attach or detach others, or override one with
   a value for that sandbox alone. Changes reach a sandbox from its next wake or restart on, and a
-  running sandbox shows **Restart to apply** until then.
+  running sandbox shows **Restart to apply** until then. A file Corral wrote that is no longer
+  attached is removed at the next start, unless it was changed inside the sandbox; a file it
+  could not write, or left for that reason, is reported at login and by `corral status`.
 - Admins add, reset and delete local accounts under **Local accounts**, and disable, enable or
   delete users under **Users**. **All sandboxes** lists every user's sandboxes.
 - Deleting a user, as an admin or from your own **Profile**, deletes their sandboxes with their

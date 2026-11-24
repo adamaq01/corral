@@ -249,7 +249,7 @@ mod tests {
         ContainerConfig, ContainerCreateBody, ContainerInspectResponse, MountTypeEnum,
         RestartPolicyNameEnum,
     };
-    use corral_core::domain::{Allocation, Handle, Resources, SandboxId, SandboxName};
+    use corral_core::domain::{Allocation, Handle, Resources, SandboxId, SandboxName, UserId};
     use corral_core::ports::SandboxSpec;
 
     use super::{
@@ -267,6 +267,7 @@ mod tests {
     fn spec() -> SandboxSpec {
         SandboxSpec {
             owner: Handle::parse("adam").unwrap(),
+            user: UserId(uuid::Uuid::nil()),
             name: SandboxName::parse("main").unwrap(),
             image: "ghcr.io/adamaq01/corral-sandbox:1.0".to_owned(),
             resources: Resources {

@@ -7,7 +7,7 @@ use secrecy::SecretString;
 use super::Inspection;
 use crate::Result;
 use crate::domain::{
-    Handle, HomeFiles, Resources, SandboxId, SandboxName, SandboxStatus, VariableName,
+    Handle, HomeFiles, Resources, SandboxId, SandboxName, SandboxStatus, UserId, VariableName,
 };
 
 pub type VariableMap = BTreeMap<VariableName, SecretString>;
@@ -32,6 +32,7 @@ pub struct Started {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxSpec {
     pub owner: Handle,
+    pub user: UserId,
     pub name: SandboxName,
     pub image: String,
     pub resources: Resources,

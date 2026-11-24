@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use corral_core::Error;
 use corral_core::domain::{
     Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId, SandboxName,
-    SandboxStatus, VariableName,
+    SandboxStatus, UserId, VariableName,
 };
 use corral_core::ports::{
     Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, VariableMap,
@@ -69,6 +69,7 @@ fn token(token: &str) -> VariableMap {
 fn spec(name: &str) -> SandboxSpec {
     SandboxSpec {
         owner: Handle::parse("adam").unwrap(),
+        user: UserId(uuid::Uuid::nil()),
         name: SandboxName::parse(name).unwrap(),
         image: image(),
         resources: Resources {
@@ -173,7 +174,7 @@ impl Lab {
     }
 
     async fn create_from(&self, engine: &DockerEngine, spec: &SandboxSpec) -> SandboxId {
-        let id = SandboxId::generate();
+        let id = SandboxId::generate(&spec.owner, &spec.name);
         engine.create(&id, spec).await.unwrap();
         self.sandboxes
             .lock()
@@ -492,10 +493,11 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     assert_eq!(
         lab.ssh(
             &name,
-            "cat ~/.config/corral/sandbox.json ~/kept ~/'notes dir/notes.txt'"
+            "cat ~/.config/corral/sandbox.json ~/kept; test -e ~/'notes dir/notes.txt' || echo gone"
         ),
-        "secondmine\nnotes",
-        "a start rewrites the files, and leaves the rest of the home alone"
+        "secondmine\ngone",
+        "a start rewrites the files, removes those it no longer writes, and leaves the rest of \
+         the home alone"
     );
     assert_eq!(
         lab.ssh(

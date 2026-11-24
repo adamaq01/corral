@@ -178,7 +178,7 @@ impl Sandboxes {
             .catalog
             .size(Some(request.size.as_ref().unwrap_or(&defaults.size)))?;
         let sandbox = Sandbox {
-            id: SandboxId::generate(),
+            id: SandboxId::generate(&owner.handle, &request.name),
             owner: owner.id,
             name: request.name,
             image,
@@ -395,6 +395,7 @@ impl Sandboxes {
         };
         Some(SandboxSpec {
             owner,
+            user: sandbox.owner,
             name: sandbox.name.clone(),
             image,
             resources: self.catalog.size(Some(&sandbox.size)).ok()?.resources,

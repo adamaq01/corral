@@ -15,12 +15,13 @@ volume=$prefix-home
 client=$prefix-client
 server=$prefix-sshd
 baked=$prefix-baked:dev
+groups=$prefix-groups:dev
 
 remove_resources() {
   docker rm --force "$client" "$server" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
-  docker rmi "$baked" >/dev/null 2>&1 || true
+  docker rmi "$baked" "$groups" >/dev/null 2>&1 || true
 }
 trap remove_resources EXIT
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -119,6 +120,27 @@ listed() {
   docker exec --user 1000 "$server" /opt/corral/bin/busybox ps -o args | grep -Eq "$1"
 }
 
+# The bash a base image's logins run: its own, or the overlay's.
+bash_of() {
+  docker run --rm --user 0 --entrypoint /opt/corral/bin/sh \
+    --mount "type=image,source=$overlay,target=/opt/corral" "$1" -c '
+      for shell in /bin/bash /usr/bin/bash /opt/corral/bin/bash; do
+        [ -x "$shell" ] && echo "$shell" && break
+      done'
+}
+
+# As the Kubernetes engine's init container prepares a pod: the account files, and a link to the
+# bash every session's SHELL names.
+check_prepare() {
+  check "the Kubernetes init container links the bash a login runs" "$(bash_of "$base")" \
+    "$(docker run --rm --user 0 --entrypoint /opt/corral/bin/sh \
+      --mount "type=image,source=$overlay,target=/opt/corral" \
+      --mount "type=tmpfs,destination=/home/sandbox,tmpfs-mode=0777" "$base" -c '
+        /opt/corral/bin/busybox mkdir /tmp/accounts
+        /opt/corral/bin/corral-init prepare /tmp/accounts >/dev/null
+        /opt/corral/bin/busybox readlink /tmp/accounts/bash')"
+}
+
 check_base() {
   base=$1
   docker image inspect "$base" >/dev/null 2>&1 || docker pull --quiet "$base" >/dev/null
@@ -128,12 +150,15 @@ check_base() {
 2 0600 notes.txt/blocked
 MANIFEST
   start_server "$base"
+  check_prepare
 
   check "a session runs as the sandbox user, uid 1000" "sandbox 1000" "$(ssh_run 'echo "$(id -un) $(id -u)"')"
   check "uid 1000 is the sandbox user alone" "sandbox" \
     "$(ssh_run "awk -F: '\$3 == 1000 { print \$1 }' /etc/passwd")"
   check "passwordless sudo" root "$(ssh_run 'sudo -n id -un')"
   check "the login shell is a bash" bash "$(ssh_run 'basename "$SHELL"')"
+  check "a command's SHELL is the bash a login runs" "$(bash_of "$base")" "$(ssh_run 'echo "$SHELL"')"
+  check "the sandbox user is in its own group alone" "1000" "$(ssh_run 'id -G')"
   check "the written SetEnv reaches the session" bar "$(ssh_run 'printenv FOO_TOKEN')"
   check "no CORRAL_ variable reaches the session" "" "$(ssh_run 'env | grep ^CORRAL_; true')"
   check "corral is on PATH" "corral acts on the Corral sandbox it runs in." \
@@ -160,6 +185,12 @@ MANIFEST
 644 sandbox" \
     "$(ssh_run 'cat ~/".config/corral test/secret"; echo; stat -c "%a %U" ~/".config/corral test/secret" ~/".config/corral test" ~/notes.txt')"
   check "a staged file that cannot be written is skipped" plain "$(ssh_run 'cat ~/notes.txt')"
+  check "a file it could not write is reported at login and by corral status" 1 \
+    "$(grep -c 'Corral could not write ~/notes.txt/blocked' <<<"$login" || true)"
+  [[ "$(ssh_run 'cat ~/.config/corral/notices')" == *"~/notes.txt/blocked"* ]] ||
+    fail "$base: the notice of an unwritten file"
+  echo "ok - $base: corral status reads the notices corral-init writes"
+
 
   docker exec --detach "$client" ssh "${ssh_options[@]}" "sandbox@$server" sleep 30
   for _ in $(seq 25); do
@@ -177,12 +208,32 @@ MANIFEST
   ssh_run 'echo kept > ~/kept && echo "edited inside" > ~/".config/corral test/secret"'
   stage_home_files second <<'MANIFEST'
 0 0600 .config/corral test/secret
+1 0644 notes.txt
+2 0644 unchanged
 MANIFEST
   docker rm --force "$server" >/dev/null
   start_server "$base"
   check "a new container keeps the home and replaces the staged files" "kept
 second
 plain" "$(ssh_run 'cat ~/kept; cat ~/".config/corral test/secret"; echo; cat ~/notes.txt')"
+  check "nothing to report leaves no notices" absent "$(ssh_run 'test -e ~/.config/corral/notices || echo absent')"
+
+  stage_home_files third <<'MANIFEST'
+0 0600 .config/corral test/secret
+MANIFEST
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a file Corral wrote and no longer stages is removed" gone \
+    "$(ssh_run 'test -e ~/unchanged || test -e ~/notes.txt || echo gone')"
+  check "a file Corral never wrote stays" kept "$(ssh_run 'cat ~/kept')"
+
+  ssh_run 'echo "edited inside" > ~/".config/corral test/secret"'
+  stage_home_files fourth </dev/null
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a file changed in the sandbox is left and reported" "edited inside
+~/.config/corral test/secret is no longer attached, but it was changed in the sandbox, so Corral left it." \
+    "$(ssh_run 'cat ~/".config/corral test/secret"; cat ~/.config/corral/notices')"
 
   docker rm --force "$server" >/dev/null
   docker volume rm "$volume" >/dev/null
@@ -191,6 +242,15 @@ plain" "$(ssh_run 'cat ~/kept; cat ~/".config/corral test/secret"; echo; cat ~/n
 for each in "${bases[@]}"; do
   check_base "$each"
 done
+
+# An image whose own uid 1000, and a group listing sandbox, would give the sandbox user more
+# groups.
+docker build --quiet --tag "$groups" - >/dev/null <<'EOF2'
+FROM alpine:3.24
+RUN adduser -D -u 1000 olduser && addgroup -g 1500 extra && addgroup olduser extra \
+ && addgroup olduser wheel && echo 'tools:x:1600:sandbox' >> /etc/group
+EOF2
+check_base "$groups"
 
 # An image that bakes the overlay in still starts the same way.
 base=recipe

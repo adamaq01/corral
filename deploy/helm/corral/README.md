@@ -43,6 +43,15 @@ In the sandbox namespace (`<release>-sandboxes` by default, created by the chart
   exec into Pods for the idle check. A Role for ContainerSSH: reading Pods and exec into them.
 - The ServiceAccount sandboxes run as, with no token mounted.
 
+Corral then makes, for each sandbox, a `Sandbox`, its home claim `home-<id>` and the Secrets
+`<id>-env` and `<id>-home`. The id is `<handle>-<sandbox>-<6 hex>` (`sbx-<12 hex>` for an older
+sandbox), and each of these objects and the pod carry the labels and annotations
+`corral.adamaq01.fr/owner` (the handle), `corral.adamaq01.fr/user-id` and
+`corral.adamaq01.fr/sandbox` (the name), so a released volume tells whose it was. The pod runs
+with `supplementalGroupsPolicy: Strict`, which needs a container runtime that supports it, such
+as containerd 2.0 or later or CRI-O 1.31 or later: the sandbox user gets only its own group, not
+the groups the image's `/etc/group` lists for uid 1000.
+
 Neither Corral nor ContainerSSH has rights outside the sandbox namespace, and users never get
 cluster access. The chart does not install agent-sandbox or the CloudNativePG operator.
 

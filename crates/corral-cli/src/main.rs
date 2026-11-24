@@ -28,8 +28,12 @@ fn main() -> ExitCode {
         }
     };
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-    let outcome =
-        SandboxFile::read(&home).and_then(|file| run(&command, &file, &Client::new(&file)));
+    let outcome = SandboxFile::read(&home)
+        .and_then(|file| run(&command, &file, &Client::new(&file)))
+        .map(|text| match command {
+            Command::Status => with_notices(text, &sandbox_file::notices(&home)),
+            _ => text,
+        });
     match outcome {
         Ok(text) => {
             println!("{text}");
@@ -86,6 +90,15 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
     }
 }
 
+/// The status, then what the last start has to tell, such as a home file it could not write.
+fn with_notices(status: String, notices: &[String]) -> String {
+    if notices.is_empty() {
+        return status;
+    }
+    let listed: Vec<String> = notices.iter().map(|notice| format!("  {notice}")).collect();
+    format!("{status}\n\nAt the last start:\n{}", listed.join("\n"))
+}
+
 fn expect(reply: client::Reply, status: u16) -> Result<Value, String> {
     if reply.status == status {
         Ok(reply.body)
@@ -114,7 +127,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::run;
+    use super::{run, with_notices};
     use crate::client::{Corral, Reply};
     use crate::command::Command;
     use crate::sandbox_file::SandboxFile;
@@ -196,6 +209,21 @@ mod tests {
             "Sandbox  main.adam\nState    running\nImage    ubuntu\nSize     small"
         );
         assert_eq!(calls, ["GET /api/sandbox"]);
+    }
+
+    #[test]
+    fn status_ends_with_the_notices_of_the_last_start() {
+        assert_eq!(
+            with_notices("State running".to_owned(), &[]),
+            "State running"
+        );
+        assert_eq!(
+            with_notices(
+                "State running".to_owned(),
+                &["Corral could not write ~/x.".to_owned()]
+            ),
+            "State running\n\nAt the last start:\n  Corral could not write ~/x."
+        );
     }
 
     #[test]

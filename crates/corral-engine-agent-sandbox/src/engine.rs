@@ -67,10 +67,11 @@ impl AgentSandboxEngine {
         Ok(pod.and_then(|pod| pod.metadata.uid))
     }
 
-    async fn write_boot(&self, id: &SandboxId, boot: &Boot) -> Result<()> {
+    async fn write_boot(&self, id: &SandboxId, boot: &Boot, workload: &Workload) -> Result<()> {
         let namespace = &self.config.namespace;
-        let home = manifest::home_secret(id, &boot.files, namespace)?;
-        for secret in [manifest::env_secret(id, &boot.env, namespace), home] {
+        let home = manifest::home_secret(id, &boot.files, namespace, workload)?;
+        let env = manifest::env_secret(id, &boot.env, namespace, workload);
+        for secret in [env, home] {
             let name = secret.metadata.name.clone().unwrap_or_default();
             self.secrets
                 .patch(
@@ -116,11 +117,11 @@ impl AgentSandboxEngine {
                 "at most {max} sandboxes may run at once"
             )));
         }
-        self.write_boot(id, boot).await?;
         let workload = match spec {
             Some(spec) => Workload::new(id, spec),
             None => Workload::recorded(&sandbox)?,
         };
+        self.write_boot(id, boot, &workload).await?;
         let template = manifest::pod_template(id, &workload, &self.config);
         // A replace drops what the template no longer has, which a merge patch would keep; one
         // patch for both means a resume never starts a pod from the old template.

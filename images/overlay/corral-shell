@@ -1,9 +1,16 @@
 #!/opt/corral/bin/sh
 # The sandbox user's login shell on every engine: the image's bash, or the overlay's, as a login
 # shell, with the overlay's commands at the end of PATH and the motd before an interactive login.
-for shell in /bin/bash /usr/bin/bash /opt/corral/bin/bash; do
-  [ -x "$shell" ] && break
-done
+# A SHELL already naming a bash, as the Kubernetes engine sets for every session, is kept.
+shell=
+case "${SHELL:-}" in
+  */bash) [ -x "$SHELL" ] && shell=$SHELL ;;
+esac
+if [ -z "$shell" ]; then
+  for shell in /bin/bash /usr/bin/bash /opt/corral/bin/bash; do
+    [ -x "$shell" ] && break
+  done
+fi
 case ":${PATH:-}:" in
   *:/opt/corral/bin:*) ;;
   *) PATH="${PATH:-/usr/local/bin:/usr/bin:/bin}:/opt/corral/bin:/opt/corral/fallback" ;;
@@ -11,5 +18,11 @@ esac
 export PATH SHELL="$shell"
 if [ $# -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
   /opt/corral/bin/busybox cat /opt/corral/etc/motd
+  notices=/home/sandbox/.config/corral/notices
+  if [ -s "$notices" ]; then
+    echo "At this sandbox's last start:"
+    /opt/corral/bin/busybox sed 's/^/  /' "$notices"
+    echo
+  fi
 fi
 exec "$shell" -l "$@"

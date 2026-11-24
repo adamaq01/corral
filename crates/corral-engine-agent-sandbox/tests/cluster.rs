@@ -7,7 +7,7 @@ use corral_activity::{Exec, Sweepable};
 use corral_core::Error;
 use corral_core::domain::{
     Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId, SandboxName,
-    SandboxStatus, VariableName,
+    SandboxStatus, UserId, VariableName,
 };
 use corral_core::ports::labels::SANDBOX_ID;
 use corral_core::ports::{
@@ -117,8 +117,9 @@ impl Cluster {
     }
 
     async fn create(&self, name: &str) -> SandboxId {
-        let id = SandboxId::generate();
-        self.engine.create(&id, &spec(name)).await.unwrap();
+        let spec = spec(name);
+        let id = SandboxId::generate(&spec.owner, &spec.name);
+        self.engine.create(&id, &spec).await.unwrap();
         id
     }
 
@@ -231,6 +232,11 @@ async fn sessions_run_as_the_sandbox_user_with_their_variables(cluster: &Cluster
         "the overlay's account files make uid 1000 the sandbox user, with passwordless sudo"
     );
     assert_eq!(
+        cluster.exec(id, &["sh", "-c", SHELL_AND_GROUPS]).await,
+        (0, "1000\n/run/corral-accounts/bash\n5\n".to_owned()),
+        "every session has its own group alone, and a SHELL naming a bash"
+    );
+    assert_eq!(
         cluster
             .exec(id, &["sh", "-c", "corral help | head -n 1"])
             .await,
@@ -270,6 +276,8 @@ async fn sessions_run_as_the_sandbox_user_with_their_variables(cluster: &Cluster
         "only the home init step sees the staged files"
     );
 }
+
+const SHELL_AND_GROUPS: &str = r#"id -G; echo $SHELL; "$SHELL" -c 'echo $BASH_VERSION' | cut -c1"#;
 
 const HOME_FILE_LISTING: &str = "cd /home/sandbox/.config && \
     stat -c '%a %u %g %n' \"$PWD/corral test/token\" \"$PWD/corral test\" && \
@@ -717,6 +725,7 @@ where
 fn spec(name: &str) -> SandboxSpec {
     SandboxSpec {
         owner: Handle::parse("corral-test").unwrap(),
+        user: UserId(uuid::Uuid::nil()),
         name: SandboxName::parse(name).unwrap(),
         image: std::env::var("CORRAL_SANDBOX_IMAGE")
             .unwrap_or_else(|_| "corral-sandbox:dev".to_owned()),

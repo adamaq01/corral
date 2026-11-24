@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use corral_core::domain::{Allocation, HomeFiles, Resources, SandboxId};
 use corral_core::ports::home_staging::{self, Staged};
-use corral_core::ports::labels::{self, MANAGED_BY, MANAGER, SANDBOX_ID};
+use corral_core::ports::labels;
 use corral_core::ports::{SandboxSpec, VariableMap};
 use corral_core::{Error, Result};
 use k8s_openapi::ByteString;
@@ -45,6 +45,9 @@ const ACCOUNT_FILES: [(&str, &str); 5] = [
 // ContainerSSH runs a command through /bin/sh with the container's environment, so the
 // overlay's commands are on this PATH, which an sshd session on Docker gets too.
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback";
+/// What every session's SHELL names: a link `corral-init prepare` makes to the bash a login runs,
+/// the image's or the overlay's.
+const SHELL: &str = "/run/corral-accounts/bash";
 // Kubernetes refuses a Secret whose data is larger.
 const SECRET_LIMIT: usize = 1 << 20;
 
@@ -68,6 +71,7 @@ pub fn home_secret_name(id: &SandboxId) -> String {
 /// when the template is made.
 pub struct Workload {
     labels: BTreeMap<String, String>,
+    annotations: BTreeMap<String, String>,
     image: String,
     resources: ResourceRequirements,
 }
@@ -77,6 +81,7 @@ impl Workload {
     pub fn new(id: &SandboxId, spec: &SandboxSpec) -> Self {
         Self {
             labels: labels::of(id, spec),
+            annotations: labels::annotations(spec),
             image: spec.image.clone(),
             resources: resources(&spec.resources),
         }
@@ -103,6 +108,11 @@ impl Workload {
                 .as_ref()
                 .and_then(|metadata| metadata.labels.clone())
                 .ok_or_else(|| unreadable("labels"))?,
+            annotations: template
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.annotations.clone())
+                .unwrap_or_default(),
             image: container.image.clone().ok_or_else(|| unreadable("image"))?,
             resources: container
                 .resources
@@ -114,19 +124,20 @@ impl Workload {
 
 #[must_use]
 pub fn build(id: &SandboxId, spec: &SandboxSpec, cfg: &AgentSandboxConfig) -> Sandbox {
-    let labels = labels::of(id, spec);
+    let workload = Workload::new(id, spec);
     Sandbox {
         metadata: ObjectMeta {
             name: Some(id.0.clone()),
             namespace: Some(cfg.namespace.clone()),
-            labels: Some(labels.clone()),
+            labels: Some(workload.labels.clone()),
+            annotations: Some(workload.annotations.clone()),
             ..ObjectMeta::default()
         },
         spec: crd::SandboxSpec {
             operating_mode: OperatingMode::Suspended,
             failed_pod_policy: Some(FailedPodPolicy::Recreate),
-            pod_template: pod_template(id, &Workload::new(id, spec), cfg),
-            volume_claim_templates: vec![home_claim(&spec.resources, cfg, labels)],
+            pod_template: pod_template(id, &workload, cfg),
+            volume_claim_templates: vec![home_claim(&spec.resources, cfg, &workload)],
         },
         status: None,
     }
@@ -141,6 +152,7 @@ pub fn pod_template(
     PodTemplateSpec {
         metadata: Some(ObjectMeta {
             labels: Some(workload.labels.clone()),
+            annotations: Some(workload.annotations.clone()),
             ..ObjectMeta::default()
         }),
         spec: Some(pod_spec(id, workload, cfg)),
@@ -148,7 +160,12 @@ pub fn pod_template(
 }
 
 #[must_use]
-pub fn env_secret(id: &SandboxId, env: &VariableMap, namespace: &str) -> Secret {
+pub fn env_secret(
+    id: &SandboxId,
+    env: &VariableMap,
+    namespace: &str,
+    workload: &Workload,
+) -> Secret {
     let data = env
         .iter()
         .map(|(name, value)| {
@@ -156,12 +173,17 @@ pub fn env_secret(id: &SandboxId, env: &VariableMap, namespace: &str) -> Secret 
             (name.as_str().to_owned(), ByteString(bytes))
         })
         .collect();
-    secret(id, secret_name(id), namespace, data)
+    secret(secret_name(id), namespace, workload, data)
 }
 
 /// The home files as `corral-init` reads them, staged by key; refused beyond what a Secret
 /// holds.
-pub fn home_secret(id: &SandboxId, files: &HomeFiles, namespace: &str) -> Result<Secret> {
+pub fn home_secret(
+    id: &SandboxId,
+    files: &HomeFiles,
+    namespace: &str,
+    workload: &Workload,
+) -> Result<Secret> {
     let Staged { manifest, files } = home_staging::stage(files);
     let mut data = BTreeMap::from([(
         home_staging::MANIFEST.to_owned(),
@@ -181,23 +203,21 @@ pub fn home_secret(id: &SandboxId, files: &HomeFiles, namespace: &str) -> Result
             id.0
         )));
     }
-    Ok(secret(id, home_secret_name(id), namespace, data))
+    Ok(secret(home_secret_name(id), namespace, workload, data))
 }
 
 fn secret(
-    id: &SandboxId,
     name: String,
     namespace: &str,
+    workload: &Workload,
     data: BTreeMap<String, ByteString>,
 ) -> Secret {
     Secret {
         metadata: ObjectMeta {
             name: Some(name),
             namespace: Some(namespace.to_owned()),
-            labels: Some(BTreeMap::from([
-                (MANAGED_BY.to_owned(), MANAGER.to_owned()),
-                (SANDBOX_ID.to_owned(), id.0.clone()),
-            ])),
+            labels: Some(workload.labels.clone()),
+            annotations: Some(workload.annotations.clone()),
             ..ObjectMeta::default()
         },
         type_: Some("Opaque".to_owned()),
@@ -217,6 +237,9 @@ fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> Po
             run_as_user: Some(SANDBOX_UID),
             run_as_group: Some(SANDBOX_UID),
             fs_group: Some(SANDBOX_UID),
+            // Without it, the runtime also gives uid 1000 the groups the image's /etc/group
+            // lists for its own user of that uid.
+            supplemental_groups_policy: Some("Strict".to_owned()),
             ..PodSecurityContext::default()
         }),
         image_pull_secrets: (!cfg.image_pull_secrets.is_empty()).then(|| {
@@ -284,11 +307,14 @@ fn sandbox_container(id: &SandboxId, workload: &Workload) -> Container {
         sub_path: Some(file.to_owned()),
         ..read_only(ACCOUNTS_VOLUME, path)
     }));
+    // The whole directory, since a subPath mount refuses a link pointing out of its volume.
+    mounts.push(read_only(ACCOUNTS_VOLUME, ACCOUNTS_PATH));
     let env = [
         ("HOME", HOME_PATH),
         ("USER", "sandbox"),
         ("LOGNAME", "sandbox"),
         ("PATH", PATH),
+        ("SHELL", SHELL),
     ];
     Container {
         name: CONTAINER.to_owned(),
@@ -375,12 +401,13 @@ fn resources(resources: &Resources) -> ResourceRequirements {
 fn home_claim(
     resources: &Resources,
     cfg: &AgentSandboxConfig,
-    labels: BTreeMap<String, String>,
+    workload: &Workload,
 ) -> PersistentVolumeClaimTemplate {
     PersistentVolumeClaimTemplate {
         metadata: Some(ObjectMeta {
             name: Some(HOME_VOLUME.to_owned()),
-            labels: Some(labels),
+            labels: Some(workload.labels.clone()),
+            annotations: Some(workload.annotations.clone()),
             ..ObjectMeta::default()
         }),
         spec: PersistentVolumeClaimSpec {
@@ -405,7 +432,7 @@ mod tests {
     use corral_core::Error;
     use corral_core::domain::{
         Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId,
-        SandboxName, VariableName,
+        SandboxName, UserId, VariableName,
     };
     use corral_core::ports::{SandboxSpec, VariableMap};
     use secrecy::{SecretSlice, SecretString};
@@ -417,6 +444,7 @@ mod tests {
     fn spec() -> SandboxSpec {
         SandboxSpec {
             owner: Handle::parse("adam").unwrap(),
+            user: UserId(uuid::Uuid::nil()),
             name: SandboxName::parse("main").unwrap(),
             image: "ghcr.io/adamaq01/corral-sandbox:1".to_owned(),
             resources: Resources {
@@ -453,43 +481,68 @@ mod tests {
         }
     }
 
+    fn labels() -> Value {
+        json!({
+            "app.kubernetes.io/managed-by": "corral",
+            "corral.adamaq01.fr/owner": "adam",
+            "corral.adamaq01.fr/sandbox": "main",
+            "corral.adamaq01.fr/sandbox-id": "sbx-0123456789ab",
+            "corral.adamaq01.fr/user-id": "00000000-0000-0000-0000-000000000000",
+        })
+    }
+
+    fn annotations() -> Value {
+        json!({
+            "corral.adamaq01.fr/owner": "adam",
+            "corral.adamaq01.fr/sandbox": "main",
+            "corral.adamaq01.fr/user-id": "00000000-0000-0000-0000-000000000000",
+        })
+    }
+
     fn manifests() -> (Value, Value) {
         let id = SandboxId("sbx-0123456789ab".to_owned());
         let spec = spec();
         let cfg = cfg();
         (
             serde_json::to_value(build(&id, &spec, &cfg)).unwrap(),
-            serde_json::to_value(env_secret(&id, &env(), &cfg.namespace)).unwrap(),
+            serde_json::to_value(env_secret(
+                &id,
+                &env(),
+                &cfg.namespace,
+                &Workload::new(&id, &spec),
+            ))
+            .unwrap(),
         )
     }
 
     #[test]
     fn manifest_sets_identity_security_and_volumes() {
         let (sandbox, _) = manifests();
-        let labels = json!({
-            "app.kubernetes.io/managed-by": "corral",
-            "corral.adamaq01.fr/owner": "adam",
-            "corral.adamaq01.fr/sandbox": "main",
-            "corral.adamaq01.fr/sandbox-id": "sbx-0123456789ab",
-        });
+        let (labels, annotations) = (labels(), annotations());
         assert_eq!(sandbox["apiVersion"], "agents.x-k8s.io/v1beta1");
         assert_eq!(sandbox["kind"], "Sandbox");
         assert_eq!(sandbox["metadata"]["name"], "sbx-0123456789ab");
         assert_eq!(sandbox["metadata"]["namespace"], "corral-sandboxes");
         assert_eq!(sandbox["metadata"]["labels"], labels);
-        assert!(sandbox["metadata"].get("annotations").is_none());
+        assert_eq!(sandbox["metadata"]["annotations"], annotations);
         assert_eq!(sandbox["spec"]["operatingMode"], "Suspended");
         assert_eq!(sandbox["spec"]["failedPodPolicy"], "Recreate");
         assert!(sandbox["spec"].get("shutdownTime").is_none());
 
         let template = &sandbox["spec"]["podTemplate"];
         assert_eq!(template["metadata"]["labels"], labels);
+        assert_eq!(template["metadata"]["annotations"], annotations);
         let pod = &template["spec"];
         assert_eq!(pod["serviceAccountName"], "corral-sandbox");
         assert_eq!(pod["automountServiceAccountToken"], false);
         assert_eq!(
             pod["securityContext"],
-            json!({"runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000})
+            json!({
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "fsGroup": 1000,
+                "supplementalGroupsPolicy": "Strict",
+            })
         );
         let home = json!({"name": "home", "mountPath": "/home/sandbox"});
         let overlay =
@@ -522,6 +575,7 @@ mod tests {
                     {"name": "USER", "value": "sandbox"},
                     {"name": "LOGNAME", "value": "sandbox"},
                     {"name": "PATH", "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback"},
+                    {"name": "SHELL", "value": "/run/corral-accounts/bash"},
                 ],
                 "envFrom": [{"secretRef": {"name": "sbx-0123456789ab-env"}}],
                 "resources": {
@@ -538,6 +592,7 @@ mod tests {
                     account("shadow", "/etc/shadow"),
                     account("sudoers", "/etc/sudoers.d/corral-sandbox"),
                     account("profile.sh", "/etc/profile.d/corral.sh"),
+                    {"name": "corral-accounts", "mountPath": "/run/corral-accounts", "readOnly": true},
                 ],
             }])
         );
@@ -547,7 +602,7 @@ mod tests {
     fn manifest_mounts_the_agent_and_the_overlay_and_claims_the_home() {
         let (sandbox, _) = manifests();
         let pod = &sandbox["spec"]["podTemplate"]["spec"];
-        let labels = &sandbox["metadata"]["labels"];
+        let (labels, annotations) = (&sandbox["metadata"]["labels"], annotations());
         assert_eq!(
             pod["volumes"],
             json!([
@@ -569,7 +624,7 @@ mod tests {
         assert_eq!(
             sandbox["spec"]["volumeClaimTemplates"],
             json!([{
-                "metadata": {"name": "home", "labels": labels},
+                "metadata": {"name": "home", "labels": labels, "annotations": annotations},
                 "spec": {
                     "accessModes": ["ReadWriteOnce"],
                     "storageClassName": "tns-csi-nvmeof",
@@ -651,10 +706,8 @@ mod tests {
                 "metadata": {
                     "name": "sbx-0123456789ab-env",
                     "namespace": "corral-sandboxes",
-                    "labels": {
-                        "app.kubernetes.io/managed-by": "corral",
-                        "corral.adamaq01.fr/sandbox-id": "sbx-0123456789ab",
-                    },
+                    "labels": labels(),
+                    "annotations": annotations(),
                 },
                 "type": "Opaque",
                 "data": {
@@ -684,7 +737,8 @@ mod tests {
     #[test]
     fn the_home_secret_stages_files_by_key_up_to_a_secrets_size() {
         let id = SandboxId("sbx-0123456789ab".to_owned());
-        let secret = home_secret(&id, &home_files(&[2, 3]), "corral-sandboxes").unwrap();
+        let workload = Workload::new(&id, &spec());
+        let secret = home_secret(&id, &home_files(&[2, 3]), "corral-sandboxes", &workload).unwrap();
         assert_eq!(
             serde_json::to_value(secret).unwrap(),
             json!({
@@ -693,10 +747,8 @@ mod tests {
                 "metadata": {
                     "name": "sbx-0123456789ab-home",
                     "namespace": "corral-sandboxes",
-                    "labels": {
-                        "app.kubernetes.io/managed-by": "corral",
-                        "corral.adamaq01.fr/sandbox-id": "sbx-0123456789ab",
-                    },
+                    "labels": labels(),
+                    "annotations": annotations(),
                 },
                 "type": "Opaque",
                 "data": {
@@ -709,9 +761,9 @@ mod tests {
 
         let manifest = "0 0640 dir/file-0\n1 0640 dir/file-1\n".len() + "manifest".len() + 2;
         let fits = (1 << 20) - manifest - (1 << 19);
-        home_secret(&id, &home_files(&[1 << 19, fits]), "ns").unwrap();
+        home_secret(&id, &home_files(&[1 << 19, fits]), "ns", &workload).unwrap();
         assert!(matches!(
-            home_secret(&id, &home_files(&[1 << 19, fits + 1]), "ns"),
+            home_secret(&id, &home_files(&[1 << 19, fits + 1]), "ns", &workload),
             Err(Error::Invalid(_))
         ));
     }

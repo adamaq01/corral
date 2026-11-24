@@ -3,20 +3,44 @@ use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::{ImageKey, ImageReference, SandboxName, SizeKey, UserId};
+use super::{Handle, ImageKey, ImageReference, SandboxName, SizeKey, UserId};
 use crate::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SandboxId(pub String);
 
+/// The most an id generated now takes, so that each object an engine names after it fits a
+/// Kubernetes name, such as the claim `home-<id>`, and a label value.
+const ID_MAX: usize = 52;
+const ID_HEX: usize = 6;
+
 impl SandboxId {
+    /// `<handle>-<name>-<6 hex>`, cut to fit, so the names of what an engine makes for the
+    /// sandbox say whose it is. Sandboxes made earlier keep their `sbx-<12 hex>` id.
     #[must_use]
-    pub fn generate() -> Self {
-        Self(format!(
-            "sbx-{}",
-            &Uuid::new_v4().simple().to_string()[..12]
-        ))
+    pub fn generate(owner: &Handle, name: &SandboxName) -> Self {
+        let hex = &Uuid::new_v4().simple().to_string()[..ID_HEX];
+        let room = ID_MAX - ID_HEX - 2;
+        let name = name.as_str().trim_matches('-');
+        let owner = owner.as_str().trim_matches('-');
+        let owner = cut(owner, room.saturating_sub(name.len()).max(room / 2));
+        let name = cut(name, room - owner.len());
+        let id = [owner, name, hex]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        // A Kubernetes Service, which agent-sandbox names after the Sandbox, starts with a letter.
+        if id.starts_with(|c: char| c.is_ascii_lowercase()) {
+            Self(id)
+        } else {
+            Self(format!("sbx-{id}"))
+        }
     }
+}
+
+fn cut(slug: &str, max: usize) -> &str {
+    slug[..slug.len().min(max)].trim_end_matches('-')
 }
 
 /// What a sandbox runs: a catalog image, by its key, or an image its owner named.
@@ -77,7 +101,7 @@ pub enum SandboxStatus {
 mod tests {
     use serde_json::json;
 
-    use super::{SandboxId, SandboxImage, SandboxStatus};
+    use super::{Handle, SandboxId, SandboxImage, SandboxName, SandboxStatus};
 
     #[test]
     fn status_serializes_its_state_and_any_failure_detail() {
@@ -112,14 +136,37 @@ mod tests {
     }
 
     #[test]
-    fn generated_ids_are_sbx_and_twelve_lowercase_hex() {
-        let id = SandboxId::generate().0;
-        let hex = id.strip_prefix("sbx-").unwrap();
-        assert_eq!(hex.len(), 12, "{id}");
-        assert!(
-            hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-            "{id}"
-        );
-        assert_ne!(SandboxId::generate(), SandboxId::generate());
+    fn generated_ids_name_the_owner_and_the_sandbox_and_fit_kubernetes() {
+        let generate = |owner: &str, name: &str| {
+            SandboxId::generate(
+                &Handle::parse(owner).unwrap(),
+                &SandboxName::parse(name).unwrap(),
+            )
+            .0
+        };
+        let long = "a".repeat(32);
+        for (owner, name, prefix) in [
+            ("adam", "main", "adam-main-".to_owned()),
+            ("-adam-", "-main-", "adam-main-".to_owned()),
+            ("1adam", "main", "sbx-1adam-main-".to_owned()),
+            (&long, "main", format!("{long}-main-")),
+            ("adam", &long, format!("adam-{}-", "a".repeat(32))),
+            (&long, &long, format!("{0}-{0}-", "a".repeat(22))),
+            (
+                "ab-",
+                &format!("-{}", "b".repeat(31)),
+                format!("ab-{}-", "b".repeat(31)),
+            ),
+        ] {
+            let id = generate(owner, name);
+            let hex = id.strip_prefix(&prefix).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(hex.len(), 6, "{id}");
+            assert!(
+                hex.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+                "{id}"
+            );
+            assert!(id.len() <= 56 && !id.contains("--"), "{id}");
+        }
+        assert_ne!(generate("adam", "main"), generate("adam", "main"));
     }
 }

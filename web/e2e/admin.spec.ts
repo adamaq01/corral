@@ -114,8 +114,8 @@ test.describe('an admin', () => {
 		const facts = page.locator('dl');
 		const fact = (label: string) =>
 			facts.locator('div').filter({ has: page.getByText(label, { exact: true }) });
-		await expect(fact('Container')).toContainText(/corral-sbx-[0-9a-f]{12}/);
-		await expect(fact('Home volume')).toContainText(/corral-home-sbx-[0-9a-f]{12}/);
+		await expect(fact('Container')).toContainText(/corral-dana-probe-[0-9a-f]{6}/);
+		await expect(fact('Home volume')).toContainText(/corral-home-dana-probe-[0-9a-f]{6}/);
 		await expect(fact('Image')).toContainText(
 			process.env.CORRAL_SANDBOX_IMAGE ?? 'corral-sandbox:dev'
 		);

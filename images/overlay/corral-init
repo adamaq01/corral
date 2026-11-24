@@ -8,6 +8,11 @@ B=$O/bin/busybox
 SANDBOX_ID=1000
 HOME_DIR=/home/sandbox
 STAGED=/etc/corral/home-files
+# What corral-init wrote at the last start, a "<sha256> <path>" line per file, and what it has
+# to tell the sandbox user about this start, which corral-shell and `corral status` show.
+OWN_DIR=$HOME_DIR/.config/corral
+WRITTEN=$OWN_DIR/home-files
+NOTICES=$OWN_DIR/notices
 SUDOERS_LINE='sandbox ALL=(ALL:ALL) NOPASSWD: ALL'
 PROFILE_LINE='case ":$PATH:" in *:/opt/corral/bin:*) ;; *) PATH="$PATH:/opt/corral/bin:/opt/corral/fallback" ;; esac'
 
@@ -22,8 +27,8 @@ replace() {
 }
 
 # Writes the sandbox user into passwd, group and shadow under $1, in place of any user or group
-# named sandbox or numbered 1000, and adds root and nobody when they are missing. Each function
-# keeps its variables local: sh has no other scope.
+# named sandbox or numbered 1000, so the sandbox user is in its own group alone, and adds root and
+# nobody when they are missing. Each function keeps its variables local: sh has no other scope.
 accounts() {
   local dir=$1 gone
   $B mkdir -p "$dir"
@@ -32,7 +37,7 @@ accounts() {
   [ -e "$dir/shadow" ] || $B install -m 0600 /dev/null "$dir/shadow"
   gone=$($B awk -F: -v id=$SANDBOX_ID '$1 == "sandbox" || $3 == id { print $1 }' "$dir/passwd")
   replace "$dir/passwd" passwd_of "$dir/passwd"
-  replace "$dir/group" group_of "$dir/group"
+  replace "$dir/group" group_of "$dir/group" "$gone"
   replace "$dir/shadow" shadow_of "$dir/shadow" "$gone"
 }
 
@@ -44,7 +49,16 @@ passwd_of() {
 }
 
 group_of() {
-  $B awk -F: -v id=$SANDBOX_ID '$1 != "sandbox" && $3 != id' "$1"
+  $B awk -F: -v OFS=: -v id=$SANDBOX_ID -v gone="$2" '
+    BEGIN { split(gone, names, "\n"); for (i in names) skip[names[i]] = 1; skip["sandbox"] = 1 }
+    $1 == "sandbox" || $3 == id { next }
+    NF < 4 { print; next }
+    {
+      count = split($4, members, ","); kept = ""
+      for (i = 1; i <= count; i++) if (!(members[i] in skip)) kept = kept (kept == "" ? "" : ",") members[i]
+      $4 = kept
+      print
+    }' "$1"
   $B grep -q '^root:' "$1" || echo "root:x:0:"
   echo "sandbox:x:$SANDBOX_ID:"
 }
@@ -66,9 +80,10 @@ system() {
 }
 
 # Runs as the sandbox user: the skeleton on the first start, then the home files the engine
-# staged, each replacing what is at its path.
+# staged, each replacing what is at its path. A file written at an earlier start and no longer
+# staged is removed, unless it was changed since.
 home() {
-  local skel line key rest mode path
+  local skel
   if [ ! -e "$HOME_DIR/.corral-initialized" ]; then
     skel=$O/etc/skel
     if [ -n "$($B ls -A /etc/skel 2>/dev/null)" ]; then
@@ -77,18 +92,98 @@ home() {
     $B cp -R "$skel/." "$HOME_DIR/"
     : >"$HOME_DIR/.corral-initialized"
   fi
-  [ -f "$STAGED/manifest" ] || return 0
+  # Without its own directory, such as when a file sits at ~/.config, Corral still writes the
+  # home files, and keeps no record.
+  if ! $B mkdir -p "$OWN_DIR" 2>/dev/null; then
+    OWN_DIR=$($B mktemp -d)
+    WRITTEN=$OWN_DIR/home-files
+    NOTICES=$OWN_DIR/notices
+  fi
+  [ -f "$WRITTEN" ] || : >"$WRITTEN"
+  : >"$WRITTEN.new"
+  : >"$NOTICES.new"
+  [ ! -f "$STAGED/manifest" ] || write_staged <"$STAGED/manifest"
+  remove_unstaged <"$WRITTEN"
+  $B mv "$WRITTEN.new" "$WRITTEN"
+  if [ -s "$NOTICES.new" ]; then
+    $B mv "$NOTICES.new" "$NOTICES"
+  else
+    $B rm -f "$NOTICES.new" "$NOTICES"
+  fi
+}
+
+# Writes each file of the manifest on stdin. One that cannot be written, such as one with a
+# directory at its path, must not keep the sandbox from starting: it is reported instead.
+write_staged() {
+  local line key rest mode path sum before error
   while IFS= read -r line; do
     key=${line%% *}
     rest=${line#* }
     mode=${rest%% *}
     path=${rest#* }
-    # A file the sandbox cannot replace, such as a directory at its path, must not keep the
-    # sandbox from starting.
-    if [ -d "$HOME_DIR/$path" ] || ! $B install -D -m "$mode" "$STAGED/$key" "$HOME_DIR/$path"; then
-      echo "corral-init: could not write ~/$path" >&2
+    sum=$(digest "$STAGED/$key")
+    before=$(recorded "$path")
+    if [ -d "$HOME_DIR/$path" ]; then
+      error="a directory is in the way"
+    elif error=$($B install -D -m "$mode" "$STAGED/$key" "$HOME_DIR/$path" 2>&1); then
+      error=
     fi
-  done <"$STAGED/manifest"
+    if [ -n "$error" ]; then
+      notice "Corral could not write ~/$path: $error."
+      [ -z "$before" ] || echo "$before $path" >>"$WRITTEN.new"
+      continue
+    fi
+    echo "$sum $path" >>"$WRITTEN.new"
+  done
+}
+
+# Removes each file of the record on stdin that is no longer staged and still holds what Corral
+# wrote.
+remove_unstaged() {
+  local line sum path
+  while IFS= read -r line; do
+    sum=${line%% *}
+    path=${line#* }
+    [ -n "$(P=$path recorded_in "$WRITTEN.new")" ] && continue
+    if [ -L "$HOME_DIR/$path" ] || [ ! -f "$HOME_DIR/$path" ]; then
+      continue
+    fi
+    if [ "$(digest "$HOME_DIR/$path")" = "$sum" ]; then
+      $B rm -f "$HOME_DIR/$path" 2>/dev/null || notice "Corral could not remove ~/$path."
+    else
+      notice "~/$path is no longer attached, but it was changed in the sandbox, so Corral left it."
+    fi
+  done
+}
+
+digest() {
+  local sum
+  sum=$($B sha256sum "$1")
+  echo "${sum%% *}"
+}
+
+# The digest the last start recorded for the path $1, if any.
+recorded() {
+  P=$1 recorded_in "$WRITTEN"
+}
+
+recorded_in() {
+  $B awk '{ path = substr($0, index($0, " ") + 1) } path == ENVIRON["P"] { print $1; exit }' "$1"
+}
+
+notice() {
+  echo "$1" >>"$NOTICES.new"
+}
+
+# The bash a login runs: the image's, or the overlay's.
+bash_path() {
+  local shell
+  for shell in /bin/bash /usr/bin/bash $O/bin/bash; do
+    if [ -x "$shell" ]; then
+      echo "$shell"
+      return
+    fi
+  done
 }
 
 as_sandbox() {
@@ -116,6 +211,7 @@ case "${1:-}" in
     # the directory $2, and the home.
     dir=${2:?corral-init prepare needs a directory}
     accounts /etc
+    $B ln -sf "$(bash_path)" "$dir/bash"
     $B install -m 0644 /etc/passwd "$dir/passwd"
     $B install -m 0644 /etc/group "$dir/group"
     $B install -m 0600 /etc/shadow "$dir/shadow"
