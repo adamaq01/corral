@@ -4,9 +4,9 @@ corral acts on the Corral sandbox it runs in.
 Usage:
   corral status                   Show this sandbox and its state
   corral restart                  Restart this sandbox, which ends this session
-  corral stop                     Stop this sandbox, which ends this session
-  corral delete --confirm <name>  Stop this sandbox now and delete it with its home after a
-                                  grace period, if your profile allows it
+  corral stop                     Put this sandbox to sleep, which ends this session
+  corral delete --confirm <name>  Put this sandbox to sleep now and delete it with its home
+                                  after a grace period, if your profile allows it
   corral help                     Show this help";
 
 #[derive(Debug, PartialEq, Eq)]

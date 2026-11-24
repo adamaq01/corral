@@ -60,13 +60,13 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
         Command::Stop => {
             expect(corral.post("/api/sandbox/stop", &json!({}))?, 202)?;
             Ok(format!(
-                "Corral accepted the stop of {name}. This session ends as the sandbox stops; \
-                 connecting again wakes it."
+                "Corral accepted the stop of {name}. This session ends as the sandbox goes to \
+                 sleep; connecting again wakes it."
             ))
         }
         Command::Delete(None) => Err(format!(
-            "corral delete stops {name} now and deletes it, with everything in its home, after a \
-             grace period. To go ahead, run: corral delete --confirm {name}"
+            "corral delete puts {name} to sleep now and deletes it, with everything in its home, \
+             after a grace period. To go ahead, run: corral delete --confirm {name}"
         )),
         Command::Delete(Some(typed)) => {
             let reply = expect(
@@ -77,8 +77,8 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
                 .as_str()
                 .unwrap_or("the end of the grace period");
             Ok(format!(
-                "{name} stops now and is deleted at {at}. Until then, cancel the deletion on its \
-                 page: {}/sandboxes/{name}",
+                "{name} goes to sleep now and is deleted at {at}. Until then, cancel the deletion \
+                 on its page: {}/sandboxes/{name}",
                 file.web.trim_end_matches('/')
             ))
         }
@@ -212,8 +212,8 @@ mod tests {
         let (outcome, calls) = ran(&Command::Delete(Some("main".to_owned())), &scheduled);
         assert_eq!(
             outcome.unwrap(),
-            "main stops now and is deleted at 2026-11-23T12:10:00Z. Until then, cancel the \
-             deletion on its page: https://corral.example.com/sandboxes/main"
+            "main goes to sleep now and is deleted at 2026-11-23T12:10:00Z. Until then, cancel \
+             the deletion on its page: https://corral.example.com/sandboxes/main"
         );
         assert_eq!(calls, [r#"POST /api/sandbox/delete {"confirm":"main"}"#]);
     }

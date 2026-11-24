@@ -452,7 +452,7 @@ ok "corral delete asks for --confirm, then is refused while adam's profile has i
 
 api adam PUT api/me/delete-from-inside '{"enabled":true}' >/dev/null
 out=$(as adam main.adam 'corral delete --confirm main' 2>&1 || true)
-[[ "$out" == "main stops now and is deleted at "*"cancel the deletion on its page: $base/sandboxes/main" ]] \
+[[ "$out" == "main goes to sleep now and is deleted at "*"cancel the deletion on its page: $base/sandboxes/main" ]] \
   || fail "corral delete --confirm main: $out"
 until_state sleeping
 delete_at=$(api adam GET api/sandboxes/main | jq -r .deleteAt)
