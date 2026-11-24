@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use corral_core::domain::{Allocation, HomeFiles, Resources, SandboxId};
 use corral_core::ports::home_staging::{self, Staged};
 use corral_core::ports::labels::{self, MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{CredentialMap, SandboxSpec};
+use corral_core::ports::{SandboxSpec, VariableMap};
 use corral_core::{Error, Result};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
@@ -148,7 +148,7 @@ pub fn pod_template(
 }
 
 #[must_use]
-pub fn env_secret(id: &SandboxId, env: &CredentialMap, namespace: &str) -> Secret {
+pub fn env_secret(id: &SandboxId, env: &VariableMap, namespace: &str) -> Secret {
     let data = env
         .iter()
         .map(|(name, value)| {
@@ -404,10 +404,10 @@ mod tests {
 
     use corral_core::Error;
     use corral_core::domain::{
-        Allocation, CredentialName, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources,
-        SandboxId, SandboxName,
+        Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId,
+        SandboxName, VariableName,
     };
-    use corral_core::ports::{CredentialMap, SandboxSpec};
+    use corral_core::ports::{SandboxSpec, VariableMap};
     use secrecy::{SecretSlice, SecretString};
     use serde_json::{Value, json};
 
@@ -427,7 +427,7 @@ mod tests {
         }
     }
 
-    fn env() -> CredentialMap {
+    fn env() -> VariableMap {
         [
             ("ANTHROPIC_API_KEY", "sk-ant-1"),
             ("GH_TOKEN", "gh#\"quoted\\"),
@@ -435,7 +435,7 @@ mod tests {
         .into_iter()
         .map(|(name, value)| {
             (
-                CredentialName::parse(name).unwrap(),
+                VariableName::parse(name).unwrap(),
                 SecretString::from(value),
             )
         })

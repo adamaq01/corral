@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use corral_core::domain::{CredentialName, SecretId, UserId};
-use corral_core::ports::{CredentialMap, SecretStore};
+use corral_core::domain::{SecretId, UserId, VariableName};
+use corral_core::ports::{SecretStore, VariableMap};
 use corral_core::{Error, Result};
 use corral_sql::{Migrations, Pool, db_error, on_pool, parsed};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
@@ -33,7 +33,7 @@ impl DatabaseSecretStore {
 
     /// Keeps a credential the way this store kept them before entries existed.
     #[cfg(feature = "testing")]
-    pub async fn keep_legacy(&self, owner: UserId, name: &CredentialName, value: &str) {
+    pub async fn keep_legacy(&self, owner: UserId, name: &VariableName, value: &str) {
         let sealed = seal(&self.keyring, &legacy_aad(owner, name), value.as_bytes()).to_bytes();
         on_pool!(self.pool, |pool| {
             sqlx::query("insert into credentials (user_id, name, sealed) values ($1, $2, $3)")
@@ -53,7 +53,7 @@ fn aad(owner: UserId, id: SecretId) -> Vec<u8> {
     format!("{}/secret/{}", owner.0, id.0).into_bytes()
 }
 
-fn legacy_aad(owner: UserId, name: &CredentialName) -> Vec<u8> {
+fn legacy_aad(owner: UserId, name: &VariableName) -> Vec<u8> {
     format!("{}/{name}", owner.0).into_bytes()
 }
 
@@ -125,7 +125,7 @@ impl SecretStore for DatabaseSecretStore {
         .map_err(db_error)
     }
 
-    async fn legacy_credentials(&self, owner: UserId) -> Result<CredentialMap> {
+    async fn legacy_credentials(&self, owner: UserId) -> Result<VariableMap> {
         let rows: Vec<(String, Vec<u8>)> = on_pool!(self.pool, |pool| {
             sqlx::query_as("select name, sealed from credentials where user_id = $1")
                 .bind(owner.0)
@@ -135,7 +135,7 @@ impl SecretStore for DatabaseSecretStore {
         .map_err(db_error)?;
         rows.into_iter()
             .map(|(name, sealed)| {
-                let name = parsed("credential name", CredentialName::parse(&name))?;
+                let name = parsed("credential name", VariableName::parse(&name))?;
                 let value = self
                     .unseal(&legacy_aad(owner, &name), &sealed)
                     .and_then(|plaintext| {

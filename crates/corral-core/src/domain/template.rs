@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::CredentialName;
+use super::VariableName;
 use crate::{Error, Result};
 
 const OPEN: &str = "{{";
@@ -16,7 +16,7 @@ pub struct Template {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Part {
     Text(String),
-    Variable(CredentialName),
+    Variable(VariableName),
 }
 
 impl Template {
@@ -30,7 +30,7 @@ impl Template {
                 .find(CLOSE)
                 .ok_or_else(|| Error::Invalid("the template has a {{ without its }}".to_owned()))?;
             let inner = after[..close].trim();
-            let name = CredentialName::parse(inner).map_err(|_| {
+            let name = VariableName::parse(inner).map_err(|_| {
                 Error::Invalid(format!(
                     "{{{{ {inner} }}}} in the template must name a variable, such as \
                      {{{{ GH_TOKEN }}}}"
@@ -49,7 +49,7 @@ impl Template {
     }
 
     #[must_use]
-    pub fn names(&self) -> BTreeSet<&CredentialName> {
+    pub fn names(&self) -> BTreeSet<&VariableName> {
         self.parts
             .iter()
             .filter_map(|part| match part {
@@ -63,8 +63,8 @@ impl Template {
     /// does not know.
     pub fn render<'a>(
         &self,
-        value: impl Fn(&CredentialName) -> Option<&'a str>,
-    ) -> Result<String, BTreeSet<CredentialName>> {
+        value: impl Fn(&VariableName) -> Option<&'a str>,
+    ) -> Result<String, BTreeSet<VariableName>> {
         let mut rendered = String::new();
         let mut unknown = BTreeSet::new();
         for part in &self.parts {
@@ -92,10 +92,10 @@ mod tests {
 
     use super::Template;
     use crate::Error;
-    use crate::domain::CredentialName;
+    use crate::domain::VariableName;
 
-    fn name(value: &str) -> CredentialName {
-        CredentialName::parse(value).unwrap()
+    fn name(value: &str) -> VariableName {
+        VariableName::parse(value).unwrap()
     }
 
     #[test]

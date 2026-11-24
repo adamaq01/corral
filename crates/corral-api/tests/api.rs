@@ -18,7 +18,7 @@ use corral_api::{
 use corral_core::app::Environment;
 use corral_core::domain::{Handle, Role, SecretId, UserId};
 use corral_core::fakes::{ADAM_KEY, EngineCall, MAX_SANDBOXES, PROVIDER, World, exposed, links};
-use corral_core::ports::{CredentialMap, EventKind, Identity, SecretStore, UserRepo};
+use corral_core::ports::{EventKind, Identity, SecretStore, UserRepo, VariableMap};
 use corral_core::{Error, Result};
 use secrecy::SecretSlice;
 use serde_json::{Value, json};
@@ -115,8 +115,8 @@ impl SecretStore for BrokenVault {
         Ok(())
     }
 
-    async fn legacy_credentials(&self, _: UserId) -> Result<CredentialMap> {
-        Ok(CredentialMap::new())
+    async fn legacy_credentials(&self, _: UserId) -> Result<VariableMap> {
+        Ok(VariableMap::new())
     }
 
     async fn forget_legacy_credentials(&self, _: UserId) -> Result<()> {

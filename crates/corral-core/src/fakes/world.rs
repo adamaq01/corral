@@ -13,10 +13,10 @@ use crate::app::{
     SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{
-    Admin, Allocation, CredentialName, Entry, HomePath, ImageKey, Resources, Role, Sandbox,
-    SandboxDefaults, SandboxName, SizeKey, Target, User,
+    Admin, Allocation, Entry, HomePath, ImageKey, Resources, Role, Sandbox, SandboxDefaults,
+    SandboxName, SizeKey, Target, User, VariableName,
 };
-use crate::ports::{CredentialMap, Identity, IdentityProvider};
+use crate::ports::{Identity, IdentityProvider, VariableMap};
 
 pub const MAX_SANDBOXES: usize = 3;
 pub const PROVIDER: &str = "test";
@@ -55,13 +55,13 @@ pub fn identity(subject: &str, username: &str, role: Option<Role>) -> Identity {
 }
 
 #[must_use]
-pub fn credential(name: &str) -> CredentialName {
-    CredentialName::parse(name).unwrap()
+pub fn variable_name(name: &str) -> VariableName {
+    VariableName::parse(name).unwrap()
 }
 
 #[must_use]
 pub fn variable(name: &str) -> Target {
-    Target::Variable(credential(name))
+    Target::Variable(variable_name(name))
 }
 
 #[must_use]
@@ -158,7 +158,7 @@ pub fn default_names(views: &[SandboxView]) -> Vec<&str> {
 }
 
 #[must_use]
-pub fn exposed(env: &CredentialMap) -> Vec<String> {
+pub fn exposed(env: &VariableMap) -> Vec<String> {
     env.iter()
         .map(|(name, value)| format!("{name}={}", value.expose_secret()))
         .collect()

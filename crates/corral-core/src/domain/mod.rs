@@ -51,7 +51,6 @@ macro_rules! validated_string {
 }
 
 mod catalog_key;
-mod credential_name;
 mod entry;
 mod handle;
 mod home_file;
@@ -68,9 +67,9 @@ mod ssh_username;
 mod stored_value;
 mod template;
 mod user;
+mod variable_name;
 
 pub use catalog_key::{ImageKey, SizeKey};
-pub use credential_name::CredentialName;
 pub use entry::{Attachment, Entry, EntryId, Target};
 pub use handle::Handle;
 pub use home_file::{FileMode, HomeFile, HomeFiles, HomePath};
@@ -87,6 +86,7 @@ pub use ssh_username::SshUsername;
 pub use stored_value::{Glimpse, Kept, SecretId, SecretRef, StoredValue};
 pub use template::Template;
 pub use user::{Admin, Role, User, UserId, UserStatus};
+pub use variable_name::VariableName;
 
 const SLUG_MAX_LEN: usize = 32;
 

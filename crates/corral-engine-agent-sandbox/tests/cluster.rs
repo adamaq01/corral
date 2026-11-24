@@ -6,12 +6,12 @@ use std::time::Duration;
 use corral_activity::{Exec, Sweepable};
 use corral_core::Error;
 use corral_core::domain::{
-    Allocation, CredentialName, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources,
-    SandboxId, SandboxName, SandboxStatus,
+    Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId, SandboxName,
+    SandboxStatus, VariableName,
 };
 use corral_core::ports::labels::SANDBOX_ID;
 use corral_core::ports::{
-    Boot, CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, VariableMap,
 };
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
@@ -191,7 +191,7 @@ async fn lifecycle(cluster: Arc<Cluster>, id: SandboxId) {
     cluster.engine.create(&id, &spec("main")).await.unwrap();
     cluster.wake(&id, &[("FOO_TOKEN", "one")]).await;
     backing_objects_are_owned_by_the_sandbox(&cluster, &id).await;
-    sessions_run_as_the_sandbox_user_with_credentials(&cluster, &id).await;
+    sessions_run_as_the_sandbox_user_with_their_variables(&cluster, &id).await;
     sleep_keeps_home_and_wake_applies_new_env(&cluster, &id).await;
     stop_then_start_applies_new_env(&cluster, &id).await;
     a_wake_while_stopping_lets_the_stop_finish(&cluster, &id).await;
@@ -215,7 +215,7 @@ async fn backing_objects_are_owned_by_the_sandbox(cluster: &Cluster, id: &Sandbo
     assert_eq!(cluster.claim_names(id).await, [format!("home-{}", id.0)]);
 }
 
-async fn sessions_run_as_the_sandbox_user_with_credentials(cluster: &Cluster, id: &SandboxId) {
+async fn sessions_run_as_the_sandbox_user_with_their_variables(cluster: &Cluster, id: &SandboxId) {
     assert_eq!(
         cluster.exec(id, &["id", "-u"]).await,
         (0, "1000\n".to_owned())
@@ -744,12 +744,12 @@ fn boot(pairs: &[(&str, &str)]) -> Boot {
     }
 }
 
-fn env(pairs: &[(&str, &str)]) -> CredentialMap {
+fn env(pairs: &[(&str, &str)]) -> VariableMap {
     pairs
         .iter()
         .map(|(name, value)| {
             (
-                CredentialName::parse(name).unwrap(),
+                VariableName::parse(name).unwrap(),
                 SecretString::from(*value),
             )
         })

@@ -5,7 +5,7 @@ use secrecy::{ExposeSecret, SecretSlice};
 use uuid::Uuid;
 
 use crate::domain::{SecretId, UserId};
-use crate::fakes::{MemorySecretStore, credential, exposed};
+use crate::fakes::{MemorySecretStore, exposed, variable_name};
 use crate::ports::SecretStore;
 
 /// Keeps a credential the way the store under test kept them before entries existed.
@@ -17,7 +17,7 @@ pub trait LegacyWriter: Send + Sync {
 #[async_trait]
 impl LegacyWriter for MemorySecretStore {
     async fn keep(&self, owner: UserId, name: &str, value: &str) {
-        self.keep_legacy(owner, &credential(name), value);
+        self.keep_legacy(owner, &variable_name(name), value);
     }
 }
 

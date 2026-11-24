@@ -2,9 +2,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
 use corral_core::app::{Attached, EntryChange, EntryView, NewEntry};
-use corral_core::domain::{
-    CredentialName, Entry, HomePath, Kept, SandboxName, StoredValue, Target,
-};
+use corral_core::domain::{Entry, HomePath, Kept, SandboxName, StoredValue, Target, VariableName};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Serialize};
@@ -56,7 +54,7 @@ pub(crate) struct NewEntryDto {
 impl NewEntryDto {
     pub(crate) fn parse(self) -> Result<NewEntry> {
         let target = match self.kind {
-            EntryKind::Variable => Target::Variable(CredentialName::parse(&self.target)?),
+            EntryKind::Variable => Target::Variable(VariableName::parse(&self.target)?),
             EntryKind::File => Target::File(HomePath::parse(&self.target)?),
         };
         Ok(NewEntry {

@@ -3,7 +3,7 @@ use secrecy::{ExposeSecret, SecretSlice};
 use super::{EntryChange, FILE_LIMIT, NewEntry};
 use crate::Error;
 use crate::domain::{EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxName, Target, User};
-use crate::fakes::{World, bytes, credential, entry, exposed, file, sandbox_name, variable};
+use crate::fakes::{World, bytes, entry, exposed, file, sandbox_name, variable, variable_name};
 use crate::ports::SecretStore;
 
 fn flags(template: bool, apply_to_new: bool) -> EntryChange {
@@ -609,9 +609,9 @@ async fn credentials_kept_before_entries_become_secret_variables_on_every_sandbo
         ("GH_TOKEN", "ghp_0123456789abcdefghij"),
         ("SHORT", "hunter2"),
     ] {
-        w.secrets.keep_legacy(adam.id, &credential(name), value);
+        w.secrets.keep_legacy(adam.id, &variable_name(name), value);
     }
-    w.secrets.keep_legacy(eve.id, &credential("EVES"), "eve");
+    w.secrets.keep_legacy(eve.id, &variable_name("EVES"), "eve");
     for user in [&adam, &eve] {
         w.environment_repo.await_adoption(user.id);
     }

@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 
 use corral_core::Error;
 use corral_core::domain::{
-    Allocation, CredentialName, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources,
-    SandboxId, SandboxName, SandboxStatus,
+    Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId, SandboxName,
+    SandboxStatus, VariableName,
 };
 use corral_core::ports::{
-    Boot, CredentialMap, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget,
+    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, VariableMap,
 };
 use corral_engine_docker::{DockerConfig, DockerEngine};
 use secrecy::{SecretSlice, SecretString};
@@ -50,19 +50,19 @@ fn docker_ok(args: &[&str]) -> String {
         .to_owned()
 }
 
-fn env(pairs: &[(&str, &str)]) -> CredentialMap {
+fn env(pairs: &[(&str, &str)]) -> VariableMap {
     pairs
         .iter()
         .map(|(name, value)| {
             (
-                CredentialName::parse(name).unwrap(),
+                VariableName::parse(name).unwrap(),
                 SecretString::from(*value),
             )
         })
         .collect()
 }
 
-fn token(token: &str) -> CredentialMap {
+fn token(token: &str) -> VariableMap {
     env(&[("FOO_TOKEN", token)])
 }
 
@@ -276,7 +276,7 @@ async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxStatus {
     engine.status(id).await.unwrap()
 }
 
-async fn wake(engine: &DockerEngine, id: &SandboxId, env: CredentialMap) -> SshTarget {
+async fn wake(engine: &DockerEngine, id: &SandboxId, env: VariableMap) -> SshTarget {
     wake_with(
         engine,
         id,
@@ -339,7 +339,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
         "a sandbox joins only the sandbox network"
     );
 
-    let target = wake(&engine, &id, CredentialMap::new()).await;
+    let target = wake(&engine, &id, VariableMap::new()).await;
     assert_eq!(state(&engine, &id).await, SandboxStatus::Running);
     let SshTarget::SshServer {
         host,
@@ -366,7 +366,7 @@ async fn sandbox_lifecycle_over_real_ssh() {
     engine.stop(&id).await.unwrap();
     assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
     engine.stop(&id).await.unwrap();
-    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
+    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
     assert_eq!(lab.ssh(host, "cat ~/persist-check"), "kept");
 
     engine.delete(&id).await.unwrap();
@@ -382,8 +382,8 @@ async fn sandbox_lifecycle_over_real_ssh() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn credentials_apply_at_each_start_and_stay_out_of_the_container_config() {
-    let Some(lab) = Lab::open("credentials") else {
+async fn variables_apply_at_each_start_and_stay_out_of_the_container_config() {
+    let Some(lab) = Lab::open("variables") else {
         return;
     };
     let engine = lab.engine(10).await;
@@ -401,14 +401,14 @@ async fn credentials_apply_at_each_start_and_stay_out_of_the_container_config() 
     assert_eq!(
         lab.ssh(&name, "printenv FOO_TOKEN; cat ~/persist-check"),
         format!("{}\nkept", secret("two")),
-        "a start after a stop applies the changed credential and keeps the home"
+        "a start after a stop applies the changed variable and keeps the home"
     );
 
     wake(&engine, &id, token(&secret("ignored"))).await;
     assert_eq!(
         lab.ssh(&name, "printenv FOO_TOKEN"),
         secret("two"),
-        "a running sandbox keeps its credentials"
+        "a running sandbox keeps its variables"
     );
 
     let odd = r#"p#ss "word" it's $HOME \x\"#;
@@ -418,7 +418,7 @@ async fn credentials_apply_at_each_start_and_stay_out_of_the_container_config() 
     assert_eq!(
         lab.ssh(&name, "printenv FOO_TOKEN; true"),
         "",
-        "a removed credential is gone"
+        "a removed variable is gone"
     );
 
     let inspected = docker_ok(&["inspect", &name]);
@@ -440,7 +440,7 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
     let boot = |files| Boot {
-        env: CredentialMap::new(),
+        env: VariableMap::new(),
         files: home_files(files),
     };
     let listing = "for f in .config/corral/sandbox.json '.config/corral' 'notes dir/notes.txt'; do \
@@ -582,7 +582,7 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
     };
     let id = lab.create_from(&engine, &spec).await;
     let name = container_name(&id);
-    let target = wake(&engine, &id, CredentialMap::new()).await;
+    let target = wake(&engine, &id, VariableMap::new()).await;
     lab.pin_host_key(&target);
     lab.ssh(&name, "echo kept > ~/kept");
     engine.stop(&id).await.unwrap();
@@ -638,7 +638,7 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
     );
 
     engine.stop(&id).await.unwrap();
-    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
+    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
     assert_eq!(
         inspect(&name, "{{.Image}}"),
         newer_id,
@@ -648,7 +648,7 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
     let remade = inspect(&name, "{{.Id}}");
 
     engine.stop(&id).await.unwrap();
-    wake(&engine, &id, CredentialMap::new()).await;
+    wake(&engine, &id, VariableMap::new()).await;
     assert_eq!(
         inspect(&name, "{{.Id}}"),
         remade,
@@ -667,7 +667,7 @@ async fn a_start_from_stopped_remakes_the_sandbox_from_the_spec_it_is_given() {
     let newer_id = tags.variant(&newer);
     let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
-    let target = wake(&engine, &id, CredentialMap::new()).await;
+    let target = wake(&engine, &id, VariableMap::new()).await;
     lab.pin_host_key(&target);
     lab.ssh(&name, "echo kept > ~/kept");
 
@@ -710,7 +710,7 @@ async fn a_start_from_stopped_mounts_the_overlay_the_engine_pinned() {
     let engine = lab.engine(10).await;
     let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
-    let target = wake(&engine, &id, CredentialMap::new()).await;
+    let target = wake(&engine, &id, VariableMap::new()).await;
     lab.pin_host_key(&target);
     lab.ssh(&name, "echo kept > ~/kept");
     let first = inspect(&name, "{{.Id}}");
@@ -718,14 +718,14 @@ async fn a_start_from_stopped_mounts_the_overlay_the_engine_pinned() {
     assert!(mounts.contains(&overlay_id), "{mounts}");
 
     let upgraded = lab.engine_with(10, &newer).await;
-    wake(&upgraded, &id, CredentialMap::new()).await;
+    wake(&upgraded, &id, VariableMap::new()).await;
     assert_eq!(
         inspect(&name, "{{.Id}}"),
         first,
         "a running sandbox keeps its overlay"
     );
     upgraded.stop(&id).await.unwrap();
-    assert_eq!(wake(&upgraded, &id, CredentialMap::new()).await, target);
+    assert_eq!(wake(&upgraded, &id, VariableMap::new()).await, target);
     let mounts = inspect(&name, "{{json .HostConfig.Mounts}}");
     assert!(mounts.contains(&newer_id), "{mounts}");
     assert_ne!(inspect(&name, "{{.Id}}"), first);
@@ -752,7 +752,7 @@ async fn a_remake_cut_short_finishes_at_the_next_start() {
     let id = lab.create_from(&engine, &spec).await;
     let name = container_name(&id);
     let replacement = format!("{name}-next");
-    let target = wake(&engine, &id, CredentialMap::new()).await;
+    let target = wake(&engine, &id, VariableMap::new()).await;
     lab.pin_host_key(&target);
     lab.ssh(&name, "echo kept > ~/kept");
     engine.stop(&id).await.unwrap();
@@ -760,7 +760,7 @@ async fn a_remake_cut_short_finishes_at_the_next_start() {
     // Cut short before the old container went: its replacement is left over.
     tags.tag(&newer, &current);
     docker_ok(&["create", "--name", &replacement, &image()]);
-    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
+    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
     assert_eq!(inspect(&name, "{{.Image}}"), newer_id);
     assert!(!exists("container", &replacement));
     assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
@@ -768,7 +768,7 @@ async fn a_remake_cut_short_finishes_at_the_next_start() {
     // Cut short after: the complete replacement is all there is.
     engine.stop(&id).await.unwrap();
     docker_ok(&["rename", &name, &replacement]);
-    assert_eq!(wake(&engine, &id, CredentialMap::new()).await, target);
+    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
     assert!(!exists("container", &replacement));
     assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
 
@@ -844,7 +844,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     let herdr = lab.create(&engine, "herdr").await;
     let mut targets = Vec::new();
     for id in [&idle, &ssh, &herdr] {
-        targets.push(wake(&engine, id, CredentialMap::new()).await);
+        targets.push(wake(&engine, id, VariableMap::new()).await);
     }
 
     lab.pin_host_key(&targets[1]);
@@ -971,7 +971,7 @@ async fn inspection_shows_the_container_its_image_home_and_events() {
         assert_eq!(fact(&created, label), value, "{label}: {created:#?}");
     }
 
-    wake(&engine, &id, CredentialMap::new()).await;
+    wake(&engine, &id, VariableMap::new()).await;
     let running = engine.inspect(&id).await.unwrap();
     assert_eq!(fact(&running, "State"), Some("running"));
     assert!(fact(&running, "Started").is_some_and(|at| at.ends_with(" UTC")));

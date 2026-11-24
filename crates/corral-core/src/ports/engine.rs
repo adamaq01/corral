@@ -7,16 +7,16 @@ use secrecy::SecretString;
 use super::Inspection;
 use crate::Result;
 use crate::domain::{
-    CredentialName, Handle, HomeFiles, Resources, SandboxId, SandboxName, SandboxStatus,
+    Handle, HomeFiles, Resources, SandboxId, SandboxName, SandboxStatus, VariableName,
 };
 
-pub type CredentialMap = BTreeMap<CredentialName, SecretString>;
+pub type VariableMap = BTreeMap<VariableName, SecretString>;
 
 /// What a sandbox gets when it starts from stopped.
 #[derive(Clone, Debug, Default)]
 pub struct Boot {
     /// The environment of its sessions.
-    pub env: CredentialMap,
+    pub env: VariableMap,
     /// Written into its home, owned by the sandbox user, before anything else runs: each replaces
     /// whatever is at its path, with any missing directory made.
     pub files: HomeFiles,

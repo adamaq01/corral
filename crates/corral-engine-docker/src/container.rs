@@ -127,7 +127,7 @@ pub(crate) struct Wiring<'a> {
     pub(crate) overlay: &'a str,
 }
 
-/// Credentials stay out of the container's config, which `docker inspect` shows, and arrive with
+/// Variables stay out of the container's config, which `docker inspect` shows, and arrive with
 /// the session files before each start. A label records a digest of the rest, the overlay's image
 /// ID included, by which a start tells a container the engine would now make differently.
 pub(crate) fn body(

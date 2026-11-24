@@ -8,7 +8,7 @@ const RESERVED: [&str; 12] = [
     "USER", "_",
 ];
 
-validated_string!(CredentialName, check);
+validated_string!(VariableName, check);
 
 fn check(value: &str) -> Result<()> {
     let bytes = value.as_bytes();
@@ -32,11 +32,11 @@ fn check(value: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::CredentialName;
+    use super::VariableName;
     use crate::Error;
 
     #[test]
-    fn credential_name_rules() {
+    fn variable_name_rules() {
         for good in [
             "ANTHROPIC_API_KEY",
             "_X",
@@ -44,11 +44,11 @@ mod tests {
             "PATHS",
             &"K".repeat(64),
         ] {
-            assert!(CredentialName::parse(good).is_ok(), "{good}");
+            assert!(VariableName::parse(good).is_ok(), "{good}");
         }
         for bad in ["anthropic", "1KEY", "KEY-1", "", &"K".repeat(65)] {
             assert!(
-                matches!(CredentialName::parse(bad), Err(Error::Invalid(_))),
+                matches!(VariableName::parse(bad), Err(Error::Invalid(_))),
                 "{bad}"
             );
         }
@@ -67,7 +67,7 @@ mod tests {
             "TERM",
             "_",
         ] {
-            match CredentialName::parse(reserved) {
+            match VariableName::parse(reserved) {
                 Err(Error::Invalid(message)) => assert!(message.contains("reserved"), "{message}"),
                 other => panic!("{reserved}: {other:?}"),
             }
@@ -76,13 +76,10 @@ mod tests {
 
     #[test]
     fn serde_uses_the_validated_string() {
-        let name: CredentialName = serde_json::from_str(r#""GH_TOKEN""#).unwrap();
+        let name: VariableName = serde_json::from_str(r#""GH_TOKEN""#).unwrap();
         assert_eq!(serde_json::to_string(&name).unwrap(), r#""GH_TOKEN""#);
         for bad in [r#""gh_token""#, r#""PATH""#] {
-            assert!(
-                serde_json::from_str::<CredentialName>(bad).is_err(),
-                "{bad}"
-            );
+            assert!(serde_json::from_str::<VariableName>(bad).is_err(), "{bad}");
         }
     }
 }

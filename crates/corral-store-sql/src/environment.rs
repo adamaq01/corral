@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use corral_core::domain::{
-    Attachment, CredentialName, Entry, EntryId, Glimpse, HomePath, Kept, SandboxId, SecretId,
-    SecretRef, StoredValue, Target, UserId,
+    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, SandboxId, SecretId, SecretRef,
+    StoredValue, Target, UserId, VariableName,
 };
 use corral_core::ports::EnvironmentRepo;
 use corral_core::{Error, Result};
@@ -119,7 +119,7 @@ impl TryFrom<EntryRow> for Entry {
     fn try_from(row: EntryRow) -> Result<Self> {
         let target = match row.kind.as_str() {
             VARIABLE => {
-                Target::Variable(parsed("variable name", CredentialName::parse(&row.target))?)
+                Target::Variable(parsed("variable name", VariableName::parse(&row.target))?)
             }
             FILE => Target::File(parsed("file path", HomePath::parse(&row.target))?),
             other => {

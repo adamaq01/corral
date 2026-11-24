@@ -3,8 +3,8 @@ use uuid::Uuid;
 use super::repos::new_sandbox;
 use super::{at, seed_user};
 use crate::domain::{
-    Attachment, CredentialName, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SecretId,
-    SecretRef, StoredValue, Target, UserId,
+    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SecretId, SecretRef, StoredValue,
+    Target, UserId, VariableName,
 };
 use crate::ports::{EnvironmentRepo, SandboxRepo, UserRepo};
 
@@ -51,7 +51,7 @@ fn entry(owner: UserId, target: Target, value: StoredValue, created: i64) -> Ent
 }
 
 fn variable(name: &str) -> Target {
-    Target::Variable(CredentialName::parse(name).unwrap())
+    Target::Variable(VariableName::parse(name).unwrap())
 }
 
 fn file(path: &str) -> Target {

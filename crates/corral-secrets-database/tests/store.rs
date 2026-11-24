@@ -3,7 +3,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use corral_core::Error;
 use corral_core::contract::secrets::{self, LegacyWriter};
-use corral_core::domain::{CredentialName, SecretId, UserId};
+use corral_core::domain::{SecretId, UserId, VariableName};
 use corral_core::fakes::exposed;
 use corral_core::ports::SecretStore;
 use corral_secrets_database::{DatabaseSecretStore, Keyring};
@@ -18,7 +18,7 @@ struct Legacy<'a>(&'a DatabaseSecretStore);
 impl LegacyWriter for Legacy<'_> {
     async fn keep(&self, owner: UserId, name: &str, value: &str) {
         self.0
-            .keep_legacy(owner, &CredentialName::parse(name).unwrap(), value)
+            .keep_legacy(owner, &VariableName::parse(name).unwrap(), value)
             .await;
     }
 }

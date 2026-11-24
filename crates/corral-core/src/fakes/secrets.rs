@@ -6,18 +6,18 @@ use secrecy::{ExposeSecret, SecretSlice, SecretString};
 
 use super::lock;
 use crate::Result;
-use crate::domain::{CredentialName, SecretId, UserId};
-use crate::ports::{CredentialMap, SecretStore};
+use crate::domain::{SecretId, UserId, VariableName};
+use crate::ports::{SecretStore, VariableMap};
 
 #[derive(Default)]
 pub struct MemorySecretStore {
     values: Mutex<BTreeMap<(UserId, SecretId), Vec<u8>>>,
-    legacy: Mutex<BTreeMap<UserId, CredentialMap>>,
+    legacy: Mutex<BTreeMap<UserId, VariableMap>>,
 }
 
 impl MemorySecretStore {
     /// Keeps a credential the way stores kept them before entries existed.
-    pub fn keep_legacy(&self, owner: UserId, name: &CredentialName, value: &str) {
+    pub fn keep_legacy(&self, owner: UserId, name: &VariableName, value: &str) {
         lock(&self.legacy)
             .entry(owner)
             .or_default()
@@ -63,7 +63,7 @@ impl SecretStore for MemorySecretStore {
         Ok(())
     }
 
-    async fn legacy_credentials(&self, owner: UserId) -> Result<CredentialMap> {
+    async fn legacy_credentials(&self, owner: UserId) -> Result<VariableMap> {
         Ok(lock(&self.legacy).get(&owner).cloned().unwrap_or_default())
     }
 

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::{CredentialName, HomePath, SandboxId, StoredValue, UserId};
+use super::{HomePath, SandboxId, StoredValue, UserId, VariableName};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct EntryId(pub Uuid);
@@ -17,7 +17,7 @@ impl EntryId {
 /// home.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Target {
-    Variable(CredentialName),
+    Variable(VariableName),
     File(HomePath),
 }
 
@@ -77,14 +77,14 @@ pub struct Attachment {
 #[cfg(test)]
 mod tests {
     use super::Target;
-    use crate::domain::{CredentialName, HomePath};
+    use crate::domain::{HomePath, VariableName};
 
     fn file(path: &str) -> Target {
         Target::File(HomePath::parse(path).unwrap())
     }
 
     fn variable(name: &str) -> Target {
-        Target::Variable(CredentialName::parse(name).unwrap())
+        Target::Variable(VariableName::parse(name).unwrap())
     }
 
     #[test]

@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 
 use crate::domain::{
-    CredentialName, Entry, FileMode, HomeFile, HomeFiles, HomePath, Kept, SandboxName, SecretId,
-    StoredValue, Target, Template,
+    Entry, FileMode, HomeFile, HomeFiles, HomePath, Kept, SandboxName, SecretId, StoredValue,
+    Target, Template, VariableName,
 };
-use crate::ports::{Boot, CredentialMap, home_staging};
+use crate::ports::{Boot, VariableMap, home_staging};
 use crate::{Error, Result};
 
 /// The most a file may hold, rendered.
@@ -24,7 +24,7 @@ const PLAIN_FILE: u32 = 0o644;
 /// attached to it. Such a file is left unrendered.
 pub(super) struct Composed {
     pub boot: Boot,
-    pub unknown: BTreeMap<HomePath, BTreeSet<CredentialName>>,
+    pub unknown: BTreeMap<HomePath, BTreeSet<VariableName>>,
 }
 
 /// What the entries attached to a sandbox give it, each with the value it has there, next to the
@@ -37,7 +37,7 @@ pub(super) fn compose(
     own_file: (HomePath, HomeFile),
 ) -> Result<Composed> {
     check_collisions(sandbox, effective)?;
-    let mut env = CredentialMap::new();
+    let mut env = VariableMap::new();
     let mut secret_variables = BTreeSet::new();
     let mut files = Vec::new();
     for (entry, value) in effective {
@@ -179,8 +179,8 @@ mod tests {
     use super::{FILE_LIMIT, FILES_LIMIT, VARIABLES_LIMIT, compose};
     use crate::Error;
     use crate::domain::{
-        CredentialName, Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, SandboxName,
-        SecretId, SecretRef, StoredValue, Target, UserId,
+        Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, SandboxName, SecretId,
+        SecretRef, StoredValue, Target, UserId, VariableName,
     };
     use crate::fakes::exposed;
 
@@ -251,7 +251,7 @@ mod tests {
     }
 
     fn variable(value: &str) -> Target {
-        Target::Variable(CredentialName::parse(value).unwrap())
+        Target::Variable(VariableName::parse(value).unwrap())
     }
 
     fn file(value: &str) -> Target {
@@ -308,8 +308,8 @@ mod tests {
             BTreeMap::from([(
                 path("t"),
                 BTreeSet::from([
-                    CredentialName::parse("GONE").unwrap(),
-                    CredentialName::parse("LOST").unwrap()
+                    VariableName::parse("GONE").unwrap(),
+                    VariableName::parse("LOST").unwrap()
                 ])
             )])
         );

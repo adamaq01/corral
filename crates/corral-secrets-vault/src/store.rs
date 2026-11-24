@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use corral_core::domain::{CredentialName, SecretId, UserId};
-use corral_core::ports::{CredentialMap, SecretStore};
+use corral_core::domain::{SecretId, UserId, VariableName};
+use corral_core::ports::{SecretStore, VariableMap};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde_json::{Value, json};
@@ -120,11 +120,11 @@ impl SecretStore for VaultStore {
         Ok(())
     }
 
-    async fn legacy_credentials(&self, owner: UserId) -> Result<CredentialMap> {
+    async fn legacy_credentials(&self, owner: UserId) -> Result<VariableMap> {
         let client = self.session.client().await?;
         match read(&client, &self.mount, &self.owner_path(owner)).await? {
             Some(data) => parse_credentials(data),
-            None => Ok(CredentialMap::new()),
+            None => Ok(VariableMap::new()),
         }
     }
 
@@ -166,14 +166,14 @@ fn parse_value(path: &str, data: &Value) -> Result<SecretSlice<u8>> {
         .map_err(|_| malformed())
 }
 
-fn parse_credentials(data: Value) -> Result<CredentialMap> {
+fn parse_credentials(data: Value) -> Result<VariableMap> {
     let Value::Object(entries) = data else {
         return Err(Error::internal("vault secret", "data is not a map"));
     };
     entries
         .into_iter()
         .map(|(key, value)| {
-            let name = CredentialName::parse(&key).map_err(|_| {
+            let name = VariableName::parse(&key).map_err(|_| {
                 Error::internal(
                     "vault secret",
                     format!("key {key:?} is not a credential name"),

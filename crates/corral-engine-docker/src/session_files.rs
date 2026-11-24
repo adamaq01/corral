@@ -1,5 +1,5 @@
 use corral_core::ports::home_staging::{self, Staged};
-use corral_core::ports::{Boot, CredentialMap};
+use corral_core::ports::{Boot, VariableMap};
 use secrecy::ExposeSecret;
 use ssh_key::PublicKey;
 use tracing::warn;
@@ -10,7 +10,7 @@ const ROOT: u64 = 0;
 const SANDBOX_USER: u64 = 1000;
 
 /// A tar archive, to extract at `/`, of what the sandbox reads when it starts: the key the front
-/// door logs in with and the credentials its sessions see, both for sshd, and the home files,
+/// door logs in with and the variables its sessions get, both for sshd, and the home files,
 /// staged for `corral-init` where only the sandbox user may read them.
 pub(crate) fn archive(proxy_key: &PublicKey, boot: &Boot) -> Vec<u8> {
     let authorized_key = format!(
@@ -73,7 +73,7 @@ fn header(kind: tar::EntryType, mode: u32, owner: u64) -> tar::Header {
     header
 }
 
-fn set_env(env: &CredentialMap) -> String {
+fn set_env(env: &VariableMap) -> String {
     let quoted: Vec<String> = env
         .iter()
         .filter_map(|(name, value)| {
@@ -81,8 +81,8 @@ fn set_env(env: &CredentialMap) -> String {
             // A line break would end the SetEnv line and let the value write sshd directives.
             if value.contains(['\n', '\r', '\0']) {
                 warn!(
-                    credential = name.as_str(),
-                    "left out a credential that is not one line"
+                    variable = name.as_str(),
+                    "left out a variable that is not one line"
                 );
                 return None;
             }
@@ -101,8 +101,8 @@ fn set_env(env: &CredentialMap) -> String {
 mod tests {
     use std::io::Read;
 
-    use corral_core::domain::{CredentialName, FileMode, HomeFile, HomeFiles, HomePath};
-    use corral_core::ports::{Boot, CredentialMap};
+    use corral_core::domain::{FileMode, HomeFile, HomeFiles, HomePath, VariableName};
+    use corral_core::ports::{Boot, VariableMap};
     use secrecy::{SecretSlice, SecretString};
     use ssh_key::PublicKey;
 
@@ -111,12 +111,12 @@ mod tests {
     const PROXY_KEY: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIqeCTDFpVlRmE6nzi3s6Ui2G8N7lHGk06q4B8yZ3sAi";
 
-    fn env(pairs: &[(&str, &str)]) -> CredentialMap {
+    fn env(pairs: &[(&str, &str)]) -> VariableMap {
         pairs
             .iter()
             .map(|(name, value)| {
                 (
-                    CredentialName::parse(name).unwrap(),
+                    VariableName::parse(name).unwrap(),
                     SecretString::from(*value),
                 )
             })
@@ -146,7 +146,7 @@ mod tests {
             .collect()
     }
 
-    fn entries(env: &CredentialMap) -> Vec<Entry> {
+    fn entries(env: &VariableMap) -> Vec<Entry> {
         entries_of(&Boot {
             env: env.clone(),
             files: HomeFiles::new(),
@@ -183,7 +183,7 @@ mod tests {
             content: SecretSlice::from(content.as_bytes().to_vec()),
         };
         let boot = Boot {
-            env: CredentialMap::new(),
+            env: VariableMap::new(),
             files: HomeFiles::from([
                 (HomePath::parse(".config/a").unwrap(), file(0o600, "first")),
                 (HomePath::parse("b").unwrap(), file(0o755, "second")),
@@ -216,7 +216,7 @@ mod tests {
             odd[1].3,
             "SetEnv \"ODD_TOKEN=p#ss \\\"word\\\" it's $HOME \\\\x\\\\\"\n"
         );
-        assert_eq!(entries(&CredentialMap::new())[1].3, "");
+        assert_eq!(entries(&VariableMap::new())[1].3, "");
     }
 
     #[test]

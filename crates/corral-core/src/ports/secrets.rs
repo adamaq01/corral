@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use secrecy::SecretSlice;
 
-use super::CredentialMap;
+use super::VariableMap;
 use crate::Result;
 use crate::domain::{SecretId, UserId};
 
@@ -23,7 +23,7 @@ pub trait SecretStore: Send + Sync {
     /// Removes every value of the owner, the credentials they kept before entries included.
     async fn remove_all(&self, owner: UserId) -> Result<()>;
     /// What the owner kept as credentials, by name, before entries replaced them.
-    async fn legacy_credentials(&self, owner: UserId) -> Result<CredentialMap>;
+    async fn legacy_credentials(&self, owner: UserId) -> Result<VariableMap>;
     /// Removes those credentials once core has made them entries. Safe to repeat.
     async fn forget_legacy_credentials(&self, owner: UserId) -> Result<()>;
 }

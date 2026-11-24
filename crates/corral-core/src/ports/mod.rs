@@ -8,7 +8,7 @@ mod registry;
 mod repos;
 mod secrets;
 
-pub use engine::{Boot, CredentialMap, Readiness, SandboxEngine, SandboxSpec, SshTarget, Started};
+pub use engine::{Boot, Readiness, SandboxEngine, SandboxSpec, SshTarget, Started, VariableMap};
 pub use environment::EnvironmentRepo;
 pub use identity::{Identity, IdentityProvider};
 pub use inspection::{EngineEvent, EventKind, Fact, Inspection, utc};

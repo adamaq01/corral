@@ -9,8 +9,8 @@ use super::lock;
 use crate::domain::HomeFiles;
 use crate::domain::{SandboxId, SandboxStatus};
 use crate::ports::{
-    Boot, CredentialMap, EngineEvent, EventKind, Fact, Inspection, Readiness, SandboxEngine,
-    SandboxSpec, SshTarget, Started,
+    Boot, EngineEvent, EventKind, Fact, Inspection, Readiness, SandboxEngine, SandboxSpec,
+    SshTarget, Started, VariableMap,
 };
 use crate::{Error, Result};
 
@@ -94,7 +94,7 @@ impl FakeEngine {
 
     /// The env of the sandbox's last boot.
     #[must_use]
-    pub fn env_of(&self, id: &SandboxId) -> Option<CredentialMap> {
+    pub fn env_of(&self, id: &SandboxId) -> Option<VariableMap> {
         lock(&self.state)
             .sandboxes
             .get(id)

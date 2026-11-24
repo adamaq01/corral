@@ -16,8 +16,8 @@ use registry::Registry;
 
 use super::inside::{SANDBOX_FILE, SandboxLinks};
 use crate::domain::{
-    Attachment, CredentialName, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxId,
-    SandboxName, SandboxToken, SecretId, SecretRef, StoredValue, Target, Template, User, UserId,
+    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxId, SandboxName,
+    SandboxToken, SecretId, SecretRef, StoredValue, Target, Template, User, UserId, VariableName,
 };
 use crate::ports::{Boot, EnvironmentRepo, SandboxRepo, SecretStore};
 use crate::{Error, Result};
@@ -590,7 +590,7 @@ fn known_in_registry(
     let text = String::from_utf8_lossy(content.expose_secret());
     let template = Template::parse(&text)?;
     let variables = registry.variables();
-    let unknown: BTreeSet<CredentialName> = template
+    let unknown: BTreeSet<VariableName> = template
         .names()
         .into_iter()
         .filter(|name| !variables.contains(name))
@@ -606,10 +606,10 @@ fn known_in_registry(
     }
 }
 
-fn listed(names: &BTreeSet<CredentialName>) -> String {
+fn listed(names: &BTreeSet<VariableName>) -> String {
     names
         .iter()
-        .map(CredentialName::as_str)
+        .map(VariableName::as_str)
         .collect::<Vec<_>>()
         .join(", ")
 }

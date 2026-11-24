@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::domain::{Attachment, CredentialName, Entry, EntryId, SandboxId, StoredValue, Target};
+use crate::domain::{Attachment, Entry, EntryId, SandboxId, StoredValue, Target, VariableName};
 use crate::{Error, Result};
 
 /// One user's entries and where they are attached, loaded together so that a change can be
@@ -61,7 +61,7 @@ impl Registry {
             .collect()
     }
 
-    pub fn variables(&self) -> BTreeSet<&CredentialName> {
+    pub fn variables(&self) -> BTreeSet<&VariableName> {
         self.entries
             .iter()
             .filter_map(|entry| match &entry.target {
