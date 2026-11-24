@@ -90,6 +90,7 @@ test('a refused key fails at once, with no password prompt, under either config 
 		sizes: [{ key: 'small', label: 'Small' }],
 		defaultImage: 'dev',
 		defaultSize: 'small',
+		defaultsWithdrawn: false,
 		maxSandboxes: 8,
 		ssh: { host: '127.0.0.1', port: Number(port) }
 	};

@@ -65,6 +65,14 @@ pub struct Sandboxes {
     limits: Limits,
 }
 
+/// The image and size a user's new sandboxes get unless they pick others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserDefaults {
+    pub defaults: SandboxDefaults,
+    /// They picked an image or a size the catalog no longer offers, and its first stands in.
+    pub withdrawn: bool,
+}
+
 impl Sandboxes {
     #[must_use]
     pub fn new(
@@ -99,7 +107,7 @@ impl Sandboxes {
 
     /// The owner's picks, or the catalog's first in place of one it no longer offers or they never
     /// made.
-    pub async fn defaults(&self, owner: &User) -> Result<SandboxDefaults> {
+    pub async fn defaults(&self, owner: &User) -> Result<UserDefaults> {
         let picked = self.users.sandbox_defaults(owner.id).await?;
         let image = picked
             .as_ref()
@@ -107,9 +115,12 @@ impl Sandboxes {
         let size = picked
             .as_ref()
             .and_then(|picked| self.catalog.size(Some(&picked.size)).ok());
-        Ok(SandboxDefaults {
-            image: image.unwrap_or(self.catalog.image(None)?).key.clone(),
-            size: size.unwrap_or(self.catalog.size(None)?).key.clone(),
+        Ok(UserDefaults {
+            withdrawn: picked.is_some() && (image.is_none() || size.is_none()),
+            defaults: SandboxDefaults {
+                image: image.unwrap_or(self.catalog.image(None)?).key.clone(),
+                size: size.unwrap_or(self.catalog.size(None)?).key.clone(),
+            },
         })
     }
 
@@ -148,7 +159,7 @@ impl Sandboxes {
     }
 
     async fn provision(&self, owner: &User, request: CreateSandbox) -> Result<Sandbox> {
-        let defaults = self.defaults(owner).await?;
+        let UserDefaults { defaults, .. } = self.defaults(owner).await?;
         let image = match (request.image_reference, request.image) {
             (Some(_), Some(_)) => {
                 return Err(Error::Invalid(
@@ -460,7 +471,7 @@ mod tests {
 
     use std::num::NonZeroU64;
 
-    use super::{CreateSandbox, SandboxView};
+    use super::{CreateSandbox, SandboxView, UserDefaults};
     use crate::Error;
     use crate::app::EntryChange;
     use crate::app::{Catalog, NamedImages};
@@ -1070,9 +1081,13 @@ mod tests {
     async fn defaults_are_the_catalogs_first_until_picked_and_once_no_longer_offered() {
         let w = World::new();
         let adam = w.member("adam").await;
+        let effective = async || w.sandboxes.defaults(&adam).await.unwrap();
         assert_eq!(
-            w.sandboxes.defaults(&adam).await.unwrap(),
-            defaults("base", "small")
+            effective().await,
+            UserDefaults {
+                defaults: defaults("base", "small"),
+                withdrawn: false
+            }
         );
         for unknown in [defaults("gone", "large"), defaults("tools", "gone")] {
             assert!(matches!(
@@ -1080,17 +1095,28 @@ mod tests {
                 Err(Error::Invalid(_))
             ));
         }
+        assert_eq!(effective().await.defaults, defaults("base", "small"));
+        w.sandboxes
+            .set_defaults(&adam, &defaults("tools", "large"))
+            .await
+            .unwrap();
         assert_eq!(
-            w.sandboxes.defaults(&adam).await.unwrap(),
-            defaults("base", "small")
+            effective().await,
+            UserDefaults {
+                defaults: defaults("tools", "large"),
+                withdrawn: false
+            }
         );
         w.users
             .set_sandbox_defaults(adam.id, &defaults("retired", "large"))
             .await
             .unwrap();
         assert_eq!(
-            w.sandboxes.defaults(&adam).await.unwrap(),
-            defaults("base", "large")
+            effective().await,
+            UserDefaults {
+                defaults: defaults("base", "large"),
+                withdrawn: true
+            }
         );
     }
 

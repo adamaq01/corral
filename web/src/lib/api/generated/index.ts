@@ -18,7 +18,12 @@ defaultImage: ImageKey,
 /**
  * The signed-in user's default size.
  */
-defaultSize: SizeKey, maxSandboxes: number, ssh: SshEndpoint, };
+defaultSize: SizeKey,
+/**
+ * The signed-in user picked an image or a size the catalog no longer offers, and its first
+ * stands in for it in their defaults.
+ */
+defaultsWithdrawn: boolean, maxSandboxes: number, ssh: SshEndpoint, };
 
 export type Choice = { key: string, label: string, };
 

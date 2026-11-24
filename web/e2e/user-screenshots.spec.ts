@@ -22,6 +22,7 @@ const catalog: Catalog = {
 	],
 	defaultImage: 'dev',
 	defaultSize: 'small',
+	defaultsWithdrawn: false,
 	maxSandboxes: 8,
 	ssh: { host: 'corral.example.lan', port: 48291 }
 };

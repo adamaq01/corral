@@ -639,6 +639,7 @@ async fn create_then_list_shows_the_ssh_username() {
             "sizes": [{ "key": "small", "label": "SMALL" }, { "key": "large", "label": "LARGE" }],
             "defaultImage": "base",
             "defaultSize": "small",
+            "defaultsWithdrawn": false,
             "maxSandboxes": MAX_SANDBOXES,
             "ssh": { "host": "corral.example.com", "port": 48291 },
         })
@@ -676,6 +677,7 @@ async fn a_users_sandbox_defaults_preselect_and_fill_in_new_sandboxes() {
     let mut eve = corral.signed_in("eve", Role::Member).await;
     let defaults_of = async |browser: &mut Browser| {
         let catalog = browser.get("/api/catalog").await.json();
+        assert_eq!(catalog["defaultsWithdrawn"], json!(false));
         json!([catalog["defaultImage"], catalog["defaultSize"]])
     };
     assert_eq!(defaults_of(&mut adam).await, json!(["base", "small"]));

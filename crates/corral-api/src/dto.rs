@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
-use corral_core::app::{Catalog, SandboxDetails, SandboxView};
+use corral_core::app::{Catalog, SandboxDetails, SandboxView, UserDefaults};
 use corral_core::domain::{
-    Handle, ImageKey, PictureUrl, Role, SandboxDefaults, SandboxName, SandboxStatus, SizeKey,
-    SshKey, SshUsername, User, UserStatus,
+    Handle, ImageKey, PictureUrl, Role, SandboxName, SandboxStatus, SizeKey, SshKey, SshUsername,
+    User, UserStatus,
 };
 use corral_core::ports::{EngineEvent, EventKind, Fact};
 use serde::{Deserialize, Serialize};
@@ -68,6 +68,9 @@ pub(crate) struct CatalogDto {
     default_image: ImageKey,
     /// The signed-in user's default size.
     default_size: SizeKey,
+    /// The signed-in user picked an image or a size the catalog no longer offers, and its first
+    /// stands in for it in their defaults.
+    defaults_withdrawn: bool,
     max_sandboxes: usize,
     ssh: SshEndpoint,
 }
@@ -75,7 +78,7 @@ pub(crate) struct CatalogDto {
 impl CatalogDto {
     pub(crate) fn new(
         catalog: &Catalog,
-        defaults: SandboxDefaults,
+        defaults: UserDefaults,
         max_sandboxes: usize,
         ssh: &SshEndpoint,
     ) -> Self {
@@ -94,8 +97,9 @@ impl CatalogDto {
             .map(|size| choice(size.key.as_str(), &size.label))
             .collect();
         Self {
-            default_image: defaults.image,
-            default_size: defaults.size,
+            default_image: defaults.defaults.image,
+            default_size: defaults.defaults.size,
+            defaults_withdrawn: defaults.withdrawn,
             images,
             sizes,
             named_images: catalog.named_images().map(|named| NamedImages {

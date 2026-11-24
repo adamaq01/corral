@@ -28,6 +28,7 @@ const catalog: Catalog = {
 	sizes: [{ key: 'small', label: 'Small' }],
 	defaultImage: 'dev',
 	defaultSize: 'small',
+	defaultsWithdrawn: false,
 	maxSandboxes: 8,
 	ssh: { host: lan, port: 2222 }
 };
