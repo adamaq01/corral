@@ -4,8 +4,8 @@ use serde_json::json;
 use super::Sandboxes;
 use crate::Result;
 use crate::domain::{
-    FileMode, HomeFile, HomePath, Sandbox, SandboxName, SandboxStatus, SandboxToken, TokenHash,
-    User, UserStatus,
+    FileMode, HomeFile, HomePath, Sandbox, SandboxId, SandboxName, SandboxStatus, SandboxToken,
+    TokenHash, User, UserStatus,
 };
 
 /// Where the `corral` command in a sandbox finds what it needs, relative to the home.
@@ -59,6 +59,11 @@ impl CallingSandbox {
     #[must_use]
     pub fn name(&self) -> &SandboxName {
         &self.sandbox.name
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &SandboxId {
+        &self.sandbox.id
     }
 }
 

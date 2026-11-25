@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use corral_core::domain::{
@@ -10,6 +12,17 @@ use uuid::Uuid;
 use crate::Store;
 use corral_sql::{db_error, on_pool, parsed, unique_as};
 
+/// A query for whole sandboxes, `$rest` after its `from`.
+macro_rules! select {
+    ($rest:literal) => {
+        concat!(
+            "select id, owner, name, image, size, created_at, started_at, environment_changed_at, \
+             delete_at, idle_timeout_secs, keep_awake_until from sandboxes ",
+            $rest
+        )
+    };
+}
+
 #[derive(sqlx::FromRow)]
 struct SandboxRow {
     id: String,
@@ -21,6 +34,8 @@ struct SandboxRow {
     started_at: Option<DateTime<Utc>>,
     environment_changed_at: Option<DateTime<Utc>>,
     delete_at: Option<DateTime<Utc>>,
+    idle_timeout_secs: Option<i64>,
+    keep_awake_until: Option<DateTime<Utc>>,
 }
 
 impl TryFrom<SandboxRow> for Sandbox {
@@ -37,6 +52,12 @@ impl TryFrom<SandboxRow> for Sandbox {
             started_at: row.started_at,
             environment_changed_at: row.environment_changed_at,
             delete_at: row.delete_at,
+            idle_timeout: row
+                .idle_timeout_secs
+                .map(|secs| u64::try_from(secs).map(Duration::from_secs))
+                .transpose()
+                .map_err(|err| Error::internal("stored idle timeout", err))?,
+            keep_awake_until: row.keep_awake_until,
         })
     }
 }
@@ -45,13 +66,10 @@ impl TryFrom<SandboxRow> for Sandbox {
 impl SandboxRepo for Store {
     async fn list(&self, owner: UserId) -> Result<Vec<Sandbox>> {
         let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
-            sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at, environment_changed_at, delete_at \
-                 from sandboxes where owner = $1 order by created_at, id",
-            )
-            .bind(owner.0)
-            .fetch_all(pool)
-            .await
+            sqlx::query_as(select!("where owner = $1 order by created_at, id"))
+                .bind(owner.0)
+                .fetch_all(pool)
+                .await
         })
         .map_err(db_error)?;
         rows.into_iter().map(Sandbox::try_from).collect()
@@ -59,12 +77,9 @@ impl SandboxRepo for Store {
 
     async fn list_all(&self) -> Result<Vec<Sandbox>> {
         let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
-            sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at, environment_changed_at, delete_at \
-                 from sandboxes order by created_at, id",
-            )
-            .fetch_all(pool)
-            .await
+            sqlx::query_as(select!("order by created_at, id"))
+                .fetch_all(pool)
+                .await
         })
         .map_err(db_error)?;
         rows.into_iter().map(Sandbox::try_from).collect()
@@ -72,14 +87,11 @@ impl SandboxRepo for Store {
 
     async fn by_name(&self, owner: UserId, name: &SandboxName) -> Result<Option<Sandbox>> {
         let row: Option<SandboxRow> = on_pool!(self.pool, |pool| {
-            sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at, environment_changed_at, delete_at \
-                 from sandboxes where owner = $1 and name = $2",
-            )
-            .bind(owner.0)
-            .bind(name.as_str())
-            .fetch_optional(pool)
-            .await
+            sqlx::query_as(select!("where owner = $1 and name = $2"))
+                .bind(owner.0)
+                .bind(name.as_str())
+                .fetch_optional(pool)
+                .await
         })
         .map_err(db_error)?;
         row.map(Sandbox::try_from).transpose()
@@ -216,13 +228,10 @@ impl SandboxRepo for Store {
 
     async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>> {
         let row: Option<SandboxRow> = on_pool!(self.pool, |pool| {
-            sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at, environment_changed_at, delete_at \
-                 from sandboxes where token_hash = $1",
-            )
-            .bind(token.as_str())
-            .fetch_optional(pool)
-            .await
+            sqlx::query_as(select!("where token_hash = $1"))
+                .bind(token.as_str())
+                .fetch_optional(pool)
+                .await
         })
         .map_err(db_error)?;
         row.map(Sandbox::try_from).transpose()
@@ -242,15 +251,74 @@ impl SandboxRepo for Store {
 
     async fn due_for_deletion(&self, now: DateTime<Utc>) -> Result<Vec<Sandbox>> {
         let rows: Vec<SandboxRow> = on_pool!(self.pool, |pool| {
-            sqlx::query_as(
-                "select id, owner, name, image, size, created_at, started_at, environment_changed_at, delete_at \
-                 from sandboxes where delete_at <= $1 order by created_at, id",
-            )
-            .bind(now)
-            .fetch_all(pool)
-            .await
+            sqlx::query_as(select!("where delete_at <= $1 order by created_at, id"))
+                .bind(now)
+                .fetch_all(pool)
+                .await
         })
         .map_err(db_error)?;
         rows.into_iter().map(Sandbox::try_from).collect()
+    }
+
+    async fn set_idle_timeout(&self, id: &SandboxId, timeout: Option<Duration>) -> Result<()> {
+        let secs = timeout
+            .map(|timeout| i64::try_from(timeout.as_secs()))
+            .transpose()
+            .map_err(|err| Error::Invalid(format!("an idle timeout that long: {err}")))?;
+        on_pool!(self.pool, |pool| {
+            sqlx::query("update sandboxes set idle_timeout_secs = $2 where id = $1")
+                .bind(&id.0)
+                .bind(secs)
+                .execute(pool)
+                .await
+                .map(drop)
+        })
+        .map_err(db_error)
+    }
+
+    async fn set_keep_awake_until(
+        &self,
+        id: &SandboxId,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query("update sandboxes set keep_awake_until = $2 where id = $1")
+                .bind(&id.0)
+                .bind(until)
+                .execute(pool)
+                .await
+                .map(drop)
+        })
+        .map_err(db_error)
+    }
+
+    async fn client_state(&self, id: &SandboxId, client: &str) -> Result<Option<String>> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query_scalar(
+                "select state from sandbox_client_states where sandbox_id = $1 and client = $2",
+            )
+            .bind(&id.0)
+            .bind(client)
+            .fetch_optional(pool)
+            .await
+        })
+        .map_err(db_error)
+    }
+
+    async fn set_client_state(&self, id: &SandboxId, client: &str, state: &str) -> Result<()> {
+        on_pool!(self.pool, |pool| {
+            sqlx::query(
+                "insert into sandbox_client_states (sandbox_id, client, state) \
+                 select id, $2, $3 from sandboxes where id = $1 \
+                 on conflict (sandbox_id, client) do update set state = excluded.state",
+            )
+            .bind(&id.0)
+            .bind(client)
+            .bind(state)
+            .execute(pool)
+            .await
+            .map(drop)
+        })
+        .map_err(db_error)
     }
 }

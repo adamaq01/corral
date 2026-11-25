@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use super::Sandboxes;
 use super::accounts::inactive;
-use crate::domain::{Handle, Sandbox, SandboxName, SshPublicKey, User, UserStatus};
+use crate::domain::{
+    Handle, Sandbox, SandboxId, SandboxName, SandboxStatus, SshPublicKey, User, UserStatus,
+};
 use crate::ports::{IdentityProvider, KeyRepo, Readiness, UserRepo};
 use crate::{Error, Result};
 
@@ -20,6 +22,8 @@ pub enum Arrival {
     Ready(Sandbox),
     /// The sandbox is starting: arriving again waits on it.
     Waking(Sandbox),
+    /// The sandbox sleeps, and was left asleep.
+    Asleep(Sandbox),
     /// Why the connection reaches no sandbox, for the person who made it.
     Refused(String),
 }
@@ -96,25 +100,68 @@ impl SshAccess {
     /// Wakes the sandbox the login names, creating it first from the owner's defaults when they
     /// have none by that name, or says why it cannot.
     pub async fn arrive(&self, username: &str) -> Result<Arrival> {
+        let sandbox = match self.sandbox_of(username, true).await? {
+            Ok(sandbox) => sandbox,
+            Err(refused) => return Ok(refused),
+        };
+        self.start(sandbox).await
+    }
+
+    /// Where the login arrives, without making or waking anything: its sandbox `Ready` when it
+    /// runs, else `Asleep`, or why it cannot arrive.
+    pub async fn look(&self, username: &str) -> Result<Arrival> {
+        let sandbox = match self.sandbox_of(username, false).await? {
+            Ok(sandbox) => sandbox,
+            Err(refused) => return Ok(refused),
+        };
+        if self.sandboxes.status(&sandbox).await == SandboxStatus::Running {
+            self.start(sandbox).await
+        } else {
+            Ok(Arrival::Asleep(sandbox))
+        }
+    }
+
+    /// The sandbox the login names, made when `make` and the user has none by that name, or the
+    /// refusal that says why there is none.
+    async fn sandbox_of(
+        &self,
+        username: &str,
+        make: bool,
+    ) -> Result<std::result::Result<Sandbox, Arrival>> {
+        let refused = |why: String| Ok(Err(Arrival::Refused(why)));
         let Some(login) = Login::parse(username) else {
-            return Ok(Arrival::Refused(format!(
-                "{username:?} is not a Corral login"
-            )));
+            return refused(format!("{username:?} is not a Corral login"));
         };
         let Some(user) = self.users.by_handle(&login.handle).await? else {
-            return Ok(Arrival::Refused(format!(
-                "there is no user {}",
-                login.handle
-            )));
+            return refused(format!("there is no user {}", login.handle));
         };
         if user.status != UserStatus::Active {
-            return Ok(Arrival::Refused(inactive(&user).to_string()));
+            return refused(inactive(&user).to_string());
         }
-        let sandbox = match self.reach(&user, login.sandbox).await {
-            Ok(sandbox) => sandbox,
-            Err(Error::Invalid(why)) => return Ok(Arrival::Refused(why)),
-            Err(error) => return Err(error),
-        };
+        match self.reach(&user, login.sandbox, make).await {
+            Ok(sandbox) => Ok(Ok(sandbox)),
+            Err(Error::Invalid(why)) => refused(why),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// What a client adapter of the front door kept for the sandbox.
+    pub async fn client_state(&self, sandbox: &SandboxId, client: &str) -> Result<Option<String>> {
+        self.sandboxes.client_state(sandbox, client).await
+    }
+
+    pub async fn keep_client_state(
+        &self,
+        sandbox: &SandboxId,
+        client: &str,
+        state: &str,
+    ) -> Result<()> {
+        self.sandboxes
+            .keep_client_state(sandbox, client, state)
+            .await
+    }
+
+    async fn start(&self, sandbox: Sandbox) -> Result<Arrival> {
         // One scheduled for deletion stays stopped.
         match self.sandboxes.start(&sandbox).await {
             Ok(Readiness::Ready) => Ok(Arrival::Ready(sandbox)),
@@ -128,9 +175,9 @@ impl SshAccess {
         }
     }
 
-    /// The sandbox named, made when the user has none by that name, or their default. Refuses
-    /// with `Invalid` and the reason to show.
-    async fn reach(&self, user: &User, name: Option<&str>) -> Result<Sandbox> {
+    /// The sandbox named, made when `make` and the user has none by that name, or their default.
+    /// Refuses with `Invalid` and the reason to show.
+    async fn reach(&self, user: &User, name: Option<&str>, make: bool) -> Result<Sandbox> {
         let Some(name) = name else {
             return self
                 .sandboxes
@@ -145,6 +192,18 @@ impl SshAccess {
                 });
         };
         let name = SandboxName::parse(name)?;
+        if !make {
+            return self
+                .sandboxes
+                .find(user, &name)
+                .await
+                .map_err(|error| match error {
+                    Error::NotFound(_) => Error::Invalid(format!(
+                        "there is no sandbox {name}: connect with ssh to make it"
+                    )),
+                    error => error,
+                });
+        }
         self.sandboxes
             .find_or_create(user, &name)
             .await
@@ -523,6 +582,37 @@ mod tests {
         assert_eq!(
             exposed(&w.engine.env_of(&main.id).unwrap()),
             ["GH_TOKEN=changed-while-asleep"]
+        );
+    }
+
+    #[tokio::test]
+    async fn looking_neither_wakes_nor_makes_a_sandbox() {
+        let (w, adam, _) = adam_and_eve().await;
+        let main = w.sandboxes.resolve(&adam, None).await.unwrap();
+        assert!(matches!(
+            w.access.look("main.adam").await.unwrap(),
+            Arrival::Ready(Sandbox { id, .. }) if id == main.id
+        ));
+        w.sandboxes.stop(&adam, &main.name).await.unwrap();
+        let calls = w.engine.calls().len();
+
+        assert!(matches!(
+            w.access.look("main.adam").await.unwrap(),
+            Arrival::Asleep(Sandbox { id, .. }) if id == main.id
+        ));
+        assert!(matches!(
+            w.access.look("adam").await.unwrap(),
+            Arrival::Asleep(Sandbox { id, .. }) if id == main.id
+        ));
+        assert_eq!(
+            refusal(w.access.look("new.adam").await.unwrap()),
+            "there is no sandbox new: connect with ssh to make it"
+        );
+        assert_eq!(w.engine.calls().len(), calls, "the engine was not asked");
+        assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 1);
+        assert_eq!(
+            refusal(w.access.look("main.nobody").await.unwrap()),
+            "there is no user nobody"
         );
     }
 }

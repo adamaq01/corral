@@ -2,16 +2,19 @@ use std::time::{Duration, Instant};
 
 use corral_core::{Error, Result};
 use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 use crate::GateSecret;
-use crate::api::{ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated};
+use crate::api::{
+    ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated, CLIENT_STATE, ClientState,
+    WORKED, Worked,
+};
 
 // `opkssh verify` takes up to 5 seconds; the server waits up to its wake deadline to arrive.
 const AUTHENTICATE_TIMEOUT: Duration = Duration::from_secs(15);
 const ARRIVE_MARGIN: Duration = Duration::from_secs(30);
 const UNREACHABLE_PATIENCE: Duration = Duration::from_secs(20);
 const RECONNECT_EVERY: Duration = Duration::from_millis(500);
+const QUICK: Duration = Duration::from_secs(10);
 
 /// The gate's half of the internal API.
 #[derive(Clone)]
@@ -39,23 +42,36 @@ impl ServerClient {
     pub(crate) async fn authenticate(&self, request: &Authenticate) -> Result<bool> {
         let answer: Authenticated = self
             .post(AUTHENTICATE, request, AUTHENTICATE_TIMEOUT)
-            .await?;
+            .await?
+            .json()
+            .await
+            .map_err(|err| Error::internal("read Corral's answer to an authentication", err))?;
         Ok(answer.accepted)
     }
 
-    pub(crate) async fn arrive(&self, username: &str) -> Result<Arrived> {
-        let request = Arrive {
-            username: username.to_owned(),
-        };
-        self.post(ARRIVE, &request, self.arrive_timeout).await
+    pub(crate) async fn arrive(&self, request: &Arrive) -> Result<Arrived> {
+        let response = self.post(ARRIVE, request, self.arrive_timeout).await?;
+        response
+            .json()
+            .await
+            .map_err(|err| Error::internal(format!("read Corral's answer at {ARRIVE}"), err))
     }
 
-    async fn post<T: DeserializeOwned>(
+    pub(crate) async fn worked(&self, sandboxes: Vec<String>) -> Result<()> {
+        let request = Worked { sandboxes };
+        self.post(WORKED, &request, QUICK).await.map(drop)
+    }
+
+    pub(crate) async fn keep_client_state(&self, kept: &ClientState) -> Result<()> {
+        self.post(CLIENT_STATE, kept, QUICK).await.map(drop)
+    }
+
+    async fn post(
         &self,
         path: &str,
         body: &impl Serialize,
         timeout: Duration,
-    ) -> Result<T> {
+    ) -> Result<reqwest::Response> {
         let failed = |err: reqwest::Error| Error::internal(format!("ask Corral at {path}"), err);
         let began = Instant::now();
         let response = loop {
@@ -77,9 +93,6 @@ impl ServerClient {
         };
         response
             .and_then(reqwest::Response::error_for_status)
-            .map_err(failed)?
-            .json()
-            .await
             .map_err(failed)
     }
 }

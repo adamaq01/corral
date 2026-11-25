@@ -10,7 +10,7 @@ use corral_api::testing::{Browser, Reply, api, trusting_provider};
 use corral_core::app::SANDBOX_FILE;
 use corral_core::domain::{Handle, HomePath, Role, Sandbox, SandboxStatus};
 use corral_core::fakes::{EngineCall, PROVIDER, World, sandbox_name};
-use corral_core::ports::{SandboxEngine, UserRepo};
+use corral_core::ports::{SandboxEngine, Usage, UserRepo};
 use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 
@@ -357,4 +357,164 @@ async fn a_deletion_from_inside_stops_the_sandbox_until_cancelled() {
         .call("DELETE", "/api/sandboxes/nope/deletion", None)
         .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_sandbox_reports_what_it_used_and_hears_when_to_report_again() {
+    let corral = Corral::new();
+    let mut adam = corral.member("adam").await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let token = corral.token("adam", "main").await;
+    let id = corral.sandbox("adam", "main").await.id;
+
+    let report = json!({ "intervalMs": 60_000, "cpuUs": 1_500_000, "networkBytes": 4096 });
+    let reply = corral
+        .inside_with("POST", "/api/sandbox/activity", Some(&token), Some(report))
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.json(), json!({ "afterSecs": 60 }));
+    let usage = Usage {
+        interval: Duration::from_mins(1),
+        cpu: Duration::from_millis(1500),
+        network_bytes: 4096,
+    };
+    assert_eq!(corral.world.signals.reports(), [(id, usage)]);
+
+    let refused = corral
+        .inside_with(
+            "POST",
+            "/api/sandbox/activity",
+            Some("corral_sbx_nope"),
+            Some(json!({ "intervalMs": 0, "cpuUs": 0, "networkBytes": 0 })),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(corral.world.signals.reports().len(), 1);
+}
+
+#[tokio::test]
+async fn a_sandbox_keeps_itself_awake_and_lets_itself_sleep_again() {
+    let corral = Corral::new();
+    let mut adam = corral.member("adam").await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let token = corral.token("adam", "main").await;
+
+    let before = Utc::now();
+    let kept = corral
+        .inside_with(
+            "POST",
+            "/api/sandbox/keep-awake",
+            Some(&token),
+            Some(json!({ "forSecs": 4 * 3600 })),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::OK, "{}", kept.text());
+    let until: DateTime<Utc> =
+        serde_json::from_value(kept.json()["idle"]["keepAwakeUntil"].clone()).unwrap();
+    assert!(until >= before + TimeDelta::hours(4) && until <= Utc::now() + TimeDelta::hours(4));
+    assert_eq!(
+        adam.get("/api/sandboxes/main").await.json()["idle"]["keepAwakeUntil"],
+        kept.json()["idle"]["keepAwakeUntil"]
+    );
+
+    let too_long = corral
+        .inside_with(
+            "POST",
+            "/api/sandbox/keep-awake",
+            Some(&token),
+            Some(json!({ "forSecs": 25 * 3600 })),
+        )
+        .await;
+    assert_eq!(
+        too_long.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        too_long.text()
+    );
+
+    let off = corral
+        .inside_with(
+            "POST",
+            "/api/sandbox/keep-awake",
+            Some(&token),
+            Some(json!({ "forSecs": null })),
+        )
+        .await;
+    assert_eq!(off.json()["idle"]["keepAwakeUntil"], Value::Null);
+}
+
+#[tokio::test]
+async fn an_owner_sets_the_idle_timeout_and_keeps_a_sandbox_awake() {
+    let corral = Corral::new();
+    let mut adam = corral.member("adam").await;
+    let mut eve = corral.member("eve").await;
+    adam.post("/api/sandboxes", json!({ "name": "main" })).await;
+    let idle = adam.get("/api/sandboxes/main").await.json()["idle"].clone();
+    assert_eq!(
+        idle,
+        json!({
+            "timeoutSecs": 1800,
+            "chosen": false,
+            "defaultTimeoutSecs": 1800,
+            "minTimeoutSecs": 60,
+            "maxTimeoutSecs": 4 * 3600,
+            "keepAwakeUntil": null,
+            "maxKeepAwakeSecs": 24 * 3600,
+        })
+    );
+
+    let set = adam
+        .call(
+            "PUT",
+            "/api/sandboxes/main/idle-timeout",
+            Some(json!({ "timeoutSecs": 7200 })),
+        )
+        .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text());
+    assert_eq!(set.json()["idle"]["timeoutSecs"], 7200);
+    assert_eq!(set.json()["idle"]["chosen"], true);
+    let past_the_maximum = adam
+        .call(
+            "PUT",
+            "/api/sandboxes/main/idle-timeout",
+            Some(json!({ "timeoutSecs": 5 * 3600 })),
+        )
+        .await;
+    assert_eq!(past_the_maximum.status, StatusCode::BAD_REQUEST);
+    let theirs = eve
+        .call(
+            "PUT",
+            "/api/sandboxes/main/idle-timeout",
+            Some(json!({ "timeoutSecs": 7200 })),
+        )
+        .await;
+    assert_eq!(theirs.status, StatusCode::NOT_FOUND);
+    let default = adam
+        .call(
+            "PUT",
+            "/api/sandboxes/main/idle-timeout",
+            Some(json!({ "timeoutSecs": null })),
+        )
+        .await;
+    assert_eq!(default.json()["idle"]["timeoutSecs"], 1800);
+
+    let until = "2099-01-01T00:00:00Z";
+    let too_far = adam
+        .call(
+            "PUT",
+            "/api/sandboxes/main/keep-awake",
+            Some(json!({ "until": until })),
+        )
+        .await;
+    assert_eq!(too_far.status, StatusCode::BAD_REQUEST);
+    let until = (Utc::now() + TimeDelta::hours(1)).to_rfc3339();
+    let kept = adam
+        .call(
+            "PUT",
+            "/api/sandboxes/main/keep-awake",
+            Some(json!({ "until": until })),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::OK, "{}", kept.text());
+    assert!(kept.json()["idle"]["keepAwakeUntil"].is_string());
 }

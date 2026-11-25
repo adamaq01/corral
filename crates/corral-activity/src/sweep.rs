@@ -3,69 +3,57 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use corral_core::Result;
-use corral_core::domain::SandboxId;
-use tokio::sync::{Mutex, MutexGuard};
+use corral_core::domain::{IdleLimits, Sandbox, SandboxId};
+use corral_core::ports::SandboxRepo;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::{Exec, IdleDecision, decide, is_active};
+use crate::ActivityLock;
+use crate::decide::{Verdict, decide};
+use crate::lock::Seen;
 
 /// What the idle sweep needs from an engine.
 #[async_trait]
 pub trait Sweepable: Send + Sync + 'static {
     /// What `suspend` needs from the listing, such as a version to suspend against.
     type Listed: Send + Sync;
-    type Exec: Exec;
 
     fn activity(&self) -> &ActivityLock;
     async fn running(&self) -> Result<Vec<(SandboxId, Self::Listed)>>;
-    fn exec(&self, id: &SandboxId) -> Self::Exec;
     /// Runs while wakes are held off.
     async fn suspend(&self, id: &SandboxId, listed: &Self::Listed) -> Result<()>;
 }
 
-/// When each running sandbox was last seen active, behind the engine-wide lock that wakes and
-/// idle suspends take. Kept only in memory: a restart of Corral costs at most one extra idle
-/// period.
-#[derive(Default)]
-pub struct ActivityLock(Mutex<HashMap<SandboxId, DateTime<Utc>>>);
-
-/// Held by a wake from its capacity check to its start. Idle suspends and other wakes wait for
-/// it, so no sandbox is put to sleep under a wake and concurrent wakes cannot pass the running
-/// limit together.
-pub struct Waking<'a> {
-    _entries: MutexGuard<'a, HashMap<SandboxId, DateTime<Utc>>>,
-}
-
-impl ActivityLock {
-    pub async fn wake(&self, id: &SandboxId) -> Waking<'_> {
-        let mut entries = self.0.lock().await;
-        entries.insert(id.clone(), Utc::now());
-        Waking { _entries: entries }
-    }
+#[derive(Clone, Copy, Debug)]
+pub struct Settings {
+    pub limits: IdleLimits,
+    /// How often running sandboxes are checked.
+    pub check_every: Duration,
+    /// How often each sandbox reports what it used.
+    pub report_every: Duration,
 }
 
 pub fn spawn<E: Sweepable>(
     engine: Arc<E>,
-    interval: Duration,
-    idle_timeout: Duration,
+    sandboxes: Arc<dyn SandboxRepo>,
+    settings: Settings,
     shutdown: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let sweeps = async {
             loop {
-                tokio::time::sleep(interval).await;
-                sweep(engine.as_ref(), idle_timeout).await;
+                tokio::time::sleep(settings.check_every).await;
+                sweep(engine.as_ref(), sandboxes.as_ref(), &settings).await;
             }
         };
         shutdown.run_until_cancelled(sweeps).await;
     })
 }
 
-async fn sweep<E: Sweepable>(engine: &E, timeout: Duration) {
+async fn sweep<E: Sweepable>(engine: &E, sandboxes: &dyn SandboxRepo, settings: &Settings) {
     let running = match engine.running().await {
         Ok(running) => running,
         Err(error) => {
@@ -73,29 +61,53 @@ async fn sweep<E: Sweepable>(engine: &E, timeout: Duration) {
             return;
         }
     };
-    engine
-        .activity()
-        .0
-        .lock()
-        .await
-        .retain(|id, _| running.iter().any(|(listed, _)| listed == id));
-    for (id, listed) in &running {
+    let known: HashMap<SandboxId, Sandbox> = match sandboxes.list_all().await {
+        Ok(known) => known
+            .into_iter()
+            .map(|sandbox| (sandbox.id.clone(), sandbox))
+            .collect(),
+        Err(error) => {
+            warn!(%error, "could not read the sandboxes' idle settings");
+            return;
+        }
+    };
+    let lock = engine.activity();
+    let _suspending = lock.suspending().await;
+    let now = Utc::now();
+    let sleepy: Vec<&(SandboxId, E::Listed)> = {
+        let mut seen = lock.seen();
+        seen.retain(|id, _| running.iter().any(|(listed, _)| listed == id));
+        running
+            .iter()
+            .filter(|(id, _)| {
+                let sandbox = known.get(id);
+                let timeout = sandbox.map_or(settings.limits.default_timeout, |sandbox| {
+                    settings.limits.timeout_of(sandbox)
+                });
+                let keep_awake_until = sandbox.and_then(|sandbox| sandbox.keep_awake_until);
+                let entry = seen.entry(id.clone()).or_insert_with(|| Seen::since(now));
+                let verdict = decide(entry, timeout, keep_awake_until, settings.report_every, now);
+                let silent_for = now - entry.since;
+                let long_silent = silent_for
+                    .to_std()
+                    .is_ok_and(|silent| silent > settings.report_every * 3);
+                if verdict == Verdict::Unreported && long_silent && !entry.warned {
+                    entry.warned = true;
+                    warn!(
+                        sandbox = id.0,
+                        "the sandbox reports no activity, so it stays awake until it stops; \
+                         one started before Corral was upgraded reports once restarted"
+                    );
+                }
+                verdict == Verdict::Sleep
+            })
+            .collect()
+    };
+    for (id, listed) in sleepy {
         let sandbox = id.0.as_str();
-        let activity = is_active(&engine.exec(id)).await;
-        if let Err(error) = &activity {
-            warn!(sandbox, %error, "activity probe failed, keeping the sandbox awake");
-        }
-        let mut last_active = engine.activity().0.lock().await;
-        let now = Utc::now();
-        if matches!(activity, Ok(true)) {
-            last_active.insert(id.clone(), now);
-        }
-        let since = *last_active.entry(id.clone()).or_insert(now);
-        if decide(activity, since, timeout, now) == IdleDecision::Sleep {
-            match engine.suspend(id, listed).await {
-                Ok(()) => info!(sandbox, "put an idle sandbox to sleep"),
-                Err(error) => warn!(sandbox, %error, "could not put an idle sandbox to sleep"),
-            }
+        match engine.suspend(id, listed).await {
+            Ok(()) => info!(sandbox, "put an idle sandbox to sleep"),
+            Err(error) => warn!(sandbox, %error, "could not put an idle sandbox to sleep"),
         }
     }
 }
@@ -104,40 +116,43 @@ async fn sweep<E: Sweepable>(engine: &E, timeout: Duration) {
 mod tests {
     use std::sync::Mutex as SyncMutex;
 
-    use super::*;
-    use crate::processes::tests::{LIST, listing};
-    use crate::testing::ScriptedExec;
+    use chrono::TimeDelta;
+    use corral_core::fakes::{MemorySandboxRepo, sandbox_name};
+    use corral_core::ports::{ActivitySignals, Usage};
 
-    const HERDR_LIST: &str = "/opt/corral/bin/hc ls --json";
-    const CORE: (u32, u32, &str) = (35, 1, "/opt/corral/bin/herdr-core serve");
-    const SESSION: (u32, u32, &str) = (42, 7, "sshd-session: sandbox@notty");
+    use super::*;
+    use crate::{Busy, Signals};
+
+    const BUSY: Busy = Busy {
+        cpu_percent: 5.0,
+        network_bytes_per_sec: 4096,
+    };
+    const SETTINGS: Settings = Settings {
+        limits: IdleLimits {
+            default_timeout: Duration::from_mins(30),
+            max_timeout: Duration::from_hours(4),
+            max_keep_awake: Duration::from_hours(24),
+        },
+        check_every: Duration::from_mins(1),
+        report_every: Duration::from_mins(1),
+    };
 
     struct Engine {
         activity: ActivityLock,
-        sandboxes: Vec<(SandboxId, ScriptedExec)>,
+        running: Vec<SandboxId>,
         suspended: SyncMutex<Vec<SandboxId>>,
     }
 
     #[async_trait]
     impl Sweepable for Engine {
         type Listed = ();
-        type Exec = ScriptedExec;
 
         fn activity(&self) -> &ActivityLock {
             &self.activity
         }
 
         async fn running(&self) -> Result<Vec<(SandboxId, ())>> {
-            Ok(self
-                .sandboxes
-                .iter()
-                .map(|(id, _)| (id.clone(), ()))
-                .collect())
-        }
-
-        fn exec(&self, id: &SandboxId) -> ScriptedExec {
-            let (_, exec) = self.sandboxes.iter().find(|(own, _)| own == id).unwrap();
-            exec.clone()
+            Ok(self.running.iter().map(|id| (id.clone(), ())).collect())
         }
 
         async fn suspend(&self, id: &SandboxId, (): &()) -> Result<()> {
@@ -146,79 +161,146 @@ mod tests {
         }
     }
 
-    fn engine(sandboxes: Vec<(&str, ScriptedExec)>) -> Engine {
-        Engine {
-            activity: ActivityLock::default(),
-            sandboxes: sandboxes
-                .into_iter()
-                .map(|(id, exec)| (SandboxId(id.to_owned()), exec))
-                .collect(),
-            suspended: SyncMutex::default(),
+    struct World {
+        engine: Engine,
+        repo: MemorySandboxRepo,
+        signals: Signals,
+    }
+
+    impl World {
+        async fn new(names: &[&str]) -> Self {
+            let repo = MemorySandboxRepo::default();
+            let mut running = Vec::new();
+            for name in names {
+                let sandbox = Sandbox {
+                    id: SandboxId(format!("adam-{name}-000000")),
+                    owner: corral_core::domain::UserId(uuid::Uuid::nil()),
+                    name: sandbox_name(name),
+                    image: corral_core::domain::SandboxImage::parse("default").unwrap(),
+                    size: corral_core::domain::SizeKey::parse("small").unwrap(),
+                    created_at: Utc::now(),
+                    started_at: None,
+                    environment_changed_at: None,
+                    delete_at: None,
+                    idle_timeout: None,
+                    keep_awake_until: None,
+                };
+                repo.insert(&sandbox, 10).await.unwrap();
+                running.push(sandbox.id);
+            }
+            let activity = ActivityLock::default();
+            Self {
+                signals: Signals::new(activity.clone(), BUSY, SETTINGS.report_every),
+                engine: Engine {
+                    activity,
+                    running,
+                    suspended: SyncMutex::default(),
+                },
+                repo,
+            }
+        }
+
+        fn id(name: &str) -> SandboxId {
+            SandboxId(format!("adam-{name}-000000"))
+        }
+
+        /// Moves every sandbox's last work and report back by `minutes`.
+        fn age(&self, minutes: i64) {
+            for seen in self.engine.activity.seen().values_mut() {
+                seen.last_work -= TimeDelta::minutes(minutes);
+                if let Some(reported) = &mut seen.reported {
+                    *reported -= TimeDelta::minutes(minutes);
+                }
+            }
+        }
+
+        fn report(&self, name: &str, cpu_millis: u64, network_bytes: u64) {
+            let usage = Usage {
+                interval: Duration::from_mins(1),
+                cpu: Duration::from_millis(cpu_millis),
+                network_bytes,
+            };
+            self.signals.measured(&Self::id(name), usage);
+        }
+
+        async fn suspended_after_a_sweep(&self) -> Vec<String> {
+            sweep(&self.engine, &self.repo, &SETTINGS).await;
+            let suspended = self.engine.suspended.lock().unwrap();
+            suspended
+                .iter()
+                .map(|id| id.0.split('-').nth(1).unwrap().to_owned())
+                .collect()
         }
     }
 
-    fn listed(processes: &[(u32, u32, &str)]) -> ScriptedExec {
-        ScriptedExec::default().exits(LIST, 0, &listing(processes))
-    }
-
-    fn idle() -> ScriptedExec {
-        listed(&[])
-    }
-
-    fn herdr(terminal_status: &str) -> ScriptedExec {
-        listed(&[CORE]).exits(
-            HERDR_LIST,
-            0,
-            &format!(r#"{{"terminals":[{{"state":"live","status":"{terminal_status}"}}]}}"#),
-        )
-    }
-
-    async fn suspended_after_a_sweep(engine: &Engine, timeout: Duration) -> Vec<String> {
-        sweep(engine, timeout).await;
-        let suspended = engine.suspended.lock().unwrap();
-        suspended.iter().map(|id| id.0.clone()).collect()
-    }
-
     #[tokio::test]
-    async fn an_idle_sandbox_sleeps_once_its_timeout_passes() {
-        let expired = engine(vec![("idle", idle())]);
-        let fresh = engine(vec![("idle", idle())]);
+    async fn only_sandboxes_idle_past_their_timeout_by_both_sources_sleep() {
+        let w = World::new(&["typing", "busy", "streaming", "idle", "old"]).await;
+        for name in ["typing", "busy", "streaming", "idle"] {
+            w.report(name, 0, 0);
+        }
+        assert_eq!(w.suspended_after_a_sweep().await, Vec::<String>::new());
 
+        w.age(31);
+        w.report("typing", 0, 0);
+        w.signals.worked(&[World::id("typing")]);
+        w.report("busy", 30_000, 0);
+        w.report("streaming", 0, 600_000);
+        w.report("idle", 100, 1_000);
         assert_eq!(
-            suspended_after_a_sweep(&expired, Duration::ZERO).await,
-            ["idle"]
-        );
-        assert_eq!(
-            suspended_after_a_sweep(&fresh, Duration::from_hours(1)).await,
-            Vec::<String>::new()
+            w.suspended_after_a_sweep().await,
+            ["idle"],
+            "old, which never reported, stays awake"
         );
     }
 
     #[tokio::test]
-    async fn only_idle_sandboxes_sleep() {
-        let engine = engine(vec![
-            ("session", listed(&[SESSION])),
-            ("working", herdr("working")),
-            ("idle", idle()),
-            ("waiting", herdr("done")),
-        ]);
+    async fn the_owners_timeout_and_keep_awake_apply() {
+        let w = World::new(&["short", "long", "kept"]).await;
+        w.repo
+            .set_idle_timeout(&World::id("short"), Some(Duration::from_mins(5)))
+            .await
+            .unwrap();
+        w.repo
+            .set_idle_timeout(&World::id("long"), Some(Duration::from_hours(2)))
+            .await
+            .unwrap();
+        w.repo
+            .set_keep_awake_until(&World::id("kept"), Some(Utc::now() + TimeDelta::hours(1)))
+            .await
+            .unwrap();
+        for name in ["short", "long", "kept"] {
+            w.report(name, 0, 0);
+        }
+        w.suspended_after_a_sweep().await;
+        w.age(40);
+        for name in ["short", "long", "kept"] {
+            w.report(name, 0, 0);
+        }
 
-        assert_eq!(
-            suspended_after_a_sweep(&engine, Duration::ZERO).await,
-            ["idle", "waiting"]
-        );
+        assert_eq!(w.suspended_after_a_sweep().await, ["short"]);
     }
 
     #[tokio::test]
-    async fn a_failed_probe_keeps_the_sandbox_awake() {
-        let engine = engine(vec![
-            ("no-exec", ScriptedExec::default().fails(LIST)),
-            ("broken-herdr", listed(&[CORE]).fails(HERDR_LIST)),
-        ]);
+    async fn a_boot_starts_the_idle_period_again() {
+        let w = World::new(&["main"]).await;
+        w.report("main", 0, 0);
+        w.suspended_after_a_sweep().await;
+        w.age(31);
+        w.report("main", 0, 0);
 
-        assert_eq!(
-            suspended_after_a_sweep(&engine, Duration::ZERO).await,
-            Vec::<String>::new()
-        );
+        w.engine.activity.wake(&World::id("main")).await.booted();
+        w.report("main", 0, 0);
+        assert_eq!(w.suspended_after_a_sweep().await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_that_stops_reporting_stays_awake() {
+        let w = World::new(&["main"]).await;
+        w.report("main", 0, 0);
+        w.suspended_after_a_sweep().await;
+        w.age(31);
+
+        assert_eq!(w.suspended_after_a_sweep().await, Vec::<String>::new());
     }
 }

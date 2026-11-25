@@ -10,14 +10,12 @@ use serde_json::json;
 use crate::AgentSandboxEngine;
 use crate::crd::OperatingMode;
 use crate::error::kube_error;
-use crate::pod_exec::PodExec;
 use crate::status;
 
 #[async_trait]
 impl Sweepable for AgentSandboxEngine {
     /// The resource version the sandbox was listed at.
     type Listed = Option<String>;
-    type Exec = PodExec;
 
     fn activity(&self) -> &ActivityLock {
         &self.activity
@@ -38,10 +36,6 @@ impl Sweepable for AgentSandboxEngine {
             }
         }
         Ok(running)
-    }
-
-    fn exec(&self, id: &SandboxId) -> PodExec {
-        PodExec::new(self.pods.clone(), id.0.clone())
     }
 
     // The listed resource version makes the suspend conditional, so any change since wins.

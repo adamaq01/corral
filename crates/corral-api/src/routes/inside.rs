@@ -1,6 +1,7 @@
 //! What a sandbox may do to itself, with the token Corral issued it at its start.
 
 use std::future::Future;
+use std::time::Duration;
 
 use axum::extract::{FromRequestParts, State};
 use axum::http::StatusCode;
@@ -8,10 +9,13 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{TimeDelta, Utc};
 use corral_core::app::CallingSandbox;
+use corral_core::ports::Usage;
 
-use crate::dto::{ConfirmDeletion, SandboxDto, ScheduledDeletion};
+use crate::dto::{
+    ConfirmDeletion, KeepAwakeFor, ReportAgain, SandboxDto, ScheduledDeletion, UsageReport,
+};
 use crate::error::ApiError;
 use crate::extract::JsonBody;
 use crate::state::{AppState, shared};
@@ -22,6 +26,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/sandbox/restart", post(restart))
         .route("/api/sandbox/stop", post(stop))
         .route("/api/sandbox/delete", post(delete))
+        .route("/api/sandbox/keep-awake", post(keep_awake))
+        .route("/api/sandbox/activity", post(report_activity))
 }
 
 /// The sandbox whose current token the request carries as `Authorization: Bearer <token>`.
@@ -96,6 +102,42 @@ async fn delete(
         state.sandboxes.stop(calling.owner(), calling.name()).await
     });
     Ok((status, Json(ScheduledDeletion { delete_at })))
+}
+
+async fn keep_awake(
+    CurrentSandbox(calling): CurrentSandbox,
+    State(state): State<AppState>,
+    JsonBody(KeepAwakeFor { for_secs }): JsonBody<KeepAwakeFor>,
+) -> Result<Json<SandboxDto>, ApiError> {
+    let until = for_secs
+        .map(|secs| {
+            let secs = i64::try_from(secs).unwrap_or(i64::MAX);
+            TimeDelta::try_seconds(secs).map(|ahead| Utc::now() + ahead)
+        })
+        .map(|until| until.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "too far ahead")))
+        .transpose()?;
+    let view = state
+        .sandboxes
+        .keep_awake(calling.owner(), calling.name(), until)
+        .await?;
+    Ok(Json(SandboxDto::new(view, &state.ssh)))
+}
+
+/// What the sandbox's reporter measured, for the idle sweep. The answer says when to report next.
+async fn report_activity(
+    CurrentSandbox(calling): CurrentSandbox,
+    State(state): State<AppState>,
+    JsonBody(report): JsonBody<UsageReport>,
+) -> Json<ReportAgain> {
+    let usage = Usage {
+        interval: Duration::from_millis(report.interval_ms),
+        cpu: Duration::from_micros(report.cpu_us),
+        network_bytes: report.network_bytes,
+    };
+    let again = state.activity.measured(calling.id(), usage);
+    Json(ReportAgain {
+        after_secs: again.as_secs(),
+    })
 }
 
 /// Runs `action` on its own: it ends the session that asked for it, whose connection may close

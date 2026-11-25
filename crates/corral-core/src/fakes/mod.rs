@@ -1,3 +1,4 @@
+mod activity;
 mod engine;
 mod environment;
 mod provider;
@@ -8,6 +9,7 @@ mod world;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+pub use activity::RecordedSignals;
 pub use engine::{EngineCall, FakeEngine};
 pub use environment::MemoryEnvironmentRepo;
 pub use provider::FakeProvider;

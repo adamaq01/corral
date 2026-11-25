@@ -14,13 +14,14 @@ use crate::Limits;
 use crate::backlog::{Backlog, Throttled};
 use crate::client::ServerClient;
 use crate::connection::{Connection, Watched};
+use crate::link::Reach;
+use crate::work::WorkLog;
 
 /// The SSH front door: it authenticates each connection with the server, and carries its
 /// channels into its sandbox.
 #[derive(Clone)]
 pub struct Gate {
-    server: ServerClient,
-    streams: Arc<dyn SandboxStreams>,
+    reach: Reach,
     config: Arc<Config>,
     limits: Limits,
 }
@@ -50,8 +51,12 @@ impl Gate {
             ..Config::default()
         };
         Self {
-            server,
-            streams,
+            reach: Reach {
+                server,
+                streams,
+                work: WorkLog::default(),
+                patience: limits.wake_patience,
+            },
             config: Arc::new(config),
             limits,
         }
@@ -59,6 +64,9 @@ impl Gate {
 
     /// Serves connections from `listener` until `shutdown`.
     pub async fn serve(self, listener: TcpListener, shutdown: CancellationToken) {
+        self.reach
+            .work
+            .report_to(self.reach.server.clone(), shutdown.clone());
         let unauthenticated = Arc::new(Semaphore::new(self.limits.unauthenticated));
         loop {
             let accepted = tokio::select! {
@@ -98,12 +106,7 @@ impl Gate {
             unauthenticated: place,
             ended,
         };
-        let handler = Connection::new(
-            self.server.clone(),
-            self.streams.clone(),
-            self.limits,
-            watched,
-        );
+        let handler = Connection::new(self.reach.clone(), self.limits, watched);
         let session = async {
             russh::server::run_stream(
                 self.config.clone(),

@@ -3,7 +3,7 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
-use corral_activity::{Exec, Sweepable};
+use corral_activity::{ActivityLock, Busy, Settings, Signals, Sweepable};
 use corral_core::Error;
 use corral_core::domain::{
     Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId, SandboxName,
@@ -11,16 +11,19 @@ use corral_core::domain::{
 };
 use corral_core::ports::labels::SANDBOX_ID;
 use corral_core::ports::{
-    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SandboxStreams, VariableMap,
+    ActivitySignals, Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec,
+    SandboxStreams, Usage, VariableMap,
 };
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine, PodStreams};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
-    ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
+    ApiResource, AttachParams, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch,
+    PatchParams,
 };
 use kube::{Api, Client};
 use secrecy::{SecretSlice, SecretString};
 use serde_json::{Value, json};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::sync::{Barrier, Mutex};
@@ -83,9 +86,34 @@ impl Cluster {
         })
     }
 
+    /// Runs `argv` in the sandbox as the sandbox user, through the overlay's shell so that a
+    /// missing program is exit 127, and returns its exit code and output.
     async fn exec(&self, id: &SandboxId, argv: &[&str]) -> (i32, String) {
-        let output = self.engine.exec(id).run(argv).await.unwrap();
-        (output.code, output.stdout)
+        let argv: Vec<&str> = ["/opt/corral/bin/sh", "-c", "exec \"$@\"", "sh"]
+            .iter()
+            .chain(argv)
+            .copied()
+            .collect();
+        let params = AttachParams::default().container("sandbox").stderr(false);
+        let mut process = self.pods.exec(&id.0, argv, &params).await.unwrap();
+        let mut stdout = Vec::new();
+        if let Some(mut reader) = process.stdout() {
+            reader.read_to_end(&mut stdout).await.unwrap();
+        }
+        let status = process.take_status().unwrap().await.unwrap();
+        process.join().await.unwrap();
+        let code = if status.status.as_deref() == Some("Success") {
+            0
+        } else {
+            status
+                .details
+                .iter()
+                .flat_map(|details| details.causes.iter().flatten())
+                .find(|cause| cause.reason.as_deref() == Some("ExitCode"))
+                .and_then(|cause| cause.message.as_deref()?.parse().ok())
+                .unwrap_or_else(|| panic!("exec in {} failed: {status:?}", id.0))
+        };
+        (code, String::from_utf8_lossy(&stdout).into_owned())
     }
 
     /// An SSH session the way the gate opens one: OpenSSH to `corral-sshd`, run in the sandbox
@@ -673,14 +701,14 @@ fn fact<'a>(inspection: &'a Inspection, label: &str) -> Option<&'a str> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
+async fn idle_sandboxes_sleep_and_ones_at_work_stay_awake() {
     let _namespace = NAMESPACE.lock().await;
     let Some(cluster) = Cluster::connect(3).await else {
         return;
     };
     let cluster = Arc::new(cluster);
     let mut ids = Vec::new();
-    for name in ["herdr", "session", "idle"] {
+    for name in ["worked", "busy", "idle"] {
         ids.push(cluster.create(name).await);
     }
     let scenario = tokio::spawn(idle_lifecycle(cluster.clone(), ids.clone())).await;
@@ -692,25 +720,58 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     }
 }
 
+/// Signals as the gate and each sandbox's reporter send them: work through the front door for
+/// one, a busy report for another, idle reports for the last.
 async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
-    let [herdr, session, idle] = <[SandboxId; 3]>::try_from(ids).unwrap();
-    for id in [&herdr, &session, &idle] {
+    let [worked, busy, idle] = <[SandboxId; 3]>::try_from(ids).unwrap();
+    for id in [&worked, &busy, &idle] {
         cluster.wake(id, &[]).await;
     }
-    start_a_plain_process_under_herdr(&cluster, &herdr).await;
-    let mut ssh_session = cluster.ssh_session(&session, "sleep 600").await;
-    let busy = [&herdr, &session];
-
+    let settings = Settings {
+        limits: corral_core::domain::IdleLimits {
+            default_timeout: IDLE_TIMEOUT,
+            max_timeout: IDLE_TIMEOUT,
+            max_keep_awake: IDLE_TIMEOUT,
+        },
+        check_every: LIFECYCLE_INTERVAL,
+        report_every: LIFECYCLE_INTERVAL,
+    };
+    let lock: ActivityLock = cluster.engine.activity().clone();
+    let busy_above = Busy {
+        cpu_percent: 5.0,
+        network_bytes_per_sec: 4096,
+    };
+    let signals = Signals::new(lock, busy_above, LIFECYCLE_INTERVAL);
     let shutdown = CancellationToken::new();
+    let feeding = {
+        let (worked, busy, idle) = (worked.clone(), busy.clone(), idle.clone());
+        shutdown.clone().run_until_cancelled_owned(async move {
+            loop {
+                let usage = |cpu_secs| Usage {
+                    interval: LIFECYCLE_INTERVAL,
+                    cpu: Duration::from_secs(cpu_secs),
+                    network_bytes: 0,
+                };
+                signals.worked(std::slice::from_ref(&worked));
+                for id in [&worked, &idle] {
+                    signals.measured(id, usage(0));
+                }
+                signals.measured(&busy, usage(5));
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        })
+    };
+    let feeding = tokio::spawn(feeding);
     let lifecycle = corral_activity::spawn(
         cluster.engine.clone(),
-        LIFECYCLE_INTERVAL,
-        IDLE_TIMEOUT,
+        Arc::new(corral_core::fakes::MemorySandboxRepo::default()),
+        settings,
         shutdown.clone(),
     );
     let started = tokio::time::Instant::now();
+    let at_work = [&worked, &busy];
     wait_until("the idle sandbox to sleep", ASLEEP_WITHIN, || async {
-        for id in busy {
+        for id in at_work {
             assert_eq!(cluster.state(id).await, SandboxStatus::Running, "{}", id.0);
         }
         cluster.state(&idle).await == SandboxStatus::Sleeping
@@ -718,7 +779,7 @@ async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
     .await;
     eprintln!("idle sandbox asleep after {:?}", started.elapsed());
     tokio::time::sleep(2 * LIFECYCLE_INTERVAL).await;
-    for id in busy {
+    for id in at_work {
         assert_eq!(cluster.state(id).await, SandboxStatus::Running, "{}", id.0);
     }
 
@@ -727,23 +788,7 @@ async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
         .await
         .expect("the lifecycle stops on shutdown")
         .unwrap();
-    ssh_session.kill().await.unwrap();
-}
-
-async fn start_a_plain_process_under_herdr(cluster: &Cluster, id: &SandboxId) {
-    assert_eq!(
-        cluster
-            .exec(id, &["hc", "run", "--bg", "sleep", "600"])
-            .await
-            .0,
-        0
-    );
-    let (code, listing) = cluster.exec(id, &["hc", "ls", "--json"]).await;
-    assert_eq!(code, 0);
-    let listing: serde_json::Value = serde_json::from_str(&listing).unwrap();
-    let terminal = &listing["terminals"][0];
-    assert_eq!(terminal["state"], "live", "{listing}");
-    assert!(terminal.get("status").is_none(), "{listing}");
+    feeding.await.unwrap();
 }
 
 async fn wait_until<F, Fut>(what: &str, within: Duration, mut done: F)

@@ -7,6 +7,7 @@ use russh::{Channel, ChannelId, ChannelMsg, ChannelReadHalf, ChannelWriteHalf, c
 use tokio::sync::mpsc;
 
 use crate::backlog::Backlog;
+use crate::work::Work;
 
 /// What the client sent on a channel, taken at once and held until the sandbox takes it.
 pub(crate) struct FromClient {
@@ -68,9 +69,19 @@ fn size(message: &ChannelMsg) -> usize {
     }
 }
 
-/// Writes one message from the client to the sandbox's side of the channel. False once the
-/// channel is done.
-pub(crate) async fn to_sandbox(inner: &ChannelWriteHalf<client::Msg>, message: ChannelMsg) -> bool {
+/// Writes one message from the client to the sandbox's side of the channel, its data noted as
+/// `work`. False once the channel is done.
+pub(crate) async fn to_sandbox(
+    inner: &ChannelWriteHalf<client::Msg>,
+    message: ChannelMsg,
+    work: &Work,
+) -> bool {
+    if matches!(
+        message,
+        ChannelMsg::Data { .. } | ChannelMsg::ExtendedData { .. }
+    ) {
+        work.note();
+    }
     let written = match message {
         ChannelMsg::Data { data } => inner.data_bytes(data).await,
         ChannelMsg::ExtendedData { data, ext } => inner.extended_data_bytes(ext, data).await,
@@ -101,16 +112,22 @@ pub(crate) async fn to_sandbox(inner: &ChannelWriteHalf<client::Msg>, message: C
 }
 
 /// Forwards what the sandbox sends on a channel to the client until either side closes it. The
-/// sandbox's replies to requests go to `replies`.
+/// sandbox's replies to requests go to `replies`; its data is noted as `work`, if any.
 pub(crate) async fn to_client(
     mut inner: ChannelReadHalf,
     outer: server::Handle,
     id: ChannelId,
     replies: Option<mpsc::UnboundedSender<bool>>,
+    work: Option<Work>,
 ) {
     while let Some(message) = inner.wait().await {
         let sent = match message {
-            ChannelMsg::Data { data } => outer.data(id, data).await.is_ok(),
+            ChannelMsg::Data { data } => {
+                if let Some(work) = &work {
+                    work.note();
+                }
+                outer.data(id, data).await.is_ok()
+            }
             ChannelMsg::ExtendedData { data, ext } => {
                 outer.extended_data(id, ext, data).await.is_ok()
             }
@@ -146,20 +163,23 @@ pub(crate) async fn to_client(
     let _ = outer.close(id).await;
 }
 
-/// Relays a channel that carries bytes alone, such as a forward or the agent, both ways.
+/// Relays a channel that carries bytes alone, such as a forward or the agent, both ways. Its
+/// opening and its bytes either way are work.
 pub(crate) async fn bytes(
     outer: Channel<server::Msg>,
     handle: server::Handle,
     inner: Channel<client::Msg>,
     backlog: Arc<Backlog>,
+    work: Work,
 ) {
+    work.note();
     let id = outer.id();
     let (outer_read, _) = outer.split();
     let (inner_read, inner_write) = inner.split();
-    let back = tokio::spawn(to_client(inner_read, handle, id, None));
+    let back = tokio::spawn(to_client(inner_read, handle, id, None, Some(work.clone())));
     let mut from_client = FromClient::drain(outer_read, backlog);
     while let Some(mut taken) = from_client.next().await {
-        if !to_sandbox(&inner_write, taken.message()).await {
+        if !to_sandbox(&inner_write, taken.message(), &work).await {
             break;
         }
     }

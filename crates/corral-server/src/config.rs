@@ -4,9 +4,11 @@ mod quantity;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
 use corral_core::app::Catalog;
+use corral_core::domain::IdleLimits;
 use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
 use corral_frontdoor_gate::GateConfig;
@@ -156,19 +158,46 @@ impl Default for Engine {
     }
 }
 
-/// When a sandbox with no activity is put to sleep, for every engine.
+/// When a sandbox with no work is put to sleep, for every engine.
 #[derive(Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Idle {
+    /// How long a sandbox whose owner chose no timeout stays awake without work.
     pub timeout_secs: u64,
-    pub probe_interval_secs: NonZeroU64,
+    /// The longest timeout an owner may choose.
+    pub max_timeout_secs: u64,
+    /// How far ahead an owner may keep a sandbox awake.
+    pub max_keep_awake_secs: u64,
+    /// How often running sandboxes are checked.
+    pub check_interval_secs: NonZeroU64,
+    /// How often each sandbox reports what it used.
+    pub report_interval_secs: NonZeroU64,
+    /// A report interval is work when the sandbox used this much of one core on average.
+    pub busy_cpu_percent: f64,
+    /// Or when its network traffic, in and out, averaged this many bytes a second.
+    pub busy_network_bytes_per_sec: u64,
 }
 
 impl Default for Idle {
     fn default() -> Self {
         Self {
             timeout_secs: 1800,
-            probe_interval_secs: const { NonZeroU64::new(60).unwrap() },
+            max_timeout_secs: 24 * 3600,
+            max_keep_awake_secs: 7 * 24 * 3600,
+            check_interval_secs: const { NonZeroU64::new(60).unwrap() },
+            report_interval_secs: const { NonZeroU64::new(60).unwrap() },
+            busy_cpu_percent: 2.0,
+            busy_network_bytes_per_sec: 4096,
+        }
+    }
+}
+
+impl Idle {
+    pub fn limits(&self) -> IdleLimits {
+        IdleLimits {
+            default_timeout: Duration::from_secs(self.timeout_secs),
+            max_timeout: Duration::from_secs(self.max_timeout_secs),
+            max_keep_awake: Duration::from_secs(self.max_keep_awake_secs),
         }
     }
 }
@@ -229,6 +258,17 @@ impl Config {
 
     pub fn parse(text: &str) -> Result<Self> {
         let config: Self = toml::from_str(text)?;
+        let idle = &config.idle;
+        ensure!(
+            idle.timeout_secs <= idle.max_timeout_secs,
+            "[idle] timeout_secs ({}) is past max_timeout_secs ({})",
+            idle.timeout_secs,
+            idle.max_timeout_secs
+        );
+        ensure!(
+            idle.busy_cpu_percent.is_finite() && idle.busy_cpu_percent > 0.0,
+            "[idle] busy_cpu_percent must be above 0"
+        );
         ensure!(
             config.identity.local.is_some() || config.identity.oidc.is_some(),
             "no login method: add [identity.local], [identity.oidc] or both"
@@ -297,7 +337,8 @@ mod tests {
             Engine::Docker(docker) if docker.network == "corral-sandboxes"
         ));
         assert_eq!(config.limits.max_running, 6);
-        assert_eq!(config.idle.probe_interval_secs.get(), 60);
+        assert_eq!(config.idle.check_interval_secs.get(), 60);
+        assert_eq!(config.idle.report_interval_secs.get(), 60);
         assert_eq!(config.idle.timeout_secs, 1800);
         assert_eq!(config.ssh.public_port, 48291);
         assert_eq!(config.limits.max_sandboxes_per_user, 5);
@@ -560,9 +601,23 @@ mod tests {
     }
 
     #[test]
-    fn zero_probe_interval_is_rejected() {
-        let message = rejection(&format!("{MINIMAL}\n[idle]\nprobe_interval_secs = 0"));
-        assert!(message.contains("probe_interval_secs"), "{message}");
+    fn idle_settings_are_checked() {
+        for (setting, expected) in [
+            ("check_interval_secs = 0", "check_interval_secs"),
+            ("report_interval_secs = 0", "report_interval_secs"),
+            (
+                "timeout_secs = 7200\nmax_timeout_secs = 3600",
+                "past max_timeout_secs",
+            ),
+            ("busy_cpu_percent = 0.0", "busy_cpu_percent"),
+            (
+                "probe_interval_secs = 60",
+                "unknown field `probe_interval_secs`",
+            ),
+        ] {
+            let message = rejection(&format!("{MINIMAL}\n[idle]\n{setting}"));
+            assert!(message.contains(expected), "{setting}: {message}");
+        }
     }
 
     #[test]

@@ -109,7 +109,8 @@ network = "$sandbox_network"
 overlay_image = "$overlay_image"
 
 [idle]
-probe_interval_secs = 1
+check_interval_secs = 1
+report_interval_secs = 1
 
 [limits]
 max_sandboxes_per_user = 2
@@ -514,8 +515,8 @@ grep -q "Waking main\.\.\. [0-9]* s" slow-login.out || fail "no progress line: $
 ((took >= 2)) || fail "ssh got in after ${took}s, within the wake deadline"
 ok "a wake past the deadline: the gate waits on with a progress line, and gets in once main is up (${took}s)"
 
-# A quick idle timeout for the rest.
-awk '{ print } /^probe_interval_secs = / { print "timeout_secs = 3" }' config.toml >config.new
+# A quick idle timeout for the rest, longer than the gate's 5 s between reports of work.
+awk '{ print } /^check_interval_secs = / { print "timeout_secs = 10" }' config.toml >config.new
 cat config.new >config.toml
 docker compose restart corral >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
@@ -524,7 +525,7 @@ api adam POST api/sandboxes '{"name":"idle"}' >/dev/null
 idle=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_network" \
   --filter label=corral.adamaq01.fr/sandbox=idle)
 idle_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$idle")
-ok "restarted corral with wake_deadline_secs = 2 and timeout_secs = 3, created sandbox idle"
+ok "restarted corral with wake_deadline_secs = 2 and timeout_secs = 10, created sandbox idle"
 
 state() {
   docker inspect --format '{{.State.Status}}' "$idle"
@@ -540,32 +541,93 @@ sleeps_within() {
   echo "$waited"
 }
 
-as adam idle.adam 'sleep 6'
-expect "after a 6s SSH session" running "$(state)"
-ok "an SSH session longer than the idle timeout keeps idle awake"
-slept=$(sleeps_within 15)
-ok "with nothing running, idle slept ${slept}s after the session ended"
+wake_idle() {
+  api adam POST api/sandboxes/idle/wake >/dev/null
+  expect "idle after a wake" running "$(state)"
+}
 
-# A core started by an SSH command ends with it, so this one starts as the probe runs, outside SSH,
-# once an SSH login has woken idle.
-as adam idle.adam true
-docker exec --user 1000 "$idle" /opt/corral/bin/hc run --bg "sleep 300" >/dev/null 2>&1
-sleep 6
-expect "6s after starting a Herdr terminal" running "$(state)"
-ok "a live Herdr terminal keeps idle awake"
+as adam idle.adam 'sleep 40' >/dev/null 2>&1 &
+session=$!
+slept=$(sleeps_within 30)
+wait "$session" || true
+ok "an open SSH session with nothing happening in it lets idle sleep, ${slept}s in"
 
-# Herdr's state unreadable, the probe's hc fails beside a running core.
-docker exec --user 1000 "$idle" /opt/corral/bin/busybox chmod 000 /home/sandbox/.local/state/herdr-core
-sleep 6
-expect "6s after breaking the probes" running "$(state)"
-if ! docker compose logs --no-color corral 2>&1 | grep "activity probe failed, keeping the sandbox awake" \
-  | grep -qF "${idle#corral-}"; then
-  fail "no log line for idle's failed activity probe"
-fi
-docker exec --user 1000 "$idle" /opt/corral/bin/busybox sh -c \
-  'chmod 700 ~/.local/state/herdr-core && /opt/corral/bin/hc kill t1' >/dev/null 2>&1
-slept=$(sleeps_within 15)
-ok "a failing activity probe keeps idle awake; once fixed, with no terminal at work, it slept ${slept}s later"
+wake_idle
+{ for _ in $(seq 25); do echo true; sleep 1; done; } |
+  ssh -T -F ssh_config -i keys/adam idle.adam@corral-e2e sh >/dev/null 2>&1
+expect "idle after 25 s of commands typed into a session" running "$(state)"
+ok "commands typed into a session keep idle awake past its idle timeout"
+
+as adam idle.adam 'timeout 25 sh -c "while :; do :; done"; true'
+expect "idle after 25 s of a busy command with no input" running "$(state)"
+ok "a busy command keeps idle awake through the sandbox's own processor use, with no input"
+slept=$(sleeps_within 30)
+ok "with nothing running, idle slept ${slept}s after the busy command ended"
+
+wake_idle
+expect "corral keep-awake 1h inside idle" "idle stays awake until" \
+  "$(as adam idle.adam 'corral keep-awake 1h' | cut -d' ' -f1-4)"
+sleep 20
+expect "idle 20 s into a keep-awake" running "$(state)"
+expect "corral status inside idle" 1 "$(as adam idle.adam 'corral status' | grep -c '^Awake    until')"
+api adam PUT api/sandboxes/idle/keep-awake '{"until":null}' >/dev/null
+slept=$(sleeps_within 30)
+ok "corral keep-awake 1h kept idle awake; once the owner let it go, it slept ${slept}s later"
+
+# Herdr's line to a machine stays open and talks every 3 s; it is not work.
+wake_idle
+hc_local machine add --name idle \
+  --via "ssh -F $work/ssh_config -i $work/keys/adam idle.adam@corral-e2e" >>"$log"
+machine_state() {
+  hc_local machine ls --json | jq -r '(.machines? // .)[] | select(.name == "idle") | .state'
+}
+# Once added, Herdr dials the machine again and holds that line.
+connects() {
+  for _ in $(seq 30); do
+    [[ "$(machine_state)" == connected ]] && return
+    sleep 1
+  done
+  fail "the Herdr machine idle $1 is $(machine_state): $(hc_local machine ls --json)"
+}
+connects "once added"
+slept=$(sleeps_within 40)
+ok "with Herdr connected to it and nothing else, idle slept ${slept}s in"
+sleep 20
+expect "idle 20 s after it slept under a Herdr line" exited "$(state)"
+expect "the Herdr machine idle while idle sleeps" connected "$(machine_state)"
+expect "Herdr's terminals on idle while it sleeps" 0 \
+  "$(hc_local ls --json | jq '[.terminals[] | select(.address | startswith("idle/"))] | length')"
+ok "Herdr stays connected to sleeping idle, shows no terminals, and neither redials nor wakes it"
+
+hc_local run --on idle --bg --name woke sleep 60 >>"$log"
+expect "idle after hc run --on idle" running "$(state)"
+expect "hc exec --on idle once woken" ok "$(hc_local exec --on idle echo ok)"
+expect "the terminal hc run started on idle" live \
+  "$(hc_local ls --json | jq -r '.terminals[] | select(.name == "woke") | .state')"
+ok "hc run --on idle woke idle through the same line and runs there"
+
+hc_local kill idle/woke >>"$log" 2>&1 || true
+slept=$(sleeps_within 40)
+docker compose restart gate >>"$log" 2>&1
+docker compose up -d --wait >>"$log" 2>&1
+connects "after the gate restarted"
+sleep 10
+expect "idle after the gate restarted under Herdr" exited "$(state)"
+expect "hc exec --on idle after the gate restarted" ok "$(hc_local exec --on idle echo ok)"
+hc_local server stop >>"$log"
+ok "idle slept ${slept}s after its terminal ended; a gate restart reconnects Herdr to it asleep, and it wakes on use"
+
+# A sandbox that reports nothing, as one started on an overlay without the reporter, is never
+# put to sleep at work: it stays awake, and Corral says why.
+wake_idle
+docker exec "$idle" /opt/corral/bin/busybox pkill -f "corral report-activity"
+sleep 25
+expect "idle 25 s after its reporter stopped" running "$(state)"
+docker compose logs --no-color corral 2>&1 | grep "reports no activity" | grep -qF "${idle#corral-}" \
+  || fail "no log line for idle reporting no activity"
+api adam POST api/sandboxes/idle/restart >/dev/null
+slept=$(sleeps_within 40)
+ok "a sandbox that reports no activity stays awake and is logged; restarted, it reports and slept ${slept}s later"
 
 
 api adam POST "api/admin/users/$bob_id/enable" >/dev/null

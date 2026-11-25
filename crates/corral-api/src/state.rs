@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::http::request::Parts;
 use cookie::Key;
 use corral_core::app::{Accounts, Environment, Keys, Sandboxes};
+use corral_core::ports::ActivitySignals;
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -22,6 +23,8 @@ pub struct Api {
     /// Marks the cookies `Secure`, for an `https://` base URL.
     pub secure_cookies: bool,
     pub trust_forwarded_for: bool,
+    /// Where a sandbox's reports of what it used go.
+    pub activity: Arc<dyn ActivitySignals>,
 }
 
 /// Where people point their SSH client.

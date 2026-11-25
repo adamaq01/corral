@@ -46,8 +46,8 @@ In the release namespace:
 In the sandbox namespace (`<release>-sandboxes` by default, created by the chart unless
 `sandboxes.namespace.create` is false):
 
-- A Role for Corral: Sandboxes, Secrets and PersistentVolumeClaims, reading Pods and Events, and
-  exec into Pods for the idle check. A Role for the gate: exec into Pods, nothing more.
+- A Role for Corral: Sandboxes, Secrets and PersistentVolumeClaims, reading Pods and Events. A
+  Role for the gate: exec into Pods, nothing more.
 - The ServiceAccount sandboxes run as, with no token mounted.
 
 Corral then makes, for each sandbox, a `Sandbox`, its home claim `home-<id>` and the Secrets
@@ -262,9 +262,17 @@ latter.
 
 - Logs: `kubectl --namespace corral logs deploy/corral` and `deploy/corral-gate`. `logLevel`
   sets the level of both.
-- A sandbox sleeps after `idle.timeoutSecs` with no SSH session and no Herdr terminal at work,
-  and wakes on the next SSH login. A connection that only forwards ports (`ssh -N -L`) keeps a
-  sandbox awake while it is open.
+- A sandbox sleeps after `idle.timeoutSecs` with no work, and wakes on the next SSH login. Work
+  is what a person does through SSH (typing, commands, file transfers, traffic through a forward)
+  or the sandbox's own processor and network use, which it reports to Corral every
+  `idle.reportIntervalSecs`; a report is work past `idle.busyCpuPercent` of one core or
+  `idle.busyNetworkBytesPerSec`. An open but untouched connection, a forward with no traffic, and
+  Herdr staying connected do not keep it awake. While it sleeps the gate answers Herdr for it,
+  with no terminals, and the first terminal opened there wakes it.
+- Each sandbox's page sets its own idle timeout, up to `idle.maxTimeoutSecs`, and keeps it awake
+  up to `idle.maxKeepAwakeSecs` ahead; `corral keep-awake 4h` inside does the same. A sandbox
+  that reports nothing, such as one started before an upgrade to this version, stays awake until
+  it is restarted, and Corral logs that it does.
 - A sandbox pod's init container runs as root, only the overlay's static `corral-init`, which
   writes the sandbox user's account files; the sandbox container runs as uid 1000. The sandbox
   namespace enforces the `baseline` Pod Security level, which allows both.

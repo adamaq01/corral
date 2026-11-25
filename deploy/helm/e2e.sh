@@ -124,7 +124,8 @@ catalog:
       reference: $CORRAL_SANDBOX_IMAGE
 idle:
   timeoutSecs: 30
-  probeIntervalSecs: 5
+  checkIntervalSecs: 5
+  reportIntervalSecs: 5
 keepOnUninstall: true
 gate:
   service:
@@ -277,7 +278,7 @@ until [[ "$(shells)" == "$shells_before" ]]; do
 done
 ok "dropping that connection ended its shell within ${waited}s"
 
-as main.adam 'nohup node -e "require(\"http\").createServer((q, r) => q.url === \"/hold\" ? r.writeHead(200).write(\"held\") : r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" >/dev/null 2>&1 &'
+as main.adam 'nohup node -e "require(\"http\").createServer((q, r) => r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" >/dev/null 2>&1 &'
 ssh -F "$work/ssh_config" -o ExitOnForwardFailure=yes -N \
   -L "127.0.0.1:$forward_port:127.0.0.1:8000" main.adam@corral-e2e </dev/null &
 tunnel=$!
@@ -287,7 +288,8 @@ for _ in $(seq 50); do
   sleep 0.2
 done
 expect "ssh -L" forwarded "$body"
-curl -sN "http://127.0.0.1:$forward_port/hold" >/dev/null &
+# Traffic through the forward is work, an open forward alone is not.
+{ while curl -s -o /dev/null "http://127.0.0.1:$forward_port/"; do sleep 5; done; } &
 held=$!
 ok "ssh -L $forward_port:127.0.0.1:8000 reaches a server inside the sandbox"
 
@@ -303,8 +305,8 @@ state() {
   api GET api/sandboxes/main | jq -r .state
 }
 sleep 45
-expect "main's state with a forwarded connection open" running "$(state)"
-ok "an open forwarded connection keeps main awake 45s into a 30s idle timeout"
+expect "main's state with traffic through a forward" running "$(state)"
+ok "traffic through a forward every 5s keeps main awake 45s into a 30s idle timeout"
 
 stop "$held"
 stop "$tunnel"
@@ -317,7 +319,7 @@ until [[ "$(state)" == sleeping ]]; do
   waited=$((waited + 5))
 done
 kubectl --namespace "$sandboxes" wait --for=delete "pod/$sandbox_id" --timeout=60s >>"$log"
-ok "with the forwarding connection closed, main slept within ${waited}s"
+ok "with the forward idle and then closed, main slept within ${waited}s"
 
 woke_at=$SECONDS
 expect "the home after a wake" kept "$(as main.adam 'cat ~/marker')"

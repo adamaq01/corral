@@ -6,24 +6,30 @@ use secrecy::{ExposeSecret, SecretSlice};
 
 use super::{
     FakeEngine, FakeProvider, FakeRegistry, MemoryEnvironmentRepo, MemoryKeyRepo,
-    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
+    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo, RecordedSignals,
 };
 use crate::app::{
     Accounts, Catalog, CreateSandbox, EntryChange, Environment, ImageOption, Keys, Limits,
     NewEntry, SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{
-    Admin, Allocation, Entry, HomePath, ImageKey, Resources, Role, Sandbox, SandboxDefaults,
-    SandboxName, SizeKey, Target, User, VariableName,
+    Admin, Allocation, Entry, HomePath, IdleLimits, ImageKey, Resources, Role, Sandbox,
+    SandboxDefaults, SandboxName, SizeKey, Target, User, VariableName,
 };
 use crate::ports::{Identity, IdentityProvider, VariableMap};
 
 pub const MAX_SANDBOXES: usize = 3;
 pub const PROVIDER: &str = "test";
 pub const WAKE_DEADLINE: Duration = Duration::from_secs(7);
+pub const IDLE: IdleLimits = IdleLimits {
+    default_timeout: Duration::from_mins(30),
+    max_timeout: Duration::from_hours(4),
+    max_keep_awake: Duration::from_hours(24),
+};
 const LIMITS: Limits = Limits {
     max_sandboxes_per_user: MAX_SANDBOXES,
     wake_deadline: WAKE_DEADLINE,
+    idle: IDLE,
 };
 
 pub const ADAM_KEY: &str = include_str!("../../tests/fixtures/adam_ed25519.pub");
@@ -191,6 +197,7 @@ pub struct World {
     pub registry: Arc<FakeRegistry>,
     pub sandboxes: Sandboxes,
     pub access: Arc<SshAccess>,
+    pub signals: Arc<RecordedSignals>,
 }
 
 impl World {
@@ -253,6 +260,7 @@ impl World {
             users,
             provider,
             access,
+            signals: Arc::default(),
         }
     }
 

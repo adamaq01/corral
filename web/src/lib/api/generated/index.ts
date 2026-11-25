@@ -123,7 +123,34 @@ value: string | null, };
 
 export type Handle = string;
 
+/**
+ * How long a sandbox stays awake without work, and within what its owner may choose.
+ */
+export type Idle = {
+/**
+ * Its idle timeout: its owner's choice within the maximum, or the default.
+ */
+timeoutSecs: number,
+/**
+ * Whether its owner chose the timeout.
+ */
+chosen: boolean, defaultTimeoutSecs: number, minTimeoutSecs: number, maxTimeoutSecs: number,
+/**
+ * Until when it stays awake with or without work, if its owner asked.
+ */
+keepAwakeUntil: string | null, maxKeepAwakeSecs: number, };
+
+/**
+ * An owner's idle timeout, or `null` for the default.
+ */
+export type IdleTimeoutChange = { timeoutSecs: number | null, };
+
 export type ImageKey = string;
+
+/**
+ * Keeps a sandbox awake until a time, or with `null` no longer.
+ */
+export type KeepAwake = { until: string | null, };
 
 export type LocalAccount = { username: Handle, role: Role, createdAt: string,
 /**
@@ -189,7 +216,7 @@ staleEnvironment: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
-deleteAt: string | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
 
@@ -226,7 +253,7 @@ staleEnvironment: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
-deleteAt: string | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 /**
  * The image and size a user's new sandbox gets when its creation names none.

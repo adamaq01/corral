@@ -19,6 +19,7 @@ tokio-util = { workspace = true, features = ["compat"] }
 tracing.workspace = true
 
 [dev-dependencies]
+corral-core = { path = "../corral-core", features = ["fakes"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring"] }
 tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "sync"] }
 tokio-util.workspace = true

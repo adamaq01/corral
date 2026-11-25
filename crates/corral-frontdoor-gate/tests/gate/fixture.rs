@@ -158,7 +158,12 @@ impl Fixture {
         let secret = GateSecret::new("a-gate-secret-of-plenty-of-characters".into()).unwrap();
         let internal = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let internal_url = format!("http://{}", internal.local_addr().unwrap());
-        let api = router(world.access.clone(), GateConfig::default(), secret.clone());
+        let api = router(
+            world.access.clone(),
+            world.signals.clone(),
+            GateConfig::default(),
+            secret.clone(),
+        );
         tokio::spawn(async move { axum::serve(internal, api).await.unwrap() });
 
         let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();

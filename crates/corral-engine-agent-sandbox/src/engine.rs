@@ -104,7 +104,7 @@ impl AgentSandboxEngine {
         spec: Option<&SandboxSpec>,
         boot: &Boot,
     ) -> Result<bool> {
-        let _waking = self.activity.wake(id).await;
+        let waking = self.activity.wake(id).await;
         let sandbox = self.sandbox(id).await?;
         if sandbox.spec.operating_mode == OperatingMode::Running {
             return Ok(false);
@@ -132,6 +132,7 @@ impl AgentSandboxEngine {
             .patch(&id.0, &PatchParams::default(), &Patch::Json::<()>(resume))
             .await
             .map_err(kube_error)?;
+        waking.booted();
         Ok(true)
     }
 

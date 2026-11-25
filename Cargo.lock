@@ -809,11 +809,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "corral-core",
- "serde",
- "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

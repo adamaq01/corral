@@ -191,6 +191,8 @@ case "${1:-}" in
     fi
     as_sandbox
     : >/run/corral/ready
+    # What the sandbox uses, reported to Corral, which decides from it when the sandbox is idle.
+    $B su -s $O/bin/sh sandbox -c "exec $O/bin/corral report-activity" &
     exec $B sleep 2147483647
     ;;
   prepare)
@@ -207,6 +209,7 @@ case "${1:-}" in
     ;;
   idle)
     # Kubernetes sandbox container, as the sandbox user: sessions are execs into it.
+    HOME=$HOME_DIR $O/bin/corral report-activity &
     exec $B sleep 2147483647
     ;;
   build)

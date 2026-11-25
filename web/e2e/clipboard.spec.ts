@@ -1,5 +1,5 @@
 import type { Catalog, Sandbox } from '../src/lib/api/generated/index.js';
-import { account, expect, signIn, test } from './fixtures';
+import { account, expect, signIn, test, idle } from './fixtures';
 
 // A LAN hostname over plain HTTP is not a secure context, so the browser withholds the Clipboard
 // API there, unlike on 127.0.0.1. Chromium would hand the name to a proxy from the environment.
@@ -19,6 +19,7 @@ const sandbox: Sandbox = {
 	ssh: { username: 'main.bob', host: lan, port: 2222 },
 	createdAt: '2026-11-02T09:30:00Z',
 	staleEnvironment: false,
+	idle,
 	deleteAt: null,
 	state: 'running'
 };

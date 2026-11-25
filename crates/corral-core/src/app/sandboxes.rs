@@ -3,14 +3,14 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use ts_rs::TS;
 
 use super::{Catalog, Environment};
 use crate::domain::{
-    Admin, Handle, ImageKey, ImageReference, Sandbox, SandboxDefaults, SandboxId, SandboxImage,
-    SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
+    Admin, Handle, IdleLimits, ImageKey, ImageReference, Sandbox, SandboxDefaults, SandboxId,
+    SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
 };
 use crate::ports::{
     ImageRegistry, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
@@ -21,6 +21,7 @@ use crate::{Error, Result};
 pub struct Limits {
     pub max_sandboxes_per_user: usize,
     pub wake_deadline: Duration,
+    pub idle: IdleLimits,
 }
 
 /// Without an image or a size, the owner's default. An image reference names an image of the
@@ -45,6 +46,8 @@ pub struct SandboxView {
     pub status: SandboxStatus,
     /// Runs without the latest change to its environment, which a restart applies.
     pub stale_environment: bool,
+    /// What its idle timeout and keep-awake are within.
+    pub idle: IdleLimits,
 }
 
 /// A sandbox with what its engine reports about how it runs.
@@ -187,6 +190,8 @@ impl Sandboxes {
             started_at: None,
             environment_changed_at: None,
             delete_at: None,
+            idle_timeout: None,
+            keep_awake_until: None,
         };
         self.repo
             .insert(&sandbox, self.limits.max_sandboxes_per_user)
@@ -314,6 +319,54 @@ impl Sandboxes {
         self.engine.stop(&sandbox.id).await
     }
 
+    /// Sets how long the sandbox stays awake without work, or with `None` gives it the default.
+    pub async fn set_idle_timeout(
+        &self,
+        owner: &User,
+        name: &SandboxName,
+        timeout: Option<Duration>,
+    ) -> Result<SandboxView> {
+        if let Some(timeout) = timeout {
+            self.limits.idle.check_timeout(timeout)?;
+        }
+        let sandbox = self.find(owner, name).await?;
+        self.repo.set_idle_timeout(&sandbox.id, timeout).await?;
+        self.get(owner, name).await
+    }
+
+    /// Keeps the sandbox awake until `until` whether or not it is at work, or with `None` lets it
+    /// sleep once idle again.
+    pub async fn keep_awake(
+        &self,
+        owner: &User,
+        name: &SandboxName,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<SandboxView> {
+        if let Some(until) = until {
+            self.limits.idle.check_keep_awake(until, Utc::now())?;
+        }
+        let sandbox = self.find(owner, name).await?;
+        self.repo.set_keep_awake_until(&sandbox.id, until).await?;
+        self.get(owner, name).await
+    }
+
+    /// What a client adapter of the front door kept for the sandbox, such as what it answers for
+    /// the sandbox while it sleeps.
+    pub async fn client_state(&self, id: &SandboxId, client: &str) -> Result<Option<String>> {
+        self.repo.client_state(id, client).await
+    }
+
+    pub async fn keep_client_state(&self, id: &SandboxId, client: &str, state: &str) -> Result<()> {
+        self.repo.set_client_state(id, client, state).await
+    }
+
+    pub(super) async fn status(&self, sandbox: &Sandbox) -> SandboxStatus {
+        self.engine
+            .status(&sandbox.id)
+            .await
+            .unwrap_or_else(|_| SandboxStatus::Failed("engine status unavailable".to_owned()))
+    }
+
     pub async fn set_default(&self, owner: &User, name: &SandboxName) -> Result<()> {
         let sandbox = self.find(owner, name).await?;
         self.repo.set_default(owner.id, &sandbox.id).await
@@ -431,11 +484,7 @@ impl Sandboxes {
     }
 
     async fn view(&self, sandbox: Sandbox, owner: User, is_default: bool) -> SandboxView {
-        let status = self
-            .engine
-            .status(&sandbox.id)
-            .await
-            .unwrap_or_else(|_| SandboxStatus::Failed("engine status unavailable".to_owned()));
+        let status = self.status(&sandbox).await;
         let stale_environment = status == SandboxStatus::Running
             && sandbox
                 .environment_changed_at
@@ -446,6 +495,7 @@ impl Sandboxes {
             is_default,
             status,
             stale_environment,
+            idle: self.limits.idle,
         }
     }
 }
@@ -981,6 +1031,7 @@ mod tests {
                     is_default: true,
                     status: SandboxStatus::Running,
                     stale_environment: false,
+                    idle: crate::fakes::IDLE,
                 },
                 SandboxView {
                     sandbox: dev.clone(),
@@ -988,6 +1039,7 @@ mod tests {
                     is_default: false,
                     status: SandboxStatus::Sleeping,
                     stale_environment: false,
+                    idle: crate::fakes::IDLE,
                 },
             ]
         );
@@ -1196,5 +1248,65 @@ mod tests {
                 Err(Error::NotFound(_))
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn an_owner_sets_the_idle_timeout_and_keeps_a_sandbox_awake_within_the_limits() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let eve = w.member("eve").await;
+        let main = w.sandbox(&adam, "main").await;
+        let hour = Duration::from_hours(1);
+
+        let view = w
+            .sandboxes
+            .set_idle_timeout(&adam, &main.name, Some(hour))
+            .await
+            .unwrap();
+        assert_eq!(view.sandbox.idle_timeout, Some(hour));
+        assert_eq!(view.idle.timeout_of(&view.sandbox), hour);
+        let until = chrono::Utc::now() + chrono::TimeDelta::hours(4);
+        let view = w
+            .sandboxes
+            .keep_awake(&adam, &main.name, Some(until))
+            .await
+            .unwrap();
+        assert_eq!(view.sandbox.keep_awake_until, Some(until));
+
+        for refused in [Duration::from_secs(30), Duration::from_hours(5)] {
+            assert!(matches!(
+                w.sandboxes
+                    .set_idle_timeout(&adam, &main.name, Some(refused))
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+        }
+        let too_far = chrono::Utc::now() + chrono::TimeDelta::hours(25);
+        assert!(matches!(
+            w.sandboxes
+                .keep_awake(&adam, &main.name, Some(too_far))
+                .await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            w.sandboxes.set_idle_timeout(&eve, &main.name, None).await,
+            Err(Error::NotFound(_))
+        ));
+
+        let view = w
+            .sandboxes
+            .set_idle_timeout(&adam, &main.name, None)
+            .await
+            .unwrap();
+        let view = w
+            .sandboxes
+            .keep_awake(&adam, &view.sandbox.name, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            (view.sandbox.idle_timeout, view.sandbox.keep_awake_until),
+            (None, None)
+        );
+        assert_eq!(view.idle.timeout_of(&view.sandbox), Duration::from_mins(30));
     }
 }

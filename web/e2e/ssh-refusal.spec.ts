@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Catalog, OpksshLogin, Provider, Sandbox } from '../src/lib/api/generated/index.js';
-import { expect, test } from './fixtures';
+import { expect, test, idle } from './fixtures';
 
 const home = mkdtempSync(join(tmpdir(), 'corral-web-refusal-'));
 test.afterAll(() => rmSync(home, { recursive: true, force: true }));
@@ -82,6 +82,7 @@ test('a refused key fails at once, with no password prompt, under either config 
 		ssh: { username: 'main.bob', host: '127.0.0.1', port: Number(port) },
 		createdAt: '2026-11-02T09:30:00Z',
 		staleEnvironment: false,
+		idle,
 		deleteAt: null,
 		state: 'running'
 	};

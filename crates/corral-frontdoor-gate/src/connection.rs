@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use corral_core::ports::SandboxStreams;
 use russh::keys::{Certificate, PublicKey};
 use russh::server::{Auth, ChannelOpenHandle, Msg, PublicKeyOffer, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, ChannelOpenFailure, Disconnect, Pty};
@@ -15,15 +14,13 @@ use tracing::{info, warn};
 use crate::Limits;
 use crate::api::Authenticate;
 use crate::backlog::Backlog;
-use crate::client::ServerClient;
-use crate::link::Link;
+use crate::link::{Link, Reach};
 use crate::{relay, session};
 
 const ADMINISTRATIVELY_PROHIBITED: u32 = 1;
 
 pub(crate) struct Connection {
-    server: ServerClient,
-    streams: Arc<dyn SandboxStreams>,
+    reach: Reach,
     limits: Limits,
     peer: SocketAddr,
     id: String,
@@ -51,15 +48,9 @@ pub(crate) struct Watched {
 }
 
 impl Connection {
-    pub(crate) fn new(
-        server: ServerClient,
-        streams: Arc<dyn SandboxStreams>,
-        limits: Limits,
-        watched: Watched,
-    ) -> Self {
+    pub(crate) fn new(reach: Reach, limits: Limits, watched: Watched) -> Self {
         Self {
-            server,
-            streams,
+            reach,
             limits,
             peer: watched.peer,
             id: uuid::Uuid::new_v4().to_string(),
@@ -82,7 +73,7 @@ impl Connection {
             client_address: self.peer,
             connection: self.id.clone(),
         };
-        match self.server.authenticate(&request).await {
+        match self.reach.server.authenticate(&request).await {
             Ok(true) => {
                 if proven {
                     self.proven = Some(username.to_owned());
@@ -142,10 +133,18 @@ impl Connection {
                     return;
                 }
             };
-            match opening(bridge).await {
+            match opening(bridge.clone()).await {
                 Ok(inner) => {
                     reply.accept().await;
-                    relay::bytes(channel, link.client.clone(), inner, link.backlog.clone()).await;
+                    let work = bridge.work.clone();
+                    relay::bytes(
+                        channel,
+                        link.client.clone(),
+                        inner,
+                        link.backlog.clone(),
+                        work,
+                    )
+                    .await;
                 }
                 Err(_) => reply.reject(ChannelOpenFailure::ConnectFailed).await,
             }
@@ -172,6 +171,7 @@ impl Connection {
         };
         match ask(&bridge).await {
             Ok(port) => {
+                bridge.work.note();
                 self.remote_forwards += 1;
                 Ok(Some(port))
             }
@@ -234,11 +234,9 @@ impl russh::server::Handler for Connection {
         self.unauthenticated = None;
         self.link = Some(Arc::new(Link::new(
             username,
-            self.server.clone(),
-            self.streams.clone(),
+            self.reach.clone(),
             session.handle(),
             self.backlog.clone(),
-            self.limits.wake_patience,
             self.ended.clone(),
         )));
         Ok(())

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -67,4 +69,19 @@ pub trait SandboxRepo: Send + Sync {
     async fn set_delete_at(&self, id: &SandboxId, at: Option<DateTime<Utc>>) -> Result<()>;
     /// Every sandbox whose deletion is due at `now`, oldest first.
     async fn due_for_deletion(&self, now: DateTime<Utc>) -> Result<Vec<Sandbox>>;
+    /// Sets the owner's idle timeout, or with `None` leaves the default. Does nothing unless the
+    /// sandbox exists.
+    async fn set_idle_timeout(&self, id: &SandboxId, timeout: Option<Duration>) -> Result<()>;
+    /// Keeps the sandbox awake until `until`, or with `None` no longer. Does nothing unless the
+    /// sandbox exists.
+    async fn set_keep_awake_until(
+        &self,
+        id: &SandboxId,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<()>;
+    /// What a client adapter of the front door last kept for the sandbox.
+    async fn client_state(&self, id: &SandboxId, client: &str) -> Result<Option<String>>;
+    /// Keeps `state` for the client adapter in place of what it kept before. Does nothing unless
+    /// the sandbox exists.
+    async fn set_client_state(&self, id: &SandboxId, client: &str, state: &str) -> Result<()>;
 }

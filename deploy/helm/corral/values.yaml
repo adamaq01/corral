@@ -160,11 +160,22 @@ sandboxes:
 keepOnUninstall: false
 
 idle:
-  # idle.timeoutSecs is how long a sandbox with no SSH session and no Herdr terminal at work stays
-  # awake.
+  # idle.timeoutSecs is how long a sandbox stays awake with no work, unless its owner chose
+  # another timeout. Work is input through SSH (keystrokes, commands, file transfers, forwarded
+  # traffic) or the sandbox's own processor or network use.
   timeoutSecs: 1800
-  # idle.probeIntervalSecs is how often running sandboxes are checked for activity.
-  probeIntervalSecs: 60
+  # idle.maxTimeoutSecs is the longest idle timeout an owner may choose for a sandbox.
+  maxTimeoutSecs: 86400
+  # idle.maxKeepAwakeSecs is how far ahead an owner may keep a sandbox awake, work or not.
+  maxKeepAwakeSecs: 604800
+  # idle.checkIntervalSecs is how often running sandboxes are checked.
+  checkIntervalSecs: 60
+  # idle.reportIntervalSecs is how often each sandbox reports its processor and network use.
+  reportIntervalSecs: 60
+  # A report interval is work when the sandbox used idle.busyCpuPercent of one core on average,
+  # or moved idle.busyNetworkBytesPerSec bytes a second in and out.
+  busyCpuPercent: 2
+  busyNetworkBytesPerSec: 4096
 
 limits:
   # limits.maxSandboxesPerUser is how many sandboxes each user may have.

@@ -631,6 +631,15 @@ async fn create_then_list_shows_the_ssh_username() {
         "createdAt": created["createdAt"],
         "staleEnvironment": false,
         "deleteAt": null,
+        "idle": {
+            "timeoutSecs": 1800,
+            "chosen": false,
+            "defaultTimeoutSecs": 1800,
+            "minTimeoutSecs": 60,
+            "maxTimeoutSecs": 4 * 3600,
+            "keepAwakeUntil": null,
+            "maxKeepAwakeSecs": 24 * 3600,
+        },
     });
     assert_eq!(created, expected);
     assert_eq!(adam.get("/api/sandboxes").await.json(), json!([expected]));

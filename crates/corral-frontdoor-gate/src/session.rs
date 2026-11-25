@@ -8,6 +8,7 @@ use std::time::Duration;
 use russh::{Channel, ChannelId, ChannelMsg, Disconnect, Pty, server};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::herdr;
 use crate::link::Link;
 use crate::relay::{self, FromClient};
 
@@ -105,6 +106,12 @@ pub(crate) async fn run(link: Arc<Link>, outer: Channel<server::Msg>) {
         let _ = link.client.close(id).await;
         return;
     };
+    if let Request::Exec(command) = &request
+        && asked.terminal.is_none()
+        && herdr::is_line(command)
+    {
+        return herdr::run(link, id, from_client, command.clone(), asked.env).await;
+    }
     let on_terminal = asked.terminal.is_some();
     let progress = on_terminal.then(|| Progress::show(link.clone(), id));
     let bridged = link.bridge().await;
@@ -121,11 +128,13 @@ pub(crate) async fn run(link: Arc<Link>, outer: Channel<server::Msg>) {
     };
     let (inner_read, inner_write) = inner.split();
     let (replies, mut reply) = mpsc::unbounded_channel();
+    bridge.work.note();
     let back = tokio::spawn(relay::to_client(
         inner_read,
         link.client.clone(),
         id,
         Some(replies),
+        None,
     ));
     if let Some(terminal) = asked.terminal {
         let _ = inner_write
@@ -157,7 +166,7 @@ pub(crate) async fn run(link: Arc<Link>, outer: Channel<server::Msg>) {
         let _ = link.client.channel_failure(id).await;
     }
     while let Some(mut taken) = from_client.next().await {
-        if !relay::to_sandbox(&inner_write, taken.message()).await {
+        if !relay::to_sandbox(&inner_write, taken.message(), &bridge.work).await {
             break;
         }
     }

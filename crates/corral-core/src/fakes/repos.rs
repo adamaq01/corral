@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -30,6 +31,7 @@ pub struct MemorySandboxRepo {
     sandboxes: Mutex<Vec<Sandbox>>,
     defaults: Mutex<BTreeMap<UserId, SandboxId>>,
     tokens: Mutex<BTreeMap<SandboxId, TokenHash>>,
+    client_states: Mutex<BTreeMap<(SandboxId, String), String>>,
 }
 
 fn find<T: Clone>(items: &Mutex<Vec<T>>, matches: impl Fn(&T) -> bool) -> Option<T> {
@@ -224,6 +226,7 @@ impl SandboxRepo for MemorySandboxRepo {
         let before = sandboxes.len();
         sandboxes.retain(|s| !(s.owner == owner && s.name == *name));
         lock(&self.tokens).retain(|id, _| sandboxes.iter().any(|s| s.id == *id));
+        lock(&self.client_states).retain(|(id, _), _| sandboxes.iter().any(|s| s.id == *id));
         Ok(sandboxes.len() < before)
     }
 
@@ -290,5 +293,36 @@ impl SandboxRepo for MemorySandboxRepo {
             |s| s.delete_at.is_some_and(|at| at <= now),
             |s| s.created_at,
         ))
+    }
+
+    async fn set_idle_timeout(&self, id: &SandboxId, timeout: Option<Duration>) -> Result<()> {
+        if let Some(sandbox) = lock(&self.sandboxes).iter_mut().find(|s| s.id == *id) {
+            sandbox.idle_timeout = timeout;
+        }
+        Ok(())
+    }
+
+    async fn set_keep_awake_until(
+        &self,
+        id: &SandboxId,
+        until: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        if let Some(sandbox) = lock(&self.sandboxes).iter_mut().find(|s| s.id == *id) {
+            sandbox.keep_awake_until = until;
+        }
+        Ok(())
+    }
+
+    async fn client_state(&self, id: &SandboxId, client: &str) -> Result<Option<String>> {
+        Ok(lock(&self.client_states)
+            .get(&(id.clone(), client.to_owned()))
+            .cloned())
+    }
+
+    async fn set_client_state(&self, id: &SandboxId, client: &str, state: &str) -> Result<()> {
+        if lock(&self.sandboxes).iter().any(|s| s.id == *id) {
+            lock(&self.client_states).insert((id.clone(), client.to_owned()), state.to_owned());
+        }
+        Ok(())
     }
 }

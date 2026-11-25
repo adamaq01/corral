@@ -39,6 +39,7 @@ pub fn api(world: &World) -> Api {
         session_key: Key::generate(),
         secure_cookies: false,
         trust_forwarded_for: false,
+        activity: world.signals.clone(),
     }
 }
 

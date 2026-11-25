@@ -8,7 +8,7 @@ import type {
 	SandboxStatus,
 	SshKey
 } from '../src/lib/api/generated/index.js';
-import { expect, test } from './fixtures';
+import { expect, test, idle } from './fixtures';
 import { inEveryView } from './views';
 
 const catalog: Catalog = {
@@ -42,6 +42,7 @@ function sandbox(
 		ssh: { username: `${name}.bob`, host: 'corral.example.lan', port: 48291 },
 		createdAt: '2026-11-02T09:30:00Z',
 		staleEnvironment: false,
+		idle,
 		deleteAt: null,
 		...status,
 		...extra

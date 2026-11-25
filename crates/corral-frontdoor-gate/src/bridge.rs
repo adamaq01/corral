@@ -15,6 +15,7 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::backlog::Backlog;
 use crate::relay;
+use crate::work::Work;
 
 /// The overlay's sshd for one connection, which takes the one public key it is given.
 const SSHD: &str = "/opt/corral/libexec/corral-sshd";
@@ -26,6 +27,8 @@ const KEEPALIVE: Duration = Duration::from_mins(1);
 
 pub(crate) struct Bridge {
     pub(crate) sandbox: client::Handle<Sandbox>,
+    /// Work in the sandbox.
+    pub(crate) work: Work,
 }
 
 impl Bridge {
@@ -35,6 +38,7 @@ impl Bridge {
         id: &SandboxId,
         client: server::Handle,
         backlog: Arc<Backlog>,
+        work: Work,
     ) -> Result<Self> {
         let key = connection_key()?;
         let public = key
@@ -42,7 +46,11 @@ impl Bridge {
             .to_openssh()
             .map_err(|err| Error::internal("encode the gate's key", err))?;
         let stream = streams.open(id, &command(&public)).await?;
-        let handler = Sandbox { client, backlog };
+        let handler = Sandbox {
+            client,
+            backlog,
+            work: work.clone(),
+        };
         let login = async {
             let mut sandbox = client::connect_stream(Arc::new(config()), stream.compat(), handler)
                 .await
@@ -60,7 +68,7 @@ impl Bridge {
                     "it refused the gate's key",
                 ));
             }
-            Ok(Self { sandbox })
+            Ok(Self { sandbox, work })
         };
         tokio::time::timeout(HANDSHAKE, login)
             .await
@@ -93,6 +101,7 @@ fn config() -> client::Config {
 pub(crate) struct Sandbox {
     client: server::Handle,
     backlog: Arc<Backlog>,
+    work: Work,
 }
 
 impl Sandbox {
@@ -102,12 +111,13 @@ impl Sandbox {
         reply: client::ChannelOpenHandle,
         opening: impl Future<Output = Result<Channel<server::Msg>, russh::Error>> + Send + 'static,
     ) {
-        let (client, backlog) = (self.client.clone(), self.backlog.clone());
+        let (client, backlog, work) =
+            (self.client.clone(), self.backlog.clone(), self.work.clone());
         tokio::spawn(async move {
             match opening.await {
                 Ok(outer) => {
                     reply.accept().await;
-                    relay::bytes(outer, client, inner, backlog).await;
+                    relay::bytes(outer, client, inner, backlog, work).await;
                 }
                 Err(_) => reply.reject(ChannelOpenFailure::ConnectFailed).await,
             }

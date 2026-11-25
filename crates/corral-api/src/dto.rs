@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use corral_core::app::{Catalog, SandboxDetails, SandboxView, UserDefaults};
 use corral_core::domain::{
-    Handle, ImageKey, PictureUrl, Role, SandboxName, SandboxStatus, SizeKey, SshKey, SshUsername,
-    User, UserStatus,
+    Handle, IdleLimits, ImageKey, MIN_IDLE_TIMEOUT, PictureUrl, Role, Sandbox, SandboxName,
+    SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus,
 };
 use corral_core::ports::{EngineEvent, EventKind, Fact};
 use serde::{Deserialize, Serialize};
@@ -136,6 +136,7 @@ pub(crate) struct SandboxDto {
     stale_environment: bool,
     /// When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
     delete_at: Option<DateTime<Utc>>,
+    idle: Idle,
 }
 
 impl SandboxDto {
@@ -146,7 +147,9 @@ impl SandboxDto {
             is_default,
             status,
             stale_environment,
+            idle,
         } = view;
+        let idle = Idle::of(&sandbox, &idle);
         Self {
             ssh: SandboxSsh {
                 username: SshUsername {
@@ -163,6 +166,7 @@ impl SandboxDto {
             created_at: sandbox.created_at,
             stale_environment,
             delete_at: sandbox.delete_at,
+            idle,
         }
     }
 }
@@ -271,6 +275,81 @@ impl From<EngineEvent> for EngineEventDto {
 #[derive(Serialize, TS)]
 pub(crate) struct Wake {
     pub ready: bool,
+}
+
+/// How long a sandbox stays awake without work, and within what its owner may choose.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Idle {
+    /// Its idle timeout: its owner's choice within the maximum, or the default.
+    #[ts(type = "number")]
+    timeout_secs: u64,
+    /// Whether its owner chose the timeout.
+    chosen: bool,
+    #[ts(type = "number")]
+    default_timeout_secs: u64,
+    #[ts(type = "number")]
+    min_timeout_secs: u64,
+    #[ts(type = "number")]
+    max_timeout_secs: u64,
+    /// Until when it stays awake with or without work, if its owner asked.
+    keep_awake_until: Option<DateTime<Utc>>,
+    #[ts(type = "number")]
+    max_keep_awake_secs: u64,
+}
+
+impl Idle {
+    fn of(sandbox: &Sandbox, limits: &IdleLimits) -> Self {
+        Self {
+            timeout_secs: limits.timeout_of(sandbox).as_secs(),
+            chosen: sandbox.idle_timeout.is_some(),
+            default_timeout_secs: limits.default_timeout.as_secs(),
+            min_timeout_secs: MIN_IDLE_TIMEOUT.as_secs(),
+            max_timeout_secs: limits.max_timeout.as_secs(),
+            keep_awake_until: sandbox.keep_awake_until,
+            max_keep_awake_secs: limits.max_keep_awake.as_secs(),
+        }
+    }
+}
+
+/// An owner's idle timeout, or `null` for the default.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IdleTimeoutChange {
+    #[ts(type = "number | null")]
+    pub timeout_secs: Option<u64>,
+}
+
+/// Keeps a sandbox awake until a time, or with `null` no longer.
+#[derive(Deserialize, TS)]
+pub(crate) struct KeepAwake {
+    pub until: Option<DateTime<Utc>>,
+}
+
+/// `corral keep-awake` inside a sandbox: for so many seconds from now, or with `null` no longer.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct KeepAwakeFor {
+    #[ts(type = "number | null")]
+    pub for_secs: Option<u64>,
+}
+
+/// What a sandbox used since its last report, as its reporter measures it. The first report of
+/// a boot covers no time.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UsageReport {
+    pub interval_ms: u64,
+    /// Processor time across its processes, in microseconds.
+    pub cpu_us: u64,
+    /// Bytes in and out over its network interfaces, loopback left out.
+    pub network_bytes: u64,
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReportAgain {
+    pub after_secs: u64,
 }
 
 /// What `corral delete` sends: the sandbox's name, typed to confirm.

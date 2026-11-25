@@ -8,7 +8,7 @@ import type {
 	SandboxStatus,
 	User
 } from '../src/lib/api/generated/index.js';
-import { expect, test } from './fixtures';
+import { expect, test, idle } from './fixtures';
 import { inEveryView } from './views';
 
 const days = (n: number) => new Date(Date.UTC(2026, 10, 22 - n, 9, 30)).toISOString();
@@ -309,6 +309,7 @@ function sandbox(
 		ssh: { username: `${name}.${owner}`, host: 'corral.example.com', port: 2222 },
 		createdAt: days(age),
 		staleEnvironment: false,
+		idle,
 		deleteAt: null,
 		...status
 	};

@@ -1,6 +1,7 @@
 //! `corral`, in a sandbox: acts on that sandbox through Corral's API, with the token Corral wrote
 //! into the home at the sandbox's start.
 
+mod activity;
 mod client;
 mod command;
 mod sandbox_file;
@@ -28,6 +29,9 @@ fn main() -> ExitCode {
         }
     };
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    if command == Command::ReportActivity {
+        activity::run(&home);
+    }
     let outcome = SandboxFile::read(&home)
         .and_then(|file| run(&command, &file, &Client::new(&file)))
         .map(|text| match command {
@@ -68,6 +72,20 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
                  sleep; connecting again wakes it."
             ))
         }
+        Command::KeepAwake(time) => {
+            let for_secs = time.map(|time| time.as_secs());
+            let reply = expect(
+                corral.post("/api/sandbox/keep-awake", &json!({ "forSecs": for_secs }))?,
+                200,
+            )?;
+            Ok(match reply["idle"]["keepAwakeUntil"].as_str() {
+                Some(until) => format!("{name} stays awake until {until}, with or without work."),
+                None => format!(
+                    "{name} sleeps again after {} with no work.",
+                    idle_timeout(&reply)
+                ),
+            })
+        }
         Command::Delete(None) => Err(format!(
             "corral delete puts {name} to sleep now and deletes it, with everything in its home, \
              after a grace period. To go ahead, run: corral delete --confirm {name}"
@@ -86,7 +104,20 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
                 file.web.trim_end_matches('/')
             ))
         }
-        Command::Help => Ok(USAGE.to_owned()),
+        Command::Help | Command::ReportActivity => Ok(USAGE.to_owned()),
+    }
+}
+
+/// The sandbox's idle timeout, as `30 min` or `2 h`.
+fn idle_timeout(sandbox: &Value) -> String {
+    let Some(secs) = sandbox["idle"]["timeoutSecs"].as_u64() else {
+        return "its idle timeout".to_owned();
+    };
+    let minutes = secs / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, minutes) => format!("{minutes} min"),
+        (hours, 0) => format!("{hours} h"),
+        (hours, minutes) => format!("{hours} h {minutes} min"),
     }
 }
 
@@ -115,6 +146,13 @@ fn status(sandbox: &Value) -> String {
         format!("Image    {}", field(&sandbox["image"])),
         format!("Size     {}", field(&sandbox["size"])),
     ];
+    lines.push(format!(
+        "Sleeps   after {} with no work",
+        idle_timeout(sandbox)
+    ));
+    if let Some(until) = sandbox["idle"]["keepAwakeUntil"].as_str() {
+        lines.push(format!("Awake    until {until}, with or without work"));
+    }
     if let Some(at) = sandbox["deleteAt"].as_str() {
         lines.push(format!("Deletes  at {at}, unless cancelled in the web UI"));
     }
@@ -202,13 +240,36 @@ mod tests {
             "state": "running",
             "image": "ubuntu",
             "size": "small",
+            "idle": {"timeoutSecs": 5400, "keepAwakeUntil": "2026-11-25T18:00:00Z"},
         });
         let (outcome, calls) = ran(&Command::Status, &Fake::answering(200, sandbox));
         assert_eq!(
             outcome.unwrap(),
-            "Sandbox  main.adam\nState    running\nImage    ubuntu\nSize     small"
+            "Sandbox  main.adam\nState    running\nImage    ubuntu\nSize     small\n\
+             Sleeps   after 1 h 30 min with no work\n\
+             Awake    until 2026-11-25T18:00:00Z, with or without work"
         );
         assert_eq!(calls, ["GET /api/sandbox"]);
+    }
+
+    #[test]
+    fn keep_awake_says_until_when_or_after_how_long_it_sleeps_again() {
+        let kept = json!({"idle": {"timeoutSecs": 1800, "keepAwakeUntil": "2026-11-25T18:00:00Z"}});
+        let four_hours = Command::KeepAwake(Some(std::time::Duration::from_hours(4)));
+        let (outcome, calls) = ran(&four_hours, &Fake::answering(200, kept));
+        assert_eq!(
+            outcome.unwrap(),
+            "main stays awake until 2026-11-25T18:00:00Z, with or without work."
+        );
+        assert_eq!(calls, [r#"POST /api/sandbox/keep-awake {"forSecs":14400}"#]);
+
+        let off = json!({"idle": {"timeoutSecs": 1800, "keepAwakeUntil": null}});
+        let (outcome, calls) = ran(&Command::KeepAwake(None), &Fake::answering(200, off));
+        assert_eq!(
+            outcome.unwrap(),
+            "main sleeps again after 30 min with no work."
+        );
+        assert_eq!(calls, [r#"POST /api/sandbox/keep-awake {"forSecs":null}"#]);
     }
 
     #[test]

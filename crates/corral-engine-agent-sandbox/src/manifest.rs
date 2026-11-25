@@ -41,7 +41,7 @@ const ACCOUNT_FILES: [(&str, &str); 5] = [
     ("sudoers", "/etc/sudoers.d/corral-sandbox"),
     ("profile.sh", "/etc/profile.d/corral.sh"),
 ];
-/// For the execs the engine runs itself; a session's environment comes from sshd.
+/// For the container's own processes; a session's environment comes from sshd.
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback";
 // Kubernetes refuses a Secret whose data is larger.
 const SECRET_LIMIT: usize = 1 << 20;

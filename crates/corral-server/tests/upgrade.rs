@@ -189,6 +189,7 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
         Limits {
             max_sandboxes_per_user: 5,
             wake_deadline: Duration::from_secs(1),
+            idle: corral_core::fakes::IDLE,
         },
     );
     for sandbox in &theirs {

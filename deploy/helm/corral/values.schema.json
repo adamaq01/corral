@@ -498,9 +498,29 @@
           "type": "integer",
           "minimum": 0
         },
-        "probeIntervalSecs": {
+        "maxTimeoutSecs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxKeepAwakeSecs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "checkIntervalSecs": {
           "type": "integer",
           "minimum": 1
+        },
+        "reportIntervalSecs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "busyCpuPercent": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "busyNetworkBytesPerSec": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },

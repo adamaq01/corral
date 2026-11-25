@@ -137,9 +137,13 @@ gate:
   service:
     type: Ingress
 ---
-# expect: at '/idle/probeIntervalSecs': minimum: got 0, want 1
+# expect: at '/idle/checkIntervalSecs': minimum: got 0, want 1
 idle:
-  probeIntervalSecs: 0
+  checkIntervalSecs: 0
+---
+# expect: at '/idle': additional properties 'probeIntervalSecs' not allowed
+idle:
+  probeIntervalSecs: 60
 ---
 # expect: at '/sandboxes/namespace/name': 'Corral_Sandboxes' does not match pattern
 sandboxes:

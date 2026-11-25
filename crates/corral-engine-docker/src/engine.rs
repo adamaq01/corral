@@ -8,7 +8,7 @@ use bollard::query_parameters::{
     RemoveVolumeOptions, RenameContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
 use bollard::{Docker, body_full};
-use corral_activity::{ActivityLock, Exec};
+use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{
@@ -233,7 +233,7 @@ impl DockerEngine {
         let exec = DockerExec::new(self.docker.clone(), container::name(id));
         let ready = async {
             loop {
-                if exec.run(&MARKED_READY).await?.code == 0 {
+                if exec.run(&MARKED_READY).await? == 0 {
                     return Ok(());
                 }
                 tokio::time::sleep(READY_POLL).await;
@@ -280,11 +280,12 @@ impl SandboxEngine for DockerEngine {
     ) -> Result<Started> {
         let called = Instant::now();
         let (current, booted) = {
-            let _waking = self.activity.wake(id).await;
+            let waking = self.activity.wake(id).await;
             let mut current = self.settled(id).await?.ok_or_else(|| missing(id))?;
             let booted = !status::is_running(&current);
             if booted {
                 current = Box::pin(self.boot(id, spec, current, &boot)).await?;
+                waking.booted();
             }
             (current, booted)
         };

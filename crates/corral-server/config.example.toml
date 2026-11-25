@@ -40,10 +40,19 @@ storage_class = "tns-csi-nvmeof"
 # The Corral overlay every sandbox mounts at /opt/corral, whatever its image.
 overlay_image = "ghcr.io/adamaq01/corral-overlay:latest"
 
-# A sandbox with no SSH session and no Herdr terminal at work sleeps after timeout_secs.
+# A sandbox sleeps after its idle timeout with no work: no input through SSH (keystrokes,
+# commands, file transfers, forwarded traffic) and its own processor and network use, which it
+# reports every report_interval_secs, below the busy thresholds. An open connection alone is not
+# work. Owners choose a sandbox's timeout up to max_timeout_secs, and keep it awake up to
+# max_keep_awake_secs ahead.
 [idle]
 timeout_secs = 1800
-probe_interval_secs = 60
+max_timeout_secs = 86400
+max_keep_awake_secs = 604800
+check_interval_secs = 60
+report_interval_secs = 60
+busy_cpu_percent = 2.0
+busy_network_bytes_per_sec = 4096
 
 # The SSH front door, `corral-server gate`, which reads this same file.
 [frontdoor]

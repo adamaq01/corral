@@ -124,9 +124,20 @@ block, and wakes, stops, restarts or deletes the sandbox.
   homes, keys, environment and local account. The username is free again afterwards, and a new
   account with it starts empty. A deletion that fails part way leaves the user with status
   Deleting, unable to log in, and deleting them again finishes it.
-- A sandbox sleeps (its container stops) after 30 minutes with no SSH session and no Herdr
-  terminal at work (`timeout_secs` under `[idle]`), and wakes on the next SSH login. Sleep keeps
-  the container, so its files survive until the sandbox is deleted.
+- A sandbox sleeps (its container stops) after 30 minutes with no work, and wakes on the next SSH
+  login. Work is what a person does through SSH (typing, commands, file transfers, forwarded
+  traffic) or the sandbox's own processor and network use, which it reports to Corral every
+  minute: an agent answering or running tools is at work, one waiting at its prompt is not. An open
+  but untouched connection does not keep a sandbox awake, and neither does Herdr: while the sandbox
+  sleeps, the gate answers Herdr for it, so Herdr shows the machine connected with no terminals,
+  and the first terminal opened there wakes it. Sleep keeps the container, so its files survive
+  until the sandbox is deleted, and ends its programs.
+- Each sandbox's page sets how long it stays awake with no work, up to `max_timeout_secs`, and
+  keeps it awake for a while (an hour, four, until tomorrow morning) whatever it does. `[idle]` in
+  `config.toml` sets the default timeout, those limits, and what counts as busy
+  (`busy_cpu_percent` of one core, `busy_network_bytes_per_sec`). A sandbox that reports nothing,
+  such as one started before an upgrade to this version, stays awake until it is restarted, and
+  Corral logs that it does.
 
 ### From inside a sandbox
 
@@ -135,6 +146,8 @@ The `corral` command acts on the sandbox it runs in:
 - `corral status` shows the sandbox and its state.
 - `corral restart` and `corral stop` restart or stop it. Corral accepts the request and does it
   next, so the session that asked ends as the sandbox stops.
+- `corral keep-awake 4h` keeps it awake for that long (`30m`, `4h`, `2d`), with or without work,
+  and `corral keep-awake off` lets it sleep once idle again.
 - `corral delete --confirm <sandbox>` stops the sandbox at once and deletes it, with its home, 10
   minutes later. It is refused until you turn it on in your **Profile**. Until the deletion, the
   sandbox stays stopped and its page offers **Cancel deletion**.

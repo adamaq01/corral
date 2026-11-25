@@ -1,13 +1,15 @@
+use std::time::Duration;
+
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use corral_core::app::CreateSandbox;
 use corral_core::domain::SandboxName;
 use corral_core::ports::Readiness;
 
 use crate::auth::CurrentUser;
-use crate::dto::{SandboxDto, Wake};
+use crate::dto::{IdleTimeoutChange, KeepAwake, SandboxDto, Wake};
 use crate::error::ApiError;
 use crate::extract::{JsonBody, PathParam};
 use crate::state::AppState;
@@ -20,6 +22,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/sandboxes/{name}/stop", post(stop))
         .route("/api/sandboxes/{name}/restart", post(restart))
         .route("/api/sandboxes/{name}/default", post(make_default))
+        .route("/api/sandboxes/{name}/idle-timeout", put(set_idle_timeout))
+        .route("/api/sandboxes/{name}/keep-awake", put(keep_awake))
         .route("/api/sandboxes/{name}/deletion", delete(cancel_deletion))
 }
 
@@ -100,6 +104,30 @@ async fn cancel_deletion(
 ) -> Result<StatusCode, ApiError> {
     state.sandboxes.cancel_deletion(&user, &name).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_idle_timeout(
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    PathParam(name): PathParam<SandboxName>,
+    JsonBody(IdleTimeoutChange { timeout_secs }): JsonBody<IdleTimeoutChange>,
+) -> Result<Json<SandboxDto>, ApiError> {
+    let timeout = timeout_secs.map(Duration::from_secs);
+    let view = state
+        .sandboxes
+        .set_idle_timeout(&user, &name, timeout)
+        .await?;
+    Ok(Json(SandboxDto::new(view, &state.ssh)))
+}
+
+async fn keep_awake(
+    CurrentUser(user): CurrentUser,
+    State(state): State<AppState>,
+    PathParam(name): PathParam<SandboxName>,
+    JsonBody(KeepAwake { until }): JsonBody<KeepAwake>,
+) -> Result<Json<SandboxDto>, ApiError> {
+    let view = state.sandboxes.keep_awake(&user, &name, until).await?;
+    Ok(Json(SandboxDto::new(view, &state.ssh)))
 }
 
 async fn make_default(

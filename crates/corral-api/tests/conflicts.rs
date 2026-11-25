@@ -35,6 +35,7 @@ async fn app(databases: &Databases) -> Router {
         Limits {
             max_sandboxes_per_user: 5,
             wake_deadline: Duration::from_secs(1),
+            idle: corral_core::fakes::IDLE,
         },
     );
     let api = Api {
@@ -55,6 +56,7 @@ async fn app(databases: &Databases) -> Router {
         session_key: Key::generate(),
         secure_cookies: false,
         trust_forwarded_for: false,
+        activity: std::sync::Arc::new(corral_core::fakes::RecordedSignals::default()),
     };
     router(api, vec![trusting_provider("test")])
 }

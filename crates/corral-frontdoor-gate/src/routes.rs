@@ -11,8 +11,13 @@ use axum::routing::post;
 use axum::{Json, Router};
 use corral_core::Error;
 use corral_core::app::{Arrival, FailureWindow, Network, SshAccess};
+use corral_core::domain::{Sandbox, SandboxId};
+use corral_core::ports::ActivitySignals;
 
-use crate::api::{ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated};
+use crate::api::{
+    ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated, CLIENT_STATE, ClientState,
+    WORKED, Worked,
+};
 use crate::{GateConfig, GateSecret};
 
 const MAX_FAILED_CONNECTIONS: NonZeroUsize = NonZeroUsize::new(10).unwrap();
@@ -20,20 +25,29 @@ const LOCKOUT_WINDOW: Duration = Duration::from_mins(5);
 
 struct Gatekeeper {
     access: Arc<SshAccess>,
+    activity: Arc<dyn ActivitySignals>,
     settings: GateConfig,
     failures: FailureWindow<Network>,
 }
 
 /// The server's half of the internal API, which answers only the gate.
-pub fn router(access: Arc<SshAccess>, settings: GateConfig, secret: GateSecret) -> Router {
+pub fn router(
+    access: Arc<SshAccess>,
+    activity: Arc<dyn ActivitySignals>,
+    settings: GateConfig,
+    secret: GateSecret,
+) -> Router {
     let gatekeeper = Gatekeeper {
         access,
+        activity,
         settings,
         failures: FailureWindow::new(MAX_FAILED_CONNECTIONS, LOCKOUT_WINDOW),
     };
     Router::new()
         .route(AUTHENTICATE, post(authenticate))
         .route(ARRIVE, post(arrive))
+        .route(WORKED, post(worked))
+        .route(CLIENT_STATE, post(client_state))
         .with_state(Arc::new(gatekeeper))
         .route_layer(middleware::from_fn(move |request: Request, next: Next| {
             let admitted = secret.admits(
@@ -108,20 +122,69 @@ async fn arrive(
     // A gate that stops waiting drops this request. The wake runs on, so the sandbox it creates
     // or wakes is whole for the next connection.
     let access = gatekeeper.access.clone();
-    let arrival = tokio::spawn(async move { access.arrive(&request.username).await })
-        .await
-        .unwrap_or_else(|failed| Err(Error::internal("arrive", failed)));
-    match arrival {
-        Ok(Arrival::Ready(sandbox)) => Json(Arrived::Ready {
+    let username = request.username.clone();
+    let arrival = tokio::spawn(async move {
+        if request.wake {
+            access.arrive(&username).await
+        } else {
+            access.look(&username).await
+        }
+    })
+    .await
+    .unwrap_or_else(|failed| Err(Error::internal("arrive", failed)));
+    let kept = async |sandbox: &Sandbox| match &request.client {
+        Some(client) => gatekeeper.access.client_state(&sandbox.id, client).await,
+        None => Ok(None),
+    };
+    let arrived = match arrival {
+        Ok(Arrival::Ready(sandbox)) => kept(&sandbox).await.map(|client_state| Arrived::Ready {
+            client_state,
             sandbox: sandbox.id.0,
             name: sandbox.name.to_string(),
-        })
-        .into_response(),
-        Ok(Arrival::Waking(sandbox)) => Json(Arrived::Waking {
+        }),
+        Ok(Arrival::Asleep(sandbox)) => kept(&sandbox).await.map(|client_state| Arrived::Asleep {
+            client_state,
+            sandbox: sandbox.id.0,
             name: sandbox.name.to_string(),
-        })
-        .into_response(),
-        Ok(Arrival::Refused(reason)) => Json(Arrived::Refused { reason }).into_response(),
+        }),
+        Ok(Arrival::Waking(sandbox)) => Ok(Arrived::Waking {
+            name: sandbox.name.to_string(),
+        }),
+        Ok(Arrival::Refused(reason)) => Ok(Arrived::Refused { reason }),
+        Err(error) => Err(error),
+    };
+    match arrived {
+        Ok(arrived) => Json(arrived).into_response(),
+        Err(error) => internal_error(&error),
+    }
+}
+
+async fn worked(
+    State(gatekeeper): State<Arc<Gatekeeper>>,
+    request: Result<Json<Worked>, JsonRejection>,
+) -> StatusCode {
+    let Ok(Json(Worked { sandboxes })) = request else {
+        return StatusCode::BAD_REQUEST;
+    };
+    let sandboxes: Vec<SandboxId> = sandboxes.into_iter().map(SandboxId).collect();
+    gatekeeper.activity.worked(&sandboxes);
+    StatusCode::NO_CONTENT
+}
+
+async fn client_state(
+    State(gatekeeper): State<Arc<Gatekeeper>>,
+    request: Result<Json<ClientState>, JsonRejection>,
+) -> Response {
+    let Ok(Json(kept)) = request else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let sandbox = SandboxId(kept.sandbox);
+    match gatekeeper
+        .access
+        .keep_client_state(&sandbox, &kept.client, &kept.state)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => internal_error(&error),
     }
 }

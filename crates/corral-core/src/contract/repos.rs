@@ -19,6 +19,8 @@ pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dy
     sandbox_repo(users, sandboxes).await;
     sandbox_tokens(users, sandboxes).await;
     scheduled_deletions(users, sandboxes).await;
+    idle_settings(users, sandboxes).await;
+    client_states(users, sandboxes).await;
     environment_change_times(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
     deleting_a_user_leaves_nothing_of_them(users, keys, sandboxes).await;
@@ -416,6 +418,104 @@ async fn sandbox_tokens(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     );
 }
 
+async fn idle_settings(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+    let adam = seed_user(users, "adam").await;
+    let (main, other) = (
+        new_sandbox(adam.id, "main", 1),
+        new_sandbox(adam.id, "other", 2),
+    );
+    for sandbox in [&main, &other] {
+        sandboxes.insert(sandbox, 5).await.expect("insert sandbox");
+    }
+    let read = async |sandbox: &Sandbox| {
+        let found = sandboxes.by_name(adam.id, &sandbox.name).await.unwrap();
+        let found = found.expect("the sandbox");
+        (found.idle_timeout, found.keep_awake_until)
+    };
+    assert_eq!(read(&main).await, (None, None));
+
+    let timeout = std::time::Duration::from_mins(90);
+    sandboxes
+        .set_idle_timeout(&main.id, Some(timeout))
+        .await
+        .unwrap();
+    sandboxes
+        .set_keep_awake_until(&main.id, Some(at(30)))
+        .await
+        .unwrap();
+    assert_eq!(read(&main).await, (Some(timeout), Some(at(30))));
+    assert_eq!(read(&other).await, (None, None), "only main changed");
+    assert_eq!(
+        sandboxes.list(adam.id).await.unwrap()[0].idle_timeout,
+        Some(timeout),
+        "a listing reads it too"
+    );
+
+    sandboxes.set_idle_timeout(&main.id, None).await.unwrap();
+    sandboxes
+        .set_keep_awake_until(&main.id, None)
+        .await
+        .unwrap();
+    assert_eq!(read(&main).await, (None, None));
+    let nobody = SandboxId(unique("sbx"));
+    sandboxes
+        .set_idle_timeout(&nobody, Some(timeout))
+        .await
+        .expect("set nothing");
+    sandboxes
+        .set_keep_awake_until(&nobody, Some(at(1)))
+        .await
+        .expect("set nothing");
+}
+
+async fn client_states(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+    let adam = seed_user(users, "adam").await;
+    let main = new_sandbox(adam.id, "main", 1);
+    sandboxes.insert(&main, 5).await.expect("insert sandbox");
+    assert_eq!(
+        sandboxes.client_state(&main.id, "herdr").await.unwrap(),
+        None
+    );
+
+    sandboxes
+        .set_client_state(&main.id, "herdr", r#"{"id":"a"}"#)
+        .await
+        .unwrap();
+    sandboxes
+        .set_client_state(&main.id, "herdr", r#"{"id":"b"}"#)
+        .await
+        .unwrap();
+    sandboxes
+        .set_client_state(&main.id, "other", "kept apart")
+        .await
+        .unwrap();
+    assert_eq!(
+        sandboxes.client_state(&main.id, "herdr").await.unwrap(),
+        Some(r#"{"id":"b"}"#.to_owned())
+    );
+    assert_eq!(
+        sandboxes.client_state(&main.id, "other").await.unwrap(),
+        Some("kept apart".to_owned())
+    );
+    let nobody = SandboxId(unique("sbx"));
+    sandboxes
+        .set_client_state(&nobody, "herdr", "{}")
+        .await
+        .expect("keep nothing");
+    assert_eq!(
+        sandboxes.client_state(&nobody, "herdr").await.unwrap(),
+        None
+    );
+
+    sandboxes.delete(adam.id, &main.name).await.unwrap();
+    sandboxes.insert(&main, 5).await.expect("insert it again");
+    assert_eq!(
+        sandboxes.client_state(&main.id, "herdr").await.unwrap(),
+        None,
+        "a delete forgets what was kept"
+    );
+}
+
 async fn scheduled_deletions(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     let adam = seed_user(users, "adam").await;
     assert!(!users.deletes_from_inside(adam.id).await.unwrap());
@@ -640,5 +740,7 @@ pub(super) fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         started_at: None,
         environment_changed_at: None,
         delete_at: None,
+        idle_timeout: None,
+        keep_awake_until: None,
     }
 }

@@ -5,7 +5,6 @@ mod error;
 mod idle;
 mod inspection;
 mod manifest;
-mod pod_exec;
 mod status;
 mod streams;
 

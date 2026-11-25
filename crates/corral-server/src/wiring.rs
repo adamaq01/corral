@@ -4,9 +4,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use axum::Router;
 use axum::routing::get;
+use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
 use corral_core::app::{Accounts, Environment, Keys, Limits, SandboxLinks, Sandboxes, SshAccess};
-use corral_core::ports::{IdentityProvider, RegistryAccess, SandboxEngine, SecretStore};
+use corral_core::ports::{
+    ActivitySignals, IdentityProvider, RegistryAccess, SandboxEngine, SandboxRepo, SecretStore,
+};
 use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
 use corral_identity_local::LocalProvider;
@@ -63,8 +66,18 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         );
     }
     let (providers, provider_routes) = providers(config, oidc, &pool).await?;
-    let (engine, lifecycle) =
-        start_engine(config, engine, registries.clone(), shutdown.clone()).await?;
+    let Started {
+        engine,
+        lifecycle,
+        signals,
+    } = start_engine(
+        config,
+        engine,
+        registries.clone(),
+        store.clone(),
+        shutdown.clone(),
+    )
+    .await?;
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
@@ -75,6 +88,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         Limits {
             max_sandboxes_per_user: config.limits.max_sandboxes_per_user,
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
+            idle: config.idle.limits(),
         },
     );
     let deletions = deletions::spawn(sandboxes.clone(), deletions::SWEEP_INTERVAL, shutdown);
@@ -102,6 +116,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         session_key,
         secure_cookies: config.http.base_url.is_https(),
         trust_forwarded_for: config.http.trust_forwarded_for,
+        activity: signals.clone(),
     };
     let mut public = corral_api::router(api, provider_routes).route("/healthz", get(healthz));
     if let Some(ui) = Ui::find(config.http.ui_dir.as_deref())? {
@@ -109,7 +124,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     }
     let internal = match &config.frontdoor {
         FrontDoor::Gate(gate) => {
-            corral_frontdoor_gate::router(Arc::new(access), gate.clone(), gate_secret)
+            corral_frontdoor_gate::router(Arc::new(access), signals, gate.clone(), gate_secret)
         }
     };
     Ok(App {
@@ -170,30 +185,59 @@ async fn providers(
     Ok((providers, routes))
 }
 
+/// The engine, the idle sweep it runs under, and where the signals of work go.
+struct Started {
+    engine: Arc<dyn SandboxEngine>,
+    lifecycle: JoinHandle<()>,
+    signals: Arc<dyn ActivitySignals>,
+}
+
 async fn start_engine(
     config: &Config,
     choice: EngineChoice,
     registries: Vec<RegistryAccess>,
+    sandboxes: Arc<dyn SandboxRepo>,
     shutdown: CancellationToken,
-) -> Result<(Arc<dyn SandboxEngine>, JoinHandle<()>)> {
+) -> Result<Started> {
     let max_running = config.limits.max_running;
-    let interval = Duration::from_secs(config.idle.probe_interval_secs.get());
-    let idle_timeout = Duration::from_secs(config.idle.timeout_secs);
+    let idle = &config.idle;
+    let settings = Settings {
+        limits: idle.limits(),
+        check_every: Duration::from_secs(idle.check_interval_secs.get()),
+        report_every: Duration::from_secs(idle.report_interval_secs.get()),
+    };
+    let busy = Busy {
+        cpu_percent: idle.busy_cpu_percent,
+        network_bytes_per_sec: idle.busy_network_bytes_per_sec,
+    };
     match choice {
         EngineChoice::Docker(config) => {
             let docker = Arc::new(DockerEngine::connect(config, max_running, registries).await?);
-            let lifecycle =
-                corral_activity::spawn(docker.clone(), interval, idle_timeout, shutdown);
-            Ok((docker, lifecycle))
+            Ok(sweep(docker, sandboxes, settings, busy, shutdown))
         }
         EngineChoice::AgentSandbox(config) => {
             let client = kube::Client::try_default()
                 .await
                 .context("connecting to Kubernetes")?;
             let agent = Arc::new(AgentSandboxEngine::new(client, config, max_running));
-            let lifecycle = corral_activity::spawn(agent.clone(), interval, idle_timeout, shutdown);
-            Ok((agent, lifecycle))
+            Ok(sweep(agent, sandboxes, settings, busy, shutdown))
         }
+    }
+}
+
+/// Runs the idle sweep over `engine`, which the signals of work feed.
+fn sweep<E: Sweepable + SandboxEngine>(
+    engine: Arc<E>,
+    sandboxes: Arc<dyn SandboxRepo>,
+    settings: Settings,
+    busy: Busy,
+    shutdown: CancellationToken,
+) -> Started {
+    let signals = Signals::new(engine.activity().clone(), busy, settings.report_every);
+    Started {
+        lifecycle: corral_activity::spawn(engine.clone(), sandboxes, settings, shutdown),
+        engine,
+        signals: Arc::new(signals),
     }
 }
 
@@ -241,6 +285,7 @@ mod tests {
                 "environment_attachments",
                 "environment_entries",
                 "local_accounts",
+                "sandbox_client_states",
                 "sandboxes",
                 "secrets",
                 "ssh_keys",

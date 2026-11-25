@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use ts_rs::{Config, TS, TypeVisitor};
 
 use crate::dto::{
-    CatalogDto, ConfirmDeletion, DeleteFromInside, KeyDto, Me, NewKey, OwnedSandbox,
-    SandboxDetailsDto, SandboxDto, ScheduledDeletion, UserDto, Wake,
+    CatalogDto, ConfirmDeletion, DeleteFromInside, IdleTimeoutChange, KeepAwake, KeyDto, Me,
+    NewKey, OwnedSandbox, SandboxDetailsDto, SandboxDto, ScheduledDeletion, UserDto, Wake,
 };
 use crate::environment_dto::{
     AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, PreviewDto, ValueInput,
@@ -37,6 +37,8 @@ impl TypeScript {
             .add::<SandboxDto>()
             .add::<SandboxStatus>()
             .add::<Wake>()
+            .add::<IdleTimeoutChange>()
+            .add::<KeepAwake>()
             .add::<ConfirmDeletion>()
             .add::<ScheduledDeletion>()
             .add::<DeleteFromInside>()

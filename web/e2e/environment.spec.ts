@@ -1,6 +1,6 @@
 import type { Page, Route } from '@playwright/test';
 import type { AttachedEntry, EnvironmentEntry, Sandbox } from '../src/lib/api/generated/index.js';
-import { expect, test } from './fixtures';
+import { expect, test, idle } from './fixtures';
 
 test.use({ role: 'member' });
 
@@ -272,6 +272,7 @@ test('a sandbox attaches several entries, overrides and detaches them', async ({
 		ssh: { username: 'main.bob', host: 'corral.example.lan', port: 48291 },
 		createdAt: setAt,
 		staleEnvironment: false,
+		idle,
 		deleteAt: null,
 		state: 'running'
 	};

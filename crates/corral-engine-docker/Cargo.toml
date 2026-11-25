@@ -20,6 +20,7 @@ tokio-util = { workspace = true, features = ["compat", "io"] }
 tracing.workspace = true
 
 [dev-dependencies]
+corral-core = { path = "../corral-core", features = ["fakes"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-util.workspace = true
 uuid.workspace = true

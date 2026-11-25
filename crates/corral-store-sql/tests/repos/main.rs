@@ -69,6 +69,8 @@ async fn a_scheduled_deletion_outlives_the_store(url: &str) {
         started_at: None,
         environment_changed_at: None,
         delete_at: None,
+        idle_timeout: None,
+        keep_awake_until: None,
     };
     let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
     {
@@ -143,6 +145,8 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         started_at: None,
         environment_changed_at: None,
         delete_at: None,
+        idle_timeout: None,
+        keep_awake_until: None,
     })
     .collect();
 

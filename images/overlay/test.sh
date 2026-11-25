@@ -102,11 +102,6 @@ start_server() {
   ssh_run true || fail "$1: ssh never succeeded"
 }
 
-# Whether the process list the activity probe reads, as the sandbox user, has a line matching $1.
-listed() {
-  docker exec --user 1000 "$server" /opt/corral/bin/busybox ps -o args | grep -Eq "$1"
-}
-
 # The bash a base image's logins run: its own, or the overlay's.
 bash_of() {
   docker run --rm --user 0 --entrypoint /opt/corral/bin/sh \
@@ -180,22 +175,20 @@ MANIFEST
     fail "$base: the notice of an unwritten file"
   echo "ok - $base: corral status reads the notices corral-init writes"
 
-
-  ssh "${ssh_options[@]}" sandbox@sandbox sleep 30 &
-  session=$!
+  check "the activity reporter runs as the sandbox user" sandbox \
+    "$(docker exec "$server" /opt/corral/bin/busybox ps -o user,args |
+      awk '$2 == "/opt/corral/bin/corral" && $3 == "report-activity" { print $1 }')"
+  check "the sandbox's own cgroup and network counters are readable as uid 1000" "1 yes" \
+    "$(docker exec --user 1000 "$server" /opt/corral/bin/sh -c \
+      'echo $(/opt/corral/bin/busybox grep -c ^usage_usec /sys/fs/cgroup/cpu.stat) $(/opt/corral/bin/busybox grep -q lo: /proc/net/dev && echo yes)')"
   for _ in $(seq 25); do
-    listed '^sshd-session: sandbox@' && break
+    docker logs "$server" 2>&1 | grep -q 'corral report-activity: ' && break
     sleep 0.2
   done
-  listed '^sshd-session: sandbox@' || fail "$base: no SSH session in the process list"
-  echo "ok - $base: the activity probe's process list shows the SSH session, as uid 1000"
-  kill "$session" 2>/dev/null || true
-  wait "$session" 2>/dev/null || true
-  # A core started by an SSH command ends with it, as hc warns, so this one starts outside SSH.
-  docker exec --user 1000 "$server" /opt/corral/bin/hc run --bg /opt/corral/bin/busybox sleep 30 >/dev/null 2>&1
-  listed '^/opt/corral/bin/herdr-core ' || fail "$base: no herdr-core in the process list"
-  check "the activity probe lists Herdr terminals as uid 1000" live \
-    "$(docker exec --user 1000 "$server" /opt/corral/bin/hc ls --json | grep -o '"state":"live"' | cut -d'"' -f4)"
+  [[ "$(docker logs "$server" 2>&1)" == *"corral report-activity: "*"sandbox.json"* ]] ||
+    fail "$base: the reporter did not say it has no sandbox file to report with"
+  echo "ok - $base: with no sandbox file, the reporter says so and keeps trying"
+
 
   ssh_run 'echo kept > ~/kept && echo "edited inside" > ~/".config/corral test/secret"'
   stage_home_files second <<'MANIFEST'

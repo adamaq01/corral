@@ -8,6 +8,7 @@ mod bridge;
 mod client;
 mod config;
 mod connection;
+mod herdr;
 pub mod host_key;
 mod limits;
 mod link;
@@ -16,6 +17,7 @@ mod routes;
 mod secret;
 mod server;
 mod session;
+mod work;
 
 pub use client::ServerClient;
 pub use config::{Cidr, GateConfig};

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use ts_rs::TS;
@@ -85,6 +87,10 @@ pub struct Sandbox {
     pub environment_changed_at: Option<DateTime<Utc>>,
     /// When it is to be deleted, if `corral delete` inside it scheduled that.
     pub delete_at: Option<DateTime<Utc>>,
+    /// How long it stays awake without work, if its owner chose.
+    pub idle_timeout: Option<Duration>,
+    /// Until when it stays awake with or without work, if its owner asked.
+    pub keep_awake_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]

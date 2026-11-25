@@ -1,3 +1,4 @@
+mod activity;
 mod engine;
 mod environment;
 pub mod home_staging;
@@ -10,6 +11,7 @@ mod sandbox_streams;
 mod secrets;
 pub mod session_env;
 
+pub use activity::{ActivitySignals, Usage};
 pub use engine::{Boot, Readiness, SandboxEngine, SandboxSpec, Started, VariableMap};
 pub use environment::EnvironmentRepo;
 pub use identity::{Identity, IdentityProvider};

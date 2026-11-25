@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { expect, test as base, type Page } from '@playwright/test';
+import type { Idle } from '../src/lib/api/generated/index.js';
 
 export type Role = 'admin' | 'member';
 
@@ -42,5 +43,16 @@ export const test = base.extend<{ role: Role | null }>({
 		expect(violations).toEqual([]);
 	}
 });
+
+/** How a sandbox Corral just made sleeps, as the API shows it. */
+export const idle: Idle = {
+	timeoutSecs: 1800,
+	chosen: false,
+	defaultTimeoutSecs: 1800,
+	minTimeoutSecs: 60,
+	maxTimeoutSecs: 86400,
+	keepAwakeUntil: null,
+	maxKeepAwakeSecs: 604800
+};
 
 export { expect };

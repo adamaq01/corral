@@ -4,13 +4,16 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_core::Error;
 use corral_core::domain::{
-    Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId, SandboxName,
-    SandboxStatus, UserId, VariableName,
+    Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, IdleLimits, Resources, SandboxId,
+    SandboxName, SandboxStatus, UserId, VariableName,
 };
+use corral_core::fakes::MemorySandboxRepo;
 use corral_core::ports::{
-    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SandboxStreams, VariableMap,
+    ActivitySignals, Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec,
+    SandboxStreams, Usage, VariableMap,
 };
 use corral_engine_docker::{DockerConfig, DockerEngine, DockerStreams};
 use secrecy::{SecretSlice, SecretString};
@@ -788,55 +791,57 @@ async fn concurrent_starts_never_exceed_max_running() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
+async fn idle_sandboxes_sleep_and_ones_at_work_stay_awake() {
     let Some(lab) = Lab::open("reaper") else {
         return;
     };
     let timeout = Duration::from_secs(3);
     let engine = lab.engine(10).await;
     let idle = lab.create(&engine, "idle").await;
-    let ssh = lab.create(&engine, "ssh").await;
-    let herdr = lab.create(&engine, "herdr").await;
-    for id in [&idle, &ssh, &herdr] {
+    let worked = lab.create(&engine, "worked").await;
+    let busy = lab.create(&engine, "busy").await;
+    for id in [&idle, &worked, &busy] {
         wake(&engine, id, VariableMap::new()).await;
     }
 
-    let _session = lab.ssh_session(&ssh, "sleep 120").await;
-    let started = Instant::now();
-    while !docker_ok(&[
-        "exec",
-        &container_name(&ssh),
-        "/opt/corral/bin/busybox",
-        "ps",
-        "-o",
-        "args",
-    ])
-    .lines()
-    .any(|args| args.starts_with("sshd-session: sandbox@"))
-    {
-        assert!(
-            started.elapsed() < Duration::from_secs(20),
-            "the SSH session never started"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    docker_ok(&[
-        "exec",
-        "--user",
-        "1000",
-        &container_name(&herdr),
-        "/opt/corral/bin/hc",
-        "run",
-        "--bg",
-        "sleep",
-        "600",
-    ]);
-
+    let every = Duration::from_secs(1);
+    let busy_above = Busy {
+        cpu_percent: 5.0,
+        network_bytes_per_sec: 4096,
+    };
+    let signals = Signals::new(engine.activity().clone(), busy_above, every);
     let shutdown = CancellationToken::new();
+    let feeding = {
+        let (idle, worked, busy) = (idle.clone(), worked.clone(), busy.clone());
+        tokio::spawn(shutdown.clone().run_until_cancelled_owned(async move {
+            loop {
+                let usage = |cpu_millis| Usage {
+                    interval: every,
+                    cpu: Duration::from_millis(cpu_millis),
+                    network_bytes: 0,
+                };
+                signals.worked(std::slice::from_ref(&worked));
+                for id in [&idle, &worked] {
+                    signals.measured(id, usage(0));
+                }
+                signals.measured(&busy, usage(500));
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }))
+    };
+    let settings = Settings {
+        limits: IdleLimits {
+            default_timeout: timeout,
+            max_timeout: timeout,
+            max_keep_awake: timeout,
+        },
+        check_every: every,
+        report_every: every,
+    };
     let lifecycle = corral_activity::spawn(
         engine.clone(),
-        Duration::from_secs(1),
-        timeout,
+        Arc::new(MemorySandboxRepo::default()),
+        settings,
         shutdown.clone(),
     );
     let started = Instant::now();
@@ -849,14 +854,14 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     }
     tokio::time::sleep(timeout + Duration::from_secs(3)).await;
     assert_eq!(
-        state(&engine, &ssh).await,
+        state(&engine, &worked).await,
         SandboxStatus::Running,
-        "an SSH session keeps it awake"
+        "work through the front door keeps it awake"
     );
     assert_eq!(
-        state(&engine, &herdr).await,
+        state(&engine, &busy).await,
         SandboxStatus::Running,
-        "a Herdr terminal keeps it awake"
+        "a busy report keeps it awake"
     );
 
     shutdown.cancel();
@@ -864,6 +869,7 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
         .await
         .expect("the lifecycle stops on shutdown")
         .unwrap();
+    feeding.await.unwrap();
 }
 
 #[tokio::test]
