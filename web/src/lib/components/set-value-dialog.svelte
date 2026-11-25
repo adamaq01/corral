@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import type { EntryKind, ValueInput } from '#lib/api/generated/index.js';
+	import type { EntryKind, StoredValue, ValueInput } from '#lib/api/generated/index.js';
 	import FormDialog from '#lib/components/form-dialog.svelte';
 	import ValueField from '#lib/components/value-field.svelte';
 
@@ -11,7 +11,8 @@
 		submit,
 		kind,
 		secret,
-		text = '',
+		name = '',
+		current = null,
 		onsave
 	}: {
 		open: boolean;
@@ -20,8 +21,10 @@
 		submit: string;
 		kind: EntryKind;
 		secret: boolean;
-		/** The text the field starts with, such as the current value of a plain entry. */
-		text?: string;
+		/** The variable's name, which counts toward its size. */
+		name?: string;
+		/** The value the new one replaces, if any. */
+		current?: StoredValue | null;
 		onsave: (value: ValueInput) => Promise<void>;
 	} = $props();
 
@@ -43,6 +46,6 @@
 
 <FormDialog bind:open {title} {description} {submit} ready={value !== null} onsubmit={save}>
 	{#key fresh}
-		<ValueField id="set-value" {kind} {secret} {text} bind:value />
+		<ValueField id="set-value" {kind} {secret} {name} {current} bind:value />
 	{/key}
 </FormDialog>

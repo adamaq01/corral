@@ -139,14 +139,15 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 			.click();
 		await page.getByRole('button', { name: 'Add variable' }).first().click();
 		const dialog = page.getByRole('dialog', { name: 'Add a variable' });
-		await dialog.getByLabel('Name').fill('journey_token');
-		await expect(dialog.getByLabel('Name')).toHaveValue('JOURNEY_TOKEN');
-		await dialog.getByLabel('Secret').check();
+		await dialog.getByLabel('Name').fill('JOURNEY_TOKEN');
+		await dialog.getByRole('switch', { name: 'Secret' }).click();
 		await dialog.getByLabel('Value', { exact: true }).fill(token);
 		await dialog.getByRole('button', { name: 'Save variable' }).click();
 		await expect(dialog).toBeHidden();
 		await expect(page.getByRole('heading', { name: 'JOURNEY_TOKEN' })).toBeVisible();
-		await expect(page.getByText(`${token.slice(0, 4)}…${token.slice(-2)}`)).toBeVisible();
+		await expect(page.getByRole('img', { name: /^Secret value/ })).toContainText(
+			`${token.slice(0, 4)}••••••••••••${token.slice(-2)}`
+		);
 		await expect(page.locator('body')).not.toContainText(token);
 
 		await page.getByRole('link', { name: 'Environment' }).first().click();
@@ -154,8 +155,8 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		const file = page.getByRole('dialog', { name: 'Add a file' });
 		await file.getByLabel('Path in the home').fill('.journey/notes');
 		await file.getByLabel('Value', { exact: true }).fill('token={{ JOURNEY_TOKEN }}');
-		await file.getByLabel('Template').check();
-		await file.getByLabel('Apply to new sandboxes').uncheck();
+		await file.getByRole('switch', { name: 'Template' }).click();
+		await file.getByRole('switch', { name: 'Apply to new sandboxes' }).click();
 		await file.getByRole('button', { name: 'Save file' }).click();
 		await expect(file).toBeHidden();
 		await expect(page.getByRole('heading', { name: '~/.journey/notes' })).toBeVisible();
@@ -169,23 +170,20 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await page.getByRole('link', { name: /main/ }).click();
 		const section = page.getByRole('list', { name: 'Attached to main' });
 		const attach = page.getByRole('dialog', { name: 'Attach to main' });
-		await page.getByRole('button', { name: 'Attach', exact: true }).click();
-		await attach.getByRole('button', { name: 'Attach ~/.journey/notes' }).click();
-		await expect(attach.getByRole('alert')).toContainText('JOURNEY_TOKEN');
-		await attach.getByRole('button', { name: 'Attach JOURNEY_TOKEN' }).click();
-		await expect(attach).toBeHidden();
-		await page.getByRole('button', { name: 'Attach', exact: true }).click();
-		await attach.getByRole('button', { name: 'Attach ~/.journey/notes' }).click();
+		await page.getByRole('button', { name: 'Attach variables and files' }).click();
+		await attach.getByRole('checkbox').first().click();
+		await attach.getByRole('checkbox').last().click();
+		await attach.getByRole('button', { name: 'Attach 2' }).click();
 		await expect(attach).toBeHidden();
 		await expect(section.getByRole('listitem')).toHaveCount(2);
 		await expect(page.getByText('Restart to apply your environment changes')).toBeVisible();
 
-		await page.getByRole('button', { name: 'Set a value here for JOURNEY_TOKEN' }).click();
-		const own = page.getByRole('dialog', { name: 'JOURNEY_TOKEN in main' });
+		await page.getByRole('button', { name: 'Override for this sandbox: JOURNEY_TOKEN' }).click();
+		const own = page.getByRole('dialog', { name: 'Override JOURNEY_TOKEN for main' });
 		await own.getByLabel('Value', { exact: true }).fill(`${token}-main`);
-		await own.getByRole('button', { name: 'Save value' }).click();
+		await own.getByRole('button', { name: 'Save override' }).click();
 		await expect(own).toBeHidden();
-		await expect(section.getByText("This sandbox's value")).toBeVisible();
+		await expect(section.getByText('Override', { exact: true })).toBeVisible();
 	});
 
 	await test.step('restart, and see the value in a new SSH session', async () => {
@@ -205,13 +203,28 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		expect(await overSsh(sshCommand, key, 'stat -c %a .journey/notes')).toBe('600');
 	});
 
-	await test.step('use the shared value again, and detach', async () => {
+	await test.step('remove the override, and detach the file, which the next start removes', async () => {
 		const section = page.getByRole('list', { name: 'Attached to main' });
-		await page.getByRole('button', { name: 'Use the shared value for JOURNEY_TOKEN' }).click();
-		await expect(section.getByText("This sandbox's value")).toBeHidden();
+		const confirm = page.getByRole('alertdialog');
+		await page.getByRole('button', { name: 'Detach JOURNEY_TOKEN' }).click();
+		await confirm.getByRole('button', { name: 'Detach' }).click();
+		await expect(confirm.getByRole('alert')).toContainText('~/.journey/notes');
+		await confirm.getByRole('button', { name: 'Cancel' }).click();
+		await page.getByRole('button', { name: 'Remove override of JOURNEY_TOKEN' }).click();
+		await confirm.getByRole('button', { name: 'Remove override' }).click();
+		await expect(section.getByText('Override', { exact: true })).toBeHidden();
 		await page.getByRole('button', { name: 'Detach ~/.journey/notes' }).click();
+		await confirm.getByRole('button', { name: 'Detach' }).click();
 		await expect(section.getByRole('listitem')).toHaveCount(1);
 		await expect(page.getByText('Restart to apply your environment changes')).toBeVisible();
+
+		await page.getByRole('button', { name: 'Restart' }).click();
+		const restarting = page.getByRole('button', { name: 'Restarting…' });
+		await expect(restarting).toBeVisible();
+		await expect(restarting).toBeHidden({ timeout: 60_000 });
+		await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 90_000 });
+		expect(await overSsh(sshCommand, key, 'test -e .journey/notes || echo gone')).toBe('gone');
+		expect(await overSsh(sshCommand, key, 'printenv JOURNEY_TOKEN')).toBe(token);
 	});
 
 	await test.step('delete the sandbox', async () => {

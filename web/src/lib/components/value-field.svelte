@@ -1,48 +1,100 @@
 <script lang="ts">
 	import EyeIcon from '@lucide/svelte/icons/eye';
 	import EyeOffIcon from '@lucide/svelte/icons/eye-off';
+	import UploadIcon from '@lucide/svelte/icons/upload';
+	import XIcon from '@lucide/svelte/icons/x';
 	import { untrack } from 'svelte';
-	import type { EntryKind, ValueInput } from '#lib/api/generated/index.js';
+	import type { EntryKind, StoredValue, ValueInput } from '#lib/api/generated/index.js';
 	import { FILE_LIMIT } from '#lib/api/generated/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
-	import { Input } from '#lib/components/ui/input/index.js';
-	import { Textarea } from '#lib/components/ui/textarea/index.js';
-	import { fileValue, size } from '#lib/environment.js';
+	import * as InputGroup from '#lib/components/ui/input-group/index.js';
+	import {
+		characterCount,
+		fileTooLarge,
+		fileValue,
+		size,
+		utf8Size,
+		variableTooLarge
+	} from '#lib/environment.js';
 
 	let {
 		id,
 		kind,
 		secret,
+		name = '',
+		current = null,
 		value = $bindable(null),
-		text = '',
 		label = 'Value'
 	}: {
 		id: string;
 		kind: EntryKind;
 		secret: boolean;
-		/** What the field holds, ready to send, or `null` until it holds something valid. */
+		/** The variable's name, which counts toward its size. */
+		name?: string;
+		/** The value this one replaces, if any: a plain text one is the field's starting text. */
+		current?: StoredValue | null;
+		/** What the field holds, ready to send, or `null` until it holds a valid change. */
 		value: ValueInput | null;
-		/** The text it starts with. */
-		text?: string;
 		label?: string;
 	} = $props();
 
-	let typed = $state(untrack(() => text));
+	const initial = untrack(() => (current?.shown === 'text' ? current.text : ''));
+	let typed = $state(initial);
 	let shown = $state(false);
 	let upload = $state<{ name: string; size: number; value: ValueInput } | null>(null);
 	let tooBig = $state<string | null>(null);
+	let pasted = $state<string | null>(null);
 	let chosen = $state('');
+	let picker = $state<HTMLInputElement | null>(null);
+
+	const masked = $derived(secret && !shown);
+	const problem = $derived(
+		kind === 'variable' ? variableTooLarge(name, typed) : fileTooLarge(utf8Size(typed))
+	);
+	const unchanged = $derived(typed === initial && (current !== null || typed === ''));
+	const hint = $derived(currently(current));
 
 	$effect(() => {
 		if (upload) {
 			value = upload.value;
-		} else if (kind === 'variable') {
-			value = typed === '' ? null : { text: typed };
 		} else {
-			value = { text: typed };
+			value = unchanged || problem ? null : { text: typed };
 		}
 	});
+
+	function currently(value: StoredValue | null): string | null {
+		switch (value?.shown) {
+			case 'masked':
+				return `Now secret, ${characterCount(value.length)}.`;
+			case 'hidden':
+				return `Now secret, ${size(value.size)}.`;
+			case 'binary':
+				return `Now binary, ${size(value.size)}.`;
+			default:
+				return null;
+		}
+	}
+
+	function onpaste(event: ClipboardEvent) {
+		const text = event.clipboardData?.getData('text') ?? '';
+		pasted = null;
+		if (/[\r\n]/.test(text.replace(/[\r\n]+$/, ''))) {
+			event.preventDefault();
+			const lines = text.split(/\r?\n/).length;
+			pasted = `The pasted text has ${lines} lines, and a variable holds one. Make it a file instead, or paste it encoded, such as in base64.`;
+		} else if (/[\r\n]+$/.test(text)) {
+			event.preventDefault();
+			const input = event.currentTarget as HTMLInputElement;
+			input.setRangeText(
+				text.replace(/[\r\n]+$/, ''),
+				input.selectionStart ?? 0,
+				input.selectionEnd ?? 0,
+				'end'
+			);
+			typed = input.value;
+		}
+	}
 
 	async function picked(event: Event) {
 		const input = event.currentTarget as HTMLInputElement;
@@ -66,71 +118,111 @@
 	}
 </script>
 
+{#snippet eye()}
+	<InputGroup.Button
+		size="icon-xs"
+		aria-label={shown ? 'Hide the value' : 'Show the value'}
+		aria-pressed={shown}
+		aria-controls={id}
+		onclick={() => (shown = !shown)}
+	>
+		{#if shown}
+			<EyeOffIcon />
+		{:else}
+			<EyeIcon />
+		{/if}
+	</InputGroup.Button>
+{/snippet}
+
 {#if kind === 'variable'}
-	<Field.Field>
+	<Field.Field data-invalid={problem || pasted ? true : undefined}>
 		<Field.Label for={id}>{label}</Field.Label>
-		<div class="flex gap-2">
-			<Input
+		<InputGroup.Root>
+			<InputGroup.Input
 				{id}
-				type={secret && !shown ? 'password' : 'text'}
+				type={masked ? 'password' : 'text'}
 				bind:value={typed}
-				required
+				{onpaste}
+				oninput={() => (pasted = null)}
 				autocomplete="off"
 				autocapitalize="off"
 				spellcheck={false}
+				aria-invalid={problem || pasted ? true : undefined}
+				aria-describedby="{id}-hint"
 				class="font-mono"
 			/>
 			{#if secret}
-				<Button
-					type="button"
-					variant="outline"
-					size="icon"
-					aria-label="Show the value"
-					aria-pressed={shown}
-					aria-controls={id}
-					onclick={() => (shown = !shown)}
-				>
-					{#if shown}
-						<EyeOffIcon />
-					{:else}
-						<EyeIcon />
-					{/if}
-				</Button>
+				<InputGroup.Addon align="inline-end">{@render eye()}</InputGroup.Addon>
 			{/if}
-		</div>
+		</InputGroup.Root>
+		{#if pasted || problem}
+			<Field.Error id="{id}-hint">{pasted ?? problem}</Field.Error>
+		{:else}
+			<Field.Description id="{id}-hint">
+				{[hint, 'One line of text.'].filter(Boolean).join(' ')}
+			</Field.Description>
+		{/if}
 	</Field.Field>
 {:else}
-	<Field.Field>
-		<Field.Label for={id}>{label}</Field.Label>
+	<Field.Field data-invalid={problem || tooBig ? true : undefined}>
+		<div class="flex items-center justify-between gap-2">
+			<Field.Label for={id}>{label}</Field.Label>
+			<input
+				bind:this={picker}
+				id="{id}-upload"
+				type="file"
+				class="sr-only"
+				tabindex="-1"
+				aria-label="Upload a file"
+				bind:value={chosen}
+				onchange={picked}
+			/>
+			<Button type="button" variant="ghost" size="sm" onclick={() => picker?.click()}>
+				<UploadIcon />
+				Upload a file
+			</Button>
+		</div>
 		{#if upload}
 			<div class="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2">
 				<p class="min-w-0 text-sm break-all">
 					<span class="font-medium">{upload.name}</span>
 					<span class="text-muted-foreground">· {size(upload.size)}</span>
 				</p>
-				<Button type="button" variant="outline" size="sm" onclick={clearUpload}>
+				<Button type="button" variant="ghost" size="sm" onclick={clearUpload}>
+					<XIcon />
 					Type it instead
 				</Button>
 			</div>
 		{:else}
-			<Textarea
-				{id}
-				bind:value={typed}
-				rows={6}
-				spellcheck={false}
-				class="font-mono text-xs"
-				aria-describedby="{id}-hint"
-			/>
+			<InputGroup.Root>
+				<InputGroup.Textarea
+					{id}
+					bind:value={typed}
+					rows={6}
+					spellcheck={false}
+					autocomplete="off"
+					aria-invalid={problem ? true : undefined}
+					aria-describedby="{id}-hint"
+					class={[
+						'max-h-80 font-mono text-xs',
+						masked && '[-webkit-text-security:disc] [text-security:disc]'
+					]}
+				/>
+				{#if secret}
+					<InputGroup.Addon align="block-end" class="justify-end">{@render eye()}</InputGroup.Addon>
+				{/if}
+			</InputGroup.Root>
 		{/if}
-		<Field.Description id="{id}-hint">
-			Type the text, or upload a file of any kind, up to {size(FILE_LIMIT)}.
-		</Field.Description>
-	</Field.Field>
-	<Field.Field>
-		<Field.Label for="{id}-upload">Upload a file</Field.Label>
-		<Input id="{id}-upload" type="file" bind:value={chosen} onchange={picked} />
 		{#if tooBig}
-			<Field.Error>{tooBig}</Field.Error>
+			<Field.Error id="{id}-hint">{tooBig}</Field.Error>
+		{:else if problem && !upload}
+			<Field.Error id="{id}-hint">{problem}</Field.Error>
+		{:else}
+			<Field.Description id="{id}-hint">
+				{[hint, `Type the text, or upload a file of any kind, up to ${size(FILE_LIMIT)}.`]
+					.filter(Boolean)
+					.join(' ')}
+			</Field.Description>
 		{/if}
 	</Field.Field>
 {/if}

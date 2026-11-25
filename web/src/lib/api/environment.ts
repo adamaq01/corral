@@ -4,6 +4,7 @@ import type {
 	EntryChange,
 	EnvironmentEntry,
 	NewEntry,
+	TemplatePreview,
 	ValueInput
 } from './generated/index.js';
 
@@ -24,5 +25,8 @@ export const environment = {
 	detach: (sandbox: string, id: string) => api.delete(attachment(sandbox, id)),
 	override: (sandbox: string, id: string, value: ValueInput) =>
 		api.put(`${attachment(sandbox, id)}/override`, value),
-	clearOverride: (sandbox: string, id: string) => api.delete(`${attachment(sandbox, id)}/override`)
+	clearOverride: (sandbox: string, id: string) => api.delete(`${attachment(sandbox, id)}/override`),
+	/** The template as the sandbox would get it at its next start, secret variables masked. */
+	preview: (sandbox: string, id: string) =>
+		api.get<TemplatePreview>(`${attachment(sandbox, id)}/preview`)
 };

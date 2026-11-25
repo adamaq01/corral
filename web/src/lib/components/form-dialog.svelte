@@ -56,7 +56,7 @@
 		}
 	}}
 >
-	<Dialog.Content>
+	<Dialog.Content class="max-h-[90dvh] overflow-y-auto">
 		<form class="grid gap-4" onsubmit={send}>
 			<Dialog.Header>
 				<Dialog.Title>{title}</Dialog.Title>

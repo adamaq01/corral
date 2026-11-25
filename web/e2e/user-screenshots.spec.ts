@@ -138,7 +138,7 @@ const entries: EnvironmentEntry[] = [
 		createdAt: setAt,
 		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }],
 		executable: false,
-		references: [],
+		references: ['ANTHROPIC_API_KEY', 'OPENAI_BASE_URL'],
 		duplicate: false
 	},
 	{
@@ -223,9 +223,15 @@ inEveryView((look) => {
 	});
 
 	test('a sandbox', async ({ page }) => {
-		await serve(page, { '/api/sandboxes/main': sandboxes[0], '/api/catalog': catalog });
+		await serve(page, {
+			'/api/sandboxes/main': sandboxes[0],
+			'/api/sandboxes/main/environment': attached,
+			'/api/environment': entries,
+			'/api/catalog': catalog
+		});
 		await page.goto('/sandboxes/main');
 		await page.getByText('Connect', { exact: true }).waitFor();
+		await page.getByRole('list', { name: 'Attached to main' }).waitFor();
 		await look(page, 'sandbox');
 
 		await page.getByRole('button', { name: 'Delete sandbox' }).click();
@@ -281,7 +287,10 @@ inEveryView((look) => {
 			'/api/catalog': catalog
 		});
 		await page.goto('/sandboxes/main');
-		await page.getByText("This sandbox's value").waitFor();
+		await page
+			.getByRole('list', { name: 'Attached to main' })
+			.getByText('Override', { exact: true })
+			.waitFor();
 		await look(page, 'sandbox-environment');
 
 		await page.getByRole('button', { name: 'Attach', exact: true }).click();
@@ -290,7 +299,7 @@ inEveryView((look) => {
 
 		await page.keyboard.press('Escape');
 		await page.getByRole('dialog').waitFor({ state: 'hidden' });
-		await page.getByRole('button', { name: 'Change for ANTHROPIC_API_KEY' }).click();
+		await page.getByRole('button', { name: 'Change override of ANTHROPIC_API_KEY' }).click();
 		await page.getByRole('dialog').getByLabel('Value', { exact: true }).fill('sk-ant-main');
 		await look(page, 'sandbox-environment-override', { fullPage: false });
 	});
@@ -337,7 +346,7 @@ inEveryView((look) => {
 		await page.getByRole('button', { name: 'Add variable' }).click();
 		const dialog = page.getByRole('dialog');
 		await dialog.getByLabel('Name').fill('github_token');
-		await dialog.getByLabel('Secret').check();
+		await dialog.getByRole('switch', { name: 'Secret' }).click();
 		await dialog.getByLabel('Value', { exact: true }).fill('ghp_example0123456789');
 		await dialog.getByRole('button', { name: 'Show the value' }).click();
 		await look(page, 'environment-add-variable', { fullPage: false });
@@ -349,8 +358,18 @@ inEveryView((look) => {
 		await dialog
 			.getByLabel('Value', { exact: true })
 			.fill('github.com:\n  oauth_token: {{ GH_TOKEN }}\n');
-		await dialog.getByLabel('Template').check();
+		await dialog.getByRole('switch', { name: 'Template' }).click();
 		await look(page, 'environment-add-file', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Import .env' }).click();
+		await dialog
+			.getByLabel('Variables')
+			.fill(
+				'# from the laptop\nexport OPENAI_BASE_URL=https://gateway.example.lan/v1\nHF_TOKEN="hf_example"\nnot a line'
+			);
+		await look(page, 'environment-import', { fullPage: false });
 	});
 
 	test('environment, empty, loading and failed', async ({ page }) => {
@@ -380,9 +399,20 @@ inEveryView((look) => {
 			['environment-template-file', entries[3]],
 			['environment-secret-file', entries[4]]
 		] as const) {
-			await serve(page, { [`/api/environment/${entry.id}`]: entry });
+			await serve(page, {
+				[`/api/environment/${entry.id}`]: entry,
+				'/api/sandboxes': sandboxes,
+				'/api/sandboxes/main/environment/*/preview': {
+					text: '[api]\nurl = "https://gateway.example.lan/v1/openai"\nkey = "••••••••"\nretries = 3\n',
+					unresolved: []
+				}
+			});
 			await page.goto(`/environment/${entry.id}`);
-			await page.getByText('Saved as soon as you change them.').waitFor();
+			await page.getByRole('list', { name: 'Your sandboxes' }).waitFor();
+			if (entry.template) {
+				await page.getByRole('button', { name: 'Preview' }).click();
+				await page.getByText('secret values masked').waitFor();
+			}
 			await look(page, name);
 		}
 
