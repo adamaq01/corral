@@ -1,0 +1,14 @@
+# cargo deny check advisories: CI fails on a RustSec advisory against any dependency, the gate's
+# russh above all, since it faces the internet. Each ignored advisory says why it does not apply.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # rsa's Marvin attack recovers a private key from the timing of decryptions and signatures.
+  # openidconnect uses rsa 0.9 only to verify ID token signatures with the issuer's public keys.
+  { id = "RUSTSEC-2023-0071", reason = "only RSA signature verification, no private-key use" },
+  # chrono no longer has a maintainer; no advisory says its code is unsafe.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained, with no known vulnerability" },
+  # astral-tokio-tar comes with testcontainers, in tests alone.
+  { id = "RUSTSEC-2026-0440", reason = "unmaintained, in test dependencies only" },
+]

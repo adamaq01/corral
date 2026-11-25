@@ -19,6 +19,15 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  # The gate faces the internet: a RustSec advisory against any dependency fails the build.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
   test:
     runs-on: ubuntu-latest
     env:
@@ -237,7 +246,7 @@ jobs:
 
   publish:
     if: github.event_name == 'push'
-    needs: [check, test, web, chart, chart-kind, engine-kind]
+    needs: [check, deny, test, web, chart, chart-kind, engine-kind]
     runs-on: ubuntu-latest
     permissions:
       contents: read
