@@ -38,7 +38,7 @@ render() {
 
 # Without a cluster the chart cannot read back keys it generates, so it renders only with
 # existing Secrets for them.
-existing=(--set keys.existingSecret=corral-keys --set containerssh.hostKey.existingSecret=corral-host-key)
+existing=(--set keys.existingSecret=corral-keys --set ssh.hostKey.existingSecret=corral-host-key)
 
 for example in "$here"/examples/*.yaml; do
   name=$(basename "$example")
@@ -78,7 +78,7 @@ fi
 
 if output=$(render --values "$here/examples/minimal.yaml" 2>&1); then
   failed "helm template generated keys it cannot read back"
-elif [[ "$output" != *"set keys.existingSecret and containerssh.hostKey.existingSecret: rendered without a cluster"* ]]; then
+elif [[ "$output" != *"set keys.existingSecret and ssh.hostKey.existingSecret: rendered without a cluster"* ]]; then
   failed "helm template without existing Secrets failed for another reason: $output"
 else
   pass "helm template refuses to generate keys it cannot read back"

@@ -21,33 +21,32 @@ services:
       timeout: 10s
       retries: 3
 
-  containerssh:
-    # https://github.com/adamaq01/ContainerSSH: ContainerSSH's main branch with two fixes not yet
-    # released upstream, for one-shot commands losing output and for stray bytes in Kubernetes
-    # terminals.
-    image: ghcr.io/adamaq01/containerssh:7d65536@sha256:c53d09697e5605b7515606e7bb4c1284abc4c53eadd6e89b327166f344859c8f
+  # The SSH front door: the same image, which reaches Corral's internal listener and opens each
+  # session in its sandbox with `docker exec`.
+  gate:
+    image: ghcr.io/adamaq01/corral:${CORRAL_VERSION:-latest}
     restart: unless-stopped
+    command: [gate]
+    user: root
+    environment:
+      CORRAL_GATE_SECRET: ${CORRAL_GATE_SECRET:-}
+      RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - ./containerssh.yaml:/etc/containerssh/config.yaml:ro
-      - ./containerssh_host_key:/etc/containerssh/host_key:ro
-      - ./containerssh_proxy_key:/etc/containerssh/proxy_key:ro
+      - ./config.toml:/etc/corral/config.toml:ro
+      - ./ssh_host_key:/etc/corral/ssh_host_key:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "48291:2222"
     networks:
       - corral
-      - corral-sandboxes
     healthcheck:
-      test: ["CMD", "/containerssh", "--config", "/etc/containerssh/config.yaml", "--healthcheck"]
+      test: ["CMD", "corral-server", "healthcheck", "--gate"]
       interval: 5s
       timeout: 10s
       retries: 3
 
 networks:
   corral: {}
-  # Sandboxes join this network. Corral must never be on it: its internal listener is
-  # unauthenticated and wakes any sandbox it is asked about.
-  corral-sandboxes:
-    name: corral-sandboxes
 
 volumes:
   corral-data: {}

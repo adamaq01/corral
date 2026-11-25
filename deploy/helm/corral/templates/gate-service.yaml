@@ -1,11 +1,11 @@
-{{- $svc := .Values.containerssh.service }}
+{{- $svc := .Values.gate.service }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "corral.containersshName" . }}
+  name: {{ include "corral.gateName" . }}
   labels:
     {{- include "corral.labels" . | nindent 4 }}
-    app.kubernetes.io/component: containerssh
+    app.kubernetes.io/component: gate
   {{- with $svc.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
@@ -20,7 +20,7 @@ spec:
   {{- end }}
   selector:
     {{- include "corral.selectorLabels" . | nindent 4 }}
-    app.kubernetes.io/component: containerssh
+    app.kubernetes.io/component: gate
   ports:
     - name: ssh
       port: {{ include "corral.sshServicePort" . }}

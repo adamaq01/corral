@@ -7,8 +7,8 @@
 {{- if not .Values.keys.existingSecret }}
 {{- $generated = append $generated "keys.existingSecret" }}
 {{- end }}
-{{- if not .Values.containerssh.hostKey.existingSecret }}
-{{- $generated = append $generated "containerssh.hostKey.existingSecret" }}
+{{- if not .Values.ssh.hostKey.existingSecret }}
+{{- $generated = append $generated "ssh.hostKey.existingSecret" }}
 {{- end }}
 {{- with $generated }}
 {{- fail (printf "set %s: rendered without a cluster, as by helm template or Argo CD, the chart cannot read back the keys it generates, so they would change on every render. Name existing Secrets (README: GitOps), or preview with helm install --dry-run=server" (join " and " .)) }}

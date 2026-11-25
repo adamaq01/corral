@@ -23,7 +23,7 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.toml"]
-          pattern: '\[engine\]\s+agent_image = "containerssh/agent:v0.11.0"\s+kind = "agent-sandbox"\s+namespace = "corral-sandboxes"\s+overlay_image = "ghcr.io/adamaq01/corral-overlay:latest"\s+service_account = "corral-sandbox"\s+\['
+          pattern: '\[engine\]\s+kind = "agent-sandbox"\s+namespace = "corral-sandboxes"\s+overlay_image = "ghcr.io/adamaq01/corral-overlay:latest"\s+service_account = "corral-sandbox"\s+\['
       - notMatchRegex:
           path: data["config.toml"]
           pattern: storage_class
@@ -160,22 +160,25 @@ tests:
           path: data["config.toml"]
           pattern: 'max_running = 10\n'
 
-  - it: locks out every network by default
+  - it: runs the gate on its port with the host key it mounts, asking Corral at the internal Service
     asserts:
       - matchRegex:
           path: data["config.toml"]
-          pattern: '\[frontdoor\]\s+kind = "containerssh"\s+\['
+          pattern: '\[frontdoor\]\s+host_key_file = "/etc/corral-gate/host_key"\s+kind = "gate"\s+listen_addr = "0\.0\.0\.0:2222"\s+server_url = "http://corral-internal:8081"\s+\['
+
+  - it: locks out every network by default
+    asserts:
       - notMatchRegex:
           path: data["config.toml"]
           pattern: lockout_exempt_networks
 
   - it: maps lockout-exempt networks to the [frontdoor] section
     set:
-      containerssh.lockoutExemptNetworks: [10.42.0.0/16, fd00:42::/48]
+      ssh.lockoutExemptNetworks: [10.42.0.0/16, fd00:42::/48]
     asserts:
       - matchRegex:
           path: data["config.toml"]
-          pattern: '\[frontdoor\]\s+kind = "containerssh"\s+lockout_exempt_networks = \["10\.42\.0\.0/16", "fd00:42::/48"\]\n'
+          pattern: 'listen_addr = "0\.0\.0\.0:2222"\s+lockout_exempt_networks = \["10\.42\.0\.0/16", "fd00:42::/48"\]\n'
 
   - it: lets users name images from the registries it lists, up to the size it caps them at
     set:

@@ -19,7 +19,7 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "corral.selectorLabels" . | nindent 14 }}
-              app.kubernetes.io/component: containerssh
+              app.kubernetes.io/component: gate
       ports:
         - port: internal
 {{- end }}

@@ -126,14 +126,14 @@ httpRoute:
 httpRoute:
   enabled: true
 ---
-# expect: at '/containerssh/service/nodePort'
-containerssh:
+# expect: at '/gate/service/nodePort'
+gate:
   service:
     type: NodePort
     nodePort: 2222
 ---
-# expect: at '/containerssh/service/type': value must be one of 'LoadBalancer', 'NodePort', 'ClusterIP'
-containerssh:
+# expect: at '/gate/service/type': value must be one of 'LoadBalancer', 'NodePort', 'ClusterIP'
+gate:
   service:
     type: Ingress
 ---
@@ -152,20 +152,24 @@ identity:
     opkssh:
       policy: oidc
 ---
-# expect: at '/containerssh/lockoutExemptNetworks/0': '10.42.0.0' does not match pattern
-containerssh:
+# expect: at '/ssh/lockoutExemptNetworks/0': '10.42.0.0' does not match pattern
+ssh:
+  publicHost: ssh.example.com
   lockoutExemptNetworks: [10.42.0.0]
 ---
-# expect: at '/containerssh/lockoutExemptNetworks/1': '10.42.0.0/33' does not match pattern
-containerssh:
+# expect: at '/ssh/lockoutExemptNetworks/1': '10.42.0.0/33' does not match pattern
+ssh:
+  publicHost: ssh.example.com
   lockoutExemptNetworks: [fd00:42::/48, 10.42.0.0/33]
 ---
-# expect: at '/containerssh/lockoutExemptNetworks/0': 'fd00::/129' does not match pattern
-containerssh:
+# expect: at '/ssh/lockoutExemptNetworks/0': 'fd00::/129' does not match pattern
+ssh:
+  publicHost: ssh.example.com
   lockoutExemptNetworks: [fd00::/129]
 ---
-# expect: at '/containerssh/lockoutExemptNetworks': got string, want array
-containerssh:
+# expect: at '/ssh/lockoutExemptNetworks': got string, want array
+ssh:
+  publicHost: ssh.example.com
   lockoutExemptNetworks: 10.42.0.0/16
 ---
 # expect: at '/catalog/namedImages/registries': minItems: got 0, want 1

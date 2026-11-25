@@ -18,8 +18,11 @@ Every binary in the overlay is static, so it runs whatever libc the image has, o
   `/etc/sudoers.d/corral-sandbox` for an image's own sudo.
 - `corral-shell`, the sandbox user's login shell: the image's bash, or the overlay's when the image
   has none, as a login shell. It prints the motd before an interactive login.
-- On Docker, the overlay's OpenSSH server, which ContainerSSH connects to, and on both engines
-  the overlay's `sftp-server`.
+- OpenSSH's `sshd` and `sftp-server`, which `corral-sshd` runs for each SSH connection the
+  gate opens: `sshd -i` as the sandbox user, over the exec's standard input and output, with the
+  gate's key for that connection alone allowed and a host key the overlay ships, which the gate
+  does not check since it reached the sandbox through the engine. Nothing in a sandbox listens
+  for SSH.
 - Herdr's `herdr-core` and `hc`, and the `corral` command (`corral status`, `restart`, `stop`,
   `delete --confirm`).
 - busybox, whose commands come last on `PATH`, after the image's own, so an image without `ls` or
@@ -43,9 +46,12 @@ removes a file it wrote earlier that is no longer attached unless it was changed
 what it could not do in `~/.config/corral/notices`, which the motd of an interactive login and
 `corral status` show.
 
-Every session's `SHELL` names the bash a login runs, the image's when it has one, else the
-overlay's: on Kubernetes through the link `/run/corral-accounts/bash`. The sandbox user is in its
-own group alone, whatever the image's `/etc/group` lists for uid 1000 or for `sandbox`.
+Sessions run through OpenSSH on both engines, so they get its environment: `USER`, `HOME`,
+`SHELL` and the rest from the sandbox user's account, and the sandbox's variables, which the
+engine writes to `/etc/corral/sshd_env.conf` at every start as sshd `SetEnv`. `corral-shell` then
+names the bash a login runs in `SHELL`, the image's when it has one, else the overlay's. A client
+may send `LANG`, `LC_*`, `COLORTERM` and `NO_COLOR`. The sandbox user is in its own group alone,
+whatever the image's `/etc/group` lists for uid 1000 or for `sandbox`.
 
 ## Who picks the image
 
@@ -94,16 +100,15 @@ holds the `[[registries]]` entries, each password a secret value.
 Docker (Docker Engine 28 or later, for image mounts): the container mounts the overlay as an image
 mount pinned to the image ID Corral pulled when it started, runs as root
 `/opt/corral/bin/tini -- /opt/corral/bin/corral-init docker`, which writes the accounts, sudo rule,
-and profile, prepares the home as the sandbox user, then runs the overlay's sshd.
+and profile, prepares the home as the sandbox user, then marks the sandbox ready in a tmpfs at
+`/run/corral` and waits. Each SSH connection is a `docker exec` of `corral-sshd` as uid 1000.
 
 Kubernetes (1.35 or later, for image volumes): the pod mounts the overlay as an image volume. A
 root init container runs `corral-init prepare`, which writes the account files into an emptyDir
 and prepares the home as the sandbox user. The sandbox container runs as uid 1000 under tini, with
 those files mounted over the image's `/etc/passwd`, `/etc/group`, `/etc/shadow`,
-`/etc/sudoers.d/corral-sandbox` and `/etc/profile.d/corral.sh`. ContainerSSH runs
-`corral-shell` for logins and the overlay's `sftp-server` for sftp. ContainerSSH runs an SSH
-command (`ssh host <command>`) through the image's `/bin/sh`, so an image without `/bin/sh` takes
-interactive logins and sftp only.
+`/etc/sudoers.d/corral-sandbox` and `/etc/profile.d/corral.sh`, and the sandbox's variables
+mounted at `/etc/corral/sshd_env.conf`. Each SSH connection is a pod exec of `corral-sshd`.
 
 A new overlay reaches a sandbox at its next start from sleep: Docker remakes the container, its
 home kept, and Kubernetes starts the pod from a new template.

@@ -28,12 +28,12 @@ app.kubernetes.io/name: {{ include "corral.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
-{{- define "corral.containersshName" -}}
-{{- printf "%s-containerssh" (include "corral.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- define "corral.gateName" -}}
+{{- printf "%s-gate" (include "corral.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
-{{- define "corral.webhooksName" -}}
-{{- printf "%s-webhooks" (include "corral.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- define "corral.internalName" -}}
+{{- printf "%s-internal" (include "corral.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{- define "corral.sandboxNamespace" -}}
@@ -49,7 +49,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{- define "corral.hostKeySecret" -}}
-{{- .Values.containerssh.hostKey.existingSecret | default (printf "%s-host-key" (include "corral.containersshName" .)) }}
+{{- .Values.ssh.hostKey.existingSecret | default (printf "%s-ssh-host-key" (include "corral.fullname" .)) }}
 {{- end }}
 
 {{/*
@@ -65,7 +65,7 @@ helm template, helm lint or Argo CD.
 {{- end }}
 
 {{- define "corral.sshServicePort" -}}
-{{- .Values.containerssh.service.port | default .Values.ssh.publicPort | int }}
+{{- .Values.gate.service.port | default .Values.ssh.publicPort | int }}
 {{- end }}
 
 {{/*

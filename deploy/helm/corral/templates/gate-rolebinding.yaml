@@ -1,16 +1,16 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "corral.containersshName" . }}
+  name: {{ include "corral.gateName" . }}
   namespace: {{ include "corral.sandboxNamespace" . }}
   labels:
     {{- include "corral.labels" . | nindent 4 }}
-    app.kubernetes.io/component: containerssh
+    app.kubernetes.io/component: gate
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "corral.containersshName" . }}
+  name: {{ include "corral.gateName" . }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "corral.containersshName" . }}
+    name: {{ include "corral.gateName" . }}
     namespace: {{ .Release.Namespace }}

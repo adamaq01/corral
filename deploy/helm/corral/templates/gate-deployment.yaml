@@ -1,25 +1,26 @@
-{{- $name := include "corral.containersshName" . }}
+{{- $name := include "corral.gateName" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ $name }}
   labels:
     {{- include "corral.labels" . | nindent 4 }}
-    app.kubernetes.io/component: containerssh
+    app.kubernetes.io/component: gate
 spec:
-  replicas: {{ .Values.containerssh.replicas }}
+  replicas: {{ .Values.gate.replicas }}
   selector:
     matchLabels:
       {{- include "corral.selectorLabels" . | nindent 6 }}
-      app.kubernetes.io/component: containerssh
+      app.kubernetes.io/component: gate
   template:
     metadata:
       labels:
         {{- include "corral.labels" . | nindent 8 }}
-        app.kubernetes.io/component: containerssh
+        app.kubernetes.io/component: gate
       annotations:
-        checksum/config: {{ include (print $.Template.BasePath "/containerssh-configmap.yaml") . | sha256sum }}
-        {{- with .Values.containerssh.podAnnotations }}
+        {{- /* What the gate reads of the config, so a change to the rest leaves its sessions up. */}}
+        checksum/config: {{ list .Values.ssh (include "corral.sandboxNamespace" .) (include "corral.internalName" .) | toJson | sha256sum }}
+        {{- with .Values.gate.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
@@ -30,26 +31,34 @@ spec:
       {{- end }}
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1022
-        runAsGroup: 1022
-        fsGroup: 1022
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: containerssh
-          image: "{{ .Values.containerssh.image.repository }}:{{ .Values.containerssh.image.tag }}"
-          imagePullPolicy: {{ .Values.containerssh.image.pullPolicy }}
-          args: [--config, /etc/containerssh/config/config.yaml]
+        - name: gate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [gate]
+          env:
+            - name: RUST_LOG
+              value: {{ .Values.logLevel | quote }}
+            - name: CORRAL_GATE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "corral.keysSecret" . }}
+                  key: CORRAL_GATE_SECRET
           ports:
             - name: ssh
               containerPort: 2222
           readinessProbe:
-            exec:
-              command: [/containerssh, --config, /etc/containerssh/config/config.yaml, --healthcheck]
+            tcpSocket:
+              port: ssh
             periodSeconds: 5
           livenessProbe:
-            exec:
-              command: [/containerssh, --config, /etc/containerssh/config/config.yaml, --healthcheck]
+            tcpSocket:
+              port: ssh
             periodSeconds: 10
             failureThreshold: 6
           securityContext:
@@ -57,37 +66,37 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: [ALL]
-          {{- with .Values.containerssh.resources }}
+          {{- with .Values.gate.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           volumeMounts:
             - name: config
-              mountPath: /etc/containerssh/config
+              mountPath: /etc/corral
               readOnly: true
-            - name: keys
-              mountPath: /etc/containerssh/keys
+            - name: host-key
+              mountPath: /etc/corral-gate
               readOnly: true
       volumes:
         - name: config
           configMap:
-            name: {{ $name }}
-        - name: keys
+            name: {{ include "corral.fullname" . }}
+        - name: host-key
           secret:
             secretName: {{ include "corral.hostKeySecret" . }}
             items:
               - key: host_key
                 path: host_key
             defaultMode: 0440
-      {{- with .Values.containerssh.nodeSelector }}
+      {{- with .Values.gate.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.containerssh.tolerations }}
+      {{- with .Values.gate.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.containerssh.affinity }}
+      {{- with .Values.gate.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}

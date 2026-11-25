@@ -1,10 +1,11 @@
 # Corral on Docker Compose
 
-Two containers run the whole service: Corral (the web UI and API, local accounts, SQLite and the
-Docker engine) and [ContainerSSH](https://containerssh.io) (the SSH front door). Each sandbox is a
-Docker container with its home on a named volume, from any image: the Corral overlay, mounted into
-every sandbox, brings the sandbox user, sudo, SSH, Herdr and the `corral` command
-([docs/images.md](../../docs/images.md)). Users reach a sandbox with any SSH client:
+Two containers of the same image run the whole service: Corral (the web UI and API, local
+accounts, SQLite and the Docker engine) and the gate (`corral-server gate`, the SSH front door).
+Each sandbox is a Docker container with its home on a named volume, from any image: the Corral
+overlay, mounted into every sandbox, brings the sandbox user, sudo, OpenSSH, Herdr and the
+`corral` command ([docs/images.md](../../docs/images.md)). Users reach a sandbox with any SSH
+client:
 
 ```
 ssh -p 48291 <sandbox>.<handle>@<public_host>
@@ -12,19 +13,24 @@ ssh -p 48291 <sandbox>.<handle>@<public_host>
 
 A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
 makes that sandbox, from the image and size set in their profile, then opens it, unless they
-already have as many as `max_sandboxes_per_user` under `[limits]` allows (5 by default).
+already have as many as `max_sandboxes_per_user` under `[limits]` allows (5 by default). A
+connection that reaches no sandbox, such as one past that limit, to a sandbox scheduled for
+deletion, or by a disabled user, is told why at once: a command prints the reason on its standard
+error and exits 1, a terminal shows it, and the connection ends with it.
 
-The ContainerSSH image is [a build](https://github.com/adamaq01/ContainerSSH) of ContainerSSH's
-main branch with two fixes not yet released upstream: one-shot commands (`ssh -n <command>`) keep
-all their output, and Kubernetes terminals get no stray bytes and end when the connection drops.
+The gate waits for the first thing a connection asks (a shell, a command, sftp or a forward)
+before it wakes or makes the sandbox; on a terminal it counts the seconds while the sandbox wakes.
+Each session then runs through the overlay's own OpenSSH, started in the sandbox for that
+connection, so it behaves exactly as OpenSSH: the login shell, variables, signals, exit status,
+sftp, port and socket forwards both ways, and agent forwarding.
 
 ## Install
 
 You need Docker Engine 28 or later, whose image mounts bring the overlay into sandboxes, with the
 Compose plugin, and `ssh-keygen`.
 
-1. Copy this directory to the host and keep it private, since it will hold the key that opens
-   every sandbox and the key that decrypts every stored secret:
+1. Copy this directory to the host and keep it private, since it will hold the SSH host key and
+   the key that decrypts every stored secret:
 
    ```sh
    cp -R deploy/compose /opt/corral && cd /opt/corral && chmod 700 .
@@ -33,24 +39,21 @@ Compose plugin, and `ssh-keygen`.
 2. In `config.toml`, set `base_url` (the address people open in a browser) and `public_host`
    (the host name people pass to `ssh`).
 
-3. Generate Corral's keys. Run this once: new keys make every stored secret unreadable.
+3. Generate Corral's keys: the session key, the key that encrypts stored secrets, and the
+   secret Corral and the gate prove themselves to each other with. Run this once: new keys make
+   every stored secret unreadable.
 
    ```sh
    docker compose run --rm corral keys generate > .env
    ```
 
-4. Generate ContainerSSH's host key and the key it opens sandboxes with, and give Corral the
-   public half of the second, which every sandbox trusts. ContainerSSH runs as uid 1022, so both
-   keys must be readable by others; the private directory from step 1 keeps other host users out.
+4. Generate the gate's SSH host key:
 
    ```sh
-   for key in containerssh_host_key containerssh_proxy_key; do
-     ssh-keygen -q -t ed25519 -N '' -C containerssh -f "$key" && chmod 644 "$key"
-   done
-   echo "CORRAL_PROXY_PUBLIC_KEY=$(cat containerssh_proxy_key.pub)" >> .env
+   ssh-keygen -q -t ed25519 -N '' -C corral -f ssh_host_key
    ```
 
-   `ssh-keygen -lf containerssh_host_key.pub` prints the fingerprint users see on first connect.
+   `ssh-keygen -lf ssh_host_key.pub` prints the fingerprint users see on first connect.
 
 5. Start both services and wait until they are healthy:
 
@@ -171,34 +174,38 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
 
 ## Security
 
-- Corral mounts the Docker socket, which gives it control of the host's Docker, and so root on
-  the host. It runs as root inside its container because the socket's owner and group differ
-  between hosts; a non-root user would not limit what the socket allows. The socket is never
-  mounted into sandboxes.
-- Only ContainerSSH holds the private key that opens every sandbox (`containerssh_proxy_key`);
-  Corral keeps its public half, and its answers to ContainerSSH never carry the key.
-- Sandboxes and ContainerSSH share the `corral-sandboxes` network; Corral is never on it. Corral's
-  internal listener (port 8081) is unauthenticated and wakes any sandbox it is asked about, so no
-  sandbox can reach it.
-- Every sandbox on `corral-sandboxes` can reach every other sandbox's ports. Users have
-  passwordless sudo inside their own sandbox. Both are accepted for a group of trusted users.
+- Corral and the gate mount the Docker socket, which gives them control of the host's Docker,
+  and so root on the host: Corral runs sandboxes, and the gate opens each session in its sandbox
+  with `docker exec`. Both run as root inside their containers because the socket's owner and
+  group differ between hosts; a non-root user would not limit what the socket allows. The socket
+  is never mounted into sandboxes. The gate faces the internet, so keep it up to date.
+- The gate holds no state and no key to any sandbox. For each connection it makes a key, starts
+  the overlay's OpenSSH in the sandbox as the sandbox user with that key alone allowed, and talks
+  to it over the exec's standard input and output: sandboxes listen on no port.
+- Corral's internal listener (port 8081) answers only requests carrying `CORRAL_GATE_SECRET`,
+  which Corral and the gate share. It is on the `corral` network alone.
+- Sandboxes join the `corral-sandboxes` network, which Corral creates when it is missing; neither
+  Corral nor the gate is on it. Every sandbox on it can reach every other sandbox's ports. Users
+  have passwordless sudo inside their own sandbox. Both are accepted for a group of trusted users.
 - A sandbox's container starts as root, running only the overlay's static `corral-init`, which
-  writes the sandbox user and starts sshd; the image's own entrypoint never runs, and every
-  session runs as the sandbox user, uid 1000.
+  writes the sandbox user and prepares the home; the image's own entrypoint never runs, and
+  every session runs as the sandbox user, uid 1000.
 - Put the web UI and API behind your existing HTTPS reverse proxy and use an `https://`
   `base_url`: the session cookie is marked `Secure` exactly then. Behind a proxy, set
   `trust_forwarded_for = true` under `[http]`, so password-login limits count each client, not
   the proxy. Over plain HTTP on a LAN the UI works too, copy buttons included.
-- ContainerSSH accepts public keys only, and Corral locks out a source address (for IPv6, its
-  /64) after 10 failed connections in 5 minutes. ContainerSSH's audit log is off.
-- ContainerSSH does not speak the PROXY protocol, so behind a TCP tunnel or proxy (such
-  as a rathole client container) every client shares the relay's address and one lockout. Put
-  the relay and ContainerSSH on a Docker network of their own with a fixed `ipam` subnet, and
-  list that subnet in `config.toml`; connections from it are then never locked out by address:
+- The gate accepts public keys and opkssh certificates only, and Corral locks out a source
+  address (for IPv6, its /64) after 10 failed connections in 5 minutes. A connection has a
+  minute to authenticate and 6 attempts, at most 64 connections wait to authenticate at once, and
+  each connection holds at most 64 channels and 16 remote forwards.
+- The gate does not speak the PROXY protocol, so behind a TCP tunnel or proxy (such as a
+  rathole client container) every client shares the relay's address and one lockout. Put the
+  relay and the gate on a Docker network of their own with a fixed `ipam` subnet, and list that
+  subnet in `config.toml`; connections from it are then never locked out by address:
 
   ```toml
   [frontdoor]
-  kind = "containerssh"
+  kind = "gate"
   lockout_exempt_networks = ["172.30.0.0/24"]
   ```
 
@@ -215,13 +222,12 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
   (`ghcr.io/adamaq01/corral-overlay:latest` by default) each time it starts, and uses the copy
   Docker has when the pull fails. Each sandbox mounts the overlay Corral pulled, from its next
   start from sleep on; a running sandbox keeps the one it started with.
-- A sandbox running without the overlay, started by a Corral from before sandboxes mounted it,
-  cannot be checked for activity, so it stays awake until it is stopped or restarted; that start
-  remakes its container with the overlay, its home and host key kept.
-- `docker compose down` stops Corral and ContainerSSH only. Sandbox containers are not part of
-  the Compose project: running ones keep running, and they hold the `corral-sandboxes` network
-  until they are deleted in the web UI.
-- Logs: `docker compose logs corral`. `RUST_LOG` in `.env` sets the level (`info` by default).
+- A sandbox running from before the gate, or without the overlay, takes no SSH session until
+  its next start: restart it from its page, and the start remakes its container, its home kept.
+- `docker compose down` stops Corral and the gate only. Sandbox containers are not part of the
+  Compose project: running ones keep running, on the `corral-sandboxes` network.
+- Logs: `docker compose logs corral gate`. `RUST_LOG` in `.env` sets the level (`info` by
+  default).
 
 ## Optional adapters
 

@@ -11,7 +11,7 @@ test.afterAll(() => rmSync(keyDir, { recursive: true, force: true }));
 
 /**
  * Runs `remote` over `command`, an SSH command as the UI shows it, with the test's key and
- * ContainerSSH's host key pinned.
+ * the gate's host key pinned.
  */
 function overSsh(command: string, key: string, remote: string): Promise<string> {
 	const [program, ...args] = command.split(' ');

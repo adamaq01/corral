@@ -69,6 +69,21 @@
         "wakeDeadlineSecs": {
           "type": "integer",
           "minimum": 1
+        },
+        "hostKey": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "existingSecret": {
+              "type": "string"
+            }
+          }
+        },
+        "lockoutExemptNetworks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/cidr"
+          }
         }
       }
     },
@@ -398,10 +413,6 @@
         "storageClass": {
           "type": "string"
         },
-        "agentImage": {
-          "type": "string",
-          "minLength": 1
-        },
         "overlayImage": {
           "type": "object",
           "additionalProperties": false,
@@ -728,31 +739,13 @@
     "affinity": {
       "type": "object"
     },
-    "containerssh": {
+    "gate": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "image": {
-          "$ref": "#/$defs/image"
-        },
         "replicas": {
           "type": "integer",
           "minimum": 1
-        },
-        "hostKey": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "existingSecret": {
-              "type": "string"
-            }
-          }
-        },
-        "lockoutExemptNetworks": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/cidr"
-          }
         },
         "service": {
           "type": "object",

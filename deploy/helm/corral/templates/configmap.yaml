@@ -26,7 +26,6 @@
   "kind" "agent-sandbox"
   "namespace" (include "corral.sandboxNamespace" .)
   "service_account" (include "corral.sandboxServiceAccount" .)
-  "agent_image" .Values.sandboxes.agentImage
   "overlay_image" (printf "%s:%s" .Values.sandboxes.overlayImage.repository (.Values.sandboxes.overlayImage.tag | default .Chart.AppVersion)) }}
 {{- with .Values.sandboxes.storageClass }}
 {{- $_ := set $engine "storage_class" . }}
@@ -60,8 +59,12 @@
   "memory_limit" .memoryLimit
   "home_size" .homeSize) }}
 {{- end }}
-{{- $frontdoor := dict "kind" "containerssh" }}
-{{- with .Values.containerssh.lockoutExemptNetworks }}
+{{- $frontdoor := dict
+  "kind" "gate"
+  "listen_addr" "0.0.0.0:2222"
+  "host_key_file" "/etc/corral-gate/host_key"
+  "server_url" (printf "http://%s:8081" (include "corral.internalName" .)) }}
+{{- with .Values.ssh.lockoutExemptNetworks }}
 {{- $_ := set $frontdoor "lockout_exempt_networks" . }}
 {{- end }}
 {{- $catalog := dict }}

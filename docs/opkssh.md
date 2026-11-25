@@ -32,8 +32,8 @@ directories there, since the root filesystem is read-only.
 Each certificate login runs `opkssh verify` with a 5 second timeout. It runs with none of Corral's
 environment but `SSL_CERT_FILE`, `SSL_CERT_DIR` and the proxy variables, so an issuer behind a
 private CA works when `SSL_CERT_FILE` names that CA for Corral, for its web login too. A refused
-certificate is logged with opkssh's reason; certificates are never logged. ContainerSSH waits 10
-seconds for an answer about a key.
+certificate is logged with opkssh's reason; certificates are never logged. The gate waits 15
+seconds for Corral's answer about a key or certificate.
 
 ## VoidAuth
 
@@ -73,9 +73,6 @@ people signed in with single sign-on:
   `opkssh login corral -i ~/.ssh/corral-opkssh` before ssh connects, when that certificate is
   missing or written more than its lifetime less an hour ago, and gives up after 30 seconds.
   opkssh's certificates carry no expiry of their own, so the hook goes by the file's age.
-  The block also sets `PreferredAuthentications publickey`: ContainerSSH offers password
-  logins it always refuses, and without it ssh answers a refused certificate with a password
-  prompt.
 
 While the browser holds a VoidAuth session (sign in with Remember Me), the login opens a tab that
 completes on its own in under a second. Without one, sign in within the 30 seconds, or run

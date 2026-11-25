@@ -2,10 +2,6 @@ import type { OpksshLogin, Sandbox } from '#lib/api/generated/index.js';
 
 export type ConnectSnippet = { label: string; text: string };
 
-// ContainerSSH offers password and keyboard-interactive logins it always refuses, so without this
-// ssh answers a refused key with a password prompt.
-const KEYS_ONLY = '  PreferredAuthentications publickey';
-
 /** The `~/.ssh/config` alias for a sandbox, so `ssh <alias>` reaches it. */
 export function hostAlias(sandbox: Sandbox): string {
 	return `corral-${sandbox.name}`;
@@ -35,8 +31,7 @@ export function connectSnippets(sandbox: Sandbox, handle: string): ConnectSnippe
 				`Host ${hostAlias(sandbox)}`,
 				`  HostName ${host}`,
 				`  Port ${port}`,
-				`  User ${username}`,
-				KEYS_ONLY
+				`  User ${username}`
 			].join('\n')
 		}
 	];
@@ -76,8 +71,7 @@ export function opksshSnippets(login: OpksshLogin, host: string): ConnectSnippet
 			label: 'SSH config (end of ~/.ssh/config)',
 			text: [
 				`Match host ${host} exec "sh -c '${renew}' >/dev/null 2>&1"`,
-				`  IdentityFile ${OPKSSH_KEY}`,
-				KEYS_ONLY
+				`  IdentityFile ${OPKSSH_KEY}`
 			].join('\n')
 		}
 	];

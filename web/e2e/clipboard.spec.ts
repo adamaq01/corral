@@ -52,12 +52,6 @@ test('copy buttons work on a plain HTTP origin', async ({ page, context, baseURL
 	const reader = await context.newPage();
 	await reader.goto(`${trusted.origin}/sign-in`);
 	expect(await reader.evaluate(() => navigator.clipboard.readText())).toBe(
-		[
-			'Host corral-main',
-			`  HostName ${lan}`,
-			'  Port 2222',
-			'  User main.bob',
-			'  PreferredAuthentications publickey'
-		].join('\n')
+		['Host corral-main', `  HostName ${lan}`, '  Port 2222', '  User main.bob'].join('\n')
 	);
 });

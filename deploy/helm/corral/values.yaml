@@ -25,17 +25,28 @@ image:
   # image.pullPolicy is the server container's pull policy.
   pullPolicy: IfNotPresent
 
-# imagePullSecrets are the Secrets for pulling the Corral and ContainerSSH images.
+# imagePullSecrets are the Secrets for pulling the Corral image, which the server and the gate
+# run.
 imagePullSecrets: []
 
 ssh:
   # ssh.publicHost is the host name people pass to ssh. Required.
   # publicHost: ssh.example.com
-  # ssh.publicPort is the port people pass to ssh, and the ContainerSSH Service's port.
+  # ssh.publicPort is the port people pass to ssh, and the gate Service's port.
   publicPort: 48291
-  # ssh.wakeDeadlineSecs is how long a login waits for a sleeping sandbox to wake. ContainerSSH
-  # waits 10 seconds longer for Corral's answer.
+  # ssh.wakeDeadlineSecs is how long Corral waits for a sleeping sandbox to wake before it tells
+  # the gate it still wakes; the gate asks again, for up to 5 minutes.
   wakeDeadlineSecs: 20
+  # ssh.hostKey.existingSecret names a Secret whose `host_key` is the SSH host private key, in
+  # OpenSSH or PEM form. Empty: `helm install` generates an ed25519 key once, keeps it across
+  # upgrades, and `helm uninstall` leaves it behind, so known_hosts entries stay valid. Required
+  # where the chart is rendered without a cluster, as by helm template or Argo CD.
+  hostKey:
+    existingSecret: ""
+  # ssh.lockoutExemptNetworks are networks, in CIDR notation, whose SSH connections are never
+  # locked out by address, because every client behind them shares it: the pods of a tunnel such
+  # as rathole, or a proxy. See "Lockout behind a tunnel" in the README.
+  lockoutExemptNetworks: []
 
 identity:
   local:
@@ -68,9 +79,10 @@ identity:
       # identity.oidc.opkssh.policy is how long a certificate lasts: 12h, 24h, 48h or 1week.
       policy: 24h
 
-# keys.existingSecret names a Secret with CORRAL_SESSION_KEY and CORRAL_SECRETS_KEY, as printed by
-# `corral-server keys generate`. Empty: `helm install` generates both once and keeps them across
-# upgrades, and `helm uninstall` leaves that Secret behind, since stored secrets need it.
+# keys.existingSecret names a Secret with CORRAL_SESSION_KEY, CORRAL_SECRETS_KEY and
+# CORRAL_GATE_SECRET, as printed by `corral-server keys generate`. Empty: `helm install` generates
+# them once and keeps them across upgrades, and `helm uninstall` leaves that Secret behind, since
+# stored secrets need it.
 # Required where the chart is rendered without a cluster, as by helm template or Argo CD.
 keys:
   existingSecret: ""
@@ -125,16 +137,14 @@ database:
 sandboxes:
   namespace:
     # sandboxes.namespace.name is the namespace of the sandboxes. Empty: <fullname>-sandboxes.
-    # Corral and ContainerSSH get rights in this namespace only.
+    # Corral and the gate get rights in this namespace only.
     name: ""
     # sandboxes.namespace.create creates the namespace. With false it must exist.
     create: true
   # sandboxes.storageClass is the StorageClass of sandbox homes. Empty: the cluster default.
   storageClass: ""
-  # sandboxes.agentImage is the ContainerSSH agent image, mounted into every sandbox.
-  agentImage: containerssh/agent:v0.11.0
   # sandboxes.overlayImage is the Corral overlay, mounted into every sandbox at /opt/corral: the
-  # sandbox user, sudo, the login shell, sftp, Herdr and the corral command, for any image.
+  # sandbox user, sudo, the login shell, OpenSSH, Herdr and the corral command, for any image.
   overlayImage:
     # sandboxes.overlayImage.repository is the overlay image.
     repository: ghcr.io/adamaq01/corral-overlay
@@ -216,8 +226,8 @@ httpRoute:
   # httpRoute.annotations are added to the HTTPRoute.
   annotations: {}
 
-# networkPolicy.enabled lets only ContainerSSH reach Corral's webhook port, which wakes any
-# sandbox it is asked about. It needs a network plugin that enforces NetworkPolicy.
+# networkPolicy.enabled lets only the gate reach Corral's internal port, which wakes any sandbox
+# it is asked about for the shared secret. It needs a network plugin that enforces NetworkPolicy.
 networkPolicy:
   enabled: true
 
@@ -237,56 +247,36 @@ tolerations: []
 # affinity is the Corral pod's affinity.
 affinity: {}
 
-containerssh:
-  image:
-    # containerssh.image.repository is the ContainerSSH image. The default is
-    # https://github.com/adamaq01/ContainerSSH, ContainerSSH's main branch with two fixes not yet
-    # released upstream, for one-shot commands losing output and for stray bytes in Kubernetes
-    # terminals.
-    repository: ghcr.io/adamaq01/containerssh
-    # containerssh.image.tag is the ContainerSSH version.
-    tag: 7d65536
-    # containerssh.image.pullPolicy is the ContainerSSH container's pull policy.
-    pullPolicy: IfNotPresent
-  # containerssh.replicas is the number of ContainerSSH pods.
+gate:
+  # gate.replicas is the number of gate pods, the SSH front door. Each holds no state, so any
+  # number serve the same host key.
   replicas: 1
-  # containerssh.hostKey.existingSecret names a Secret whose `host_key` is the SSH host private
-  # key. Empty: `helm install` generates an ed25519 key once, keeps it across upgrades, and
-  # `helm uninstall` leaves it behind, so known_hosts entries stay valid. Required where the
-  # chart is rendered without a cluster, as by helm template or Argo CD.
-  hostKey:
-    existingSecret: ""
-  # containerssh.lockoutExemptNetworks are networks, in CIDR notation, whose SSH connections are
-  # never locked out by address, because every client behind them shares it: the pods of a
-  # tunnel such as rathole, or a proxy. See "Lockout behind a tunnel" in the README.
-  lockoutExemptNetworks: []
   service:
-    # containerssh.service.type is LoadBalancer, NodePort or ClusterIP.
+    # gate.service.type is LoadBalancer, NodePort or ClusterIP.
     type: LoadBalancer
-    # containerssh.service.port is the Service port. Empty: ssh.publicPort.
+    # gate.service.port is the Service port. Empty: ssh.publicPort.
     port: null
-    # containerssh.service.nodePort fixes the node port, for type NodePort or LoadBalancer.
+    # gate.service.nodePort fixes the node port, for type NodePort or LoadBalancer.
     nodePort: null
-    # containerssh.service.externalTrafficPolicy is Local, so Corral sees each client's address
-    # and failed-login lockouts count per client, or Cluster. NodePort and LoadBalancer only.
+    # gate.service.externalTrafficPolicy is Local, so Corral sees each client's address and
+    # failed-login lockouts count per client, or Cluster. NodePort and LoadBalancer only.
     externalTrafficPolicy: Local
-    # containerssh.service.loadBalancerClass selects a load balancer implementation.
+    # gate.service.loadBalancerClass selects a load balancer implementation.
     loadBalancerClass: ""
-    # containerssh.service.annotations are added to the Service, such as
-    # metallb.io/loadBalancerIPs.
+    # gate.service.annotations are added to the Service, such as metallb.io/loadBalancerIPs.
     annotations: {}
-  # containerssh.resources are the ContainerSSH container's requests and limits.
+  # gate.resources are the gate container's requests and limits.
   resources:
     requests:
       cpu: 50m
       memory: 64Mi
     limits:
       memory: 256Mi
-  # containerssh.podAnnotations are added to the ContainerSSH pods.
+  # gate.podAnnotations are added to the gate pods.
   podAnnotations: {}
-  # containerssh.nodeSelector constrains the ContainerSSH pods' nodes.
+  # gate.nodeSelector constrains the gate pods' nodes.
   nodeSelector: {}
-  # containerssh.tolerations are the ContainerSSH pods' tolerations.
+  # gate.tolerations are the gate pods' tolerations.
   tolerations: []
-  # containerssh.affinity is the ContainerSSH pods' affinity.
+  # gate.affinity is the gate pods' affinity.
   affinity: {}

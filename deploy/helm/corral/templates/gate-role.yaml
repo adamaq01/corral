@@ -1,0 +1,14 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "corral.gateName" . }}
+  namespace: {{ include "corral.sandboxNamespace" . }}
+  labels:
+    {{- include "corral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gate
+rules:
+  # The gate runs each connection's sshd in its sandbox's pod. A WebSocket exec is a GET, which
+  # newer API servers also authorize as create.
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]

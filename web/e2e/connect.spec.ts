@@ -10,7 +10,7 @@ const keyDir = mkdtempSync(join(tmpdir(), 'corral-web-connect-'));
 test.afterAll(() => rmSync(keyDir, { recursive: true, force: true }));
 
 /**
- * Runs `remote` over ssh to `destination`, with the test's key and ContainerSSH's host key pinned.
+ * Runs `remote` over ssh to `destination`, with the test's key and the gate's host key pinned.
  */
 function overSsh(
 	destination: string[],

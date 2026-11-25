@@ -22,7 +22,6 @@ base=http://127.0.0.1:$http_port
 server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
 export CORRAL_SANDBOX_IMAGE=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
 export CORRAL_OVERLAY_IMAGE=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
-containerssh_image=$(awk '/^containerssh:/ { s = 1 } s && $1 == "repository:" { r = $2 } s && $1 == "tag:" { print r ":" $2; exit }' "$chart/values.yaml")
 
 passed=0
 work=
@@ -74,7 +73,7 @@ cleanup() {
   if ((status != 0)); then
     kubectl --namespace "$namespace" get pods >&2 2>/dev/null || true
     kubectl --namespace "$namespace" logs deploy/$release --tail 40 >&2 2>/dev/null || true
-    kubectl --namespace "$namespace" logs deploy/$release-containerssh --tail 20 >&2 2>/dev/null || true
+    kubectl --namespace "$namespace" logs deploy/$release-gate --tail 20 >&2 2>/dev/null || true
     kubectl --namespace "$sandboxes" get sandboxes,pods,pvc >&2 2>/dev/null || true
   fi
   remove_release
@@ -100,10 +99,8 @@ load() {
     docker save "$1" | docker exec -i "$node" ctr --namespace=k8s.io images import - >>"$log"
   fi
 }
-docker image inspect "$containerssh_image" >/dev/null 2>&1 || docker pull -q "$containerssh_image" >>"$log"
 load "$server_image"
-load "$containerssh_image"
-ok "kind cluster with agent-sandbox, images $server_image, $CORRAL_SANDBOX_IMAGE and $containerssh_image"
+ok "kind cluster with agent-sandbox, images $server_image and $CORRAL_SANDBOX_IMAGE"
 
 cat >"$work/values.yaml" <<EOF
 baseUrl: $base
@@ -129,7 +126,7 @@ idle:
   timeoutSecs: 30
   probeIntervalSecs: 5
 keepOnUninstall: true
-containerssh:
+gate:
   service:
     type: NodePort
     nodePort: 30022
@@ -162,7 +159,7 @@ connect_web() {
 connect() {
   connect_web
   stop "$ssh_forward"
-  port_forward "$release-containerssh" "$ssh_port" "$ssh_port"
+  port_forward "$release-gate" "$ssh_port" "$ssh_port"
   ssh_forward=$forwarded
 }
 
@@ -174,8 +171,8 @@ install
 connect
 expect "the web UI's title" "<title>Corral</title>" "$(curl -sS --fail "$base/" | grep -o '<title>Corral</title>')"
 keys=$(secret_data "$release-keys")
-host_key=$(secret_data "$release-containerssh-host-key")
-ok "helm install: Corral and ContainerSSH are ready and the web UI answers through the Service"
+host_key=$(secret_data "$release-ssh-host-key")
+ok "helm install: Corral and the gate are ready and the web UI answers through the Service"
 
 admin_password=$(head -c 18 /dev/urandom | base64)
 kubectl --namespace "$namespace" exec -i "deploy/$release" -- \
@@ -210,7 +207,7 @@ summary=$(kubectl --namespace "$sandboxes" get sandbox "$sandbox_id" -o yaml \
   | kubeconform -strict -summary -schema-location "$work/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json")
 ok "Corral's Sandbox $sandbox_id against the installed agent-sandbox CRD schema: $summary"
 
-kubectl --namespace "$namespace" get secret "$release-containerssh-host-key" \
+kubectl --namespace "$namespace" get secret "$release-ssh-host-key" \
   -o jsonpath='{.data.host_key}' | base64 -d >"$work/host_key"
 chmod 600 "$work/host_key"
 echo "[127.0.0.1]:$ssh_port $(ssh-keygen -y -f "$work/host_key")" >"$work/known_hosts"
@@ -235,13 +232,13 @@ as() {
 
 expect "ssh main.adam id -un" sandbox "$(as main.adam 'id -un')"
 as main.adam 'echo kept >~/marker'
-ok "ssh main.adam through the ContainerSSH Service runs as sandbox, the chart's host key pinned"
+ok "ssh main.adam through the gate's Service runs as sandbox, the chart's host key pinned"
 
 if ssh -F "$work/ssh_config" -o BatchMode=no -o PreferredAuthentications=password,keyboard-interactive \
   -o NumberOfPasswordPrompts=0 main.adam@corral-e2e true </dev/null >/dev/null 2>&1; then
   fail "a password login was let in"
 fi
-ok "password and keyboard-interactive logins are refused"
+ok "password and keyboard-interactive logins are not offered"
 
 # The command is typed before ssh connects, so it reaches the session before the shell starts.
 type_ahead_and_drop() {
@@ -297,9 +294,9 @@ ok "ssh -L $forward_port:127.0.0.1:8000 reaches a server inside the sandbox"
 if [[ -z "${CORRAL_E2E_SKIP_NETWORK_POLICY:-}" ]]; then
   expect "Corral's web port from the sandbox" 200 \
     "$(as main.adam "curl -s -m 5 -o /dev/null -w %{http_code} http://$release.$namespace.svc:8080/healthz")"
-  code=$(as main.adam "curl -s -m 5 -o /dev/null http://$release-webhooks.$namespace.svc:8081/healthz; echo \$?")
-  [[ "$code" != 0 ]] || fail "the sandbox reached Corral's webhook port"
-  ok "the NetworkPolicy keeps the sandbox off Corral's webhook port (curl exit $code)"
+  code=$(as main.adam "curl -s -m 5 -o /dev/null http://$release-internal.$namespace.svc:8081/healthz; echo \$?")
+  [[ "$code" != 0 ]] || fail "the sandbox reached Corral's internal port"
+  ok "the NetworkPolicy keeps the sandbox off Corral's internal port (curl exit $code)"
 fi
 
 state() {
@@ -313,8 +310,6 @@ stop "$held"
 stop "$tunnel"
 held=
 tunnel=
-kubectl --namespace "$sandboxes" exec "$sandbox_id" -c sandbox -- \
-  pgrep -f 'containerssh-agent forward-server' >/dev/null || fail "no port-forward agent was left behind"
 waited=0
 until [[ "$(state)" == sleeping ]]; do
   ((waited < 120)) || fail "main was still $(state) after ${waited}s"
@@ -322,7 +317,7 @@ until [[ "$(state)" == sleeping ]]; do
   waited=$((waited + 5))
 done
 kubectl --namespace "$sandboxes" wait --for=delete "pod/$sandbox_id" --timeout=60s >>"$log"
-ok "with the forwarded connection closed and its agent left behind, main slept within ${waited}s"
+ok "with the forwarding connection closed, main slept within ${waited}s"
 
 woke_at=$SECONDS
 expect "the home after a wake" kept "$(as main.adam 'cat ~/marker')"
@@ -341,15 +336,15 @@ connect_web
 wait "$session" || true
 expect "an SSH session open across the upgrade" survived "$(cat "$work/session.out")"
 expect "the keys Secret after an upgrade" "$keys" "$(secret_data "$release-keys")"
-expect "the host key Secret after an upgrade" "$host_key" "$(secret_data "$release-containerssh-host-key")"
+expect "the host key Secret after an upgrade" "$host_key" "$(secret_data "$release-ssh-host-key")"
 login
 expect "keys after the upgrade" 1 "$(api GET api/keys | jq length)"
 expect "the home after the upgrade" kept "$(as main.adam 'cat ~/marker')"
-ok "helm upgrade restarted Corral with new config; an open SSH session, data, generated keys and host key survived"
+ok "helm upgrade restarted Corral with new config; the gate kept an open SSH session, and data, generated keys and host key survived"
 
 stop_forwards
 helm uninstall "$release" --namespace "$namespace" --wait >>"$log"
-expect "kept in $namespace" "persistentvolumeclaim/$release-data secret/$release-containerssh-host-key secret/$release-keys" \
+expect "kept in $namespace" "persistentvolumeclaim/$release-data secret/$release-keys secret/$release-ssh-host-key" \
   "$(kubectl --namespace "$namespace" get pvc,secrets -o name | sort | xargs)"
 expect "kept in $sandboxes" "sandbox.agents.x-k8s.io/$sandbox_id" \
   "$(kubectl --namespace "$sandboxes" get sandboxes -o name)"
@@ -358,7 +353,7 @@ ok "helm uninstall with keepOnUninstall: the database volume, keys, host key and
 install
 connect
 expect "the keys Secret after a reinstall" "$keys" "$(secret_data "$release-keys")"
-expect "the host key Secret after a reinstall" "$host_key" "$(secret_data "$release-containerssh-host-key")"
+expect "the host key Secret after a reinstall" "$host_key" "$(secret_data "$release-ssh-host-key")"
 login
 expect "sandboxes after a reinstall" main "$(api GET api/sandboxes | jq -r '.[].name')"
 expect "the home after a reinstall" kept "$(as main.adam 'cat ~/marker')"
@@ -368,7 +363,7 @@ install --set keepOnUninstall=false
 stop_forwards
 helm uninstall "$release" --namespace "$namespace" --wait >>"$log"
 kubectl wait --for=delete "namespace/$sandboxes" --timeout=180s >>"$log" 2>&1
-expect "left in $namespace" "secret/$release-containerssh-host-key secret/$release-keys" \
+expect "left in $namespace" "secret/$release-keys secret/$release-ssh-host-key" \
   "$(kubectl --namespace "$namespace" get pvc,secrets -o name | sort | xargs)"
 ok "helm uninstall without keepOnUninstall deletes the database volume and the sandbox namespace; the generated keys stay"
 

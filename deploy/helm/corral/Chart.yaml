@@ -1,11 +1,11 @@
 apiVersion: v2
 name: corral
-description: Named, persistent sandboxes reachable over SSH, on agent-sandbox, with ContainerSSH as the SSH front door.
+description: Named, persistent sandboxes reachable over SSH, on agent-sandbox, with the gate as the SSH front door.
 type: application
 # CI publishes the chart with the version and appVersion of the Corral image it was built with.
-version: 0.2.0
+version: 0.3.0
 appVersion: "latest"
-# Sandbox pods mount the ContainerSSH agent as an image volume.
+# Sandbox pods mount the Corral overlay as an image volume.
 kubeVersion: ">=1.35.0-0"
 home: https://github.com/adamaq01/corral
 sources:

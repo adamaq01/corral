@@ -1,8 +1,8 @@
-{{- /* Always ClusterIP: the webhooks are unauthenticated and wake any sandbox they are asked about. */}}
+{{- /* Always ClusterIP: the internal API wakes any sandbox the gate asks about. */}}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "corral.webhooksName" . }}
+  name: {{ include "corral.internalName" . }}
   labels:
     {{- include "corral.labels" . | nindent 4 }}
     app.kubernetes.io/component: server

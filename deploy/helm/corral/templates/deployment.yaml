@@ -46,7 +46,7 @@ spec:
           env:
             - name: RUST_LOG
               value: {{ .Values.logLevel | quote }}
-            {{- range list "CORRAL_SESSION_KEY" "CORRAL_SECRETS_KEY" }}
+            {{- range list "CORRAL_SESSION_KEY" "CORRAL_SECRETS_KEY" "CORRAL_GATE_SECRET" }}
             - name: {{ . }}
               valueFrom:
                 secretKeyRef:

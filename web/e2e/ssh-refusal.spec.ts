@@ -140,11 +140,6 @@ test('a refused key fails at once, with no password prompt, under either config 
 		const attempt = login(config, [...args]);
 		expect(attempt.prompts, refused).toEqual([]);
 		expect(attempt.status, `${refused}: ${attempt.stderr}`).toBe(255);
-		expect(attempt.stderr, refused).toContain('Permission denied (');
+		expect(attempt.stderr, refused).toContain('Permission denied (publickey)');
 	}
-
-	const prompting = login(config.replaceAll('  PreferredAuthentications publickey\n', ''), [
-		...withoutAlias
-	]);
-	expect(prompting.prompts.length, prompting.stderr).toBeGreaterThan(0);
 });

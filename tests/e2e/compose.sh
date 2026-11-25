@@ -126,32 +126,26 @@ services:
     ports: !override
       - "127.0.0.1:$http_port:8080"
       - "$sandbox_gateway:$sandbox_api_port:8080"
-  containerssh:
+  gate:
+    image: $server_image
     ports: !override
       - "127.0.0.1:$ssh_port:2222"
-networks:
-  corral-sandboxes:
-    name: $sandbox_network
-    ipam:
-      config:
-        - subnet: $sandbox_subnet
-          gateway: $sandbox_gateway
 EOF
+# Corral makes the sandbox network when it is missing; this one has a known gateway, which Corral's
+# port is published on.
+docker network create --subnet "$sandbox_subnet" --gateway "$sandbox_gateway" "$sandbox_network" >/dev/null
 export COMPOSE_PROJECT_NAME=$project COMPOSE_FILE=compose.yaml:compose.e2e.yaml
 ok "copied deploy/compose to a private directory and set base_url and public_host"
 
 docker compose run --rm corral keys generate >.env 2>>"$log"
-expect "keys generate" "CORRAL_SESSION_KEY CORRAL_SECRETS_KEY" "$(cut -d= -f1 .env | xargs)"
-ok "docker compose run --rm corral keys generate > .env wrote the two keys"
+expect "keys generate" "CORRAL_SESSION_KEY CORRAL_SECRETS_KEY CORRAL_GATE_SECRET" "$(cut -d= -f1 .env | xargs)"
+ok "docker compose run --rm corral keys generate > .env wrote the three keys"
 
-for key in containerssh_host_key containerssh_proxy_key; do
-  ssh-keygen -q -t ed25519 -N '' -C containerssh -f "$key" && chmod 644 "$key"
-done
-echo "CORRAL_PROXY_PUBLIC_KEY=$(cat containerssh_proxy_key.pub)" >>.env
-ok "generated ContainerSSH's host and proxy keys, and gave Corral the proxy's public key"
+ssh-keygen -q -t ed25519 -N '' -C corral -f ssh_host_key
+ok "generated the gate's host key"
 
 docker compose up -d --wait >>"$log" 2>&1
-ok "docker compose up -d --wait: corral and containerssh are healthy"
+ok "docker compose up -d --wait: corral and the gate are healthy"
 
 page=$(curl -sS --fail-with-body -D "$work/ui.headers" "$base/sandboxes/main")
 [[ "$page" == *"<title>Corral</title>"* ]] || fail "GET /sandboxes/main is not the web UI: $page"
@@ -204,7 +198,7 @@ adam_container=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_netw
 adam_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$adam_container")
 ok "adam registered a key and created sandbox main ($adam_container)"
 
-echo "[127.0.0.1]:$ssh_port $(cut -d' ' -f1,2 containerssh_host_key.pub)" >known_hosts
+echo "[127.0.0.1]:$ssh_port $(cut -d' ' -f1,2 ssh_host_key.pub)" >known_hosts
 cat >ssh_config <<EOF
 Host corral-e2e
   HostName 127.0.0.1
@@ -230,9 +224,18 @@ refused() {
   [[ "$output" == *"Permission denied"* ]] || fail "$2 with $1's key: unexpected error: $output"
 }
 
+# A connection that reaches no sandbox: within 5 seconds, exit status 1, and $3 on stderr.
+told() {
+  local output status began=$SECONDS
+  output=$(as "$1" "$2" true 2>&1) && status=0 || status=$?
+  expect "the exit status of $2 with $1's key" 1 "$status"
+  [[ "$output" == "corral: $3"* ]] || fail "$2 with $1's key: expected [corral: $3...], got [$output]"
+  ((SECONDS - began <= 5)) || fail "$2 with $1's key took $((SECONDS - began))s to be told why"
+}
+
 expect "ssh -n main.adam id -un" sandbox "$(as adam main.adam "id -un")"
 as adam main.adam 'echo adam >~/owner'
-ok "ssh -n main.adam@127.0.0.1 -p $ssh_port runs as sandbox, ContainerSSH's host key pinned"
+ok "ssh -n main.adam@127.0.0.1 -p $ssh_port runs as sandbox, the gate's host key pinned"
 
 expect "bytes from ssh -n main.adam with a 200 kB output" 200000 \
   "$(as adam main.adam 'head -c 200000 /dev/zero | tr "\0" a' | wc -c | xargs)"
@@ -245,9 +248,9 @@ if output=$(SSH_ASKPASS=$work/askpass SSH_ASKPASS_REQUIRE=force ssh -F ssh_confi
   main.adam@corral-e2e true 2>&1 </dev/null); then
   fail "a password login was let in"
 fi
-[[ "$output" == *"Permission denied"* ]] || fail "password login: unexpected error: $output"
-[[ -e asked ]] || fail "ssh never offered a password"
-ok "password and keyboard-interactive logins are refused"
+[[ "$output" == *"Permission denied (publickey)"* ]] || fail "password login: unexpected error: $output"
+[[ ! -e asked ]] || fail "ssh asked for a password"
+ok "password and keyboard-interactive logins are not offered"
 
 refused stranger main.adam
 ok "an unregistered key is refused"
@@ -262,16 +265,13 @@ expect "ssh ssh://main.adam@corral-e2e:$ssh_port" sandbox \
 ok "an ssh:// URI takes main.adam as written, as hc machine add passes it"
 
 refused adam adam+main
-refused adam Scratch_2.adam
-ok "adam+main and an invalid sandbox name are refused"
+told adam Scratch_2.adam 'sandbox name "Scratch_2" must match [a-z0-9-]{1,32}'
+ok "adam+main is refused, and an invalid sandbox name is told why"
 
-if output=$(as adam extra.adam true 2>&1); then
-  fail "extra.adam let adam past his limit of 2 sandboxes"
-fi
-[[ "$output" == *"closed by remote host"* ]] || fail "extra.adam: unexpected error: $output"
+told adam extra.adam "cannot make sandbox extra: at most 2 sandboxes per user"
 expect "adam's sandboxes at his limit" "main scratch" \
   "$(api adam GET api/sandboxes | jq -r '.[].name' | xargs)"
-ok "ssh extra.adam past adam's limit is refused and makes nothing"
+ok "ssh extra.adam past adam's limit is told why at once and makes nothing"
 api adam DELETE api/sandboxes/scratch >/dev/null
 
 bob_password=$(head -c 18 /dev/urandom | base64)
@@ -295,7 +295,7 @@ hc_local machine add --name e2e --install \
   --via "ssh -F $work/ssh_config -i $work/keys/adam main.adam@corral-e2e" >>"$log"
 expect "hc exec --on e2e echo ok" ok "$(hc_local exec --on e2e echo ok)"
 hc_local server stop >>"$log"
-ok "hc machine add over ContainerSSH, then hc exec --on e2e echo ok prints ok"
+ok "hc machine add over the gate, then hc exec --on e2e echo ok prints ok"
 
 as adam main.adam 'nohup node -e "require(\"http\").createServer((q, r) => r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" </dev/null >/dev/null 2>&1 &'
 inside=
@@ -389,9 +389,9 @@ ok "no secret value is in either service's logs"
 bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
 expect "bob's status once disabled" disabled \
   "$(api adam POST "api/admin/users/$bob_id/disable" | jq -r .status)"
-refused bob main.bob
+told bob main.bob "this account is disabled"
 expect "disabled bob's GET /api/me" 403 "$(http_status bob GET api/me)"
-ok "a disabled user is refused over SSH and by the API"
+ok "a disabled user is told why over SSH, and refused by the API"
 
 docker compose restart corral >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
@@ -457,10 +457,7 @@ out=$(as adam main.adam 'corral delete --confirm main' 2>&1 || true)
 until_state sleeping
 delete_at=$(api adam GET api/sandboxes/main | jq -r .deleteAt)
 [[ "$delete_at" != null ]] || fail "no deleteAt after corral delete"
-if output=$(as adam main.adam true 2>&1); then
-  fail "ssh woke main while its deletion was scheduled"
-fi
-[[ "$output" == *"closed by remote host"* ]] || fail "ssh to a scheduled main: unexpected error: $output"
+told adam main.adam "sandbox main is to be deleted at"
 expect "container while scheduled" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
 ok "with it on, corral delete --confirm main stopped main and scheduled its deletion for $delete_at"
 
@@ -473,10 +470,10 @@ expect "deleteAt after the cancel" null "$(api adam GET api/sandboxes/main | jq 
 expect "ssh after the cancel" "sandbox adam" "$(as adam main.adam 'echo "$(id -un) $(cat ~/owner)"')"
 ok "the schedule outlived a restart of corral; cancelling it through the API kept main and its home"
 
-docker compose restart containerssh >>"$log" 2>&1
+docker compose restart gate >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
-expect "ssh after a ContainerSSH restart" sandbox "$(as adam main.adam "id -un")"
-ok "after docker compose restart containerssh, the pinned host key still matches"
+expect "ssh after a gate restart" sandbox "$(as adam main.adam "id -un")"
+ok "after docker compose restart gate, the pinned host key still matches"
 
 for _ in 1 2 3 4 5; do
   expect "a wrong password" 403 "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
@@ -487,10 +484,38 @@ expect "the right password after 5 wrong ones" 429 "$(jq -cn --arg p "$admin_pas
   -H 'Content-Type: application/json' --data @- "$base/auth/local/login")"
 ok "after 5 wrong passwords, POST /auth/local/login answers 429 even to the right one"
 
-# Short timings for the rest: a wake deadline a slow wake can exceed, and a quick idle timeout.
-# The bind mount follows config.toml's inode, so it is rewritten in place.
-awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }
-  /^probe_interval_secs = / { print "timeout_secs = 3" }' config.toml >config.new
+# A wake deadline a slow wake can exceed. The bind mount follows config.toml's inode, so it is
+# rewritten in place.
+awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }' config.toml >config.new
+cat config.new >config.toml
+docker compose restart corral >>"$log" 2>&1
+docker compose up -d --wait >>"$log" 2>&1
+login adam "$admin_password"
+# Starved of CPU, main cannot wake within the deadline; the gate waits on, counting the seconds on
+# a terminal.
+api adam POST api/sandboxes/main/stop >/dev/null
+cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$adam_container")
+woke_at=$SECONDS
+# Input stays open until the shell answers: a pty session ends at the end of its input.
+{ printf 'id -un; exit\n'; sleep 15; } | ssh -tt -F ssh_config -i keys/adam main.adam@corral-e2e >slow-login.out 2>&1 &
+slow_login=$!
+for _ in $(seq 50); do
+  [[ "$(docker inspect --format '{{.State.Status}}' "$adam_container")" == running ]] && break
+  sleep 0.1
+done
+docker update --cpus 0.01 "$adam_container" >/dev/null
+sleep 6
+docker update --cpus "$(awk -v n="$cpus" 'BEGIN { print n / 1e9 }')" "$adam_container" >/dev/null
+wait "$slow_login" || true
+took=$((SECONDS - woke_at))
+# The terminal's control sequences share the answer's line.
+tr -d '\r' <slow-login.out | grep -q "sandbox$" || fail "ssh into the slow sandbox: $(cat -v slow-login.out)"
+grep -q "Waking main\.\.\. [0-9]* s" slow-login.out || fail "no progress line: $(cat -v slow-login.out)"
+((took >= 2)) || fail "ssh got in after ${took}s, within the wake deadline"
+ok "a wake past the deadline: the gate waits on with a progress line, and gets in once main is up (${took}s)"
+
+# A quick idle timeout for the rest.
+awk '{ print } /^probe_interval_secs = / { print "timeout_secs = 3" }' config.toml >config.new
 cat config.new >config.toml
 docker compose restart corral >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
@@ -542,28 +567,6 @@ docker exec --user 1000 "$idle" /opt/corral/bin/busybox sh -c \
 slept=$(sleeps_within 15)
 ok "a failing activity probe keeps idle awake; once fixed, with no terminal at work, it slept ${slept}s later"
 
-# main keeps the default idle timeout, so the reaper leaves its slow wake alone. Starved of CPU,
-# it cannot wake within the deadline; the CPU comes back while ContainerSSH waits to retry.
-api adam POST api/sandboxes/main/stop >/dev/null
-cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$adam_container")
-docker update --cpus 0.01 "$adam_container" >/dev/null
-called=$(date +%s)
-answer=$(docker compose exec containerssh wget -q -O /dev/null --header 'Content-Type: application/json' \
-  --post-data '{"username":"main.adam","authenticatedUsername":"main.adam","remoteAddress":"127.0.0.1:1","connectionId":"e2e","clientVersion":"SSH-2.0-e2e"}' \
-  http://corral:8081/config 2>&1 || true)
-answered=$(($(date +%s) - called))
-[[ "$answer" == *" 503 "* ]] || fail "/config during a slow wake answered: $answer"
-((answered <= 5)) || fail "/config took ${answered}s to answer 503"
-woke_at=$SECONDS
-as adam main.adam "id -un" >slow-login.out &
-slow_login=$!
-sleep 3
-docker update --cpus "$(awk -v n="$cpus" 'BEGIN { print n / 1e9 }')" "$adam_container" >/dev/null
-wait "$slow_login" || true
-took=$((SECONDS - woke_at))
-expect "ssh into the slow sandbox" sandbox "$(cat slow-login.out)"
-((took >= 10)) || fail "ssh got in after ${took}s, before any ContainerSSH retry"
-ok "a wake past the deadline: /config answers 503 in ${answered}s, ssh gets in on ContainerSSH's retry (${took}s)"
 
 api adam POST "api/admin/users/$bob_id/enable" >/dev/null
 login bob "$bob_password"
@@ -605,9 +608,6 @@ ok "deleting the sandboxes through the API removed their containers and homes"
 docker compose down --volumes >>"$log" 2>&1
 expect "project containers after down" "" \
   "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")"
-if docker network inspect "$sandbox_network" >/dev/null 2>&1; then
-  fail "docker compose down left $sandbox_network"
-fi
-ok "docker compose down --volumes removed the stack and both networks"
+ok "docker compose down --volumes removed the stack"
 
 echo "e2e: $passed checks passed in $((SECONDS - started))s"

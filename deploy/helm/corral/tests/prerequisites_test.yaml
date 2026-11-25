@@ -32,18 +32,18 @@ tests:
   - it: refuses to render without a cluster while it would generate the keys and host key
     asserts:
       - failedTemplate:
-          errorMessage: "set keys.existingSecret and containerssh.hostKey.existingSecret: rendered without a cluster, as by helm template or Argo CD, the chart cannot read back the keys it generates, so they would change on every render. Name existing Secrets (README: GitOps), or preview with helm install --dry-run=server"
+          errorMessage: "set keys.existingSecret and ssh.hostKey.existingSecret: rendered without a cluster, as by helm template or Argo CD, the chart cannot read back the keys it generates, so they would change on every render. Name existing Secrets (README: GitOps), or preview with helm install --dry-run=server"
 
   - it: names only the host key when the keys come from an existing Secret
     set:
       keys.existingSecret: corral-keys
     asserts:
       - failedTemplate:
-          errorPattern: "^set containerssh.hostKey.existingSecret: rendered without a cluster"
+          errorPattern: "^set ssh.hostKey.existingSecret: rendered without a cluster"
 
   - it: names only the keys when the host key comes from an existing Secret
     set:
-      containerssh.hostKey.existingSecret: corral-host-key
+      ssh.hostKey.existingSecret: corral-host-key
     asserts:
       - failedTemplate:
           errorPattern: "^set keys.existingSecret: rendered without a cluster"
@@ -51,7 +51,7 @@ tests:
   - it: renders without a cluster when both come from existing Secrets
     set:
       keys.existingSecret: corral-keys
-      containerssh.hostKey.existingSecret: corral-host-key
+      ssh.hostKey.existingSecret: corral-host-key
     asserts:
       - hasDocuments:
           count: 0

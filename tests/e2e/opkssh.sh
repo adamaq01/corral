@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# opkssh logins end to end: VoidAuth (upstream, behind TLS) as the issuer, Corral's image and
-# ContainerSSH from deploy/compose, the real opkssh client, and Playwright for every browser step.
+# opkssh logins end to end: VoidAuth (upstream, behind TLS) as the issuer, Corral and the gate
+# from deploy/compose, the real opkssh client, and Playwright for every browser step.
 # CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images, as for
 # compose.sh. Needs web/node_modules (npm ci) and Playwright's Chromium (npx playwright install
 # chromium).
@@ -191,22 +191,15 @@ services:
       - ./ca.pem:/etc/corral/ca.pem:ro
     ports: !override
       - "127.0.0.1:$http_port:8080"
-  containerssh:
+  gate:
+    image: $server_image
     ports: !override
       - "127.0.0.1:$ssh_port:2222"
-networks:
-  corral-sandboxes:
-    name: $sandbox_network
 EOF
 export COMPOSE_PROJECT_NAME=$project COMPOSE_FILE=compose.yaml:compose.e2e.yaml
 docker compose run --rm corral keys generate >.env 2>>"$log"
-for key in containerssh_host_key containerssh_proxy_key; do
-  ssh-keygen -q -t ed25519 -N '' -C containerssh -f "$key" && chmod 644 "$key"
-done
-{
-  echo "CORRAL_PROXY_PUBLIC_KEY=$(cat containerssh_proxy_key.pub)"
-  echo "CORRAL_OIDC_CLIENT_SECRET=$corral_secret"
-} >>.env
+ssh-keygen -q -t ed25519 -N '' -C corral -f ssh_host_key
+echo "CORRAL_OIDC_CLIENT_SECRET=$corral_secret" >>.env
 docker compose up -d --wait >>"$log" 2>&1
 expect "Corral's auth_id" "corral oidc:\"aud\":\"opkssh\" $issuer" \
   "$(docker compose cp corral:/etc/opk/auth_id - | tar -xO)"
@@ -243,7 +236,7 @@ ok "auth_admin signed in to Corral through VoidAuth, created main, and copied th
 cp opk-config.yml "$work/home/.opk/config.yml"
 # The page's IdentityFile names ~/.ssh, which ssh reads from the passwd entry, not from HOME.
 sed "s|^  IdentityFile ~/|  IdentityFile $work/home/|" ssh-hook.conf >ssh-hook.local
-echo "[127.0.0.1]:$ssh_port $(cut -d' ' -f1,2 containerssh_host_key.pub)" >known_hosts
+echo "[127.0.0.1]:$ssh_port $(cut -d' ' -f1,2 ssh_host_key.pub)" >known_hosts
 {
   cat <<EOF
 Host corral-e2e
@@ -338,10 +331,13 @@ ok "a certificate for a user Corral does not know is refused"
 
 auth_admin_id=$(api GET api/admin/users | jq -r '.[] | select(.handle == "auth-admin") | .id')
 api POST "api/admin/users/$auth_admin_id/disable" >/dev/null
-denied main.auth-admin "$key"
+if output=$(plain_ssh main.auth-admin "$key"); then
+  fail "a disabled user's certificate let them in"
+fi
+expect "a disabled user's certificate" "corral: this account is disabled" "$output"
 api POST "api/admin/users/$auth_admin_id/enable" >/dev/null
 expect "after enabling auth-admin again" sandbox "$(plain_ssh main.auth-admin "$key")"
-ok "a disabled user's valid certificate is refused, and works once enabled"
+ok "a disabled user's valid certificate is told why it goes no further, and works once enabled"
 
 cat >>"$work/home/.opk/config.yml" <<EOF
   - alias: other
@@ -364,12 +360,15 @@ denied main.auth-admin "$work/thief-cert"
 ok "auth_admin's valid token in a certificate for another key is refused"
 
 garbage=$(jq -cn --arg k "ecdsa-sha2-nistp256-cert-v01@openssh.com AAAAKGVjZHNh$(head -c 600 /dev/urandom | base64 -w0)" \
-  '{username: "main.auth-admin", remoteAddress: "127.0.0.1:1", connectionId: "e2e", clientVersion: "SSH-2.0-e2e", publicKey: $k}')
-answer=$(docker compose exec -T containerssh wget -q -O - --header 'Content-Type: application/json' \
-  --post-data "$garbage" http://corral:8081/pubkey)
-expect "/pubkey for a mangled certificate" false "$(jq -r .success <<<"$answer")"
+  '{username: "main.auth-admin", credential: $k, proven: true, clientAddress: "127.0.0.1:1", connection: "e2e"}')
+gate_secret=$(sed -n 's/^CORRAL_GATE_SECRET=//p' .env)
+# The gate's image has no HTTP client, so a container on its network asks as the gate would.
+answer=$(docker run --rm --network "${project}_corral" alpine:3.24 wget -q -O - \
+  --header 'Content-Type: application/json' --header "Authorization: Bearer $gate_secret" \
+  --post-data "$garbage" http://corral:8081/gate/authenticate)
+expect "/gate/authenticate for a mangled certificate" false "$(jq -r .accepted <<<"$answer")"
 expect "a login after the mangled certificate" sandbox "$(plain_ssh main.auth-admin "$key")"
-ok "a mangled certificate gets success false from /pubkey, and the webhook keeps answering"
+ok "a mangled certificate is not accepted by /gate/authenticate, and the server keeps answering"
 
 if docker compose logs --no-color corral 2>&1 | grep -qF "$(cut -d' ' -f2 "$cert" | head -c 80)"; then
   fail "a certificate appears in Corral's log"

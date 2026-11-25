@@ -1,11 +1,11 @@
 # Corral Helm chart
 
 Runs Corral on Kubernetes, with [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox)
-as the sandbox engine and [ContainerSSH](https://containerssh.io) as the SSH front door. Each
-sandbox is an agent-sandbox `Sandbox` whose home is a PersistentVolumeClaim, from any image: the
-Corral overlay, mounted into every sandbox, brings the sandbox user, sudo, the login shell, sftp,
-Herdr and the `corral` command ([docs/images.md](../../../docs/images.md)). Users reach a sandbox
-with any SSH client:
+as the sandbox engine and the gate (`corral-server gate`, from the same image) as the SSH front
+door. Each sandbox is an agent-sandbox `Sandbox` whose home is a PersistentVolumeClaim, from any
+image: the Corral overlay, mounted into every sandbox, brings the sandbox user, sudo, the login
+shell, OpenSSH, Herdr and the `corral` command ([docs/images.md](../../../docs/images.md)). Users
+reach a sandbox with any SSH client:
 
 ```
 ssh -p 48291 <sandbox>.<handle>@<ssh.publicHost>
@@ -13,34 +13,41 @@ ssh -p 48291 <sandbox>.<handle>@<ssh.publicHost>
 
 A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
 makes that sandbox, from the image and size set in their profile, then opens it, unless they
-already have as many as `limits.maxSandboxesPerUser` allows (5 by default).
+already have as many as `limits.maxSandboxesPerUser` allows (5 by default). A connection that
+reaches no sandbox, such as one past that limit, to a sandbox scheduled for deletion, or by a
+disabled user, is told why at once: a command prints the reason on its standard error and exits
+1, a terminal shows it, and the connection ends with it.
 
-The ContainerSSH image is [a build](https://github.com/adamaq01/ContainerSSH) of ContainerSSH's
-main branch with two fixes not yet released upstream: one-shot commands (`ssh -n <command>`) keep
-all their output, and Kubernetes terminals get no stray bytes and end when the connection drops.
+The gate waits for the first thing a connection asks (a shell, a command, sftp or a forward)
+before it wakes or makes the sandbox, and counts the seconds on a terminal while it wakes. Each
+connection then runs the overlay's own OpenSSH in the sandbox's pod, as the sandbox user, through
+a pod exec, so sessions behave exactly as OpenSSH: the login shell, variables, signals, exit
+status, sftp, port and socket forwards both ways, and agent forwarding.
 
 ## What it installs
 
 In the release namespace:
 
 - Corral: a Deployment of one replica, a Service for the web UI and API (port 8080), a ClusterIP
-  Service `<release>-webhooks` for ContainerSSH's webhooks (port 8081), its config rendered from
-  the values, and an optional Ingress or Gateway API HTTPRoute for `baseUrl`'s host.
-- ContainerSSH with its Kubernetes backend: public keys only, 10 seconds for Corral to answer
-  about a key, port forwarding on, and a config webhook timeout 10 seconds above the wake
-  deadline. Its Service is a LoadBalancer by default.
+  Service `<release>-internal` for the internal API the gate asks (port 8081), its config
+  rendered from the values, and an optional Ingress or Gateway API HTTPRoute for `baseUrl`'s
+  host.
+- The gate, `<release>-gate`: a Deployment of `gate.replicas` pods of the Corral image running
+  `corral-server gate` with the same config, and its Service, a LoadBalancer by default. It holds
+  no state, so a Corral restart leaves open SSH sessions up, and only a change to what it reads
+  (the `ssh` values) restarts it.
 - The database: SQLite on a PersistentVolumeClaim by default, an existing Postgres server, or a
   CloudNativePG `Cluster`.
-- Secrets: Corral's session and secrets keys and ContainerSSH's host key, generated once by
-  `helm install` unless you name existing Secrets, which GitOps tools need (see
-  [GitOps](#gitops-argo-cd-flux)).
-- A NetworkPolicy that lets only ContainerSSH reach Corral's webhook port.
+- Secrets: Corral's session and secrets keys, the secret Corral and the gate share, and the SSH
+  host key, generated once by `helm install` unless you name existing Secrets, which GitOps tools
+  need (see [GitOps](#gitops-argo-cd-flux)).
+- A NetworkPolicy that lets only the gate reach Corral's internal port.
 
 In the sandbox namespace (`<release>-sandboxes` by default, created by the chart unless
 `sandboxes.namespace.create` is false):
 
 - A Role for Corral: Sandboxes, Secrets and PersistentVolumeClaims, reading Pods and Events, and
-  exec into Pods for the idle check. A Role for ContainerSSH: reading Pods and exec into them.
+  exec into Pods for the idle check. A Role for the gate: exec into Pods, nothing more.
 - The ServiceAccount sandboxes run as, with no token mounted.
 
 Corral then makes, for each sandbox, a `Sandbox`, its home claim `home-<id>` and the Secrets
@@ -52,13 +59,12 @@ with `supplementalGroupsPolicy: Strict`, which needs a container runtime that su
 as containerd 2.0 or later or CRI-O 1.31 or later: the sandbox user gets only its own group, not
 the groups the image's `/etc/group` lists for uid 1000.
 
-Neither Corral nor ContainerSSH has rights outside the sandbox namespace, and users never get
+Neither Corral nor the gate has rights outside the sandbox namespace, and users never get
 cluster access. The chart does not install agent-sandbox or the CloudNativePG operator.
 
 ## Prerequisites
 
-- Kubernetes 1.35 or later: sandboxes mount the ContainerSSH agent and the Corral overlay as
-  image volumes.
+- Kubernetes 1.35 or later: sandboxes mount the Corral overlay as an image volume.
 - agent-sandbox v1.0.11. `helm install` fails until it is installed:
 
   ```sh
@@ -66,10 +72,10 @@ cluster access. The chart does not install agent-sandbox or the CloudNativePG op
   ```
 
 - A default StorageClass, or `database.sqlite.storageClass` and `sandboxes.storageClass`.
-- A load balancer for the ContainerSSH Service (MetalLB, a cloud provider), or
-  `containerssh.service.type: NodePort`.
+- A load balancer for the gate's Service (MetalLB, a cloud provider), or
+  `gate.service.type: NodePort`.
 - A network plugin that enforces NetworkPolicy. Without one, sandboxes can reach Corral's
-  unauthenticated webhook port, which wakes any sandbox it is asked about; set
+  internal port; it answers only requests carrying the gate's secret, but set
   `networkPolicy.enabled: false` only where something else keeps them apart.
 - For `database.kind: cnpg`, the [CloudNativePG](https://cloudnative-pg.io) operator, 1.23 or
   later for `database.cnpg.enablePDB: false`.
@@ -142,10 +148,11 @@ A secret value (`identity.oidc.clientSecret`, `secretStore.vault.auth.token`,
 namespace, or `value`, which the chart stores in a Secret of its own. `value` puts the secret in
 your values file and in the release history; prefer `existingSecret`.
 
-`keys.existingSecret` names a Secret with `CORRAL_SESSION_KEY` and `CORRAL_SECRETS_KEY`, such as
-one made from `corral-server keys generate`. `containerssh.hostKey.existingSecret` names a Secret
-whose `host_key` is an SSH host private key, such as the `containerssh_host_key` of a Compose
-install, so clients keep trusting the same host.
+`keys.existingSecret` names a Secret with `CORRAL_SESSION_KEY`, `CORRAL_SECRETS_KEY` and
+`CORRAL_GATE_SECRET`, such as one made from `corral-server keys generate`.
+`ssh.hostKey.existingSecret` names a Secret whose `host_key` is an SSH host private key, in
+OpenSSH or PEM form, such as the `ssh_host_key` of a Compose install, so clients keep trusting the
+same host.
 
 ## GitOps (Argo CD, Flux)
 
@@ -154,16 +161,17 @@ release and Helm's `lookup` finds nothing in the cluster. The chart generates th
 key once and reads them back with `lookup` on every upgrade; under Argo CD it would make new ones
 at every render, leaving stored secrets unreadable and every client facing a new host key.
 Rendered without a cluster, the chart therefore fails until `keys.existingSecret` and
-`containerssh.hostKey.existingSecret` name existing Secrets. A `helm template` preview needs them
+`ssh.hostKey.existingSecret` name existing Secrets. A `helm template` preview needs them
 too, or use `helm install --dry-run=server` against the cluster instead.
 
 Create the two Secrets once in the release namespace, outside the chart, so that neither a sync
 nor deleting the Application touches them. Keep their values in a secret store, since losing
 `CORRAL_SECRETS_KEY` makes every stored secret unreadable. With the
-[External Secrets Operator](https://external-secrets.io), store `CORRAL_SESSION_KEY` and
-`CORRAL_SECRETS_KEY` from `docker run --rm ghcr.io/adamaq01/corral keys generate`, and a
-`host_key` from `ssh-keygen -q -t ed25519 -N '' -C containerssh -f host_key`, under one key of
-the store, then sync them into the release namespace:
+[External Secrets Operator](https://external-secrets.io), store `CORRAL_SESSION_KEY`,
+`CORRAL_SECRETS_KEY` and `CORRAL_GATE_SECRET` from
+`docker run --rm ghcr.io/adamaq01/corral keys generate`, and a `host_key` from
+`ssh-keygen -q -t ed25519 -N '' -C corral -f host_key`, under one key of the store, then sync
+them into the release namespace:
 
 ```yaml
 apiVersion: external-secrets.io/v1
@@ -178,6 +186,8 @@ spec:
       remoteRef: { key: corral, property: CORRAL_SESSION_KEY }
     - secretKey: CORRAL_SECRETS_KEY
       remoteRef: { key: corral, property: CORRAL_SECRETS_KEY }
+    - secretKey: CORRAL_GATE_SECRET
+      remoteRef: { key: corral, property: CORRAL_GATE_SECRET }
 ---
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -194,7 +204,7 @@ spec:
 ```yaml
 keys:
   existingSecret: corral-keys
-containerssh:
+ssh:
   hostKey:
     existingSecret: corral-host-key
 ```
@@ -221,17 +231,18 @@ helm upgrade corral oci://ghcr.io/adamaq01/charts/corral --version <version> \
 - The overlay is `sandboxes.overlayImage`, of the chart's appVersion unless its tag says
   otherwise, so each chart version brings its own. A sandbox mounts it from its next start from
   sleep on; a running sandbox keeps the one it started with.
-- A sandbox running without the overlay, started by a Corral from before sandboxes mounted it,
-  cannot be checked for activity, so it stays awake until it is stopped or restarted; that start
-  makes its pod from the current template, its home kept.
-- A change to Corral's or ContainerSSH's config restarts its pods. Corral runs one replica and
-  is replaced, not rolled, so the web UI and new SSH logins pause while it restarts; open SSH
-  sessions continue.
+- A sandbox running from before the gate, or without the overlay, takes no SSH session until its
+  next start: restart it from its page, and the start makes its pod from the current template,
+  its home kept.
+- A change to Corral's config restarts its pod. Corral runs one replica and is replaced, not
+  rolled, so the web UI and new SSH logins pause while it restarts; open SSH sessions continue,
+  since the gate carries them. A change to the `ssh` values rolls the gate's pods, which ends the
+  sessions they carry.
 - Sandboxes keep running, and their homes are untouched.
 
 ## Uninstall
 
-`helm uninstall corral --namespace corral` deletes Corral, ContainerSSH and their config. Then:
+`helm uninstall corral --namespace corral` deletes Corral, the gate and their config. Then:
 
 - The generated keys and host key Secrets always stay, since stored secrets and users'
   `known_hosts` depend on them. Delete them by hand to start over.
@@ -249,16 +260,14 @@ latter.
 
 ## Operating it
 
-- Logs: `kubectl --namespace corral logs deploy/corral`. `logLevel` sets the level.
+- Logs: `kubectl --namespace corral logs deploy/corral` and `deploy/corral-gate`. `logLevel`
+  sets the level of both.
 - A sandbox sleeps after `idle.timeoutSecs` with no SSH session and no Herdr terminal at work,
   and wakes on the next SSH login. A connection that only forwards ports (`ssh -N -L`) keeps a
-  sandbox awake while a forwarded connection through it is open, such as a page holding a dev
-  server's live-reload socket, and not while the tunnel carries nothing.
+  sandbox awake while it is open.
 - A sandbox pod's init container runs as root, only the overlay's static `corral-init`, which
   writes the sandbox user's account files; the sandbox container runs as uid 1000. The sandbox
   namespace enforces the `baseline` Pod Security level, which allows both.
-- ContainerSSH runs an SSH command (`ssh host <command>`) through the image's `/bin/sh`, so an
-  image without `/bin/sh` takes interactive logins and sftp only.
 - The `corral` command in a sandbox (`corral status`, `restart`, `stop`, `delete --confirm`)
   reaches Corral's API at its Service, `http://<release>.<namespace>.svc`, which the
   NetworkPolicy leaves open on the HTTP port.
@@ -276,27 +285,30 @@ latter.
 - With `database.kind: cnpg`, the operator's PodDisruptionBudgets keep a node drain from evicting
   the primary, so a single instance blocks draining its node. `database.cnpg.enablePDB: false`
   removes them; a drain then stops the database until the instance starts again elsewhere.
-- `containerssh.service.externalTrafficPolicy: Local` keeps clients' addresses, so Corral's
-  lockout after 10 failed SSH connections in 5 minutes applies per client (per /64 for IPv6).
+- `gate.service.externalTrafficPolicy: Local` keeps clients' addresses, so Corral's lockout
+  after 10 failed SSH connections in 5 minutes applies per client (per /64 for IPv6).
+- The gate faces the internet. A connection has a minute to authenticate and 6 attempts, at most
+  64 connections wait to authenticate at once per gate pod, and each connection holds at most 64
+  channels and 16 remote forwards. Public keys and opkssh certificates are the only logins.
 
 ## Lockout behind a tunnel
 
-Corral locks out a source address after 10 failed SSH connections in 5 minutes. ContainerSSH
-does not speak the PROXY protocol, so a connection relayed by a TCP tunnel or proxy reaches it
+Corral locks out a source address after 10 failed SSH connections in 5 minutes. The gate does
+not speak the PROXY protocol, so a connection relayed by a TCP tunnel or proxy reaches it
 from the relay's address. Every client behind the relay then shares one lockout, and 10
 failures by anyone lock everyone out for 5 minutes.
 
-`containerssh.lockoutExemptNetworks` lists the networks such relays connect from, in CIDR
-notation. Connections from them are never locked out; connections from anywhere else still
-are. Set it when public SSH reaches ContainerSSH through a tunnel such as rathole, frp or an SSH
+`ssh.lockoutExemptNetworks` lists the networks such relays connect from, in CIDR notation.
+Connections from them are never locked out; connections from anywhere else still are. Set it
+when public SSH reaches the gate through a tunnel such as rathole, frp or an SSH
 reverse tunnel, or through a TCP proxy, and leave it empty when clients connect directly.
 
-Nothing replaces the lockout for exempt connections. ContainerSSH accepts public keys and
+Nothing replaces the lockout for exempt connections. The gate accepts public keys and
 certificates only, which cannot be guessed, and tries at most 6 keys on each connection. A
 lockout per account would let anyone lock a user out by failing as them, so there is none.
 
 For example, a rathole server on a public host forwards port 48291 to a rathole client in the
-cluster, which connects to the ContainerSSH Service. The server's `server.toml`:
+cluster, which connects to the gate's Service. The server's `server.toml`:
 
 ```toml
 [server]
@@ -315,7 +327,7 @@ remote_addr = "tunnel.example.com:2333"
 
 [client.services.corral-ssh]
 token = "<the same secret>"
-local_addr = "corral-containerssh.corral.svc.cluster.local:48291"
+local_addr = "corral-gate.corral.svc.cluster.local:48291"
 ```
 
 The client connects from its pod's address, which changes when the pod is replaced, so exempt
@@ -324,7 +336,6 @@ the pod network it runs in, here k3s's default:
 ```yaml
 ssh:
   publicHost: tunnel.example.com
-containerssh:
   lockoutExemptNetworks: [10.42.0.0/16]
 ```
 
