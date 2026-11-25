@@ -8,7 +8,7 @@ on:
 
 # A newer push to the same ref supersedes a run, on main too: the newest commit publishes.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -20,24 +20,50 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
-  check:
+  # The jobs this run needs, which tests/affected.sh picks from the paths changed since the last
+  # commit whose push run passed on this branch, so the changes of a cancelled or failed run are
+  # tested again; for a pull request, since its base. Tags need every job.
+  changes:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      jobs: ${{ steps.affected.outputs.jobs }}
+      images: ${{ steps.affected.outputs.images }}
     steps:
       - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  # The gate faces the internet: a RustSec advisory against any dependency fails the build.
-  deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories
+          fetch-depth: 0
+      - id: affected
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base=
+          case "$GITHUB_EVENT_NAME/$GITHUB_REF_TYPE" in
+            pull_request/*) base=$PR_BASE ;;
+            push/branch)
+              base=$(gh run list --workflow ci.yml --branch "$GITHUB_REF_NAME" --event push \
+                --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
+              ;;
+          esac
+          if [[ -n "$base" ]] && { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch --quiet origin "$base"; }; then
+            selected=$(CORRAL_BASE=$base tests/affected.sh jobs)
+          else
+            selected=$(tests/affected.sh all)
+          fi
+          images=false
+          if grep -qxE 'rust|web|images|compose|kind' <<<"$selected"; then
+            images=true
+          fi
+          echo "Jobs for the changes since ${base:-the start}: [${selected//$'\n'/ }]" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "jobs=$(jq -cnR '[inputs | select(. != "")]' <<<"$selected")"
+            echo "images=$images"
+          } >>"$GITHUB_OUTPUT"
 
   # Each image is built once per run, natively for each platform, and pushed by digest; images
   # tags the platforms together as ci-<commit>, which every test pulls and publish retags.
@@ -45,12 +71,14 @@ jobs:
   # skips the jobs that need them.
   image:
     name: image (${{ matrix.image.name }}, ${{ matrix.platform.arch }})
+    needs: [changes]
+    if: needs.changes.outputs.images == 'true'
     runs-on: ${{ matrix.platform.runner }}
     permissions:
       contents: read
       packages: write
     env:
-      PUSH: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+      PUSH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       CACHE: type=registry,ref=ghcr.io/adamaq01/corral-buildcache:${{ matrix.image.name }}-${{ matrix.platform.arch }}
     strategy:
       matrix:
@@ -103,7 +131,7 @@ jobs:
           retention-days: 1
 
   images:
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [image]
     runs-on: ubuntu-latest
     permissions:
@@ -130,78 +158,60 @@ jobs:
             docker buildx imagetools create --tag "ghcr.io/adamaq01/$image:ci-$GITHUB_SHA" "${sources[@]}"
           done
 
-  test:
-    needs: [images]
+  rust:
+    needs: [changes, images]
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'rust')
     runs-on: ubuntu-latest
     env:
-      CORRAL_SERVER_IMAGE: corral-server:e2e
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
       CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-images
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: just@1.59.0,cargo-nextest@0.9.152
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: images/sandbox/test.sh
-      - run: images/overlay/test.sh
-      # Every test but the agent-sandbox cluster tests, which need a kind cluster: engine-kind runs them.
-      - run: cargo test --workspace --all-features --exclude corral-engine-agent-sandbox
-      - run: cargo test --package corral-engine-agent-sandbox --all-features --lib
-      - name: Install hc, the version and checksum the overlay pins
-        run: |
-          version=$(sed -n 's/^ARG HERDR_CORE_VERSION=//p' images/overlay/Dockerfile)
-          sha256=$(sed -n 's/^ARG HERDR_CORE_SHA256_AMD64=//p' images/overlay/Dockerfile)
-          curl -fsSL -o "$RUNNER_TEMP/herdr-core.tar.gz" \
-            "https://releases.herdr.dev/core/$version/herdr-core-linux-x86_64.tar.gz"
-          echo "$sha256  $RUNNER_TEMP/herdr-core.tar.gz" | sha256sum -c -
-          mkdir -p "$HOME/.local/bin"
-          tar -xzf "$RUNNER_TEMP/herdr-core.tar.gz" -C "$HOME/.local/bin" --no-same-owner herdr-core
-          ln -s herdr-core "$HOME/.local/bin/hc"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: tests/e2e/compose.sh
-      # The opkssh e2e drives its browser steps with the web UI's Playwright.
-      - uses: actions/setup-node@v7
+      - run: just ci-rust
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-        working-directory: web
-      - run: npx playwright install --with-deps chromium
-        working-directory: web
-      - run: tests/e2e/opkssh.sh
+          name: junit
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
 
   web:
-    needs: [images]
+    needs: [changes, images]
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'web')
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
     env:
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
       CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
       - uses: actions/checkout@v7
-      # The user journey creates sandboxes from these images.
       - uses: ./.github/actions/ci-images
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: just@1.59.0
       # The Playwright harness builds and runs the real corral-server, the same build chart caches.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: server
           save-if: false
       - run: npm ci
-      - run: npm run lint
-      - run: npm run check
-      - run: npm run build
+        working-directory: web
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+        working-directory: web
+      - run: just ci-web
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
@@ -211,36 +221,56 @@ jobs:
             web/playwright-report
           retention-days: 14
 
-  chart:
+  images-test:
+    needs: [changes, images]
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'images')
     runs-on: ubuntu-latest
+    env:
+      CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
       - uses: actions/checkout@v7
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/ci-images
+      - uses: taiki-e/install-action@v2.90.8
         with:
-          shared-key: server
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # test.sh checks the config the chart renders with corral-server config check.
-      - run: cargo build --package corral-server
-      - run: |
-          deploy/helm/tools.sh "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - run: deploy/helm/test.sh
+          tool: just@1.59.0
+      - run: just ci-images
 
-  chart-kind:
-    needs: [images]
+  compose:
+    needs: [changes, images]
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'compose')
     runs-on: ubuntu-latest
     env:
       CORRAL_SERVER_IMAGE: corral-server:e2e
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
       CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
-      # The sandbox image is loaded into the kind node too, which needs room for a second copy.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-images
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: just@1.59.0
+      - run: just ci-compose
+
+  # On one kind cluster, the agent-sandbox engine's cluster tests, then the chart e2e.
+  kind:
+    needs: [changes, images]
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'kind')
+    runs-on: ubuntu-latest
+    env:
+      CORRAL_SERVER_IMAGE: corral-server:e2e
+      CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci-images
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: just@1.59.0,cargo-nextest@0.9.152
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: false
       - name: Install kind and the chart tools
         run: |
           curl -fsSL -o "$RUNNER_TEMP/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
@@ -249,43 +279,47 @@ jobs:
           install -m 755 "$RUNNER_TEMP/kind" "$RUNNER_TEMP/bin/kind"
           deploy/helm/tools.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - run: deploy/helm/e2e.sh
+      - run: just ci-kind
 
-  engine-kind:
-    needs: [images]
+  chart:
+    needs: [changes]
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'chart')
     runs-on: ubuntu-latest
-    env:
-      CI: "1"
-      CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
-      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
-      CORRAL_TEST_KUBE_NAMESPACE: corral-dev
     steps:
-      # The sandbox image is loaded into the kind node too, which needs room for a second copy.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/ci-images
-      # The cluster tests build a part of what test does, so they restore its cache.
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: just@1.59.0
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: test
-          save-if: false
-      - name: Install kind
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
-          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  $RUNNER_TEMP/kind" | sha256sum -c -
-          mkdir -p "$RUNNER_TEMP/bin"
-          install -m 755 "$RUNNER_TEMP/kind" "$RUNNER_TEMP/bin/kind"
+          shared-key: server
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: |
+          deploy/helm/tools.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - run: crates/corral-engine-agent-sandbox/tests/kind/up.sh
-      - run: cargo test --package corral-engine-agent-sandbox --all-features --test cluster -- --test-threads=1
+      - run: just ci-chart
 
-  # Publishing retags the images every check ran against, so it ships exactly those.
+  # The gate faces the internet: a RustSec advisory against any dependency fails the build.
+  deny:
+    needs: [changes]
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'deny')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  # Publishing retags the images every check ran against, so it ships exactly those. It runs when
+  # this run built images and no job failed or was cancelled; a job the changes did not need is
+  # skipped and does not hold it back.
   publish:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
-    needs: [check, deny, test, web, chart, chart-kind, engine-kind]
+    if: >-
+      always() && github.event_name == 'push'
+      && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+      && needs.images.result == 'success'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    needs: [changes, images, rust, web, images-test, compose, kind, chart, deny]
     runs-on: ubuntu-latest
     permissions:
       contents: read

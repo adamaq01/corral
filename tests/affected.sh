@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # What the changes since the merge base with main (CORRAL_BASE, main by default) touch, committed
-# or not: tests/affected.sh jobs|crates|files. The jobs are the per-push CI jobs; `just affected`
-# runs the matching recipes, and CI's path filters mirror the table below.
+# or not: tests/affected.sh jobs|crates|files, or all for every job. The jobs are the per-push CI
+# jobs, which CI picks with this script; `just affected` runs the matching recipes.
 set -euo pipefail
 
 # The first pattern a changed path matches decides its jobs; a `*` crosses directories.
@@ -40,6 +40,8 @@ files() {
   } | sort -u
 }
 
+all_jobs=(rust deny web images compose kind chart)
+
 jobs() {
   local path pattern selected
   declare -A wanted=()
@@ -53,7 +55,7 @@ jobs() {
       fi
     done < <(rules)
   done < <(files)
-  for job in rust deny web images compose kind chart; do
+  for job in "${all_jobs[@]}"; do
     if [[ -n "${wanted[$job]:-}" ]]; then
       echo "$job"
     fi
@@ -63,9 +65,10 @@ jobs() {
 case "${1:-}" in
   files) files ;;
   jobs) jobs ;;
+  all) printf '%s\n' "${all_jobs[@]}" ;;
   crates) files | sed -n 's|^crates/\([^/]*\)/.*|\1|p' | sort -u ;;
   *)
-    echo "usage: tests/affected.sh jobs|crates|files" >&2
+    echo "usage: tests/affected.sh jobs|all|crates|files" >&2
     exit 2
     ;;
 esac
