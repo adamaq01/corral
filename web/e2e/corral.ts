@@ -72,8 +72,10 @@ class Run {
 		execFileSync('npm', ['run', 'build'], { cwd: web, stdio: 'inherit' });
 		const binary = serverBinary();
 		const config = join(this.dir, 'config.toml');
-		const sandboxImage = process.env.CORRAL_SANDBOX_IMAGE ?? 'corral-sandbox:dev';
-		const overlayImage = process.env.CORRAL_OVERLAY_IMAGE ?? 'corral-overlay:dev';
+		execFileSync(join(repo, 'tests/images.sh'), ['sandbox', 'overlay'], { stdio: 'inherit' });
+		const sandboxImage = checkoutImage('CORRAL_SANDBOX_IMAGE');
+		const overlayImage = checkoutImage('CORRAL_OVERLAY_IMAGE');
+		process.env.CORRAL_SANDBOX_IMAGE = sandboxImage;
 		writeFileSync(
 			config,
 			`[http]
@@ -222,6 +224,11 @@ function serverBinary(): string {
 		encoding: 'utf8'
 	});
 	return join(JSON.parse(metadata).target_directory, 'debug', 'corral-server');
+}
+
+/** The image `variable` names, or this checkout's build of it, as tests/checkout.sh names both. */
+function checkoutImage(variable: string): string {
+	return execFileSync(join(repo, 'tests/checkout.sh'), [variable], { encoding: 'utf8' }).trim();
 }
 
 /** Corral's keys and the gate's secret, fresh from `corral-server keys generate`. */

@@ -1,23 +1,18 @@
 #!/usr/bin/env bash
 # opkssh logins end to end: VoidAuth (upstream, behind TLS) as the issuer, Corral and the gate
 # from deploy/compose, the real opkssh client, and Playwright for every browser step.
-# CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images, as for
-# compose.sh. Needs web/node_modules (npm ci) and Playwright's Chromium (npx playwright install
+# CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images, and
+# CORRAL_RUN_ID names the stack and picks its ports, as for compose.sh. Needs web/node_modules (npm ci) and Playwright's Chromium (npx playwright install
 # chromium).
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+source "$repo/tests/checkout.sh"
 helpers=$repo/tests/e2e/opkssh
-project=corral-opkssh-e2e
-sandbox_network=corral-opkssh-e2e-sandboxes
+project=corral-opkssh-e2e-$CORRAL_RUN_ID
+sandbox_network=$project-sandboxes
 voidauth_image=voidauth/voidauth:1.19.2
 voidauth=$project-voidauth
-http_port=18180
-ssh_port=48392
-voidauth_port=13380
-idp_port=19443
-mint_port=19444
-base=http://127.0.0.1:$http_port
 
 started=$SECONDS
 passed=0
@@ -79,6 +74,12 @@ for tool in docker ssh ssh-keygen curl jq node openssl; do
 done
 [[ -d "$repo/web/node_modules/playwright" ]] || fail "no Playwright in web/node_modules: run npm ci in web"
 remove_stack
+http_port=$(corral_port 4)
+ssh_port=$(corral_port 5)
+voidauth_port=$(corral_port 6)
+idp_port=$(corral_port 7)
+mint_port=$(corral_port 8)
+base=http://127.0.0.1:$http_port
 work=$(mktemp -d "${TMPDIR:-/tmp}/corral-opkssh-e2e.XXXXXX")
 log=$work/run.log
 # The issuer must be one address for the host, which runs opkssh and the browser, and for Corral's
@@ -88,18 +89,10 @@ issuer=https://$gateway:$idp_port/oidc
 export NO_PROXY="${NO_PROXY:+$NO_PROXY,}$gateway" no_proxy="${no_proxy:+$no_proxy,}$gateway"
 export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}
 
-server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
-sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
-overlay_image=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
-if [[ -z "${CORRAL_SERVER_IMAGE:-}" ]]; then
-  docker build --file "$repo/images/server/Dockerfile" --tag "$server_image" "$repo" >>"$log" 2>&1
-fi
-if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
-  docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo" >>"$log" 2>&1
-fi
-if [[ -z "${CORRAL_OVERLAY_IMAGE:-}" ]]; then
-  docker build --file "$repo/images/overlay/Dockerfile" --tag "$overlay_image" "$repo" >>"$log" 2>&1
-fi
+"$repo/tests/images.sh" server sandbox overlay >>"$log" 2>&1
+server_image=$CORRAL_SERVER_IMAGE
+sandbox_image=$CORRAL_SANDBOX_IMAGE
+overlay_image=$CORRAL_OVERLAY_IMAGE
 docker pull --quiet "$voidauth_image" >>"$log"
 ok "images: server $server_image, sandbox $sandbox_image, overlay $overlay_image, issuer $voidauth_image"
 

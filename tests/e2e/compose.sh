@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
+# The Docker Compose install end to end: tests/e2e/compose.sh [smoke|all], or CORRAL_E2E_PART.
+# smoke, the default, checks the stack comes up, sign-in, SSH, refusals, the environment,
+# corral-new, persistence across restarts and deletion. all adds, in the same stack, Herdr, the
+# installer on a terminal, the corral command inside a sandbox, a slow wake, and idle sleep.
 # CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images; when
-# unset, each is built from images/.
+# unset, this checkout's are built (tests/checkout.sh). The stack, its networks and its ports are
+# CORRAL_RUN_ID's, so runs with different ids share a Docker host.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-project=corral-e2e
+source "$repo/tests/checkout.sh"
+part=${1:-${CORRAL_E2E_PART:-smoke}}
+if [[ "$part" != smoke && "$part" != all ]]; then
+  echo "usage: tests/e2e/compose.sh [smoke|all]" >&2
+  exit 2
+fi
+project=corral-e2e-$CORRAL_RUN_ID
 # Its own network and ports, so a run never touches a real install on the same host.
-sandbox_network=corral-e2e-sandboxes
-http_port=18080
-ssh_port=48292
-forward_port=18000
-base=http://127.0.0.1:$http_port
-# Sandboxes reach the API through the host, at their network's gateway, as they would through
-# the host's LAN address in a real install.
-sandbox_subnet=172.30.243.0/24
-sandbox_gateway=172.30.243.1
-sandbox_api_port=18081
+sandbox_network=$project-sandboxes
 
 started=$SECONDS
 passed=0
@@ -73,26 +75,33 @@ cleanup() {
 trap cleanup EXIT
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 
-for tool in docker ssh ssh-keygen curl jq hc cargo; do
+tools=(docker ssh ssh-keygen curl jq)
+if [[ "$part" == all ]]; then
+  tools+=(hc cargo)
+fi
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 remove_stack
+http_port=$(corral_port 0)
+ssh_port=$(corral_port 1)
+forward_port=$(corral_port 2)
+sandbox_api_port=$(corral_port 3)
+base=http://127.0.0.1:$http_port
 work=$(mktemp -d "${TMPDIR:-/tmp}/corral-e2e.XXXXXX")
 log=$work/run.log
 
-server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
-sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
-overlay_image=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
-if [[ -z "${CORRAL_SERVER_IMAGE:-}" ]]; then
-  docker build --file "$repo/images/server/Dockerfile" --tag "$server_image" "$repo" >>"$log" 2>&1
-fi
-if [[ -z "${CORRAL_SANDBOX_IMAGE:-}" ]]; then
-  docker build --file "$repo/images/sandbox/Dockerfile" --tag "$sandbox_image" "$repo" >>"$log" 2>&1
-fi
-if [[ -z "${CORRAL_OVERLAY_IMAGE:-}" ]]; then
-  docker build --file "$repo/images/overlay/Dockerfile" --tag "$overlay_image" "$repo" >>"$log" 2>&1
-fi
-ok "images: server $server_image, sandbox $sandbox_image, overlay $overlay_image"
+"$repo/tests/images.sh" server sandbox overlay >>"$log" 2>&1
+server_image=$CORRAL_SERVER_IMAGE
+sandbox_image=$CORRAL_SANDBOX_IMAGE
+overlay_image=$CORRAL_OVERLAY_IMAGE
+ok "$part checks of run $CORRAL_RUN_ID, images: server $server_image, sandbox $sandbox_image, overlay $overlay_image"
+
+# Corral makes the sandbox network when it is missing; made here, its gateway is known first.
+# Sandboxes reach the API through the host at that gateway, as they would through the host's LAN
+# address in a real install.
+docker network create "$sandbox_network" >/dev/null
+sandbox_gateway=$(docker network inspect --format '{{(index .IPAM.Config 0).Gateway}}' "$sandbox_network")
 
 cp -R "$repo/deploy/compose/." "$work/"
 cd "$work"
@@ -150,9 +159,6 @@ services:
     ports: !override
       - "127.0.0.1:$ssh_port:2222"
 EOF
-# Corral makes the sandbox network when it is missing; this one has a known gateway, which Corral's
-# port is published on.
-docker network create --subnet "$sandbox_subnet" --gateway "$sandbox_gateway" "$sandbox_network" >/dev/null
 export COMPOSE_PROJECT_NAME=$project COMPOSE_FILE=compose.yaml:compose.e2e.yaml
 ok "copied deploy/compose to a private directory and set base_url and public_host"
 
@@ -308,13 +314,15 @@ ok "bob, added with the admin API, reaches his own sandbox and home"
 refused adam main.bob
 ok "adam's key is refused for main.bob"
 
-mkdir -m 700 hc-home hc-run
-# ssh reads ~/.ssh/config from the passwd home, not $HOME, so hc gets the e2e's ssh command.
-hc_local machine add --name e2e --install \
-  --via "ssh -F $work/ssh_config -i $work/keys/adam main.adam@corral-e2e" >>"$log"
-expect "hc exec --on e2e echo ok" ok "$(hc_local exec --on e2e echo ok)"
-hc_local server stop >>"$log"
-ok "hc machine add over the gate, then hc exec --on e2e echo ok prints ok"
+if [[ "$part" == all ]]; then
+  mkdir -m 700 hc-home hc-run
+  # ssh reads ~/.ssh/config from the passwd home, not $HOME, so hc gets the e2e's ssh command.
+  hc_local machine add --name e2e --install \
+    --via "ssh -F $work/ssh_config -i $work/keys/adam main.adam@corral-e2e" >>"$log"
+  expect "hc exec --on e2e echo ok" ok "$(hc_local exec --on e2e echo ok)"
+  hc_local server stop >>"$log"
+  ok "hc machine add over the gate, then hc exec --on e2e echo ok prints ok"
+fi
 
 as adam main.adam 'nohup node -e "require(\"http\").createServer((q, r) => r.end(\"forwarded\")).listen(8000, \"127.0.0.1\")" </dev/null >/dev/null 2>&1 &'
 inside=
@@ -400,17 +408,19 @@ expect "what other has of the rest" "unset absent" \
 api adam DELETE api/sandboxes/other >/dev/null
 ok "a new sandbox gets the entry that applies to new sandboxes, with the shared value: the override is main's alone"
 
-# A person on a terminal, driven through a real pty and read with a terminal emulator.
-CORRAL_E2E_SSH_CONFIG=$work/ssh_config CORRAL_E2E_SSH_KEY=$work/keys/adam \
-  CORRAL_E2E_LOBBY_LOGIN=lobby.adam@corral-e2e \
-  cargo test --quiet --manifest-path "$repo/Cargo.toml" --all-features \
-  --package corral-frontdoor-gate --test stack >>"$log" 2>&1 \
-  || fail "the installer on a terminal: $(tail -n 40 "$log")"
-expect "lobby's size and entries" "roomy E2E_PLAIN E2E_TOKEN" \
-  "$(api adam GET api/sandboxes/lobby | jq -r .size) $(api adam GET api/sandboxes/lobby/environment \
-    | jq -r '[.[].entry.target] | join(" ")')"
-api adam DELETE api/sandboxes/lobby >/dev/null
-ok "ssh lobby.adam on a terminal: the installer made it roomy with E2E_PLAIN, and its shell showed corral status and the variable"
+if [[ "$part" == all ]]; then
+  # A person on a terminal, driven through a real pty and read with a terminal emulator.
+  CORRAL_E2E_SSH_CONFIG=$work/ssh_config CORRAL_E2E_SSH_KEY=$work/keys/adam \
+    CORRAL_E2E_LOBBY_LOGIN=lobby.adam@corral-e2e \
+    cargo test --quiet --manifest-path "$repo/Cargo.toml" --all-features \
+    --package corral-frontdoor-gate --test stack >>"$log" 2>&1 \
+    || fail "the installer on a terminal: $(tail -n 40 "$log")"
+  expect "lobby's size and entries" "roomy E2E_PLAIN E2E_TOKEN" \
+    "$(api adam GET api/sandboxes/lobby | jq -r .size) $(api adam GET api/sandboxes/lobby/environment \
+      | jq -r '[.[].entry.target] | join(" ")')"
+  api adam DELETE api/sandboxes/lobby >/dev/null
+  ok "ssh lobby.adam on a terminal: the installer made it roomy with E2E_PLAIN, and its shell showed corral status and the variable"
+fi
 
 made=$(ssh -F ssh_config -i keys/adam script.adam@corral-e2e corral-new \
   <<<'{"size": "roomy", "environment": ["E2E_PLAIN"]}')
@@ -450,225 +460,219 @@ secret.key 600 sandbox secret-key-$token
 config.toml 600 sandbox token = \"$token-main\"" "$(files)"
 ok "after docker compose restart corral, the user, key, sandbox and environment persist, and a restart delivers it"
 
-started_at() {
-  docker inspect --format '{{.State.StartedAt}}' "$adam_container"
-}
+if [[ "$part" == all ]]; then
+  started_at() {
+    docker inspect --format '{{.State.StartedAt}}' "$adam_container"
+  }
 
-until_state() {
-  local waited=0
-  while [[ "$(api adam GET api/sandboxes/main | jq -r .state)" != "$1" ]]; do
-    ((waited < 60)) || fail "main was not $1 after 60s"
+  until_state() {
+    local waited=0
+    while [[ "$(api adam GET api/sandboxes/main | jq -r .state)" != "$1" ]]; do
+      ((waited < 60)) || fail "main was not $1 after 60s"
+      sleep 1
+      waited=$((waited + 1))
+    done
+  }
+
+  out=$(as adam main.adam 'corral status')
+  [[ "$out" == *"Sandbox  main.adam"*"State    running"* ]] || fail "corral status: $out"
+  ok "corral status inside main shows main.adam running"
+
+  before=$(started_at)
+  out=$(as adam main.adam 'corral restart' 2>&1 || true)
+  [[ "$out" == "Corral accepted the restart of main."* ]] || fail "corral restart: $out"
+  waited=0
+  while [[ "$(started_at)" == "$before" || "$(api adam GET api/sandboxes/main | jq -r .state)" != running ]]; do
+    ((waited < 60)) || fail "main did not come back within 60s of corral restart"
     sleep 1
     waited=$((waited + 1))
   done
-}
+  expect "ssh after corral restart" "sandbox $token-main" "$(as adam main.adam 'echo "$(id -un) $E2E_TOKEN"')"
+  ok "corral restart inside main was accepted, and main came back (${waited}s)"
 
-out=$(as adam main.adam 'corral status')
-[[ "$out" == *"Sandbox  main.adam"*"State    running"* ]] || fail "corral status: $out"
-ok "corral status inside main shows main.adam running"
+  out=$(as adam main.adam 'corral stop' 2>&1 || true)
+  [[ "$out" == "Corral accepted the stop of main."* ]] || fail "corral stop: $out"
+  until_state sleeping
+  expect "container after corral stop" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
+  ok "corral stop inside main was accepted, and main went to sleep"
 
-before=$(started_at)
-out=$(as adam main.adam 'corral restart' 2>&1 || true)
-[[ "$out" == "Corral accepted the restart of main."* ]] || fail "corral restart: $out"
-waited=0
-while [[ "$(started_at)" == "$before" || "$(api adam GET api/sandboxes/main | jq -r .state)" != running ]]; do
-  ((waited < 60)) || fail "main did not come back within 60s of corral restart"
-  sleep 1
-  waited=$((waited + 1))
-done
-expect "ssh after corral restart" "sandbox $token-main" "$(as adam main.adam 'echo "$(id -un) $E2E_TOKEN"')"
-ok "corral restart inside main was accepted, and main came back (${waited}s)"
+  out=$(as adam main.adam 'corral delete 2>&1; echo "exit $?"')
+  [[ "$out" == *"To go ahead, run: corral delete --confirm main"*"exit 1" ]] || fail "corral delete: $out"
+  out=$(as adam main.adam 'corral delete --confirm main 2>&1; echo "exit $?"')
+  [[ "$out" == *"deleting a sandbox from inside it is off"*"exit 1" ]] \
+    || fail "corral delete --confirm while off: $out"
+  expect "deleteAt while off" null "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
+  ok "corral delete asks for --confirm, then is refused while adam's profile has it off"
 
-out=$(as adam main.adam 'corral stop' 2>&1 || true)
-[[ "$out" == "Corral accepted the stop of main."* ]] || fail "corral stop: $out"
-until_state sleeping
-expect "container after corral stop" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
-ok "corral stop inside main was accepted, and main went to sleep"
+  api adam PUT api/me/delete-from-inside '{"enabled":true}' >/dev/null
+  out=$(as adam main.adam 'corral delete --confirm main' 2>&1 || true)
+  [[ "$out" == "main goes to sleep now and is deleted at "*"cancel the deletion on its page: $base/sandboxes/main" ]] \
+    || fail "corral delete --confirm main: $out"
+  until_state sleeping
+  delete_at=$(api adam GET api/sandboxes/main | jq -r .deleteAt)
+  [[ "$delete_at" != null ]] || fail "no deleteAt after corral delete"
+  told adam main.adam "sandbox main is to be deleted at"
+  expect "container while scheduled" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
+  ok "with it on, corral delete --confirm main stopped main and scheduled its deletion for $delete_at"
 
-out=$(as adam main.adam 'corral delete 2>&1; echo "exit $?"')
-[[ "$out" == *"To go ahead, run: corral delete --confirm main"*"exit 1" ]] || fail "corral delete: $out"
-out=$(as adam main.adam 'corral delete --confirm main 2>&1; echo "exit $?"')
-[[ "$out" == *"deleting a sandbox from inside it is off"*"exit 1" ]] \
-  || fail "corral delete --confirm while off: $out"
-expect "deleteAt while off" null "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
-ok "corral delete asks for --confirm, then is refused while adam's profile has it off"
-
-api adam PUT api/me/delete-from-inside '{"enabled":true}' >/dev/null
-out=$(as adam main.adam 'corral delete --confirm main' 2>&1 || true)
-[[ "$out" == "main goes to sleep now and is deleted at "*"cancel the deletion on its page: $base/sandboxes/main" ]] \
-  || fail "corral delete --confirm main: $out"
-until_state sleeping
-delete_at=$(api adam GET api/sandboxes/main | jq -r .deleteAt)
-[[ "$delete_at" != null ]] || fail "no deleteAt after corral delete"
-told adam main.adam "sandbox main is to be deleted at"
-expect "container while scheduled" exited "$(docker inspect --format '{{.State.Status}}' "$adam_container")"
-ok "with it on, corral delete --confirm main stopped main and scheduled its deletion for $delete_at"
-
-docker compose restart corral >>"$log" 2>&1
-docker compose up -d --wait >>"$log" 2>&1
-login adam "$admin_password"
-expect "deleteAt after a restart of corral" "$delete_at" "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
-expect "cancel the deletion" 204 "$(http_status adam DELETE api/sandboxes/main/deletion)"
-expect "deleteAt after the cancel" null "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
-expect "ssh after the cancel" "sandbox adam" "$(as adam main.adam 'echo "$(id -un) $(cat ~/owner)"')"
-ok "the schedule outlived a restart of corral; cancelling it through the API kept main and its home"
+  docker compose restart corral >>"$log" 2>&1
+  docker compose up -d --wait >>"$log" 2>&1
+  login adam "$admin_password"
+  expect "deleteAt after a restart of corral" "$delete_at" "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
+  expect "cancel the deletion" 204 "$(http_status adam DELETE api/sandboxes/main/deletion)"
+  expect "deleteAt after the cancel" null "$(api adam GET api/sandboxes/main | jq -r .deleteAt)"
+  expect "ssh after the cancel" "sandbox adam" "$(as adam main.adam 'echo "$(id -un) $(cat ~/owner)"')"
+  ok "the schedule outlived a restart of corral; cancelling it through the API kept main and its home"
+fi
 
 docker compose restart gate >>"$log" 2>&1
 docker compose up -d --wait >>"$log" 2>&1
 expect "ssh after a gate restart" sandbox "$(as adam main.adam "id -un")"
 ok "after docker compose restart gate, the pinned host key still matches"
 
-for _ in 1 2 3 4 5; do
-  expect "a wrong password" 403 "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-    --data '{"username":"adam","password":"not the password"}' "$base/auth/local/login")"
-done
-expect "the right password after 5 wrong ones" 429 "$(jq -cn --arg p "$admin_password" \
-  '{username: "adam", password: $p}' | curl -sS -o /dev/null -w '%{http_code}' \
-  -H 'Content-Type: application/json' --data @- "$base/auth/local/login")"
-ok "after 5 wrong passwords, POST /auth/local/login answers 429 even to the right one"
+if [[ "$part" == all ]]; then
+  # A wake deadline a slow wake can exceed. The bind mount follows config.toml's inode, so it is
+  # rewritten in place.
+  awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }' config.toml >config.new
+  cat config.new >config.toml
+  docker compose restart corral >>"$log" 2>&1
+  docker compose up -d --wait >>"$log" 2>&1
+  login adam "$admin_password"
+  # Starved of CPU, main cannot wake within the deadline; the gate waits on, counting the seconds on
+  # a terminal.
+  api adam POST api/sandboxes/main/stop >/dev/null
+  cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$adam_container")
+  # Throttled while stopped: the sandbox is ready within milliseconds of starting, before a limit set
+  # once it runs would bite.
+  docker update --cpus 0.01 "$adam_container" >/dev/null
+  woke_at=$SECONDS
+  # Input stays open until the shell answers: a pty session ends at the end of its input.
+  { printf 'id -un; exit\n'; sleep 15; } | ssh -tt -F ssh_config -i keys/adam main.adam@corral-e2e >slow-login.out 2>&1 &
+  slow_login=$!
+  sleep 6
+  docker update --cpus "$(awk -v n="$cpus" 'BEGIN { print n / 1e9 }')" "$adam_container" >/dev/null
+  wait "$slow_login" || true
+  took=$((SECONDS - woke_at))
+  # The terminal's control sequences share the answer's line.
+  tr -d '\r' <slow-login.out | grep -q "sandbox$" || fail "ssh into the slow sandbox: $(cat -v slow-login.out)"
+  grep -q "Waking main\.\.\. [0-9]* s" slow-login.out || fail "no progress line: $(cat -v slow-login.out)"
+  ((took >= 2)) || fail "ssh got in after ${took}s, within the wake deadline"
+  ok "a wake past the deadline: the gate waits on with a progress line, and gets in once main is up (${took}s)"
 
-# A wake deadline a slow wake can exceed. The bind mount follows config.toml's inode, so it is
-# rewritten in place.
-awk '{ print } /^public_port = / { print "wake_deadline_secs = 2" }' config.toml >config.new
-cat config.new >config.toml
-docker compose restart corral >>"$log" 2>&1
-docker compose up -d --wait >>"$log" 2>&1
-login adam "$admin_password"
-# Starved of CPU, main cannot wake within the deadline; the gate waits on, counting the seconds on
-# a terminal.
-api adam POST api/sandboxes/main/stop >/dev/null
-cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$adam_container")
-# Throttled while stopped: the sandbox is ready within milliseconds of starting, before a limit set
-# once it runs would bite.
-docker update --cpus 0.01 "$adam_container" >/dev/null
-woke_at=$SECONDS
-# Input stays open until the shell answers: a pty session ends at the end of its input.
-{ printf 'id -un; exit\n'; sleep 15; } | ssh -tt -F ssh_config -i keys/adam main.adam@corral-e2e >slow-login.out 2>&1 &
-slow_login=$!
-sleep 6
-docker update --cpus "$(awk -v n="$cpus" 'BEGIN { print n / 1e9 }')" "$adam_container" >/dev/null
-wait "$slow_login" || true
-took=$((SECONDS - woke_at))
-# The terminal's control sequences share the answer's line.
-tr -d '\r' <slow-login.out | grep -q "sandbox$" || fail "ssh into the slow sandbox: $(cat -v slow-login.out)"
-grep -q "Waking main\.\.\. [0-9]* s" slow-login.out || fail "no progress line: $(cat -v slow-login.out)"
-((took >= 2)) || fail "ssh got in after ${took}s, within the wake deadline"
-ok "a wake past the deadline: the gate waits on with a progress line, and gets in once main is up (${took}s)"
+  # A quick idle timeout for the rest, longer than the gate's 5 s between reports of work.
+  awk '{ print } /^check_interval_secs = / { print "timeout_secs = 10" }' config.toml >config.new
+  cat config.new >config.toml
+  docker compose restart corral >>"$log" 2>&1
+  docker compose up -d --wait >>"$log" 2>&1
+  login adam "$admin_password"
+  api adam POST api/sandboxes '{"name":"idle"}' >/dev/null
+  idle=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_network" \
+    --filter label=corral.adamaq01.fr/sandbox=idle)
+  idle_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$idle")
+  ok "restarted corral with wake_deadline_secs = 2 and timeout_secs = 10, created sandbox idle"
 
-# A quick idle timeout for the rest, longer than the gate's 5 s between reports of work.
-awk '{ print } /^check_interval_secs = / { print "timeout_secs = 10" }' config.toml >config.new
-cat config.new >config.toml
-docker compose restart corral >>"$log" 2>&1
-docker compose up -d --wait >>"$log" 2>&1
-login adam "$admin_password"
-api adam POST api/sandboxes '{"name":"idle"}' >/dev/null
-idle=$(docker ps --format '{{.Names}}' --filter "network=$sandbox_network" \
-  --filter label=corral.adamaq01.fr/sandbox=idle)
-idle_home=$(docker inspect --format '{{range .Mounts}}{{.Name}}{{end}}' "$idle")
-ok "restarted corral with wake_deadline_secs = 2 and timeout_secs = 10, created sandbox idle"
+  state() {
+    docker inspect --format '{{.State.Status}}' "$idle"
+  }
 
-state() {
-  docker inspect --format '{{.State.Status}}' "$idle"
-}
+  sleeps_within() {
+    local waited=0
+    while [[ "$(state)" != exited ]]; do
+      ((waited < $1)) || fail "$idle was still $(state) after ${1}s"
+      sleep 1
+      waited=$((waited + 1))
+    done
+    echo "$waited"
+  }
 
-sleeps_within() {
-  local waited=0
-  while [[ "$(state)" != exited ]]; do
-    ((waited < $1)) || fail "$idle was still $(state) after ${1}s"
-    sleep 1
-    waited=$((waited + 1))
-  done
-  echo "$waited"
-}
+  wake_idle() {
+    api adam POST api/sandboxes/idle/wake >/dev/null
+    expect "idle after a wake" running "$(state)"
+  }
 
-wake_idle() {
-  api adam POST api/sandboxes/idle/wake >/dev/null
-  expect "idle after a wake" running "$(state)"
-}
+  as adam idle.adam 'sleep 40' >/dev/null 2>&1 &
+  session=$!
+  slept=$(sleeps_within 30)
+  wait "$session" || true
+  ok "an open SSH session with nothing happening in it lets idle sleep, ${slept}s in"
 
-as adam idle.adam 'sleep 40' >/dev/null 2>&1 &
-session=$!
-slept=$(sleeps_within 30)
-wait "$session" || true
-ok "an open SSH session with nothing happening in it lets idle sleep, ${slept}s in"
+  wake_idle
+  { for _ in $(seq 25); do echo true; sleep 1; done; } |
+    ssh -T -F ssh_config -i keys/adam idle.adam@corral-e2e sh >/dev/null 2>&1
+  expect "idle after 25 s of commands typed into a session" running "$(state)"
+  ok "commands typed into a session keep idle awake past its idle timeout"
 
-wake_idle
-{ for _ in $(seq 25); do echo true; sleep 1; done; } |
-  ssh -T -F ssh_config -i keys/adam idle.adam@corral-e2e sh >/dev/null 2>&1
-expect "idle after 25 s of commands typed into a session" running "$(state)"
-ok "commands typed into a session keep idle awake past its idle timeout"
+  as adam idle.adam 'timeout 25 sh -c "while :; do :; done"; true'
+  expect "idle after 25 s of a busy command with no input" running "$(state)"
+  ok "a busy command keeps idle awake through the sandbox's own processor use, with no input"
+  slept=$(sleeps_within 30)
+  ok "with nothing running, idle slept ${slept}s after the busy command ended"
 
-as adam idle.adam 'timeout 25 sh -c "while :; do :; done"; true'
-expect "idle after 25 s of a busy command with no input" running "$(state)"
-ok "a busy command keeps idle awake through the sandbox's own processor use, with no input"
-slept=$(sleeps_within 30)
-ok "with nothing running, idle slept ${slept}s after the busy command ended"
+  wake_idle
+  expect "corral keep-awake 1h inside idle" "idle stays awake until" \
+    "$(as adam idle.adam 'corral keep-awake 1h' | cut -d' ' -f1-4)"
+  sleep 20
+  expect "idle 20 s into a keep-awake" running "$(state)"
+  expect "corral status inside idle" 1 "$(as adam idle.adam 'corral status' | grep -c '^Awake    until')"
+  api adam PUT api/sandboxes/idle/keep-awake '{"until":null}' >/dev/null
+  slept=$(sleeps_within 30)
+  ok "corral keep-awake 1h kept idle awake; once the owner let it go, it slept ${slept}s later"
 
-wake_idle
-expect "corral keep-awake 1h inside idle" "idle stays awake until" \
-  "$(as adam idle.adam 'corral keep-awake 1h' | cut -d' ' -f1-4)"
-sleep 20
-expect "idle 20 s into a keep-awake" running "$(state)"
-expect "corral status inside idle" 1 "$(as adam idle.adam 'corral status' | grep -c '^Awake    until')"
-api adam PUT api/sandboxes/idle/keep-awake '{"until":null}' >/dev/null
-slept=$(sleeps_within 30)
-ok "corral keep-awake 1h kept idle awake; once the owner let it go, it slept ${slept}s later"
+  # Herdr's line to a machine stays open and talks every 3 s; it is not work.
+  wake_idle
+  hc_local machine add --name idle \
+    --via "ssh -F $work/ssh_config -i $work/keys/adam idle.adam@corral-e2e" >>"$log"
+  machine_state() {
+    hc_local machine ls --json | jq -r '(.machines? // .)[] | select(.name == "idle") | .state'
+  }
+  # Once added, Herdr dials the machine again and holds that line.
+  connects() {
+    for _ in $(seq 30); do
+      [[ "$(machine_state)" == connected ]] && return
+      sleep 1
+    done
+    fail "the Herdr machine idle $1 is $(machine_state): $(hc_local machine ls --json)"
+  }
+  connects "once added"
+  slept=$(sleeps_within 40)
+  ok "with Herdr connected to it and nothing else, idle slept ${slept}s in"
+  sleep 20
+  expect "idle 20 s after it slept under a Herdr line" exited "$(state)"
+  expect "the Herdr machine idle while idle sleeps" connected "$(machine_state)"
+  expect "Herdr's terminals on idle while it sleeps" 0 \
+    "$(hc_local ls --json | jq '[.terminals[] | select(.address | startswith("idle/"))] | length')"
+  ok "Herdr stays connected to sleeping idle, shows no terminals, and neither redials nor wakes it"
 
-# Herdr's line to a machine stays open and talks every 3 s; it is not work.
-wake_idle
-hc_local machine add --name idle \
-  --via "ssh -F $work/ssh_config -i $work/keys/adam idle.adam@corral-e2e" >>"$log"
-machine_state() {
-  hc_local machine ls --json | jq -r '(.machines? // .)[] | select(.name == "idle") | .state'
-}
-# Once added, Herdr dials the machine again and holds that line.
-connects() {
-  for _ in $(seq 30); do
-    [[ "$(machine_state)" == connected ]] && return
-    sleep 1
-  done
-  fail "the Herdr machine idle $1 is $(machine_state): $(hc_local machine ls --json)"
-}
-connects "once added"
-slept=$(sleeps_within 40)
-ok "with Herdr connected to it and nothing else, idle slept ${slept}s in"
-sleep 20
-expect "idle 20 s after it slept under a Herdr line" exited "$(state)"
-expect "the Herdr machine idle while idle sleeps" connected "$(machine_state)"
-expect "Herdr's terminals on idle while it sleeps" 0 \
-  "$(hc_local ls --json | jq '[.terminals[] | select(.address | startswith("idle/"))] | length')"
-ok "Herdr stays connected to sleeping idle, shows no terminals, and neither redials nor wakes it"
+  hc_local run --on idle --bg --name woke sleep 60 >>"$log"
+  expect "idle after hc run --on idle" running "$(state)"
+  expect "hc exec --on idle once woken" ok "$(hc_local exec --on idle echo ok)"
+  expect "the terminal hc run started on idle" live \
+    "$(hc_local ls --json | jq -r '.terminals[] | select(.name == "woke") | .state')"
+  ok "hc run --on idle woke idle through the same line and runs there"
 
-hc_local run --on idle --bg --name woke sleep 60 >>"$log"
-expect "idle after hc run --on idle" running "$(state)"
-expect "hc exec --on idle once woken" ok "$(hc_local exec --on idle echo ok)"
-expect "the terminal hc run started on idle" live \
-  "$(hc_local ls --json | jq -r '.terminals[] | select(.name == "woke") | .state')"
-ok "hc run --on idle woke idle through the same line and runs there"
+  hc_local kill idle/woke >>"$log" 2>&1 || true
+  slept=$(sleeps_within 40)
+  docker compose restart gate >>"$log" 2>&1
+  docker compose up -d --wait >>"$log" 2>&1
+  connects "after the gate restarted"
+  sleep 10
+  expect "idle after the gate restarted under Herdr" exited "$(state)"
+  expect "hc exec --on idle after the gate restarted" ok "$(hc_local exec --on idle echo ok)"
+  hc_local server stop >>"$log"
+  ok "idle slept ${slept}s after its terminal ended; a gate restart reconnects Herdr to it asleep, and it wakes on use"
 
-hc_local kill idle/woke >>"$log" 2>&1 || true
-slept=$(sleeps_within 40)
-docker compose restart gate >>"$log" 2>&1
-docker compose up -d --wait >>"$log" 2>&1
-connects "after the gate restarted"
-sleep 10
-expect "idle after the gate restarted under Herdr" exited "$(state)"
-expect "hc exec --on idle after the gate restarted" ok "$(hc_local exec --on idle echo ok)"
-hc_local server stop >>"$log"
-ok "idle slept ${slept}s after its terminal ended; a gate restart reconnects Herdr to it asleep, and it wakes on use"
-
-# A sandbox that reports nothing, as one started on an overlay without the reporter, is never
-# put to sleep at work: it stays awake, and Corral says why.
-wake_idle
-docker exec "$idle" /opt/corral/bin/busybox pkill -f "corral report-activity"
-sleep 25
-expect "idle 25 s after its reporter stopped" running "$(state)"
-docker compose logs --no-color corral 2>&1 | grep "reports no activity" | grep -qF "${idle#corral-}" \
-  || fail "no log line for idle reporting no activity"
-api adam POST api/sandboxes/idle/restart >/dev/null
-slept=$(sleeps_within 40)
-ok "a sandbox that reports no activity stays awake and is logged; restarted, it reports and slept ${slept}s later"
-
+  # A sandbox that reports nothing, as one started on an overlay without the reporter, is never
+  # put to sleep at work: it stays awake, and Corral says why.
+  wake_idle
+  docker exec "$idle" /opt/corral/bin/busybox pkill -f "corral report-activity"
+  sleep 25
+  expect "idle 25 s after its reporter stopped" running "$(state)"
+  docker compose logs --no-color corral 2>&1 | grep "reports no activity" | grep -qF "${idle#corral-}" \
+    || fail "no log line for idle reporting no activity"
+  api adam POST api/sandboxes/idle/restart >/dev/null
+  slept=$(sleeps_within 40)
+  ok "a sandbox that reports no activity stays awake and is logged; restarted, it reports and slept ${slept}s later"
+fi
 
 api adam POST "api/admin/users/$bob_id/enable" >/dev/null
 login bob "$bob_password"
@@ -696,11 +700,25 @@ new_bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob"
 refused bob main.bob
 ok "recreating the local account bob gives a new, empty user"
 
+# Last of the logins: failures from one address hold back every account's until Corral restarts.
+for _ in 1 2 3 4 5; do
+  expect "a wrong password" 403 "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+    --data '{"username":"adam","password":"not the password"}' "$base/auth/local/login")"
+done
+expect "the right password after 5 wrong ones" 429 "$(jq -cn --arg p "$admin_password" \
+  '{username: "adam", password: $p}' | curl -sS -o /dev/null -w '%{http_code}' \
+  -H 'Content-Type: application/json' --data @- "$base/auth/local/login")"
+ok "after 5 wrong passwords, POST /auth/local/login answers 429 even to the right one"
+
 api adam DELETE api/sandboxes/main >/dev/null
-api adam DELETE api/sandboxes/idle >/dev/null
+homes=("$adam_home")
+if [[ "$part" == all ]]; then
+  api adam DELETE api/sandboxes/idle >/dev/null
+  homes+=("$idle_home")
+fi
 expect "sandbox containers after the deletes" "" \
   "$(docker ps --all --quiet --filter "network=$sandbox_network" --filter label=app.kubernetes.io/managed-by=corral)"
-for volume in "$adam_home" "$idle_home"; do
+for volume in "${homes[@]}"; do
   if docker volume inspect "$volume" >/dev/null 2>&1; then
     fail "$volume survived its sandbox's delete"
   fi
@@ -712,4 +730,4 @@ expect "project containers after down" "" \
   "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")"
 ok "docker compose down --volumes removed the stack"
 
-echo "e2e: $passed checks passed in $((SECONDS - started))s"
+echo "e2e $part: $passed checks passed in $((SECONDS - started))s"

@@ -2,19 +2,21 @@
 # Starts base images the way the Docker engine starts a sandbox, with the overlay as an image
 # mount, and checks each is a whole Corral sandbox over SSH, reached the way the gate reaches it:
 # the overlay's corral-sshd, run by an exec as the sandbox user.
-# CORRAL_OVERLAY_IMAGE names a prebuilt overlay; when unset, corral-overlay:dev is built from here.
+# CORRAL_OVERLAY_IMAGE names a prebuilt overlay; when unset, this checkout's is built
+# (tests/checkout.sh). Its containers, volume and images are named after CORRAL_RUN_ID.
 # CORRAL_OVERLAY_TEST_BASES lists the base images, space-separated, to check instead of the default.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
-overlay=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
+source "$repo/tests/checkout.sh"
+overlay=$CORRAL_OVERLAY_IMAGE
 read -r -a bases <<<"${CORRAL_OVERLAY_TEST_BASES:-ubuntu:24.04 debian:trixie-slim alpine:3.24 gcr.io/distroless/static-debian13}"
-prefix=corral-overlay-test
+prefix=corral-overlay-test-$CORRAL_RUN_ID
 volume=$prefix-home
 server=$prefix-sandbox
-baked=$prefix-baked:dev
-groups=$prefix-groups:dev
+baked=$prefix-baked:test
+groups=$prefix-groups:test
 work=$(mktemp -d "${TMPDIR:-/tmp}/corral-overlay-test.XXXXXX")
 
 remove_resources() {
@@ -39,10 +41,7 @@ check() {
   echo "ok - $base: $1"
 }
 
-if [[ -z "${CORRAL_OVERLAY_IMAGE:-}" ]]; then
-  docker build --quiet --file "$here/Dockerfile" --tag "$overlay" "$repo" >/dev/null
-  echo "built $overlay"
-fi
+"$repo/tests/images.sh" overlay
 
 # What the gate does for each connection: a fresh key, and corral-sshd run with its public half.
 ssh-keygen -q -t ed25519 -N '' -C gate -f "$work/key"

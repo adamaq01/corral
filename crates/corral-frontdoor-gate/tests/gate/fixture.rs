@@ -43,12 +43,26 @@ pub struct Ran {
     pub took: Duration,
 }
 
+/// The image `variable` names, or this checkout's build of it, as tests/checkout.sh names both.
+fn checkout_image(variable: &str) -> String {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/checkout.sh");
+    let named = std::process::Command::new(script)
+        .arg(variable)
+        .output()
+        .expect("run tests/checkout.sh");
+    assert!(
+        named.status.success(),
+        "tests/checkout.sh {variable} failed"
+    );
+    String::from_utf8(named.stdout).unwrap().trim().to_owned()
+}
+
 fn image() -> String {
-    std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned())
+    checkout_image("CORRAL_SANDBOX_IMAGE")
 }
 
 fn overlay() -> String {
-    std::env::var("CORRAL_OVERLAY_IMAGE").unwrap_or_else(|_| "corral-overlay:dev".to_owned())
+    checkout_image("CORRAL_OVERLAY_IMAGE")
 }
 
 fn docker(args: &[&str]) -> std::process::Output {
@@ -67,7 +81,10 @@ pub fn docker_available() -> bool {
                 std::env::var_os("CI").is_none(),
                 "CI needs a Docker daemon and image {image}"
             );
-            eprintln!("skipped: no Docker daemon or image {image}");
+            eprintln!(
+                "skipped: no Docker daemon or image {image} (tests/images.sh builds it, and just \
+                 test-rust runs it)"
+            );
             return false;
         }
     }

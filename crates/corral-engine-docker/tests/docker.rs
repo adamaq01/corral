@@ -24,12 +24,26 @@ use tokio_util::sync::CancellationToken;
 
 const WAKE: Duration = Duration::from_secs(60);
 
+/// The image `variable` names, or this checkout's build of it, as tests/checkout.sh names both.
+fn checkout_image(variable: &str) -> String {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/checkout.sh");
+    let named = std::process::Command::new(script)
+        .arg(variable)
+        .output()
+        .expect("run tests/checkout.sh");
+    assert!(
+        named.status.success(),
+        "tests/checkout.sh {variable} failed"
+    );
+    String::from_utf8(named.stdout).unwrap().trim().to_owned()
+}
+
 fn image() -> String {
-    std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned())
+    checkout_image("CORRAL_SANDBOX_IMAGE")
 }
 
 fn overlay() -> String {
-    std::env::var("CORRAL_OVERLAY_IMAGE").unwrap_or_else(|_| "corral-overlay:dev".to_owned())
+    checkout_image("CORRAL_OVERLAY_IMAGE")
 }
 
 fn docker(args: &[&str]) -> Output {
@@ -119,8 +133,8 @@ impl Lab {
                     "CI needs a Docker daemon and image {needed}"
                 );
                 eprintln!(
-                    "skipped: no Docker daemon or image {needed} (build them with \
-                     images/sandbox/test.sh and images/overlay/test.sh)"
+                    "skipped: no Docker daemon or image {needed} (tests/images.sh builds \
+                     them, and just test-rust runs it)"
                 );
                 return None;
             }
@@ -876,7 +890,10 @@ async fn idle_sandboxes_sleep_and_ones_at_work_stay_awake() {
 async fn connect_makes_a_missing_network() {
     if !docker_answers(&["image", "inspect", &overlay()]) {
         assert!(std::env::var_os("CI").is_none(), "CI needs a Docker daemon");
-        eprintln!("skipped: no Docker daemon or overlay");
+        eprintln!(
+            "skipped: no Docker daemon or image {} (tests/images.sh builds it)",
+            overlay()
+        );
         return;
     }
     let missing = format!("corral-test-docker-missing-{}", std::process::id());

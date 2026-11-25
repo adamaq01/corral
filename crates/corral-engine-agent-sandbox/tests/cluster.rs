@@ -55,9 +55,10 @@ impl Cluster {
         let Ok(namespace) = std::env::var("CORRAL_TEST_KUBE_NAMESPACE") else {
             assert!(
                 std::env::var_os("CI").is_none(),
-                "CI needs a kind cluster: run tests/kind/up.sh and set CORRAL_TEST_KUBE_NAMESPACE"
+                "CI needs a kind cluster: run just e2e-kind, or tests/kind/up.sh with \
+                 CORRAL_TEST_KUBE_NAMESPACE and KUBECONFIG set"
             );
-            eprintln!("skipped: CORRAL_TEST_KUBE_NAMESPACE is not set");
+            eprintln!("skipped: CORRAL_TEST_KUBE_NAMESPACE is not set (just e2e-kind sets it)");
             return None;
         };
         // A workspace build also compiles in aws-lc-rs, so rustls needs to be told which to use.
@@ -67,8 +68,7 @@ impl Cluster {
             namespace: namespace.clone(),
             service_account: "corral-sandbox".to_owned(),
             storage_class: None,
-            overlay_image: std::env::var("CORRAL_OVERLAY_IMAGE")
-                .unwrap_or_else(|_| "corral-overlay:dev".to_owned()),
+            overlay_image: checkout_image("CORRAL_OVERLAY_IMAGE"),
             image_pull_secrets: Vec::new(),
         };
         let sandbox = ApiResource::from_gvk_with_plural(
@@ -803,13 +803,26 @@ where
     }
 }
 
+/// The image `variable` names, or this checkout's build of it, as tests/checkout.sh names both.
+fn checkout_image(variable: &str) -> String {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/checkout.sh");
+    let named = std::process::Command::new(script)
+        .arg(variable)
+        .output()
+        .expect("run tests/checkout.sh");
+    assert!(
+        named.status.success(),
+        "tests/checkout.sh {variable} failed"
+    );
+    String::from_utf8(named.stdout).unwrap().trim().to_owned()
+}
+
 fn spec(name: &str) -> SandboxSpec {
     SandboxSpec {
         owner: Handle::parse("corral-test").unwrap(),
         user: UserId(uuid::Uuid::nil()),
         name: SandboxName::parse(name).unwrap(),
-        image: std::env::var("CORRAL_SANDBOX_IMAGE")
-            .unwrap_or_else(|_| "corral-sandbox:dev".to_owned()),
+        image: checkout_image("CORRAL_SANDBOX_IMAGE"),
         resources: Resources {
             cpu_millis: Allocation::new(100, 1000).unwrap(),
             memory_bytes: Allocation::new(128 << 20, 1 << 30).unwrap(),

@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
 # Installs the chart into the kind cluster of crates/corral-engine-agent-sandbox/tests/kind/up.sh,
-# which this script creates when it is missing, and walks a user and an operator through it.
-# CORRAL_SERVER_IMAGE names a prebuilt server image (corral-server:e2e by default);
-# CORRAL_SANDBOX_IMAGE a sandbox image (corral-sandbox:dev by default, built when missing);
-# CORRAL_OVERLAY_IMAGE the overlay image (corral-overlay:dev by default).
+# which this script creates when it is missing, and walks a user and an operator through it:
+# deploy/helm/e2e.sh [smoke|all], or CORRAL_E2E_PART. all adds the chart's lifecycle: an upgrade,
+# an uninstall that keeps the data, a reinstall over it, and an uninstall that does not keep it.
+# CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images; when
+# unset, this checkout's are built. The cluster and the ports are CORRAL_RUN_ID's (tests/checkout.sh).
 # CORRAL_E2E_SKIP_NETWORK_POLICY=1 skips the NetworkPolicy check, for a cluster whose network
 # plugin does not enforce policies.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
+source "$repo/tests/checkout.sh"
+export KUBECONFIG=$CORRAL_KUBECONFIG
+part=${1:-${CORRAL_E2E_PART:-smoke}}
+if [[ "$part" != smoke && "$part" != all ]]; then
+  echo "usage: deploy/helm/e2e.sh [smoke|all]" >&2
+  exit 2
+fi
 chart=$here/corral
-node=corral-dev-control-plane
+cluster=corral-$CORRAL_RUN_ID
+node=$cluster-control-plane
 release=corral
 namespace=corral-e2e
 sandboxes=corral-e2e-sandboxes
-http_port=18080
-ssh_port=48291
-forward_port=18000
+http_port=$(corral_port 9)
+ssh_port=$(corral_port 10)
+forward_port=$(corral_port 11)
 base=http://127.0.0.1:$http_port
-server_image=${CORRAL_SERVER_IMAGE:-corral-server:e2e}
-export CORRAL_SANDBOX_IMAGE=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
-export CORRAL_OVERLAY_IMAGE=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
+server_image=$CORRAL_SERVER_IMAGE
 
 passed=0
 work=
@@ -92,10 +99,10 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/corral-helm-e2e.XXXXXX")
 log=$work/run.log
 
 "$repo/crates/corral-engine-agent-sandbox/tests/kind/up.sh" >>"$log" 2>&1
-kubectl config use-context kind-corral-dev >/dev/null
+"$repo/tests/images.sh" server >>"$log" 2>&1
 remove_release
 load() {
-  if ! kind load docker-image "$1" --name corral-dev >>"$log" 2>&1; then
+  if ! kind load docker-image "$1" --name "$cluster" >>"$log" 2>&1; then
     docker save "$1" | docker exec -i "$node" ctr --namespace=k8s.io images import - >>"$log"
   fi
 }
@@ -325,48 +332,50 @@ woke_at=$SECONDS
 expect "the home after a wake" kept "$(as main.adam 'cat ~/marker')"
 ok "ssh woke main in $((SECONDS - woke_at))s, home kept"
 
-pod() {
-  kubectl --namespace "$namespace" get pods -l app.kubernetes.io/component=server -o jsonpath='{.items[0].metadata.uid}'
-}
-before=$(pod)
-as main.adam 'sleep 30; echo survived' >"$work/session.out" &
-session=$!
-sleep 2
-install --set limits.maxRunning=7
-connect_web
-[[ "$(pod)" != "$before" ]] || fail "the config changed and Corral was not restarted"
-wait "$session" || true
-expect "an SSH session open across the upgrade" survived "$(cat "$work/session.out")"
-expect "the keys Secret after an upgrade" "$keys" "$(secret_data "$release-keys")"
-expect "the host key Secret after an upgrade" "$host_key" "$(secret_data "$release-ssh-host-key")"
-login
-expect "keys after the upgrade" 1 "$(api GET api/keys | jq length)"
-expect "the home after the upgrade" kept "$(as main.adam 'cat ~/marker')"
-ok "helm upgrade restarted Corral with new config; the gate kept an open SSH session, and data, generated keys and host key survived"
+if [[ "$part" == all ]]; then
+  pod() {
+    kubectl --namespace "$namespace" get pods -l app.kubernetes.io/component=server -o jsonpath='{.items[0].metadata.uid}'
+  }
+  before=$(pod)
+  as main.adam 'sleep 30; echo survived' >"$work/session.out" &
+  session=$!
+  sleep 2
+  install --set limits.maxRunning=7
+  connect_web
+  [[ "$(pod)" != "$before" ]] || fail "the config changed and Corral was not restarted"
+  wait "$session" || true
+  expect "an SSH session open across the upgrade" survived "$(cat "$work/session.out")"
+  expect "the keys Secret after an upgrade" "$keys" "$(secret_data "$release-keys")"
+  expect "the host key Secret after an upgrade" "$host_key" "$(secret_data "$release-ssh-host-key")"
+  login
+  expect "keys after the upgrade" 1 "$(api GET api/keys | jq length)"
+  expect "the home after the upgrade" kept "$(as main.adam 'cat ~/marker')"
+  ok "helm upgrade restarted Corral with new config; the gate kept an open SSH session, and data, generated keys and host key survived"
 
-stop_forwards
-helm uninstall "$release" --namespace "$namespace" --wait >>"$log"
-expect "kept in $namespace" "persistentvolumeclaim/$release-data secret/$release-keys secret/$release-ssh-host-key" \
-  "$(kubectl --namespace "$namespace" get pvc,secrets -o name | sort | xargs)"
-expect "kept in $sandboxes" "sandbox.agents.x-k8s.io/$sandbox_id" \
-  "$(kubectl --namespace "$sandboxes" get sandboxes -o name)"
-ok "helm uninstall with keepOnUninstall: the database volume, keys, host key and sandboxes stay"
+  stop_forwards
+  helm uninstall "$release" --namespace "$namespace" --wait >>"$log"
+  expect "kept in $namespace" "persistentvolumeclaim/$release-data secret/$release-keys secret/$release-ssh-host-key" \
+    "$(kubectl --namespace "$namespace" get pvc,secrets -o name | sort | xargs)"
+  expect "kept in $sandboxes" "sandbox.agents.x-k8s.io/$sandbox_id" \
+    "$(kubectl --namespace "$sandboxes" get sandboxes -o name)"
+  ok "helm uninstall with keepOnUninstall: the database volume, keys, host key and sandboxes stay"
 
-install
-connect
-expect "the keys Secret after a reinstall" "$keys" "$(secret_data "$release-keys")"
-expect "the host key Secret after a reinstall" "$host_key" "$(secret_data "$release-ssh-host-key")"
-login
-expect "sandboxes after a reinstall" main "$(api GET api/sandboxes | jq -r '.[].name')"
-expect "the home after a reinstall" kept "$(as main.adam 'cat ~/marker')"
-ok "helm install over the kept data: same admin, same sandbox and home, same host key"
+  install
+  connect
+  expect "the keys Secret after a reinstall" "$keys" "$(secret_data "$release-keys")"
+  expect "the host key Secret after a reinstall" "$host_key" "$(secret_data "$release-ssh-host-key")"
+  login
+  expect "sandboxes after a reinstall" main "$(api GET api/sandboxes | jq -r '.[].name')"
+  expect "the home after a reinstall" kept "$(as main.adam 'cat ~/marker')"
+  ok "helm install over the kept data: same admin, same sandbox and home, same host key"
 
-install --set keepOnUninstall=false
-stop_forwards
-helm uninstall "$release" --namespace "$namespace" --wait >>"$log"
-kubectl wait --for=delete "namespace/$sandboxes" --timeout=180s >>"$log" 2>&1
-expect "left in $namespace" "secret/$release-keys secret/$release-ssh-host-key" \
-  "$(kubectl --namespace "$namespace" get pvc,secrets -o name | sort | xargs)"
-ok "helm uninstall without keepOnUninstall deletes the database volume and the sandbox namespace; the generated keys stay"
+  install --set keepOnUninstall=false
+  stop_forwards
+  helm uninstall "$release" --namespace "$namespace" --wait >>"$log"
+  kubectl wait --for=delete "namespace/$sandboxes" --timeout=180s >>"$log" 2>&1
+  expect "left in $namespace" "secret/$release-keys secret/$release-ssh-host-key" \
+    "$(kubectl --namespace "$namespace" get pvc,secrets -o name | sort | xargs)"
+  ok "helm uninstall without keepOnUninstall deletes the database volume and the sandbox namespace; the generated keys stay"
+fi
 
-echo "all $passed checks passed"
+echo "chart e2e $part: all $passed checks passed"

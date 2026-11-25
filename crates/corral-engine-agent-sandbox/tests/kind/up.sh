@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
+# Makes the kind cluster corral-$CORRAL_RUN_ID, or reuses it, with agent-sandbox, the namespace
+# corral-dev and the sandbox and overlay images loaded, and writes its kubeconfig to
+# CORRAL_KUBECONFIG (tests/checkout.sh).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../../../.." && pwd)
-cluster=corral-dev
+source "$repo/tests/checkout.sh"
+export KUBECONFIG=$CORRAL_KUBECONFIG
+cluster=corral-$CORRAL_RUN_ID
 context=kind-$cluster
 node=$cluster-control-plane
 namespace=corral-dev
 agent_sandbox_version=v1.0.11
-sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
-overlay_image=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
+sandbox_image=$CORRAL_SANDBOX_IMAGE
+overlay_image=$CORRAL_OVERLAY_IMAGE
 proxy_ca=/usr/local/share/ca-certificates/proxy-ca.crt
 
 if ! kind get clusters | grep -x "$cluster" >/dev/null; then
   kind create cluster --name "$cluster" --config "$here/kind.yaml" --wait 120s
 fi
-kubectl config use-context "$context" >/dev/null
+kind export kubeconfig --name "$cluster" >/dev/null 2>&1
 
 # A TLS-intercepting proxy needs its CA inside the node, or image pulls fail with x509 errors.
 if [[ -f "$proxy_ca" ]] && ! docker exec "$node" test -f "/usr/local/share/ca-certificates/$(basename "$proxy_ca")"; then
@@ -43,12 +48,8 @@ metadata:
 automountServiceAccountToken: false
 EOF
 
-# Loads a local image into the node unless it holds that image already, building it first from
-# images/<directory> when Docker does not have it.
+# Loads a local image into the node unless it holds that image already.
 load() {
-  if ! docker image inspect "$1" >/dev/null 2>&1; then
-    docker build --file "$repo/images/$2/Dockerfile" --tag "$1" "$repo"
-  fi
   local id
   id=$(docker image inspect --format '{{.Id}}' "$1")
   if ! docker exec "$node" ctr --namespace=k8s.io images ls | grep -F "$id" >/dev/null; then
@@ -57,8 +58,9 @@ load() {
     fi
   fi
 }
-load "$sandbox_image" sandbox
-load "$overlay_image" overlay
+"$repo/tests/images.sh" sandbox overlay
+load "$sandbox_image"
+load "$overlay_image"
 # The volume provisioner's helper image ships packed, so the prune below would drop its layers.
 helper_image=$(kubectl --context "$context" -n local-path-storage get configmap local-path-config \
   -o jsonpath='{.data.helperPod\.yaml}' | awk '$1 == "image:" { print $2 }')

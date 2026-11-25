@@ -2,13 +2,13 @@
 # Checks the chart without a cluster: lint, the values schema, Kubernetes schemas of the rendered
 # manifests, the rendered config against corral-server, and the unit tests in corral/tests.
 # Needs helm, kubeconform and helm-unittest on PATH (tools.sh installs them), and CORRAL_SERVER,
-# a corral-server binary (target/debug/corral-server by default).
+# a corral-server binary (debug/corral-server in CARGO_TARGET_DIR, or target/, by default).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 chart=$here/corral
-server=${CORRAL_SERVER:-$repo/target/debug/corral-server}
+server=${CORRAL_SERVER:-${CARGO_TARGET_DIR:-$repo/target}/debug/corral-server}
 # CRD schemas for the HTTPRoute and the CloudNativePG Cluster the chart can render.
 crds=https://raw.githubusercontent.com/datreeio/CRDs-catalog/04af58d740718c4dc719441bf39fb284c784f4a8
 kube_version=1.37.0
