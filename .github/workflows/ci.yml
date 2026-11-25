@@ -138,11 +138,6 @@ jobs:
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
       CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
-      # The runner's preinstalled SDKs leave too little disk for the images plus the test build.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
       - uses: actions/checkout@v7
       - uses: ./.github/actions/ci-images
       - uses: Swatinem/rust-cache@v2
@@ -188,12 +183,6 @@ jobs:
       CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
       CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
     steps:
-      # The runner's preinstalled SDKs leave too little disk for the sandbox image plus the build.
-      - name: Free disk space
-        working-directory: .
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
       - uses: actions/checkout@v7
       # The user journey creates sandboxes from these images.
       - uses: ./.github/actions/ci-images
