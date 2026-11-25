@@ -409,6 +409,7 @@ jobs:
 
   # The chart's appVersion is the image tag this run published, so it runs exactly that image.
   publish-chart:
+    if: always() && needs.publish.result == 'success'
     needs: [publish]
     runs-on: ubuntu-latest
     permissions:
