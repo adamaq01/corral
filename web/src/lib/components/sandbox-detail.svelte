@@ -22,6 +22,7 @@
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import RefreshStatus from '#lib/components/refresh-status.svelte';
 	import SandboxEnvironment from '#lib/components/sandbox-environment.svelte';
+	import SandboxSleep from '#lib/components/sandbox-sleep.svelte';
 	import SandboxStateBadge from '#lib/components/sandbox-state-badge.svelte';
 	import StateAnnouncer from '#lib/components/state-announcer.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
@@ -316,7 +317,8 @@
 					<code class="font-mono text-xs">ssh {hostAlias(current)}</code> is enough.
 					<a class="underline underline-offset-4" href="https://herdr.dev/">Herdr</a>, the app for
 					coding agents, shows the agents running in this sandbox once you add it with the Herdr
-					command.
+					command. Herdr staying connected does not keep the sandbox awake, and opening a terminal
+					in it wakes it.
 				</p>
 			</Card.Content>
 		</Card.Root>
@@ -356,6 +358,10 @@
 					Retry
 				</Button>
 			</p>
+		{/if}
+
+		{#if presentation.manageable && !current.deleteAt}
+			<SandboxSleep sandbox={current} onchanged={() => sandbox.reload()} />
 		{/if}
 
 		<SandboxEnvironment sandbox={name} onchanged={() => sandbox.reload()} />

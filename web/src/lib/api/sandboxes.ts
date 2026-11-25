@@ -1,5 +1,12 @@
 import { api } from './client.js';
-import type { Catalog, CreateSandbox, Sandbox, Wake } from './generated/index.js';
+import type {
+	Catalog,
+	CreateSandbox,
+	IdleTimeoutChange,
+	KeepAwake,
+	Sandbox,
+	Wake
+} from './generated/index.js';
 
 const path = (name: string) => `/api/sandboxes/${encodeURIComponent(name)}`;
 
@@ -11,6 +18,12 @@ export const sandboxes = {
 	stop: (name: string) => api.post(`${path(name)}/stop`),
 	restart: (name: string) => api.post(`${path(name)}/restart`),
 	makeDefault: (name: string) => api.post(`${path(name)}/default`),
+	/** How long it stays awake with no work; `null` gives it the default. */
+	setIdleTimeout: (name: string, timeoutSecs: number | null) =>
+		api.put<Sandbox>(`${path(name)}/idle-timeout`, { timeoutSecs } satisfies IdleTimeoutChange),
+	/** Keeps it awake until `until` with or without work; `null` no longer. */
+	keepAwake: (name: string, until: string | null) =>
+		api.put<Sandbox>(`${path(name)}/keep-awake`, { until } satisfies KeepAwake),
 	/** Cancels a deletion `corral delete` scheduled; the sandbox stays asleep. */
 	cancelDeletion: (name: string) => api.delete(`${path(name)}/deletion`),
 	remove: (name: string) => api.delete(path(name)),
