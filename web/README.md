@@ -32,13 +32,15 @@ built one), then runs the server on SQLite in a temporary directory with local a
 Docker engine on a network of its own, and `corral-server gate` beside it as the SSH front door,
 so tests SSH into the sandboxes they create. The suite removes the containers, volumes and network
 afterwards.
-Sandboxes use `corral-sandbox:dev` and the overlay `corral-overlay:dev` unless `CORRAL_SANDBOX_IMAGE`
-and `CORRAL_OVERLAY_IMAGE` name other images. A failed test
-keeps its trace in `test-results/`, next to `corral-server.log` and `corral-gate.log`.
+Sandboxes use this checkout's sandbox and overlay images, which `tests/images.sh` builds first,
+unless `CORRAL_SANDBOX_IMAGE` and `CORRAL_OVERLAY_IMAGE` name other images (see
+[docs/testing.md](../docs/testing.md)). A failed test keeps its trace in `test-results/`, next to
+`corral-server.log` and `corral-gate.log`.
 
 The `*screenshots.spec.ts` files open every page in both themes at desktop and phone width, full,
-empty, loading, failed and with its dialogs open, with fixed data in place of the API's. Each view
-must pass axe with no serious or critical violation, have one `h1` and headings that skip no
+empty, loading, failed and with its dialogs open, with fixed data in place of the API's. The
+`chromium` project checks light at desktop width and dark at phone width, and `other-views` the
+other two; `npx playwright test` runs every project. Each view must pass axe with no serious or critical violation, have one `h1` and headings that skip no
 level, never scroll sideways, and show focus on every element Tab reaches. With
 `CORRAL_SCREENSHOTS=<dir>`, they also save a screenshot of each view there.
 
