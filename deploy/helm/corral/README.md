@@ -363,4 +363,8 @@ the pod CIDR of the one node the client is pinned to, exempts less.
   manifests against the Kubernetes schemas, checks the rendered config with
   `corral-server config check`, and runs the unit tests in `tests/`.
 - `deploy/helm/e2e.sh` installs the chart into a kind cluster with agent-sandbox and walks
-  through sign-in, SSH, port forwarding, idle sleep and wake, upgrade and uninstall.
+  through sign-in, SSH, port forwarding, idle sleep and wake; `deploy/helm/e2e.sh all` adds
+  upgrade, uninstall and reinstall.
+
+`just chart` and `just e2e-kind` run them; [docs/testing.md](../../../docs/testing.md) has the
+rest.
