@@ -452,3 +452,21 @@ jobs:
           elif [[ -n "$issue" ]]; then
             gh issue close "$issue" --comment "Green again: $RUN"
           fi
+
+  # Deletes the ci-<commit> images, and the versions no tag reaches any more, three days old.
+  # Versions with another tag, and the platform images of a kept multi-platform tag, stay. Off
+  # main it lists what it would delete.
+  retention:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: snok/container-retention-policy@v3.1.0
+        with:
+          account: user
+          token: ${{ secrets.GITHUB_TOKEN }}
+          image-names: corral corral-sandbox corral-overlay corral-buildcache
+          image-tags: ci-*
+          cut-off: 3d
+          dry-run: ${{ github.ref != 'refs/heads/main' }}
