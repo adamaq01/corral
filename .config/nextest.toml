@@ -1,0 +1,54 @@
+nextest-version = "0.9.115"
+
+# Every run leaves out the agent-sandbox cluster tests, which need the kind cluster of `just
+# e2e-kind` (the kind profile), the stack test, which tests/e2e/compose.sh runs against its stack,
+# and HashiCorp Vault, which only the nightly run checks (the vault profile): OpenBao meets the
+# same contract on every run.
+[profile.default]
+default-filter = """
+not binary_id(corral-engine-agent-sandbox::cluster)
+and not binary_id(corral-frontdoor-gate::stack)
+and not (package(corral-secrets-vault) and test(/::vault$/))
+"""
+
+# Without the sandbox or overlay image, the tests that need them pass after printing why they
+# skipped. One of them shows its output at the end of every run, so a run without the images says so.
+[[profile.default.overrides]]
+filter = "binary_id(corral-engine-docker::docker) and test(=sandbox_lifecycle_over_real_ssh)"
+success-output = "final"
+
+# `just check`: no Docker, so none of the tests that start a container or need an image.
+[profile.hermetic]
+default-filter = """
+not binary_id(corral-engine-agent-sandbox::cluster)
+and not binary_id(corral-frontdoor-gate::stack)
+and not test(/postgres/)
+and not (package(corral-secrets-vault) and test(/::(openbao|vault)$/))
+and not binary_id(corral-engine-docker::docker)
+and not (binary_id(corral-frontdoor-gate::gate) and not test(/^limits::/))
+"""
+
+[profile.ci]
+retries = 1
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[profile.kind]
+inherits = "ci"
+default-filter = "binary_id(corral-engine-agent-sandbox::cluster)"
+
+[[profile.kind.overrides]]
+filter = "binary_id(corral-engine-agent-sandbox::cluster)"
+test-group = "kind-namespace"
+
+[profile.vault]
+inherits = "ci"
+default-filter = "package(corral-secrets-vault) and test(/::vault$/)"
+
+# The cluster tests share one namespace, and capacity checks and the idle reaper span all of it.
+[test-groups.kind-namespace]
+max-threads = 1
