@@ -496,15 +496,13 @@ login adam "$admin_password"
 # a terminal.
 api adam POST api/sandboxes/main/stop >/dev/null
 cpus=$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$adam_container")
+# Throttled while stopped: the sandbox is ready within milliseconds of starting, before a limit set
+# once it runs would bite.
+docker update --cpus 0.01 "$adam_container" >/dev/null
 woke_at=$SECONDS
 # Input stays open until the shell answers: a pty session ends at the end of its input.
 { printf 'id -un; exit\n'; sleep 15; } | ssh -tt -F ssh_config -i keys/adam main.adam@corral-e2e >slow-login.out 2>&1 &
 slow_login=$!
-for _ in $(seq 50); do
-  [[ "$(docker inspect --format '{{.State.Status}}' "$adam_container")" == running ]] && break
-  sleep 0.1
-done
-docker update --cpus 0.01 "$adam_container" >/dev/null
 sleep 6
 docker update --cpus "$(awk -v n="$cpus" 'BEGIN { print n / 1e9 }')" "$adam_container" >/dev/null
 wait "$slow_login" || true
