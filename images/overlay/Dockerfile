@@ -4,16 +4,25 @@
 # Corral's pieces for any base image. Each engine mounts this image at /opt/corral, so its root
 # is that directory, and every binary in it is static: it runs whatever libc the base has, or none.
 
-# The corral command, a static musl binary. The stage runs on the build host and cross-compiles,
-# so a multi-platform build never runs rustc under emulation.
-FROM --platform=$BUILDPLATFORM rust:1.100.0-slim-trixie AS corral-command
+# The corral command, a static musl binary. The Rust stages run on the build host and
+# cross-compile, so a multi-platform build never runs rustc under emulation.
+FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:0.1.78-rust-1.100.0-slim-trixie AS chef
+WORKDIR /src
+
+FROM chef AS recipe
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS corral-command
 ARG TARGETARCH
 # The glibc cross compilers build ring's C code and link for musl, with the musl libc and start
 # files rustc brings.
 ENV CC_x86_64_unknown_linux_musl=x86_64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-gnu-gcc \
-    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc \
+    CARGO_PROFILE_RELEASE_STRIP=true
 RUN case "$TARGETARCH" in \
       amd64) echo x86_64-unknown-linux-musl > /rust-target; gcc=gcc-x86-64-linux-gnu ;; \
       arm64) echo aarch64-unknown-linux-musl > /rust-target; gcc=gcc-aarch64-linux-gnu ;; \
@@ -24,15 +33,15 @@ RUN case "$TARGETARCH" in \
       && apt-get install -y --no-install-recommends "$gcc" "libc6-dev-$TARGETARCH-cross" \
       && rm -rf /var/lib/apt/lists/*; \
     fi
-WORKDIR /src
-COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY rust-toolchain.toml ./
 RUN rustup target add "$(cat /rust-target)"
+COPY --from=recipe /src/recipe.json ./
+RUN cargo chef cook --release --locked --package corral-cli --target "$(cat /rust-target)" \
+      --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
 COPY crates crates
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corral-cargo-registry,sharing=locked \
-    --mount=type=cache,target=/src/target,id=corral-command-target,sharing=locked \
-    target="$(cat /rust-target)" \
+RUN target="$(cat /rust-target)" \
  && cargo build --release --locked --package corral-cli --target "$target" \
-      --config profile.release.strip=true \
  && cp "target/$target/release/corral" /corral
 
 # The C programs, built statically against musl for the target platform.

@@ -17,9 +17,17 @@ ADD --checksum=sha256:${OPKSSH_SHA256_ARM64} \
 
 FROM opkssh-${TARGETARCH} AS opkssh
 
-# The build stage runs on the build host and cross-compiles, so a multi-platform build never
-# runs rustc under emulation.
-FROM --platform=$BUILDPLATFORM rust:1.100.0-slim-trixie AS build
+# The Rust stages run on the build host and cross-compile, so a multi-platform build never runs
+# rustc under emulation.
+FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:0.1.78-rust-1.100.0-slim-trixie AS chef
+WORKDIR /src
+
+FROM chef AS recipe
+COPY Cargo.toml Cargo.lock ./
+COPY crates crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS build
 ARG TARGETARCH
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
     CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
@@ -33,13 +41,14 @@ RUN case "$TARGETARCH" in \
       && apt-get install -y --no-install-recommends "$gcc" "libc6-dev-$TARGETARCH-cross" \
       && rm -rf /var/lib/apt/lists/*; \
     fi
-WORKDIR /src
-COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY rust-toolchain.toml ./
 RUN rustup target add "$(cat /rust-target)"
+COPY --from=recipe /src/recipe.json ./
+RUN cargo chef cook --release --locked --package corral-server --target "$(cat /rust-target)" \
+      --recipe-path recipe.json
+COPY Cargo.toml Cargo.lock ./
 COPY crates crates
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=corral-cargo-registry,sharing=locked \
-    --mount=type=cache,target=/src/target,id=corral-server-target,sharing=locked \
-    target="$(cat /rust-target)" \
+RUN target="$(cat /rust-target)" \
  && cargo build --release --locked --package corral-server --target "$target" \
  && cp "target/$target/release/corral-server" /corral-server
 # Corral writes opkssh's server files at startup; opkssh keeps its JWKS cache and log here.
