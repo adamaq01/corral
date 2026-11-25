@@ -646,11 +646,20 @@ async fn inspection(cluster: Arc<Cluster>, id: SandboxId) {
 
     cluster.wake(&id, &[]).await;
     let running = cluster.engine.inspect(&id).await.unwrap();
+    let node = cluster
+        .pods
+        .get(&id.0)
+        .await
+        .unwrap()
+        .spec
+        .unwrap()
+        .node_name
+        .unwrap();
     for (label, value) in [
         ("Namespace", cluster.namespace.as_str()),
         ("Sandbox", &id.0),
         ("Pod", &id.0),
-        ("Node", "corral-dev-control-plane"),
+        ("Node", node.as_str()),
         ("Phase", "Running"),
         ("Restarts", "0"),
         ("Image", &image),
