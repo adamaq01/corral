@@ -5,6 +5,9 @@ on:
     branches: [main, "ci/**"]
     tags: ["*"]
   pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 # A newer push to the same ref supersedes a run, on main too: the newest commit publishes.
 concurrency:
@@ -22,7 +25,8 @@ env:
 jobs:
   # The jobs this run needs, which tests/affected.sh picks from the paths changed since the last
   # commit whose push run passed on this branch, so the changes of a cancelled or failed run are
-  # tested again; for a pull request, since its base. Tags need every job.
+  # tested again; for a pull request, since its base. Tags, the nightly run and a manual run need
+  # every job, and nightly adds the nightly-* recipes.
   changes:
     runs-on: ubuntu-latest
     permissions:
@@ -31,6 +35,7 @@ jobs:
     outputs:
       jobs: ${{ steps.affected.outputs.jobs }}
       images: ${{ steps.affected.outputs.images }}
+      nightly: ${{ steps.affected.outputs.nightly }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,12 +47,14 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           base=
+          nightly=false
           case "$GITHUB_EVENT_NAME/$GITHUB_REF_TYPE" in
             pull_request/*) base=$PR_BASE ;;
             push/branch)
               base=$(gh run list --workflow ci.yml --branch "$GITHUB_REF_NAME" --event push \
                 --status success --limit 1 --json headSha --jq '.[0].headSha // empty')
               ;;
+            *) nightly=true ;;
           esac
           if [[ -n "$base" ]] && { git cat-file -e "$base^{commit}" 2>/dev/null || git fetch --quiet origin "$base"; }; then
             selected=$(CORRAL_BASE=$base tests/affected.sh jobs)
@@ -58,11 +65,12 @@ jobs:
           if grep -qxE 'rust|web|images|compose|kind' <<<"$selected"; then
             images=true
           fi
-          echo "Jobs for the changes since ${base:-the start}: [${selected//$'\n'/ }]" \
+          echo "Jobs for the changes since ${base:-the start}: [${selected//$'\n'/ }], nightly: $nightly" \
             | tee -a "$GITHUB_STEP_SUMMARY"
           {
             echo "jobs=$(jq -cnR '[inputs | select(. != "")]' <<<"$selected")"
             echo "images=$images"
+            echo "nightly=$nightly"
           } >>"$GITHUB_OUTPUT"
 
   # Each image is built once per run, natively for each platform, and pushed by digest; images
@@ -176,6 +184,8 @@ jobs:
           shared-key: test
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: just ci-rust
+      - if: ${{ !cancelled() && needs.changes.outputs.nightly == 'true' }}
+        run: just nightly-vault
       - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
@@ -212,6 +222,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
         working-directory: web
       - run: just ci-web
+      - if: ${{ !cancelled() && needs.changes.outputs.nightly == 'true' }}
+        run: just nightly-web
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
@@ -250,7 +262,28 @@ jobs:
       - uses: taiki-e/install-action@v2.90.8
         with:
           tool: just@1.59.0
-      - run: just ci-compose
+      - if: needs.changes.outputs.nightly != 'true'
+        run: just ci-compose
+      # The whole compose e2e drives Herdr's hc and builds the corral command.
+      - if: needs.changes.outputs.nightly == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: false
+      - if: needs.changes.outputs.nightly == 'true'
+        name: Install hc, the version and checksum the overlay pins
+        run: |
+          version=$(sed -n 's/^ARG HERDR_CORE_VERSION=//p' images/overlay/Dockerfile)
+          sha256=$(sed -n 's/^ARG HERDR_CORE_SHA256_AMD64=//p' images/overlay/Dockerfile)
+          curl -fsSL -o "$RUNNER_TEMP/herdr-core.tar.gz" \
+            "https://releases.herdr.dev/core/$version/herdr-core-linux-x86_64.tar.gz"
+          echo "$sha256  $RUNNER_TEMP/herdr-core.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "$RUNNER_TEMP/herdr-core.tar.gz" -C "$HOME/.local/bin" --no-same-owner herdr-core
+          ln -s herdr-core "$HOME/.local/bin/hc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - if: needs.changes.outputs.nightly == 'true'
+        run: just nightly-compose
 
   # On one kind cluster, the agent-sandbox engine's cluster tests, then the chart e2e.
   kind:
@@ -279,7 +312,7 @@ jobs:
           install -m 755 "$RUNNER_TEMP/kind" "$RUNNER_TEMP/bin/kind"
           deploy/helm/tools.sh "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - run: just ci-kind
+      - run: just ${{ needs.changes.outputs.nightly == 'true' && 'nightly-kind' || 'ci-kind' }}
 
   chart:
     needs: [changes]
@@ -310,6 +343,31 @@ jobs:
         with:
           command: check advisories
 
+  opkssh:
+    needs: [changes, images]
+    if: needs.changes.outputs.nightly == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CORRAL_SERVER_IMAGE: corral-server:e2e
+      CORRAL_SANDBOX_IMAGE: corral-sandbox:e2e
+      CORRAL_OVERLAY_IMAGE: corral-overlay:e2e
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/ci-images
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: taiki-e/install-action@v2.90.8
+        with:
+          tool: just@1.59.0
+      - run: npm ci
+        working-directory: web
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: just nightly-opkssh
+
   # Publishing retags the images every check ran against, so it ships exactly those. It runs when
   # this run built images and no job failed or was cancelled; a job the changes did not need is
   # skipped and does not hold it back.
@@ -319,7 +377,7 @@ jobs:
       && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
       && needs.images.result == 'success'
       && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
-    needs: [changes, images, rust, web, images-test, compose, kind, chart, deny]
+    needs: [changes, images, rust, web, images-test, compose, kind, chart, deny, opkssh]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -366,3 +424,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: helm push "$RUNNER_TEMP"/chart/corral-*.tgz oci://ghcr.io/adamaq01/charts
+
+  # A failed nightly run opens one issue, or comments on it while it is open; the next green
+  # night closes it.
+  nightly-report:
+    if: always() && github.event_name == 'schedule'
+    needs: [changes, image, images, rust, web, images-test, compose, kind, chart, deny, opkssh]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      FAILED: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - run: |
+          title="The nightly CI run fails"
+          issue=$(gh issue list --state open --author app/github-actions --search "in:title \"$title\"" \
+            --json number,title | jq -r --arg title "$title" 'map(select(.title == $title))[0].number // empty')
+          if [[ "$FAILED" == true ]]; then
+            if [[ -n "$issue" ]]; then
+              gh issue comment "$issue" --body "Failed again: $RUN"
+            else
+              gh issue create --title "$title" --body "The nightly run on main failed: $RUN. The next green night closes this issue."
+            fi
+          elif [[ -n "$issue" ]]; then
+            gh issue close "$issue" --comment "Green again: $RUN"
+          fi
