@@ -73,7 +73,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 
-for tool in docker ssh ssh-keygen curl jq hc; do
+for tool in docker ssh ssh-keygen curl jq hc cargo; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 remove_stack
@@ -119,6 +119,24 @@ max_sandboxes_per_user = 2
 key = "dev"
 label = "Local build"
 reference = "$sandbox_image"
+
+[[catalog.sizes]]
+key = "small"
+label = "Small"
+cpu_request = "500m"
+cpu_limit = "2"
+memory_request = "1Gi"
+memory_limit = "4Gi"
+home_size = "10Gi"
+
+[[catalog.sizes]]
+key = "roomy"
+label = "Roomy"
+cpu_request = "500m"
+cpu_limit = "3"
+memory_request = "1Gi"
+memory_limit = "6Gi"
+home_size = "20Gi"
 EOF
 cat >compose.e2e.yaml <<EOF
 services:
@@ -381,6 +399,30 @@ expect "what other has of the rest" "unset absent" \
   "$(as adam other.adam 'echo "${E2E_PLAIN:-unset} $(test -e ~/.e2e && echo present || echo absent)"')"
 api adam DELETE api/sandboxes/other >/dev/null
 ok "a new sandbox gets the entry that applies to new sandboxes, with the shared value: the override is main's alone"
+
+# A person on a terminal, driven through a real pty and read with a terminal emulator.
+CORRAL_E2E_SSH_CONFIG=$work/ssh_config CORRAL_E2E_SSH_KEY=$work/keys/adam \
+  CORRAL_E2E_LOBBY_LOGIN=lobby.adam@corral-e2e \
+  cargo test --quiet --manifest-path "$repo/Cargo.toml" --all-features \
+  --package corral-frontdoor-gate --test stack >>"$log" 2>&1 \
+  || fail "the installer on a terminal: $(tail -n 40 "$log")"
+expect "lobby's size and entries" "roomy E2E_PLAIN E2E_TOKEN" \
+  "$(api adam GET api/sandboxes/lobby | jq -r .size) $(api adam GET api/sandboxes/lobby/environment \
+    | jq -r '[.[].entry.target] | join(" ")')"
+api adam DELETE api/sandboxes/lobby >/dev/null
+ok "ssh lobby.adam on a terminal: the installer made it roomy with E2E_PLAIN, and its shell showed corral status and the variable"
+
+made=$(ssh -F ssh_config -i keys/adam script.adam@corral-e2e corral-new \
+  <<<'{"size": "roomy", "environment": ["E2E_PLAIN"]}')
+expect "corral-new's output" "script script.adam dev roomy E2E_PLAIN" \
+  "$(jq -r '"\(.name) \(.sshUsername) \(.image) \(.size) \([.environment[].name] | join(" "))"' <<<"$made")"
+expect "E2E_PLAIN in script" plain-value "$(as adam script.adam 'printenv E2E_PLAIN')"
+if out=$(ssh -F ssh_config -i keys/adam main.adam@corral-e2e corral-new <<<'{}' 2>&1); then
+  fail "corral-new made main again: $out"
+fi
+expect "corral-new on main" "sandbox main exists already" "$(jq -r .error <<<"$out")"
+api adam DELETE api/sandboxes/script >/dev/null
+ok "corral-new made script from a JSON spec on stdin, and refuses main, which exists"
 
 if docker compose logs --no-color 2>&1 | grep -qF "$token"; then
   fail "a secret value appears in the service logs"
