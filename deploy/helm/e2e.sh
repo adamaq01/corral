@@ -333,16 +333,15 @@ expect "the home after a wake" kept "$(as main.adam 'cat ~/marker')"
 ok "ssh woke main in $((SECONDS - woke_at))s, home kept"
 
 if [[ "$part" == all ]]; then
-  pod() {
-    kubectl --namespace "$namespace" get pods -l app.kubernetes.io/component=server -o jsonpath='{.items[0].metadata.uid}'
-  }
-  before=$(pod)
+  before=$(kubectl --namespace "$namespace" get pods -l app.kubernetes.io/component=server \
+    --field-selector=status.phase=Running -o name)
   as main.adam 'sleep 30; echo survived' >"$work/session.out" &
   session=$!
   sleep 2
   install --set limits.maxRunning=7
+  kubectl --namespace "$namespace" wait --for=delete "$before" --timeout=120s >>"$log" 2>&1 \
+    || fail "the config changed and Corral was not restarted"
   connect_web
-  [[ "$(pod)" != "$before" ]] || fail "the config changed and Corral was not restarted"
   wait "$session" || true
   expect "an SSH session open across the upgrade" survived "$(cat "$work/session.out")"
   expect "the keys Secret after an upgrade" "$keys" "$(secret_data "$release-keys")"
