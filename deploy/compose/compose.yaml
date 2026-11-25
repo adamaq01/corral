@@ -22,7 +22,8 @@ services:
       retries: 3
 
   # The SSH front door: the same image, which reaches Corral's internal listener and opens each
-  # session in its sandbox with `docker exec`.
+  # session in its sandbox with `docker exec`, through the proxy below. It faces the internet, so
+  # it never holds the Docker socket. It runs as root to read the host key, whatever its owner.
   gate:
     image: ghcr.io/adamaq01/corral:${CORRAL_VERSION:-latest}
     restart: unless-stopped
@@ -30,23 +31,44 @@ services:
     user: root
     environment:
       CORRAL_GATE_SECRET: ${CORRAL_GATE_SECRET:-}
+      DOCKER_HOST: tcp://docker-proxy:2375
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ./config.toml:/etc/corral/config.toml:ro
       - ./ssh_host_key:/etc/corral/ssh_host_key:ro
-      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "48291:2222"
     networks:
       - corral
+      - docker-proxy
+    depends_on:
+      - docker-proxy
     healthcheck:
       test: ["CMD", "corral-server", "healthcheck", "--gate"]
       interval: 5s
       timeout: 10s
       retries: 3
 
+  # The gate's only way to Docker, which lets it run sessions in sandboxes and nothing else; see
+  # docker-proxy.cfg. Root opens the socket, whose group differs between hosts; it keeps no
+  # capabilities.
+  docker-proxy:
+    image: haproxy:3.2-alpine@sha256:7816a9801a6846b912bc37e48529808e2fa87c3c47992441940f68e393ebcfeb
+    restart: unless-stopped
+    user: root
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./docker-proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - docker-proxy
+
 networks:
   corral: {}
+  docker-proxy:
+    internal: true
 
 volumes:
   corral-data: {}

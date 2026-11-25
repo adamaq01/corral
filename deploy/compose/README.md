@@ -1,7 +1,8 @@
 # Corral on Docker Compose
 
 Two containers of the same image run the whole service: Corral (the web UI and API, local
-accounts, SQLite and the Docker engine) and the gate (`corral-server gate`, the SSH front door).
+accounts, SQLite and the Docker engine) and the gate (`corral-server gate`, the SSH front door),
+which reaches Docker through a third, `docker-proxy`, that lets it run sessions and nothing else.
 Each sandbox is a Docker container with its home on a named volume, from any image: the Corral
 overlay, mounted into every sandbox, brings the sandbox user, sudo, OpenSSH, Herdr and the
 `corral` command ([docs/images.md](../../docs/images.md)). Users reach a sandbox with any SSH
@@ -55,7 +56,7 @@ Compose plugin, and `ssh-keygen`.
 
    `ssh-keygen -lf ssh_host_key.pub` prints the fingerprint users see on first connect.
 
-5. Start both services and wait until they are healthy:
+5. Start the services and wait until they are healthy:
 
    ```sh
    docker compose up -d --wait
@@ -187,11 +188,16 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
 
 ## Security
 
-- Corral and the gate mount the Docker socket, which gives them control of the host's Docker,
-  and so root on the host: Corral runs sandboxes, and the gate opens each session in its sandbox
-  with `docker exec`. Both run as root inside their containers because the socket's owner and
-  group differ between hosts; a non-root user would not limit what the socket allows. The socket
-  is never mounted into sandboxes. The gate faces the internet, so keep it up to date.
+- Corral mounts the Docker socket, which gives it control of the host's Docker, and so root on
+  the host: it runs sandboxes. It runs as root inside its container because the socket's owner
+  and group differ between hosts; a non-root user would not limit what the socket allows.
+- The gate faces the internet, so it never holds the socket. It reaches Docker through
+  `docker-proxy`, an HAProxy that holds the socket on a network of its own with only the gate on
+  it, and lets through exactly what sessions need (`docker-proxy.cfg`): creating an exec in a
+  sandbox's container (`corral-<sandbox id>`), and starting, resizing and inspecting that exec.
+  The gate cannot create, start, stop or remove containers, read images, volumes or networks,
+  mount anything, or exec into Corral's own containers; it can still run any command, as any
+  user, in any sandbox. The socket is never mounted into sandboxes. Keep the gate up to date.
 - The gate holds no state and no key to any sandbox. For each connection it makes a key, starts
   the overlay's OpenSSH in the sandbox as the sandbox user with that key alone allowed, and talks
   to it over the exec's standard input and output: sandboxes listen on no port.
