@@ -2,15 +2,21 @@ use std::time::{Duration, Instant};
 
 use corral_core::{Error, Result};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::GateSecret;
 use crate::api::{
-    ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated, CLIENT_STATE, ClientState,
-    WORKED, Worked,
+    ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated, CHECK_IMAGE, CLIENT_STATE,
+    CREATE, CheckImage, ClientState, Create, Created, Enter, Entered, ImageChecked, LOBBY, WORKED,
+    Worked,
 };
 
 // `opkssh verify` takes up to 5 seconds; the server waits up to its wake deadline to arrive.
 const AUTHENTICATE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Checking an image asks its registry.
+const REGISTRY: Duration = Duration::from_secs(60);
+/// Making a sandbox can pull its image first.
+const CREATE_TIMEOUT: Duration = Duration::from_mins(15);
 const ARRIVE_MARGIN: Duration = Duration::from_secs(30);
 const UNREACHABLE_PATIENCE: Duration = Duration::from_secs(20);
 const RECONNECT_EVERY: Duration = Duration::from_millis(500);
@@ -64,6 +70,39 @@ impl ServerClient {
 
     pub(crate) async fn keep_client_state(&self, kept: &ClientState) -> Result<()> {
         self.post(CLIENT_STATE, kept, QUICK).await.map(drop)
+    }
+
+    pub(crate) async fn enter(&self, username: &str) -> Result<Entered> {
+        let request = Enter {
+            username: username.to_owned(),
+        };
+        self.answer(LOBBY, &request, QUICK).await
+    }
+
+    /// Why no sandbox can be made from the image `reference`, if none can.
+    pub(crate) async fn check_image(&self, reference: &str) -> Result<Option<String>> {
+        let request = CheckImage {
+            reference: reference.to_owned(),
+        };
+        let checked: ImageChecked = self.answer(CHECK_IMAGE, &request, REGISTRY).await?;
+        Ok(checked.problem)
+    }
+
+    pub(crate) async fn create(&self, request: &Create) -> Result<Created> {
+        self.answer(CREATE, request, CREATE_TIMEOUT).await
+    }
+
+    async fn answer<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+        timeout: Duration,
+    ) -> Result<T> {
+        self.post(path, body, timeout)
+            .await?
+            .json()
+            .await
+            .map_err(|err| Error::internal(format!("read Corral's answer at {path}"), err))
     }
 
     async fn post(

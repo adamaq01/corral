@@ -12,6 +12,7 @@ mod herdr;
 pub mod host_key;
 mod limits;
 mod link;
+mod lobby;
 mod relay;
 mod routes;
 mod secret;

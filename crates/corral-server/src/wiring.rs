@@ -6,12 +6,15 @@ use axum::Router;
 use axum::routing::get;
 use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
-use corral_core::app::{Accounts, Environment, Keys, Limits, SandboxLinks, Sandboxes, SshAccess};
+use corral_core::app::{
+    Accounts, Environment, Keys, Limits, Lobby, SandboxLinks, Sandboxes, SshAccess,
+};
 use corral_core::ports::{
     ActivitySignals, IdentityProvider, RegistryAccess, SandboxEngine, SandboxRepo, SecretStore,
 };
 use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
+use corral_frontdoor_gate::GateSecret;
 use corral_identity_local::LocalProvider;
 use corral_identity_oidc::OidcProvider;
 use corral_registry_oci::OciRegistry;
@@ -98,6 +101,8 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         sandboxes.clone(),
         providers.clone(),
     );
+    let lobby = Lobby::new(store.clone(), sandboxes.clone(), environment.clone());
+    let internal = front_door(config, access, lobby, signals.clone(), gate_secret);
     let api = Api {
         accounts: Accounts::new(
             store.clone(),
@@ -116,17 +121,12 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         session_key,
         secure_cookies: config.http.base_url.is_https(),
         trust_forwarded_for: config.http.trust_forwarded_for,
-        activity: signals.clone(),
+        activity: signals,
     };
     let mut public = corral_api::router(api, provider_routes).route("/healthz", get(healthz));
     if let Some(ui) = Ui::find(config.http.ui_dir.as_deref())? {
         public = public.fallback_service(ui.router());
     }
-    let internal = match &config.frontdoor {
-        FrontDoor::Gate(gate) => {
-            corral_frontdoor_gate::router(Arc::new(access), signals, gate.clone(), gate_secret)
-        }
-    };
     Ok(App {
         public,
         internal: internal.route("/healthz", get(healthz)),
@@ -186,6 +186,25 @@ async fn providers(
 }
 
 /// The engine, the idle sweep it runs under, and where the signals of work go.
+/// The internal API the front door asks.
+fn front_door(
+    config: &Config,
+    access: SshAccess,
+    lobby: Lobby,
+    signals: Arc<dyn ActivitySignals>,
+    secret: GateSecret,
+) -> Router {
+    match &config.frontdoor {
+        FrontDoor::Gate(gate) => corral_frontdoor_gate::router(
+            Arc::new(access),
+            Arc::new(lobby),
+            signals,
+            gate.clone(),
+            secret,
+        ),
+    }
+}
+
 struct Started {
     engine: Arc<dyn SandboxEngine>,
     lifecycle: JoinHandle<()>,

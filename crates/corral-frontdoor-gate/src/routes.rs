@@ -10,13 +10,17 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
 use corral_core::Error;
-use corral_core::app::{Arrival, FailureWindow, Network, SshAccess};
-use corral_core::domain::{Sandbox, SandboxId};
+use corral_core::app::{
+    Arrival, Catalog, Choice, Entrance, FailureWindow, Lobby, Made, Network, Offer, SshAccess,
+};
+use corral_core::domain::{Sandbox, SandboxId, SshUsername, Target};
 use corral_core::ports::ActivitySignals;
 
 use crate::api::{
-    ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated, CLIENT_STATE, ClientState,
-    WORKED, Worked,
+    self, ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated, CHECK_IMAGE,
+    CLIENT_STATE, CREATE, CheckImage, ClientState, Create, Created, Enter, Entered, EntryKind,
+    ImageChecked, ImageChoice, LOBBY, MadeEntry, NamedImages, OfferedEntry, SizeChoice, WORKED,
+    Worked,
 };
 use crate::{GateConfig, GateSecret};
 
@@ -25,6 +29,7 @@ const LOCKOUT_WINDOW: Duration = Duration::from_mins(5);
 
 struct Gatekeeper {
     access: Arc<SshAccess>,
+    lobby: Arc<Lobby>,
     activity: Arc<dyn ActivitySignals>,
     settings: GateConfig,
     failures: FailureWindow<Network>,
@@ -33,12 +38,14 @@ struct Gatekeeper {
 /// The server's half of the internal API, which answers only the gate.
 pub fn router(
     access: Arc<SshAccess>,
+    lobby: Arc<Lobby>,
     activity: Arc<dyn ActivitySignals>,
     settings: GateConfig,
     secret: GateSecret,
 ) -> Router {
     let gatekeeper = Gatekeeper {
         access,
+        lobby,
         activity,
         settings,
         failures: FailureWindow::new(MAX_FAILED_CONNECTIONS, LOCKOUT_WINDOW),
@@ -48,6 +55,9 @@ pub fn router(
         .route(ARRIVE, post(arrive))
         .route(WORKED, post(worked))
         .route(CLIENT_STATE, post(client_state))
+        .route(LOBBY, post(enter))
+        .route(CHECK_IMAGE, post(check_image))
+        .route(CREATE, post(create))
         .with_state(Arc::new(gatekeeper))
         .route_layer(middleware::from_fn(move |request: Request, next: Next| {
             let admitted = secret.admits(
@@ -186,6 +196,168 @@ async fn client_state(
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => internal_error(&error),
+    }
+}
+
+async fn enter(
+    State(gatekeeper): State<Arc<Gatekeeper>>,
+    request: Result<Json<Enter>, JsonRejection>,
+) -> Response {
+    let Ok(Json(Enter { username })) = request else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let lobby = &gatekeeper.lobby;
+    match lobby.enter(&username).await {
+        Ok(Entrance::Sandbox) => Json(Entered::Sandbox).into_response(),
+        Ok(Entrance::Lobby(offer)) => Json(Entered::Lobby {
+            offer: offered(lobby.catalog(), offer),
+        })
+        .into_response(),
+        Ok(Entrance::Refused(reason)) => Json(Entered::Refused { reason }).into_response(),
+        Err(error) => internal_error(&error),
+    }
+}
+
+async fn check_image(
+    State(gatekeeper): State<Arc<Gatekeeper>>,
+    request: Result<Json<CheckImage>, JsonRejection>,
+) -> Response {
+    let Ok(Json(CheckImage { reference })) = request else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match gatekeeper.lobby.check_image(&reference).await {
+        Ok(()) => Json(ImageChecked { problem: None }).into_response(),
+        Err(error) => match told(&error) {
+            Some(problem) => Json(ImageChecked {
+                problem: Some(problem.to_owned()),
+            })
+            .into_response(),
+            None => internal_error(&error),
+        },
+    }
+}
+
+async fn create(
+    State(gatekeeper): State<Arc<Gatekeeper>>,
+    request: Result<Json<Create>, JsonRejection>,
+) -> Response {
+    let Ok(Json(Create { username, spec })) = request else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let choice = Choice {
+        image: spec.image,
+        size: spec.size,
+        environment: spec.environment,
+    };
+    // As in arrive: the sandbox is made whole even when the gate stops waiting.
+    let lobby = gatekeeper.lobby.clone();
+    let made = tokio::spawn(async move { lobby.create(&username, choice).await })
+        .await
+        .unwrap_or_else(|failed| Err(Error::internal("create", failed)));
+    match made {
+        Ok(made) => Json(Created::Made {
+            made: made_of(made),
+        })
+        .into_response(),
+        Err(error) => match told(&error) {
+            Some(reason) => Json(Created::Refused {
+                reason: reason.to_owned(),
+            })
+            .into_response(),
+            None => internal_error(&error),
+        },
+    }
+}
+
+/// What an error tells the person who caused it, unless it is Corral's own failure.
+fn told(error: &Error) -> Option<&str> {
+    match error {
+        Error::Invalid(why)
+        | Error::NotFound(why)
+        | Error::Conflict(why)
+        | Error::LimitReached(why)
+        | Error::Inactive(why) => Some(why),
+        Error::Forbidden | Error::Internal { .. } => None,
+    }
+}
+
+fn offered(catalog: &Catalog, offer: Offer) -> api::Offer {
+    api::Offer {
+        handle: offer.owner.to_string(),
+        name: offer.name.map(|name| name.to_string()),
+        images: catalog
+            .images()
+            .iter()
+            .map(|image| ImageChoice {
+                key: image.key.to_string(),
+                label: image.label.clone(),
+            })
+            .collect(),
+        named_images: catalog.named_images().map(|named| NamedImages {
+            registries: named.registries.clone(),
+            max_bytes: named.max_bytes.get(),
+        }),
+        sizes: catalog
+            .sizes()
+            .iter()
+            .map(|size| SizeChoice {
+                key: size.key.to_string(),
+                label: size.label.clone(),
+                cpu_millis: size.resources.cpu_millis.limit(),
+                memory_bytes: size.resources.memory_bytes.limit(),
+                home_bytes: size.resources.home_bytes.get(),
+            })
+            .collect(),
+        default_image: offer.defaults.image.to_string(),
+        default_size: offer.defaults.size.to_string(),
+        entries: offer
+            .entries
+            .iter()
+            .map(|entry| {
+                let (kind, name) = kind_and_name(&entry.target);
+                OfferedEntry {
+                    id: entry.id.0.to_string(),
+                    kind,
+                    name,
+                    secret: entry.is_secret(),
+                    template: entry.template,
+                    apply_to_new: entry.apply_to_new,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn made_of(made: Made) -> api::Made {
+    let sandbox = made.view.sandbox;
+    let ssh_username = SshUsername {
+        handle: made.view.owner.handle,
+        sandbox: Some(sandbox.name.clone()),
+    };
+    api::Made {
+        name: sandbox.name.to_string(),
+        ssh_username: ssh_username.to_string(),
+        image: sandbox.image.to_string(),
+        size: sandbox.size.to_string(),
+        environment: made
+            .attached
+            .iter()
+            .map(|entry| {
+                let (kind, name) = kind_and_name(&entry.target);
+                MadeEntry {
+                    id: entry.id.0.to_string(),
+                    kind,
+                    name,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn kind_and_name(target: &Target) -> (EntryKind, String) {
+    match target {
+        Target::Variable(name) => (EntryKind::Variable, name.to_string()),
+        Target::File(path) => (EntryKind::File, path.to_string()),
     }
 }
 

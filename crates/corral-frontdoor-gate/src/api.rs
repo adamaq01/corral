@@ -9,6 +9,9 @@ pub(crate) const AUTHENTICATE: &str = "/gate/authenticate";
 pub(crate) const ARRIVE: &str = "/gate/arrive";
 pub(crate) const WORKED: &str = "/gate/worked";
 pub(crate) const CLIENT_STATE: &str = "/gate/client-state";
+pub(crate) const LOBBY: &str = "/gate/lobby";
+pub(crate) const CHECK_IMAGE: &str = "/gate/check-image";
+pub(crate) const CREATE: &str = "/gate/create";
 
 /// A credential presented for a login. Unproven, it is a key offered before its signature, which
 /// only says whether the client may go on to prove it.
@@ -76,4 +79,143 @@ pub struct ClientState {
     pub sandbox: String,
     pub client: String,
     pub state: String,
+}
+
+/// A login with a terminal, which may land in the lobby.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Enter {
+    pub username: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Entered {
+    /// The login names a sandbox that exists: arriving goes on as usual.
+    Sandbox,
+    Lobby {
+        offer: Offer,
+    },
+    Refused {
+        reason: String,
+    },
+}
+
+/// What a new sandbox may be made from, with the owner's defaults. Values never leave the server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Offer {
+    pub handle: String,
+    /// The name the login gives the new sandbox, if it gives one.
+    pub name: Option<String>,
+    pub images: Vec<ImageChoice>,
+    /// Absent when sandboxes run only the catalog's images.
+    pub named_images: Option<NamedImages>,
+    pub sizes: Vec<SizeChoice>,
+    pub default_image: String,
+    pub default_size: String,
+    pub entries: Vec<OfferedEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageChoice {
+    pub key: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedImages {
+    pub registries: Vec<String>,
+    pub max_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SizeChoice {
+    pub key: String,
+    pub label: String,
+    pub cpu_millis: u64,
+    pub memory_bytes: u64,
+    pub home_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EntryKind {
+    Variable,
+    File,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedEntry {
+    pub id: String,
+    pub kind: EntryKind,
+    /// The variable's name, or the file's path in the home.
+    pub name: String,
+    pub secret: bool,
+    pub template: bool,
+    pub apply_to_new: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckImage {
+    pub reference: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageChecked {
+    /// Why no sandbox can be made from the image, if none can.
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Create {
+    /// `<sandbox>.<handle>`, naming a sandbox that does not exist yet.
+    pub username: String,
+    pub spec: Spec,
+}
+
+/// How a new sandbox is made, as `corral-new` reads it. Each field left out takes the owner's
+/// default; without `environment`, the entries that apply to new sandboxes are attached.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Spec {
+    /// A catalog image's key, or else an image reference.
+    pub image: Option<String>,
+    pub size: Option<String>,
+    /// Entries by id, or by the variable or file they set.
+    pub environment: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum Created {
+    Made { made: Made },
+    Refused { reason: String },
+}
+
+/// A sandbox the lobby made, as `corral-new` prints it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Made {
+    pub name: String,
+    pub ssh_username: String,
+    /// A catalog image's key, or the image reference it was made from.
+    pub image: String,
+    pub size: String,
+    pub environment: Vec<MadeEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MadeEntry {
+    pub id: String,
+    pub kind: EntryKind,
+    pub name: String,
 }

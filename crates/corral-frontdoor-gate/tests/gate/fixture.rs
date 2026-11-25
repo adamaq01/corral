@@ -75,10 +75,10 @@ pub fn docker_available() -> bool {
 }
 
 /// A sandbox container as the Docker engine makes one, with the session variable `FOO_TOKEN`.
-struct Container(String);
+pub struct Container(String);
 
 impl Container {
-    fn start(id: &SandboxId) -> Self {
+    pub fn start(id: &SandboxId) -> Self {
         let name = format!("corral-{}", id.0);
         let mount = format!("type=image,source={},target=/opt/corral", overlay());
         let started = docker(&[
@@ -160,6 +160,7 @@ impl Fixture {
         let internal_url = format!("http://{}", internal.local_addr().unwrap());
         let api = router(
             world.access.clone(),
+            world.lobby.clone(),
             world.signals.clone(),
             GateConfig::default(),
             secret.clone(),
@@ -207,23 +208,39 @@ impl Fixture {
         self.container.as_ref().expect("a container").exec(script)
     }
 
+    /// The arguments of `ssh` with options a person's config would hold, as `username`, then `args`.
+    pub fn ssh_args(&self, username: &str, args: &[&str]) -> Vec<String> {
+        let known_hosts = self.dir.path().join("known_hosts");
+        let mut all: Vec<String> = [
+            "-F",
+            "/dev/null",
+            "-i",
+            &self.key().display().to_string(),
+            "-p",
+            &self.gate.port().to_string(),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            &format!("UserKnownHostsFile={}", known_hosts.display()),
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            &format!("{username}@127.0.0.1"),
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        all.extend(args.iter().map(|&arg| arg.to_owned()));
+        all
+    }
+
     /// `ssh` with options a person's config would hold, as `username`, then `args`.
     pub fn ssh_command(&self, username: &str, args: &[&str]) -> tokio::process::Command {
         let mut command = tokio::process::Command::new("ssh");
         command
-            .args(["-F", "/dev/null", "-i"])
-            .arg(self.key())
-            .args(["-p", &self.gate.port().to_string()])
-            .args(["-o", "IdentitiesOnly=yes"])
-            .args(["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"])
-            .arg("-o")
-            .arg(format!(
-                "UserKnownHostsFile={}",
-                self.dir.path().join("known_hosts").display()
-            ))
-            .args(["-o", "GlobalKnownHostsFile=/dev/null"])
-            .arg(format!("{username}@127.0.0.1"))
-            .args(args)
+            .args(self.ssh_args(username, args))
             .env("HOME", self.dir.path())
             .env_remove("SSH_AUTH_SOCK")
             .kill_on_drop(true);

@@ -172,6 +172,11 @@ impl Link {
         *self.reaching.lock().unwrap_or_else(PoisonError::into_inner) = since;
     }
 
+    /// Wakes the sandbox, and waits until it takes sessions, without opening one.
+    pub(crate) async fn wake(&self) -> Result<(), String> {
+        self.reach().await.map(drop)
+    }
+
     /// Wakes the sandbox, and waits until it takes sessions.
     async fn reach(&self) -> Result<(SandboxId, String), String> {
         let started = Instant::now();
@@ -236,6 +241,6 @@ impl Link {
     }
 }
 
-fn unreachable() -> String {
+pub(crate) fn unreachable() -> String {
     "Corral cannot be reached right now; try again in a moment".to_owned()
 }

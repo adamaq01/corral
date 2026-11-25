@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::herdr;
 use crate::link::Link;
+use crate::lobby::{self, Passed};
 use crate::relay::{self, FromClient};
 
 /// The exit status of a command that never ran because the connection reached no sandbox.
@@ -20,13 +21,33 @@ const MAX_ENV: usize = 1000;
 const CLOSE_PATIENCE: Duration = Duration::from_secs(5);
 const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 
-struct Terminal {
-    term: String,
+/// The terminal a client asked for.
+pub(crate) struct Terminal {
+    pub(crate) term: String,
     col_width: u32,
     row_height: u32,
     pix_width: u32,
     pix_height: u32,
     modes: Vec<(Pty, u32)>,
+}
+
+impl Terminal {
+    pub(crate) fn resize(
+        &mut self,
+        col_width: u32,
+        row_height: u32,
+        pix_width: u32,
+        pix_height: u32,
+    ) {
+        (self.col_width, self.row_height) = (col_width, row_height);
+        (self.pix_width, self.pix_height) = (pix_width, pix_height);
+    }
+
+    /// Its columns and rows.
+    pub(crate) fn size(&self) -> (u16, u16) {
+        let clamp = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
+        (clamp(self.col_width), clamp(self.row_height))
+    }
 }
 
 enum Request {
@@ -75,8 +96,7 @@ impl Asked {
                     pix_height,
                 } => {
                     if let Some(terminal) = &mut self.terminal {
-                        (terminal.col_width, terminal.row_height) = (col_width, row_height);
-                        (terminal.pix_width, terminal.pix_height) = (pix_width, pix_height);
+                        terminal.resize(col_width, row_height, pix_width, pix_height);
                     }
                 }
                 ChannelMsg::SetEnv {
@@ -112,12 +132,35 @@ pub(crate) async fn run(link: Arc<Link>, outer: Channel<server::Msg>) {
     {
         return herdr::run(link, id, from_client, command.clone(), asked.env).await;
     }
-    let on_terminal = asked.terminal.is_some();
-    let progress = on_terminal.then(|| Progress::show(link.clone(), id));
-    let bridged = link.bridge().await;
-    if let Some(progress) = progress {
-        progress.stop().await;
+    if let Request::Exec(command) = &request
+        && lobby::is_script(command)
+    {
+        return lobby::script(link, id, from_client).await;
     }
+    let on_terminal = asked.terminal.is_some();
+    let mut made = None;
+    if let (Request::Shell, Some(terminal)) = (&request, &mut asked.terminal) {
+        match lobby::interactive(&link, id, terminal, &asked.env, &mut from_client).await {
+            Passed::Through => {}
+            Passed::Reached(bridge) => made = Some(bridge),
+            Passed::Left => return refuse(&link, id, true, lobby::LEFT, from_client).await,
+            Passed::Refused(reason) => return refuse(&link, id, true, &reason, from_client).await,
+            Passed::Gone => {
+                let _ = link.client.close(id).await;
+                return;
+            }
+        }
+    }
+    let bridged = if let Some(bridge) = made {
+        Ok(bridge)
+    } else {
+        let progress = on_terminal.then(|| Progress::show(link.clone(), id));
+        let bridged = link.bridge().await;
+        if let Some(progress) = progress {
+            progress.stop().await;
+        }
+        bridged
+    };
     let bridge = match bridged {
         Ok(bridge) => bridge,
         Err(reason) => return refuse(&link, id, on_terminal, &reason, from_client).await,

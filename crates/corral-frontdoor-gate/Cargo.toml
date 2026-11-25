@@ -9,6 +9,7 @@ bytes = "1.12.2"
 corral-core = { path = "../corral-core" }
 getrandom = "0.4.3"
 ipnet = "2.12.2"
+ratatui = { version = "0.30.2", default-features = false, features = ["std"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
 # Pinned: the gate is internet-facing, and minor versions change the API. Update deliberately.
 russh = { version = "=0.65.4", default-features = false, features = ["ring", "rsa"] }
@@ -25,11 +26,13 @@ uuid.workspace = true
 async-trait.workspace = true
 corral-core = { path = "../corral-core", features = ["fakes"] }
 corral-engine-docker = { path = "../corral-engine-docker" }
+portable-pty = "0.9.0"
 sha2 = "0.11.1"
 ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "test-util", "time"] }
 tower = { workspace = true, features = ["util"] }
+vt100 = "0.18.1"
 
 [lints]
 workspace = true
