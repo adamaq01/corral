@@ -318,7 +318,8 @@
 					<a class="underline underline-offset-4" href="https://herdr.dev/">Herdr</a>, the app for
 					coding agents, shows the agents running in this sandbox once you add it with the Herdr
 					command. Herdr staying connected does not keep the sandbox awake, and opening a terminal
-					in it wakes it.
+					in it wakes it. Connecting on a terminal to a name you have no sandbox by opens an
+					installer that makes it.
 				</p>
 			</Card.Content>
 		</Card.Root>

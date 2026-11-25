@@ -12,8 +12,11 @@ ssh -p 48291 <sandbox>.<handle>@<ssh.publicHost>
 ```
 
 A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
-makes that sandbox, from the image and size set in their profile, then opens it, unless they
-already have as many as `limits.maxSandboxesPerUser` allows (5 by default). A connection that
+makes that sandbox, unless they already have as many as `limits.maxSandboxesPerUser` allows (5
+by default): on a terminal an installer asks for its image, size and environment, starting from
+their profile, then opens its shell; `corral-new` makes it from a JSON spec on stdin; any other
+command makes it from the profile's image and size ([docs/lobby.md](../../../docs/lobby.md)). A
+connection that
 reaches no sandbox, such as one past that limit, to a sandbox scheduled for deletion, or by a
 disabled user, is told why at once: a command prints the reason on its standard error and exits
 1, a terminal shows it, and the connection ends with it.

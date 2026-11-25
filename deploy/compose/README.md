@@ -89,9 +89,14 @@ block, and wakes, stops, restarts or deletes the sandbox.
 - `ssh -p 48291 <name>@<public_host>` opens the default sandbox: the first one created, or the
   one set with **Make default** on its page.
 - Port forwarding works: `ssh -p 48291 -L 3000:127.0.0.1:3000 main.<name>@<public_host>`.
-- Your **Profile** sets the image and size a new sandbox gets unless you pick others, including
-  one made by connecting as `<sandbox>.<name>`. Until you set them, they are the first image and
-  size in `config.toml`'s catalog.
+- Connecting as `<sandbox>.<name>` to a sandbox you do not have yet makes it: on a terminal, an
+  installer asks for its image, size and environment, then opens its shell;
+  `ssh ... <sandbox>.<name>@<public_host> corral-new` makes it from a JSON spec on stdin, for
+  scripts; any other command makes it from your defaults. [docs/lobby.md](../../docs/lobby.md)
+  has the installer and the spec.
+- Your **Profile** sets the image and size a new sandbox gets unless you pick others, and the
+  installer starts from them. Until you set them, they are the first image and size in
+  `config.toml`'s catalog.
 - Users can also name an image of their own once `[catalog.named_images]` lists the registries
   it may come from and the most it may take to download; credentials for a private registry go
   under `[[registries]]`, never shown to users. [docs/images.md](../../docs/images.md) has both.

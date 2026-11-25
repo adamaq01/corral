@@ -88,6 +88,9 @@ test('connecting to a sandbox not made yet makes it from the profile defaults, t
 		await expect(page.getByRole('heading', { name: 'scratch' })).toBeVisible();
 		await expect(page.getByText('Local build, again · Roomy')).toBeVisible();
 		await expect(page.getByText('Running', { exact: true })).toBeVisible();
+		await expect(
+			page.getByText('Connecting on a terminal to a name you have no sandbox by opens an installer')
+		).toBeVisible();
 	});
 
 	await test.step('the bare handle reaches the default sandbox, scratch', async () => {
