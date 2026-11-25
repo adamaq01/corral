@@ -38,6 +38,44 @@ sleep and keep-awake), `nightly-kind` (the chart's upgrade, uninstall and reinst
 `tests/affected.sh jobs` prints the T2 jobs the changes reach; the table at its top maps paths to
 jobs. Markdown and `docs/` reach none, `crates/` and `Cargo.lock` reach every job downstream.
 
+## CI
+
+`.github/workflows/ci.yml` runs on each push to `main` and `ci/**`, on pull requests, on tags, every
+night at 03:17 UTC on `main`, and by hand (`workflow_dispatch`).
+
+Its `changes` job runs `tests/affected.sh jobs` over the changes since the last commit whose push
+run passed on the branch, or since a pull request's base, so a cancelled or failed run's changes
+are picked again by the next push. A branch with no passing run, a tag, the nightly run and a run
+by hand take every job. A push that changes only docs runs nothing else.
+
+When a job that needs images is picked, the images are built once, natively for amd64 and arm64,
+and pushed as `ghcr.io/adamaq01/<image>:ci-<commit>`; each job pulls them under the names it tests.
+Each job runs one recipe:
+
+| Job | Recipe | Needs the images |
+| --- | --- | --- |
+| `rust` | `just ci-rust`: rustfmt, clippy, `test-rust` with the `ci` profile | yes |
+| `web` | `just ci-web` | yes |
+| `images-test` | `just ci-images` | yes |
+| `compose` | `just ci-compose` | yes |
+| `kind` | `just ci-kind` | yes |
+| `chart` | `just ci-chart` | no |
+| `deny` | `cargo deny check advisories`, as `just deny` | no |
+
+The nightly run, tags and a run by hand add `nightly-vault` to `rust` and `nightly-web` to `web`,
+run `nightly-compose` and `nightly-kind` in place of the smoke parts, and run `nightly-opkssh` in
+its own job. A failed nightly run opens the issue "The nightly CI run fails", or comments on it;
+the next green night closes it.
+
+On a push to `main` or a tag, once no job failed or was cancelled, `publish` retags the run's
+images `sha-<commit>`, `latest` on `main` and the tag's name on a tag, and pushes the chart with
+that image tag as its appVersion. A run that built no images publishes nothing; a chart change
+reaches the `kind` job, so it builds images and publishes both.
+
+The nightly run also deletes `ci-*` images and untagged versions older than three days from the
+three image packages and `corral-buildcache`, keeping any version with another tag and the
+platform images of every kept tag. A run by hand off `main` only lists what it would delete.
+
 ## nextest profiles
 
 `.config/nextest.toml` holds the profiles `cargo nextest run --profile <name>` takes:
