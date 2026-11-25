@@ -10,11 +10,13 @@ pub(super) struct Registry {
     pub attachments: Vec<Attachment>,
 }
 
-/// Whose entries a composition takes: one sandbox's, or those a new sandbox gets.
+/// Whose entries a composition takes: one sandbox's, those a new sandbox gets, or those chosen
+/// for a new sandbox.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Scope<'a> {
     Sandbox(&'a SandboxId),
     New,
+    Chosen(&'a [EntryId]),
 }
 
 impl Registry {
@@ -71,6 +73,12 @@ impl Registry {
                 .entries
                 .iter()
                 .filter(|entry| entry.apply_to_new)
+                .map(|entry| (entry, &entry.value))
+                .collect(),
+            Scope::Chosen(ids) => self
+                .entries
+                .iter()
+                .filter(|entry| ids.contains(&entry.id))
                 .map(|entry| (entry, &entry.value))
                 .collect(),
         }

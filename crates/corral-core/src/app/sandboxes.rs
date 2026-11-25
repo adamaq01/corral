@@ -9,8 +9,8 @@ use ts_rs::TS;
 
 use super::{Catalog, Environment};
 use crate::domain::{
-    Admin, Handle, IdleLimits, ImageKey, ImageReference, Sandbox, SandboxDefaults, SandboxId,
-    SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
+    Admin, EntryId, Handle, IdleLimits, ImageKey, ImageReference, Sandbox, SandboxDefaults,
+    SandboxId, SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
 };
 use crate::ports::{
     ImageRegistry, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
@@ -36,6 +36,11 @@ pub struct CreateSandbox {
     pub image_reference: Option<String>,
     #[ts(optional)]
     pub size: Option<SizeKey>,
+    /// The environment entries to attach in place of those that apply to new sandboxes. Only the
+    /// lobby chooses them, so the web API never reads them.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub environment: Option<Vec<EntryId>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,6 +158,7 @@ impl Sandboxes {
             image: None,
             image_reference: None,
             size: None,
+            environment: None,
         };
         match self.provision(owner, request).await {
             // Another login made it first.
@@ -196,7 +202,11 @@ impl Sandboxes {
         self.repo
             .insert(&sandbox, self.limits.max_sandboxes_per_user)
             .await?;
-        if let Err(error) = self.environment.attach_new(&sandbox).await {
+        if let Err(error) = self
+            .environment
+            .attach_new(&sandbox, request.environment.as_deref())
+            .await
+        {
             self.forget(&sandbox).await?;
             return Err(error);
         }
@@ -414,6 +424,10 @@ impl Sandboxes {
 
     /// Refuses an image the catalog does not let users name, or one that takes more to
     /// download than it allows.
+    pub async fn check_named_image(&self, reference: &str) -> Result<()> {
+        self.named_image(reference).await.map(drop)
+    }
+
     async fn named_image(&self, reference: &str) -> Result<ImageReference> {
         let allowed = self.catalog.named_images().ok_or_else(|| {
             Error::Invalid("sandboxes run only the catalog's images here".to_owned())

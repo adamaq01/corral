@@ -9,7 +9,7 @@ use super::{
     MemorySandboxRepo, MemorySecretStore, MemoryUserRepo, RecordedSignals,
 };
 use crate::app::{
-    Accounts, Catalog, CreateSandbox, EntryChange, Environment, ImageOption, Keys, Limits,
+    Accounts, Catalog, CreateSandbox, EntryChange, Environment, ImageOption, Keys, Limits, Lobby,
     NewEntry, SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
 };
 use crate::domain::{
@@ -118,6 +118,7 @@ pub fn request(name: &str, image: Option<&str>, size: Option<&str>) -> CreateSan
         image: image.map(|key| ImageKey::parse(key).unwrap()),
         image_reference: None,
         size: size.map(|key| SizeKey::parse(key).unwrap()),
+        environment: None,
     }
 }
 
@@ -197,6 +198,7 @@ pub struct World {
     pub registry: Arc<FakeRegistry>,
     pub sandboxes: Sandboxes,
     pub access: Arc<SshAccess>,
+    pub lobby: Arc<Lobby>,
     pub signals: Arc<RecordedSignals>,
 }
 
@@ -241,6 +243,11 @@ impl World {
             sandboxes.clone(),
             providers.clone(),
         ));
+        let lobby = Arc::new(Lobby::new(
+            users.clone(),
+            sandboxes.clone(),
+            environment.clone(),
+        ));
         Self {
             accounts: Accounts::new(
                 users.clone(),
@@ -260,6 +267,7 @@ impl World {
             users,
             provider,
             access,
+            lobby,
             signals: Arc::default(),
         }
     }

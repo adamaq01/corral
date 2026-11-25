@@ -47,6 +47,23 @@ impl<'a> Login<'a> {
     }
 }
 
+/// The active user a login names, with the sandbox it names as written, or why it names none.
+pub(super) async fn active_login<'a>(
+    users: &dyn UserRepo,
+    username: &'a str,
+) -> Result<std::result::Result<(User, Option<&'a str>), String>> {
+    let Some(login) = Login::parse(username) else {
+        return Ok(Err(format!("{username:?} is not a Corral login")));
+    };
+    let Some(user) = users.by_handle(&login.handle).await? else {
+        return Ok(Err(format!("there is no user {}", login.handle)));
+    };
+    if user.status != UserStatus::Active {
+        return Ok(Err(inactive(&user).to_string()));
+    }
+    Ok(Ok((user, login.sandbox)))
+}
+
 impl SshAccess {
     #[must_use]
     pub fn new(
@@ -129,16 +146,11 @@ impl SshAccess {
         make: bool,
     ) -> Result<std::result::Result<Sandbox, Arrival>> {
         let refused = |why: String| Ok(Err(Arrival::Refused(why)));
-        let Some(login) = Login::parse(username) else {
-            return refused(format!("{username:?} is not a Corral login"));
+        let (user, name) = match active_login(self.users.as_ref(), username).await? {
+            Ok(login) => login,
+            Err(why) => return refused(why),
         };
-        let Some(user) = self.users.by_handle(&login.handle).await? else {
-            return refused(format!("there is no user {}", login.handle));
-        };
-        if user.status != UserStatus::Active {
-            return refused(inactive(&user).to_string());
-        }
-        match self.reach(&user, login.sandbox, make).await {
+        match self.reach(&user, name, make).await {
             Ok(sandbox) => Ok(Ok(sandbox)),
             Err(Error::Invalid(why)) => refused(why),
             Err(error) => Err(error),

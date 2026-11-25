@@ -5,6 +5,7 @@ mod environment;
 mod failure_window;
 mod inside;
 mod keys;
+mod lobby;
 mod sandboxes;
 mod ssh_access;
 
@@ -18,5 +19,6 @@ pub use environment::{
 pub use failure_window::{Attempt, FailureWindow, Network};
 pub use inside::{CallingSandbox, SANDBOX_FILE, SandboxLinks};
 pub use keys::Keys;
+pub use lobby::{Choice, Entrance, Lobby, Made, Offer};
 pub use sandboxes::{CreateSandbox, Limits, SandboxDetails, SandboxView, Sandboxes, UserDefaults};
 pub use ssh_access::{Arrival, SshAccess};

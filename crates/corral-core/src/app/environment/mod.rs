@@ -437,27 +437,44 @@ impl Environment {
         Ok(composed.boot)
     }
 
-    /// Attaches a new sandbox to each entry that applies to new sandboxes, refusing what would
-    /// keep it from starting.
-    pub(super) async fn attach_new(&self, sandbox: &Sandbox) -> Result<()> {
+    /// Attaches a new sandbox to the entries `chosen` for it, or without a choice to each entry
+    /// that applies to new sandboxes, refusing what would keep it from starting.
+    pub(super) async fn attach_new(
+        &self,
+        sandbox: &Sandbox,
+        chosen: Option<&[EntryId]>,
+    ) -> Result<()> {
         let registry = self.registry(sandbox.owner).await?;
+        for &id in chosen.unwrap_or_default() {
+            registry
+                .entry(id)
+                .map_err(|_| Error::Invalid(format!("there is no environment entry {}", id.0)))?;
+        }
+        let scope = chosen.map_or(Scope::New, Scope::Chosen);
         let composed = self
             .compose(
                 sandbox.owner,
                 &registry,
-                Scope::New,
+                scope,
                 &sandbox.name,
                 &SandboxToken::generate()?,
             )
             .await?;
         if let Some((path, names)) = composed.unknown.first_key_value() {
-            return Err(Error::Invalid(format!(
-                "template ~/{path} applies to new sandboxes but refers to {}, which {} not",
-                listed(names),
-                if names.len() == 1 { "does" } else { "do" }
-            )));
+            let one = names.len() == 1;
+            let names = listed(names);
+            return Err(Error::Invalid(match scope {
+                Scope::Chosen(_) => format!(
+                    "template ~/{path} refers to {names}: choose {} too, or leave the template out",
+                    if one { "it" } else { "them" }
+                ),
+                Scope::New | Scope::Sandbox(_) => format!(
+                    "template ~/{path} applies to new sandboxes but refers to {names}, which {} not",
+                    if one { "does" } else { "do" }
+                ),
+            }));
         }
-        for (entry, _) in registry.effective(Scope::New) {
+        for (entry, _) in registry.effective(scope) {
             self.repo
                 .attach(&Attachment {
                     sandbox: sandbox.id.clone(),
@@ -659,7 +676,7 @@ impl Environment {
                 }
                 let names = listed(&new);
                 return Err(Error::Invalid(match scope {
-                    Scope::Sandbox(_) => format!(
+                    Scope::Sandbox(_) | Scope::Chosen(_) => format!(
                         "sandbox {name} could not start: template ~/{path} would refer to \
                          {names}, not attached to it"
                     ),
@@ -875,7 +892,7 @@ fn secret_ids<'a>(values: impl IntoIterator<Item = &'a StoredValue>) -> BTreeSet
 
 fn whose(scope: Scope<'_>, name: &SandboxName) -> String {
     match scope {
-        Scope::Sandbox(_) => format!("sandbox {name}"),
+        Scope::Sandbox(_) | Scope::Chosen(_) => format!("sandbox {name}"),
         Scope::New => "new sandboxes".to_owned(),
     }
 }
