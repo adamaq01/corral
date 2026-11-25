@@ -1,16 +1,37 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 
 use corral_core::app::Network;
 use ipnet::IpNet;
 use serde::Deserialize;
 
-#[derive(Clone, Debug, Default, Deserialize)]
+/// `[frontdoor]` with `kind = "gate"`: the gate's own settings, and the lockout the server keeps
+/// for it.
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ContainerSshConfig {
+pub struct GateConfig {
+    /// Where the gate listens for SSH.
+    pub listen_addr: SocketAddr,
+    /// The SSH host private key, in OpenSSH or PEM form.
+    pub host_key_file: PathBuf,
+    /// Where the gate reaches the server's internal listener.
+    pub server_url: String,
+    /// Networks whose connections are never locked out by address.
     pub lockout_exempt_networks: Vec<Cidr>,
 }
 
-impl ContainerSshConfig {
+impl Default for GateConfig {
+    fn default() -> Self {
+        Self {
+            listen_addr: (Ipv4Addr::UNSPECIFIED, 2222).into(),
+            host_key_file: PathBuf::from("/etc/corral/ssh_host_key"),
+            server_url: "http://corral:8081".to_owned(),
+            lockout_exempt_networks: Vec::new(),
+        }
+    }
+}
+
+impl GateConfig {
     /// The network a failed connection from `source` counts against, if any.
     pub(crate) fn lockout_network(&self, source: IpAddr) -> Option<Network> {
         let source = source.to_canonical();
@@ -43,18 +64,19 @@ mod tests {
 
     use corral_core::app::Network;
 
-    use super::{Cidr, ContainerSshConfig};
+    use super::{Cidr, GateConfig};
 
-    fn config(networks: &[&str]) -> ContainerSshConfig {
-        ContainerSshConfig {
+    fn config(networks: &[&str]) -> GateConfig {
+        GateConfig {
             lockout_exempt_networks: networks
                 .iter()
                 .map(|network| Cidr::try_from((*network).to_owned()).unwrap())
                 .collect(),
+            ..GateConfig::default()
         }
     }
 
-    fn lockout_network(config: &ContainerSshConfig, source: &str) -> Option<Network> {
+    fn lockout_network(config: &GateConfig, source: &str) -> Option<Network> {
         config.lockout_network(source.parse().unwrap())
     }
 

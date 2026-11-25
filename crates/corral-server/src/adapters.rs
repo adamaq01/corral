@@ -3,14 +3,14 @@ use corral_api::Key;
 use corral_core::ports::{RegistryAccess, RegistryLogin};
 use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
+use corral_frontdoor_gate::GateSecret;
 use corral_identity_oidc::OidcConfig;
 use corral_secrets_database::Keyring;
 use corral_secrets_vault::{VaultAuth, VaultConfig};
 use secrecy::SecretString;
-use ssh_key::PublicKey;
 
 use crate::config::{Config, Engine, Secrets};
-use crate::keys::{self, PROXY_PUBLIC_KEY, SECRETS_KEY, SESSION_KEY};
+use crate::keys::{self, GATE_SECRET, SECRETS_KEY, SESSION_KEY};
 
 const DATABASE_URL: &str = "DATABASE_URL";
 const DEFAULT_DATABASE_URL: &str = "sqlite:///var/lib/corral/corral.db";
@@ -21,6 +21,7 @@ const OIDC_CLIENT_SECRET: &str = "CORRAL_OIDC_CLIENT_SECRET";
 pub struct Adapters {
     pub database_url: String,
     pub session_key: Key,
+    pub gate_secret: GateSecret,
     pub secrets: SecretsChoice,
     pub engine: EngineChoice,
     pub oidc: Option<Oidc>,
@@ -33,10 +34,7 @@ pub enum SecretsChoice {
 }
 
 pub enum EngineChoice {
-    Docker {
-        config: DockerConfig,
-        proxy_public_key: PublicKey,
-    },
+    Docker(DockerConfig),
     AgentSandbox(AgentSandboxConfig),
 }
 
@@ -64,9 +62,9 @@ impl Adapters {
         let missing: Vec<&str> = [
             (SESSION_KEY, true),
             (SECRETS_KEY, matches!(config.secrets, Secrets::Database {})),
+            (GATE_SECRET, true),
             (VAULT_TOKEN, vault_token),
             (OIDC_CLIENT_SECRET, config.identity.oidc.is_some()),
-            (PROXY_PUBLIC_KEY, matches!(config.engine, Engine::Docker(_))),
         ]
         .into_iter()
         .chain(passwords.map(|name| (name, true)))
@@ -91,15 +89,13 @@ impl Adapters {
             }
         };
         let engine = match &config.engine {
-            Engine::Docker(docker) => EngineChoice::Docker {
-                config: docker.clone(),
-                proxy_public_key: keys::proxy_public_key(&set(PROXY_PUBLIC_KEY))?,
-            },
+            Engine::Docker(docker) => EngineChoice::Docker(docker.clone()),
             Engine::AgentSandbox(agent) => EngineChoice::AgentSandbox(agent.clone()),
         };
         Ok(Self {
             database_url: database_url_from(var(DATABASE_URL)),
             session_key: keys::session_key(&secret(SESSION_KEY))?,
+            gate_secret: keys::gate_secret(secret(GATE_SECRET))?,
             secrets,
             engine,
             oidc: config.identity.oidc.clone().map(|config| Oidc {
@@ -150,8 +146,6 @@ mod tests {
     use crate::config::Config;
     use crate::keys;
 
-    const PROXY_KEY: &str = include_str!("../../corral-core/tests/fixtures/adam_ed25519.pub");
-
     fn config(extra: &str) -> Config {
         Config::parse(&format!(
             "[http]\nbase_url = \"http://corral.lan\"\n[ssh]\npublic_host = \"corral.lan\"\n\
@@ -192,7 +186,7 @@ mod tests {
             "CORRAL_SESSION_KEY",
             "CORRAL_VAULT_TOKEN",
             "CORRAL_OIDC_CLIENT_SECRET",
-            "CORRAL_PROXY_PUBLIC_KEY",
+            "CORRAL_GATE_SECRET",
         ] {
             assert!(message.contains(name), "{message}");
         }
@@ -206,8 +200,7 @@ mod tests {
              password_env = \"CORRAL_GHCR_TOKEN\"\n\
              [[registries]]\nregistry = \"registry.lan:5000\"\nplain_http = true",
         );
-        let mut vars = generated();
-        vars.push(("CORRAL_PROXY_PUBLIC_KEY".to_owned(), PROXY_KEY.to_owned()));
+        let vars = generated();
         let without: Vec<(&str, &str)> = vars
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
@@ -235,7 +228,6 @@ mod tests {
     #[test]
     fn each_selected_adapter_gets_its_secrets() {
         let mut vars = generated();
-        vars.push(("CORRAL_PROXY_PUBLIC_KEY".to_owned(), PROXY_KEY.to_owned()));
         vars.push((
             "CORRAL_OIDC_CLIENT_SECRET".to_owned(),
             "oidc-secret".to_owned(),
@@ -247,11 +239,7 @@ mod tests {
             .collect();
         let adapters = read(&config(""), &vars).unwrap();
         assert!(matches!(adapters.secrets, SecretsChoice::Database(_)));
-        assert!(matches!(
-            adapters.engine,
-            EngineChoice::Docker { proxy_public_key, .. }
-                if proxy_public_key.to_openssh().unwrap() == PROXY_KEY.trim()
-        ));
+        assert!(matches!(adapters.engine, EngineChoice::Docker(_)));
         assert!(adapters.oidc.is_none());
         assert_eq!(adapters.database_url, "sqlite:///var/lib/corral/corral.db");
 
@@ -259,14 +247,9 @@ mod tests {
             "[identity.oidc]\nissuer = \"https://idp\"\nclient_id = \"corral\"\n\
              [secrets]\nkind = \"vault\"\naddress = \"http://vault\"\n[secrets.auth]\nkind = \"token\"\n\
              [engine]\nkind = \"agent-sandbox\"\nnamespace = \"n\"\nservice_account = \"s\"\n\
-             storage_class = \"c\"\nagent_image = \"a\"",
+             storage_class = \"c\"",
         );
-        let without_proxy: Vec<_> = vars
-            .iter()
-            .copied()
-            .filter(|(name, _)| *name != "CORRAL_PROXY_PUBLIC_KEY")
-            .collect();
-        let adapters = read(&elsewhere, &without_proxy).unwrap();
+        let adapters = read(&elsewhere, &vars).unwrap();
         let SecretsChoice::Vault(vault) = adapters.secrets else {
             panic!("vault was configured");
         };

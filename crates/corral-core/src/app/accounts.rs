@@ -187,7 +187,7 @@ impl Accounts {
     }
 }
 
-fn inactive(user: &User) -> Error {
+pub(super) fn inactive(user: &User) -> Error {
     let state = if user.status == UserStatus::Deleting {
         "being deleted"
     } else {
@@ -201,6 +201,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::Error;
+    use crate::app::Arrival;
     use crate::domain::{PictureUrl, Role, User, UserId, UserStatus};
     use crate::fakes::{
         ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, bytes, file, identity, sandbox_name,
@@ -441,7 +442,10 @@ mod tests {
             w.accounts.require_active(eve.id).await,
             Err(Error::Inactive(_))
         ));
-        assert!(!w.access.authenticate("dev.eve", EVE_KEY).await.unwrap());
+        assert_eq!(
+            w.access.arrive("dev.eve").await.unwrap(),
+            Arrival::Refused("this account is being deleted".to_owned())
+        );
         assert_eq!(w.sandboxes.list(&eve).await.unwrap().len(), 1);
 
         w.engine.fail_deletes_after(None);
@@ -555,11 +559,10 @@ mod tests {
             w.accounts.require_active(eve.id).await,
             Err(Error::Inactive(_))
         ));
-        assert!(!w.access.authenticate("main.eve", EVE_KEY).await.unwrap());
-        assert!(matches!(
-            w.access.route("main.eve").await,
-            Err(Error::Forbidden)
-        ));
+        assert_eq!(
+            w.access.arrive("main.eve").await.unwrap(),
+            Arrival::Refused("this account is being deleted".to_owned())
+        );
         for enabled in [true, false] {
             assert!(matches!(
                 w.accounts.set_enabled(&by, eve.id, enabled).await,

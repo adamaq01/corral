@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Starts base images the way the Docker engine starts a sandbox, with the overlay as an image
-# mount, and checks each is a whole Corral sandbox over SSH.
+# mount, and checks each is a whole Corral sandbox over SSH, reached the way the gate reaches it:
+# the overlay's corral-sshd, run by an exec as the sandbox user.
 # CORRAL_OVERLAY_IMAGE names a prebuilt overlay; when unset, corral-overlay:dev is built from here.
 # CORRAL_OVERLAY_TEST_BASES lists the base images, space-separated, to check instead of the default.
 set -euo pipefail
@@ -10,20 +11,18 @@ repo=$(cd "$here/../.." && pwd)
 overlay=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
 read -r -a bases <<<"${CORRAL_OVERLAY_TEST_BASES:-ubuntu:24.04 debian:trixie-slim alpine:3.24 gcr.io/distroless/static-debian13}"
 prefix=corral-overlay-test
-network=$prefix
 volume=$prefix-home
-client=$prefix-client
-server=$prefix-sshd
+server=$prefix-sandbox
 baked=$prefix-baked:dev
 groups=$prefix-groups:dev
+work=$(mktemp -d "${TMPDIR:-/tmp}/corral-overlay-test.XXXXXX")
 
 remove_resources() {
-  docker rm --force "$client" "$server" >/dev/null 2>&1 || true
-  docker network rm "$network" >/dev/null 2>&1 || true
+  docker rm --force "$server" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
   docker rmi "$baked" "$groups" >/dev/null 2>&1 || true
 }
-trap remove_resources EXIT
+trap 'remove_resources; rm -rf "$work"' EXIT
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 remove_resources
 
@@ -45,64 +44,52 @@ if [[ -z "${CORRAL_OVERLAY_IMAGE:-}" ]]; then
   echo "built $overlay"
 fi
 
-docker network create "$network" >/dev/null
-docker run --detach --name "$client" --network "$network" alpine:3.24 sleep infinity >/dev/null
-docker exec "$client" apk add --quiet --no-cache openssh-client
-docker exec "$client" sh -c '
-  umask 022
-  mkdir -m 700 -p ~/.ssh
-  ssh-keygen -q -t ed25519 -N "" -C proxy -f ~/.ssh/proxy_key
-  ssh-keygen -q -t ed25519 -N "" -C host -f /tmp/host_key
-  mkdir -p /tmp/session/etc/ssh /tmp/session/etc/corral
-  cp ~/.ssh/proxy_key.pub /tmp/session/etc/ssh/corral_authorized_keys
-  echo "SetEnv \"FOO_TOKEN=bar\"" > /tmp/session/etc/corral/sshd_env.conf
-  chmod 0644 /tmp/session/etc/ssh/corral_authorized_keys
-  chmod 0600 /tmp/session/etc/corral/sshd_env.conf
-'
-host_key=$(docker exec "$client" cat /tmp/host_key)
-echo "$server $(docker exec "$client" cat /tmp/host_key.pub)" |
-  docker exec --interactive "$client" sh -c 'cat > ~/.ssh/known_hosts'
+# What the gate does for each connection: a fresh key, and corral-sshd run with its public half.
+ssh-keygen -q -t ed25519 -N '' -C gate -f "$work/key"
+public_key=$(cut -d' ' -f1,2 "$work/key.pub")
+# The session variables, as the engine writes them before each start.
+mkdir -p "$work/session/etc/corral"
+echo 'SetEnv "FOO_TOKEN=bar"' >"$work/session/etc/corral/sshd_env.conf"
+chmod 0400 "$work/session/etc/corral/sshd_env.conf"
 
-ssh_options=(-i /root/.ssh/proxy_key -o BatchMode=yes -o IdentitiesOnly=yes
-  -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null)
+ssh_options=(-F /dev/null -i "$work/key" -o BatchMode=yes -o IdentitiesOnly=yes
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+  -o "ProxyCommand=docker exec -i -u 1000 $server /opt/corral/libexec/corral-sshd '$public_key'")
 
 ssh_run() {
-  docker exec "$client" ssh "${ssh_options[@]}" "sandbox@$server" "$@"
+  ssh "${ssh_options[@]}" sandbox@sandbox "$@"
 }
 
 interactive_login() {
-  printf 'echo "shell=$SHELL"; exit\n' |
-    docker exec --interactive "$client" ssh -tt "${ssh_options[@]}" "sandbox@$server" 2>/dev/null |
+  printf 'echo "shell=$SHELL"; exit\n' | ssh -tt "${ssh_options[@]}" sandbox@sandbox 2>/dev/null |
     tr -d '\r'
 }
 
 # The home files the engine stages, as corral-init reads them: "<key> <mode> <path>" lines.
 stage_home_files() {
-  docker exec --interactive "$client" sh -c '
-    umask 022
-    rm -rf /tmp/home-files && mkdir -p /tmp/home-files/etc/corral/home-files
-    cd /tmp/home-files/etc/corral/home-files
-    cat > manifest
-    printf "%s" "$1" > 0
-    printf "plain" > 1
-    printf "blocked" > 2
-    chmod 0700 . && chmod 0600 manifest 0 1 2 && chown -R 1000:1000 .
-    cd /tmp/home-files && tar --numeric-owner -cf /tmp/home-files.tar etc/corral/home-files
-  ' sh "$1"
+  local dir=$work/home-files/etc/corral/home-files
+  rm -rf "$work/home-files" && mkdir -p "$dir"
+  cat >"$dir/manifest"
+  printf "%s" "$1" >"$dir/0"
+  printf "plain" >"$dir/1"
+  printf "blocked" >"$dir/2"
+  chmod 0700 "$dir" && chmod 0600 "$dir"/*
+  tar -C "$work/home-files" --owner=1000 --group=1000 --numeric-owner \
+    -cf "$work/home-files.tar" etc/corral/home-files
 }
 
 # As the Docker engine makes and starts a sandbox's container.
 start_server() {
-  docker create --name "$server" --network "$network" --user 0 \
+  docker create --name "$server" --network none --user 0 \
     --mount "type=volume,source=$volume,target=/home/sandbox" \
     --mount "type=image,source=$overlay,target=/opt/corral" \
-    --entrypoint /opt/corral/bin/tini --env CORRAL_SSH_HOST_KEY="$host_key" \
-    "$1" -- /opt/corral/bin/corral-init docker >/dev/null
-  docker exec "$client" tar -C /tmp/session -cf - etc | docker cp - "$server:/"
-  docker exec "$client" cat /tmp/home-files.tar | docker cp - "$server:/"
+    --tmpfs /run/corral:mode=0755 \
+    --entrypoint /opt/corral/bin/tini "$1" -- /opt/corral/bin/corral-init docker >/dev/null
+  tar -C "$work/session" --owner=1000 --group=1000 --numeric-owner -cf - etc | docker cp - "$server:/"
+  docker cp - "$server:/" <"$work/home-files.tar"
   docker start "$server" >/dev/null
   for _ in $(seq 50); do
-    if ssh_run true 2>/dev/null; then
+    if docker exec "$server" test -e /run/corral/ready && ssh_run true 2>/dev/null; then
       return
     fi
     if [[ "$(docker inspect --format '{{.State.Running}}' "$server")" != true ]]; then
@@ -129,16 +116,16 @@ bash_of() {
       done'
 }
 
-# As the Kubernetes engine's init container prepares a pod: the account files, and a link to the
-# bash every session's SHELL names.
+# As the Kubernetes engine's init container prepares a pod: the account files it mounts.
 check_prepare() {
-  check "the Kubernetes init container links the bash a login runs" "$(bash_of "$base")" \
+  check "the Kubernetes init container writes the sandbox user into the account files" \
+    "sandbox:x:1000:1000:Corral sandbox:/home/sandbox:/opt/corral/bin/corral-shell" \
     "$(docker run --rm --user 0 --entrypoint /opt/corral/bin/sh \
       --mount "type=image,source=$overlay,target=/opt/corral" \
       --mount "type=tmpfs,destination=/home/sandbox,tmpfs-mode=0777" "$base" -c '
         /opt/corral/bin/busybox mkdir /tmp/accounts
         /opt/corral/bin/corral-init prepare /tmp/accounts >/dev/null
-        /opt/corral/bin/busybox readlink /tmp/accounts/bash')"
+        /opt/corral/bin/busybox grep ^sandbox: /tmp/accounts/passwd')"
 }
 
 check_base() {
@@ -172,9 +159,11 @@ MANIFEST
   [[ "$login" == *"shell=/"*bash* ]] || fail "$base: an interactive login: $login"
   check "a command prints only its output" "only this" "$(ssh_run 'echo only this')"
 
-  docker exec "$client" sh -c "echo 'put /etc/hostname uploaded' > /tmp/batch && \
-    sftp -q -b /tmp/batch ${ssh_options[*]} sandbox@$server >/dev/null"
-  check "sftp writes into the home" "$(docker exec "$client" cat /etc/hostname)" "$(ssh_run 'cat ~/uploaded')"
+  echo "put $work/key.pub uploaded" >"$work/batch"
+  sftp -q -b "$work/batch" "${ssh_options[@]}" sandbox@sandbox >/dev/null
+  check "sftp writes into the home" "$(cat "$work/key.pub")" "$(ssh_run 'cat ~/uploaded')"
+  check "no sshd runs in the sandbox" "" \
+    "$(docker exec "$server" /opt/corral/bin/busybox ps -o args | grep -E 'listener|sshd -D' || true)"
 
   check "the first start copies a skeleton home" initialized \
     "$(ssh_run 'test -f ~/.corral-initialized && test -f ~/.profile && echo initialized')"
@@ -192,13 +181,16 @@ MANIFEST
   echo "ok - $base: corral status reads the notices corral-init writes"
 
 
-  docker exec --detach "$client" ssh "${ssh_options[@]}" "sandbox@$server" sleep 30
+  ssh "${ssh_options[@]}" sandbox@sandbox sleep 30 &
+  session=$!
   for _ in $(seq 25); do
     listed '^sshd-session: sandbox@' && break
     sleep 0.2
   done
   listed '^sshd-session: sandbox@' || fail "$base: no SSH session in the process list"
   echo "ok - $base: the activity probe's process list shows the SSH session, as uid 1000"
+  kill "$session" 2>/dev/null || true
+  wait "$session" 2>/dev/null || true
   # A core started by an SSH command ends with it, as hc warns, so this one starts outside SSH.
   docker exec --user 1000 "$server" /opt/corral/bin/hc run --bg /opt/corral/bin/busybox sleep 30 >/dev/null 2>&1
   listed '^/opt/corral/bin/herdr-core ' || fail "$base: no herdr-core in the process list"

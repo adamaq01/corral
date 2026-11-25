@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod crypto;
 mod deletions;
+mod gate;
 mod healthcheck;
 mod keys;
 mod local_account;
@@ -45,10 +46,11 @@ async fn main() -> Result<()> {
         .init();
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve::run(&Config::load(&cli.config)?).await,
+        Command::Gate => gate::run(&Config::load(&cli.config)?).await,
         Command::LocalAccount(LocalAccountCommand::Create { username, admin }) => {
             local_account::create(&Config::load(&cli.config)?, &username, admin).await
         }
-        Command::Healthcheck => healthcheck::run(&Config::load(&cli.config)?).await,
+        Command::Healthcheck { gate } => healthcheck::run(&Config::load(&cli.config)?, gate).await,
         Command::Config(ConfigCommand::Check) => {
             Config::load(&cli.config)?;
             println!("{} is valid", cli.config.display());

@@ -49,4 +49,8 @@ impl IdentityProvider for FakeProvider {
             .iter()
             .any(|(s, credential)| s == subject && credential == presented))
     }
+
+    fn takes_ssh_certificates(&self) -> bool {
+        true
+    }
 }

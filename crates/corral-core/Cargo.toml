@@ -10,6 +10,7 @@ contract = ["fakes", "dep:futures-util"]
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+futures-io = "0.3.34"
 futures-util = { version = "0.3.34", optional = true, default-features = false, features = ["alloc"] }
 getrandom = "0.4.3"
 secrecy.workspace = true

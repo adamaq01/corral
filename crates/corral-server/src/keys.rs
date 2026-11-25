@@ -2,20 +2,20 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use corral_api::Key;
-
+use corral_frontdoor_gate::GateSecret;
 use corral_secrets_database::Keyring;
 use secrecy::{ExposeSecret, SecretString};
-use ssh_key::PublicKey;
 use ssh_key::rand_core::{OsRng, RngCore};
 
 pub const SESSION_KEY: &str = "CORRAL_SESSION_KEY";
 pub const SECRETS_KEY: &str = "CORRAL_SECRETS_KEY";
-pub const PROXY_PUBLIC_KEY: &str = "CORRAL_PROXY_PUBLIC_KEY";
+pub const GATE_SECRET: &str = "CORRAL_GATE_SECRET";
 
 pub fn generate() -> String {
     format!(
-        "{SESSION_KEY}={}\n{SECRETS_KEY}=1:{}\n",
+        "{SESSION_KEY}={}\n{SECRETS_KEY}=1:{}\n{GATE_SECRET}={}\n",
         STANDARD.encode(random::<64>()),
+        STANDARD.encode(random::<32>()),
         STANDARD.encode(random::<32>()),
     )
 }
@@ -38,9 +38,8 @@ pub fn keyring(value: &SecretString) -> Result<Keyring> {
     Keyring::from_env(value.expose_secret()).with_context(|| format!("{SECRETS_KEY} is invalid"))
 }
 
-pub fn proxy_public_key(value: &str) -> Result<PublicKey> {
-    PublicKey::from_openssh(value.trim())
-        .with_context(|| format!("{PROXY_PUBLIC_KEY} is not an OpenSSH public key"))
+pub fn gate_secret(value: SecretString) -> Result<GateSecret> {
+    GateSecret::new(value).map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]
@@ -51,7 +50,9 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use secrecy::SecretString;
 
-    use super::{SECRETS_KEY, SESSION_KEY, generate, keyring, proxy_public_key, session_key};
+    use super::{
+        GATE_SECRET, SECRETS_KEY, SESSION_KEY, gate_secret, generate, keyring, session_key,
+    };
 
     fn lines(output: &str) -> BTreeMap<String, SecretString> {
         output
@@ -66,14 +67,15 @@ mod tests {
     #[test]
     fn generated_keys_are_env_lines_that_parse_back() {
         let output = generate();
-        assert_eq!(output.lines().count(), 2);
+        assert_eq!(output.lines().count(), 3);
         let keys = lines(&output);
         assert_eq!(
             keys.keys().map(String::as_str).collect::<Vec<_>>(),
-            [SECRETS_KEY, SESSION_KEY]
+            [GATE_SECRET, SECRETS_KEY, SESSION_KEY]
         );
         session_key(&keys[SESSION_KEY]).unwrap();
         keyring(&keys[SECRETS_KEY]).unwrap();
+        gate_secret(keys[GATE_SECRET].clone()).unwrap();
     }
 
     #[test]
@@ -86,7 +88,7 @@ mod tests {
         assert!(session_key(&secret("not base64!")).is_err());
         assert!(session_key(&secret(&STANDARD.encode([7; 63]))).is_err());
         assert!(keyring(&secret("1:short")).is_err());
-        assert!(proxy_public_key("ssh-ed25519 AAAA").is_err());
+        assert!(gate_secret(secret("short")).is_err());
     }
 
     fn secret(value: &str) -> SecretString {

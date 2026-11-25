@@ -31,4 +31,10 @@ pub trait IdentityProvider: Send + Sync {
     async fn vouches_for_ssh(&self, _subject: &str, _presented: &str) -> Result<bool> {
         Ok(false)
     }
+
+    /// Whether it may vouch for an SSH certificate, so a key its people present unregistered can
+    /// be the key of one.
+    fn takes_ssh_certificates(&self) -> bool {
+        false
+    }
 }

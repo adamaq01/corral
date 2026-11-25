@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 
 use corral_core::domain::{Allocation, HomeFiles, Resources, SandboxId};
 use corral_core::ports::home_staging::{self, Staged};
-use corral_core::ports::labels;
 use corral_core::ports::{SandboxSpec, VariableMap};
+use corral_core::ports::{labels, session_env};
 use corral_core::{Error, Result};
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::{
-    Container, EmptyDirVolumeSource, EnvFromSource, EnvVar, ImageVolumeSource,
-    LocalObjectReference, PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate,
-    PodSecurityContext, PodSpec, PodTemplateSpec, ResourceRequirements, Secret, SecretEnvSource,
-    SecretVolumeSource, SecurityContext, Volume, VolumeMount, VolumeResourceRequirements,
+    Container, EmptyDirVolumeSource, EnvVar, ImageVolumeSource, LocalObjectReference,
+    PersistentVolumeClaimSpec, PersistentVolumeClaimTemplate, PodSecurityContext, PodSpec,
+    PodTemplateSpec, ResourceRequirements, Secret, SecretVolumeSource, SecurityContext, Volume,
+    VolumeMount, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -25,13 +25,12 @@ const SANDBOX_UID: i64 = 1000;
 const ROOT: i64 = 0;
 const HOME_VOLUME: &str = "home";
 const HOME_PATH: &str = "/home/sandbox";
-const AGENT_VOLUME: &str = "containerssh-agent";
-const AGENT_PATH: &str = "/opt/containerssh-agent";
 const OVERLAY_VOLUME: &str = "corral-overlay";
 const OVERLAY_PATH: &str = "/opt/corral";
 const CORRAL_INIT: &str = "/opt/corral/bin/corral-init";
 const TINI: &str = "/opt/corral/bin/tini";
 const HOME_FILES_VOLUME: &str = "home-files";
+const SESSION_ENV_VOLUME: &str = "session-env";
 /// Where the init container writes the account files the sandbox container mounts.
 const ACCOUNTS_VOLUME: &str = "corral-accounts";
 const ACCOUNTS_PATH: &str = "/run/corral-accounts";
@@ -42,12 +41,8 @@ const ACCOUNT_FILES: [(&str, &str); 5] = [
     ("sudoers", "/etc/sudoers.d/corral-sandbox"),
     ("profile.sh", "/etc/profile.d/corral.sh"),
 ];
-// ContainerSSH runs a command through /bin/sh with the container's environment, so the
-// overlay's commands are on this PATH, which an sshd session on Docker gets too.
+/// For the execs the engine runs itself; a session's environment comes from sshd.
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback";
-/// What every session's SHELL names: a link `corral-init prepare` makes to the bash a login runs,
-/// the image's or the overlay's.
-const SHELL: &str = "/run/corral-accounts/bash";
 // Kubernetes refuses a Secret whose data is larger.
 const SECRET_LIMIT: usize = 1 << 20;
 
@@ -159,6 +154,7 @@ pub fn pod_template(
     }
 }
 
+/// The variables of the sandbox's sessions, as the sshd config `corral-sshd` reads.
 #[must_use]
 pub fn env_secret(
     id: &SandboxId,
@@ -166,13 +162,8 @@ pub fn env_secret(
     namespace: &str,
     workload: &Workload,
 ) -> Secret {
-    let data = env
-        .iter()
-        .map(|(name, value)| {
-            let bytes = value.expose_secret().as_bytes().to_vec();
-            (name.as_str().to_owned(), ByteString(bytes))
-        })
-        .collect();
+    let config = session_env::sshd_config(env).into_bytes();
+    let data = BTreeMap::from([(session_env::FILE.to_owned(), ByteString(config))]);
     secret(secret_name(id), namespace, workload, data)
 }
 
@@ -249,9 +240,8 @@ fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> Po
                 .collect()
         }),
         init_containers: Some(vec![init_container(workload)]),
-        containers: vec![sandbox_container(id, workload)],
+        containers: vec![sandbox_container(workload)],
         volumes: Some(vec![
-            image_volume(AGENT_VOLUME, &cfg.agent_image),
             image_volume(OVERLAY_VOLUME, &cfg.overlay_image),
             Volume {
                 name: ACCOUNTS_VOLUME.to_owned(),
@@ -263,6 +253,15 @@ fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> Po
                 secret: Some(SecretVolumeSource {
                     secret_name: Some(home_secret_name(id)),
                     // The pod's fsGroup owns the files, and only the sandbox user is in it.
+                    default_mode: Some(0o440),
+                    ..SecretVolumeSource::default()
+                }),
+                ..Volume::default()
+            },
+            Volume {
+                name: SESSION_ENV_VOLUME.to_owned(),
+                secret: Some(SecretVolumeSource {
+                    secret_name: Some(secret_name(id)),
                     default_mode: Some(0o440),
                     ..SecretVolumeSource::default()
                 }),
@@ -297,24 +296,21 @@ fn init_container(workload: &Workload) -> Container {
     }
 }
 
-fn sandbox_container(id: &SandboxId, workload: &Workload) -> Container {
-    let mut mounts = vec![
-        home_mount(),
-        read_only(AGENT_VOLUME, AGENT_PATH),
-        read_only(OVERLAY_VOLUME, OVERLAY_PATH),
-    ];
+fn sandbox_container(workload: &Workload) -> Container {
+    let mut mounts = vec![home_mount(), read_only(OVERLAY_VOLUME, OVERLAY_PATH)];
     mounts.extend(ACCOUNT_FILES.map(|(file, path)| VolumeMount {
         sub_path: Some(file.to_owned()),
         ..read_only(ACCOUNTS_VOLUME, path)
     }));
-    // The whole directory, since a subPath mount refuses a link pointing out of its volume.
-    mounts.push(read_only(ACCOUNTS_VOLUME, ACCOUNTS_PATH));
+    mounts.push(VolumeMount {
+        sub_path: Some(session_env::FILE.to_owned()),
+        ..read_only(SESSION_ENV_VOLUME, session_env::PATH)
+    });
     let env = [
         ("HOME", HOME_PATH),
         ("USER", "sandbox"),
         ("LOGNAME", "sandbox"),
         ("PATH", PATH),
-        ("SHELL", SHELL),
     ];
     Container {
         name: CONTAINER.to_owned(),
@@ -329,13 +325,6 @@ fn sandbox_container(id: &SandboxId, workload: &Workload) -> Container {
             })
             .to_vec(),
         ),
-        env_from: Some(vec![EnvFromSource {
-            secret_ref: Some(SecretEnvSource {
-                name: secret_name(id),
-                optional: None,
-            }),
-            ..EnvFromSource::default()
-        }]),
         resources: Some(workload.resources.clone()),
         security_context: Some(SecurityContext {
             allow_privilege_escalation: Some(true),
@@ -475,7 +464,6 @@ mod tests {
             namespace: "corral-sandboxes".to_owned(),
             service_account: "corral-sandbox".to_owned(),
             storage_class: Some("tns-csi-nvmeof".to_owned()),
-            agent_image: "containerssh/agent:v0.11.0".to_owned(),
             overlay_image: "ghcr.io/adamaq01/corral-overlay:sha-1".to_owned(),
             image_pull_secrets: Vec::new(),
         }
@@ -575,9 +563,7 @@ mod tests {
                     {"name": "USER", "value": "sandbox"},
                     {"name": "LOGNAME", "value": "sandbox"},
                     {"name": "PATH", "value": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback"},
-                    {"name": "SHELL", "value": "/run/corral-accounts/bash"},
                 ],
-                "envFrom": [{"secretRef": {"name": "sbx-0123456789ab-env"}}],
                 "resources": {
                     "requests": {"cpu": "500m", "memory": "1073741824"},
                     "limits": {"cpu": "2000m", "memory": "4294967296"},
@@ -585,31 +571,26 @@ mod tests {
                 "securityContext": {"allowPrivilegeEscalation": true},
                 "volumeMounts": [
                     home,
-                    {"name": "containerssh-agent", "mountPath": "/opt/containerssh-agent", "readOnly": true},
                     overlay,
                     account("passwd", "/etc/passwd"),
                     account("group", "/etc/group"),
                     account("shadow", "/etc/shadow"),
                     account("sudoers", "/etc/sudoers.d/corral-sandbox"),
                     account("profile.sh", "/etc/profile.d/corral.sh"),
-                    {"name": "corral-accounts", "mountPath": "/run/corral-accounts", "readOnly": true},
+                    {"name": "session-env", "mountPath": "/etc/corral/sshd_env.conf", "readOnly": true, "subPath": "sshd_env.conf"},
                 ],
             }])
         );
     }
 
     #[test]
-    fn manifest_mounts_the_agent_and_the_overlay_and_claims_the_home() {
+    fn manifest_mounts_the_overlay_and_the_session_variables_and_claims_the_home() {
         let (sandbox, _) = manifests();
         let pod = &sandbox["spec"]["podTemplate"]["spec"];
         let (labels, annotations) = (&sandbox["metadata"]["labels"], annotations());
         assert_eq!(
             pod["volumes"],
             json!([
-                {
-                    "name": "containerssh-agent",
-                    "image": {"reference": "containerssh/agent:v0.11.0", "pullPolicy": "IfNotPresent"},
-                },
                 {
                     "name": "corral-overlay",
                     "image": {"reference": "ghcr.io/adamaq01/corral-overlay:sha-1", "pullPolicy": "IfNotPresent"},
@@ -618,6 +599,10 @@ mod tests {
                 {
                     "name": "home-files",
                     "secret": {"secretName": "sbx-0123456789ab-home", "defaultMode": 0o440},
+                },
+                {
+                    "name": "session-env",
+                    "secret": {"secretName": "sbx-0123456789ab-env", "defaultMode": 0o440},
                 },
             ])
         );
@@ -696,7 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_secret_holds_env_values() {
+    fn the_env_secret_holds_the_sshd_config_of_the_session_variables() {
         let (_, secret) = manifests();
         assert_eq!(
             secret,
@@ -710,10 +695,7 @@ mod tests {
                     "annotations": annotations(),
                 },
                 "type": "Opaque",
-                "data": {
-                    "ANTHROPIC_API_KEY": "c2stYW50LTE=",
-                    "GH_TOKEN": "Z2gjInF1b3RlZFw=",
-                },
+                "data": {"sshd_env.conf": "U2V0RW52ICJBTlRIUk9QSUNfQVBJX0tFWT1zay1hbnQtMSIgIkdIX1RPS0VOPWdoI1wicXVvdGVkXFwiCg=="},
             })
         );
     }

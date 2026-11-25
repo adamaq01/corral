@@ -38,24 +38,11 @@ pub struct SandboxSpec {
     pub resources: Resources,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Whether a started sandbox takes sessions yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Readiness {
-    Ready(SshTarget),
+    Ready,
     Waking,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SshTarget {
-    KubernetesPod {
-        namespace: String,
-        pod: String,
-    },
-    SshServer {
-        host: String,
-        port: u16,
-        username: String,
-        host_key_fingerprint: String,
-    },
 }
 
 /// Converges a sandbox, named by the id core gave it, to a state. Every method is idempotent.
@@ -63,7 +50,7 @@ pub enum SshTarget {
 pub trait SandboxEngine: Send + Sync {
     /// Provisions the sandbox without starting it.
     async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()>;
-    /// Starts a stopped sandbox with `boot` and waits up to `deadline` for it to accept SSH. A
+    /// Starts a stopped sandbox with `boot` and waits up to `deadline` for it to take sessions. A
     /// stopped sandbox is first remade from `spec`, its home kept, where it differs from what
     /// the sandbox was made from; without a spec it runs as it was last made. A running sandbox
     /// is left as it is, `spec` and `boot` unused. Refuses with `LimitReached` beyond the

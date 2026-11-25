@@ -4,9 +4,7 @@ use async_trait::async_trait;
 use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{
-    Boot, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, Started,
-};
+use corral_core::ports::{Boot, Inspection, Readiness, SandboxEngine, SandboxSpec, Started};
 use corral_core::{Error, Result};
 use k8s_openapi::api::core::v1::{Event, PersistentVolumeClaim, Pod, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -171,10 +169,7 @@ impl SandboxEngine for AgentSandboxEngine {
         let booted = self.resume(id, spec, &boot).await?;
         let readiness = loop {
             if self.observe(id).await? == SandboxStatus::Running {
-                break Readiness::Ready(SshTarget::KubernetesPod {
-                    namespace: self.config.namespace.clone(),
-                    pod: id.0.clone(),
-                });
+                break Readiness::Ready;
             }
             let remaining = deadline.saturating_sub(started.elapsed());
             if remaining.is_zero() {

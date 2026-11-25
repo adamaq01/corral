@@ -19,8 +19,10 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Serve the web API and the SSH front door's webhooks (the default).
+    /// Serve the web API, and the internal API the gate asks (the default).
     Serve,
+    /// Serve SSH: the front door that carries each connection into its sandbox.
+    Gate,
     /// Manage local accounts.
     #[command(subcommand)]
     LocalAccount(LocalAccountCommand),
@@ -31,7 +33,11 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
     /// Exit 0 when both listeners answer `/healthz`, for container healthchecks.
-    Healthcheck,
+    Healthcheck {
+        /// Check the gate instead: its SSH listener greets.
+        #[arg(long)]
+        gate: bool,
+    },
 }
 
 #[derive(Subcommand)]

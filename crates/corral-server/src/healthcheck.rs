@@ -6,13 +6,34 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use crate::config::Config;
+use crate::config::{Config, FrontDoor};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
-pub async fn run(config: &Config) -> Result<()> {
+pub async fn run(config: &Config, gate: bool) -> Result<()> {
+    if gate {
+        let FrontDoor::Gate(settings) = &config.frontdoor;
+        return timeout(DEADLINE, greets(dialable(settings.listen_addr)))
+            .await
+            .context("the gate did not greet")?;
+    }
     probe(config.http.public_addr).await?;
     probe(config.http.internal_addr).await
+}
+
+/// Whether an SSH server at `address` sends its identification.
+async fn greets(address: SocketAddr) -> Result<()> {
+    let mut stream = TcpStream::connect(address)
+        .await
+        .with_context(|| format!("connecting to {address}"))?;
+    let mut greeting = [0; 8];
+    stream.read_exact(&mut greeting).await?;
+    ensure!(
+        greeting == *b"SSH-2.0-",
+        "{address} answered {:?}, not SSH",
+        String::from_utf8_lossy(&greeting)
+    );
+    Ok(())
 }
 
 async fn probe(listen: SocketAddr) -> Result<()> {

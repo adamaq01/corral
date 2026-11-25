@@ -8,7 +8,6 @@ pub struct AgentSandboxConfig {
     /// Without it, home volumes use the cluster's default storage class.
     #[serde(default)]
     pub storage_class: Option<String>,
-    pub agent_image: String,
     /// The Corral overlay every sandbox mounts at /opt/corral, as an image volume.
     #[serde(default = "overlay_image")]
     pub overlay_image: String,

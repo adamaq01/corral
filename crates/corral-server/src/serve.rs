@@ -50,7 +50,7 @@ async fn bind(address: SocketAddr) -> Result<TcpListener> {
         .with_context(|| format!("binding {address}"))
 }
 
-async fn cancel_on_signal(mut terminate: Signal, shutdown: CancellationToken) {
+pub async fn cancel_on_signal(mut terminate: Signal, shutdown: CancellationToken) {
     tokio::select! {
         _ = terminate.recv() => info!("SIGTERM received, shutting down"),
         _ = tokio::signal::ctrl_c() => info!("interrupted, shutting down"),

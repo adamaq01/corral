@@ -2,7 +2,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use corral_activity::{Exec, ExecOutput, Sessions, is_active};
+use corral_activity::{Exec, ExecOutput, is_active};
 use corral_core::{Error, Result};
 
 const BUSYBOX: &str = "/opt/corral/bin/busybox";
@@ -34,6 +34,49 @@ impl Container {
             .expect("run docker");
         assert!(built.success(), "corral-init build failed");
         Self { name }
+    }
+
+    /// An SSH session the way the gate opens one: OpenSSH over the overlay's `corral-sshd`, run
+    /// by an exec as the sandbox user.
+    fn ssh(&self, command: &[&str]) -> std::process::Child {
+        let key = std::env::temp_dir().join(format!("{}-key", self.name));
+        let _ = std::fs::remove_file(&key);
+        let generated = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()
+            .expect("run ssh-keygen");
+        assert!(generated.success());
+        let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let public = public
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let proxy = format!(
+            "docker exec -i -u 1000 {} /opt/corral/libexec/corral-sshd '{public}'",
+            self.name
+        );
+        Command::new("ssh")
+            .args(["-F", "/dev/null", "-i"])
+            .arg(&key)
+            .args([
+                "-o",
+                "IdentitiesOnly=yes",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                "-o",
+            ])
+            .arg(format!("ProxyCommand={proxy}"))
+            .arg("sandbox@sandbox")
+            .args(command)
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("run ssh")
     }
 }
 
@@ -87,17 +130,21 @@ async fn herdr_core_running(container: &Container) -> bool {
 }
 
 async fn active(container: &Container) -> bool {
-    is_active(Sessions::Sshd, container).await.unwrap()
+    is_active(container).await.unwrap()
 }
 
-async fn eventually_inactive(container: &Container) -> bool {
-    for _ in 0..20 {
-        if !active(container).await {
+async fn eventually(container: &Container, activity: bool) -> bool {
+    for _ in 0..40 {
+        if active(container).await == activity {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     false
+}
+
+async fn eventually_inactive(container: &Container) -> bool {
+    eventually(container, false).await
 }
 
 #[tokio::test]
@@ -119,17 +166,23 @@ async fn activity_reads_a_real_sandbox() {
     let sandbox = Container::start(&base, &overlay);
 
     assert!(!active(&sandbox).await);
-    assert!(!is_active(Sessions::Exec, &sandbox).await.unwrap());
-    let exec_session = Command::new("docker")
+    let exec = Command::new("docker")
         .args(["exec", "--detach", &sandbox.name, BUSYBOX, "sleep", "600"])
         .status()
         .expect("run docker");
-    assert!(exec_session.success());
-    assert!(is_active(Sessions::Exec, &sandbox).await.unwrap());
+    assert!(exec.success());
     assert!(
         !active(&sandbox).await,
         "an exec is no sshd session and no Herdr terminal"
     );
+    let mut session = sandbox.ssh(&["sleep", "600"]);
+    assert!(
+        eventually(&sandbox, true).await,
+        "an sshd -i session the gate opens is activity"
+    );
+    session.kill().unwrap();
+    session.wait().unwrap();
+    assert!(eventually(&sandbox, false).await);
     assert!(
         !herdr_core_running(&sandbox).await,
         "the probe started a herdr core"

@@ -252,6 +252,10 @@ impl IdentityProvider for OidcProvider {
         };
         Ok(opkssh.subject(presented).await.as_deref() == Some(subject))
     }
+
+    fn takes_ssh_certificates(&self) -> bool {
+        self.opkssh.is_some()
+    }
 }
 
 fn token_error(err: RequestTokenError<HttpError, TokenError>) -> Error {

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use corral_activity::{ActivityLock, Sessions, Sweepable};
+use corral_activity::{ActivityLock, Sweepable};
 use corral_core::Result;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER};
@@ -15,7 +15,6 @@ use crate::status;
 
 #[async_trait]
 impl Sweepable for AgentSandboxEngine {
-    const SESSIONS: Sessions = Sessions::Exec;
     /// The resource version the sandbox was listed at.
     type Listed = Option<String>;
     type Exec = PodExec;

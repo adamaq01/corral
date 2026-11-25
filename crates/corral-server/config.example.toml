@@ -2,7 +2,8 @@
 #
 # Secrets and the database come from the environment, never from this file:
 #   DATABASE_URL=postgres://corral:...@corral-db-rw:5432/corral
-#   CORRAL_SESSION_KEY, CORRAL_SECRETS_KEY (`corral-server keys generate`)
+#   CORRAL_SESSION_KEY, CORRAL_SECRETS_KEY, CORRAL_GATE_SECRET (`corral-server keys generate`),
+#   the last for the gate too
 #   CORRAL_OIDC_CLIENT_SECRET
 
 [http]
@@ -36,7 +37,6 @@ kind = "agent-sandbox"
 namespace = "corral-sandboxes"
 service_account = "corral-sandbox"
 storage_class = "tns-csi-nvmeof"
-agent_image = "containerssh/agent:v0.11.0"
 # The Corral overlay every sandbox mounts at /opt/corral, whatever its image.
 overlay_image = "ghcr.io/adamaq01/corral-overlay:latest"
 
@@ -45,8 +45,13 @@ overlay_image = "ghcr.io/adamaq01/corral-overlay:latest"
 timeout_secs = 1800
 probe_interval_secs = 60
 
+# The SSH front door, `corral-server gate`, which reads this same file.
 [frontdoor]
-kind = "containerssh"
+kind = "gate"
+listen_addr = "0.0.0.0:2222"
+host_key_file = "/etc/corral/ssh/host_key"
+# The server's internal listener, which answers the gate alone.
+server_url = "http://corral.corral.svc:8081"
 # Public SSH arrives through a rathole client pod, so every public client shares its address.
 # Connections from the pod network are never locked out by address.
 lockout_exempt_networks = ["10.42.0.0/16"]

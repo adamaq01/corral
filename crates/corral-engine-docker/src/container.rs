@@ -11,12 +11,8 @@ use corral_core::ports::{SandboxSpec, labels};
 use corral_core::{Error, Result};
 use sha2::{Digest, Sha256};
 
-use crate::host_key::HostKey;
-
 const LABEL_DOMAIN: &str = "corral.adamaq01.fr/";
-const HOST_KEY_FINGERPRINT: &str = "corral.adamaq01.fr/host-key-fingerprint";
 const DEFINITION: &str = "corral.adamaq01.fr/definition";
-const HOST_KEY_ENV: &str = "CORRAL_SSH_HOST_KEY=";
 
 const HOME: &str = "/home/sandbox";
 const OVERLAY: &str = "/opt/corral";
@@ -28,6 +24,8 @@ const ENTRYPOINT: [&str; 4] = [
     "docker",
 ];
 const ROOT: &str = "0:0";
+/// A tmpfs, so empty at every start, where `corral-init` marks the sandbox ready for sessions.
+pub(crate) const RUN_DIR: &str = "/run/corral";
 const NANOS_PER_MILLI: u64 = 1_000_000;
 
 pub(crate) fn name(id: &SandboxId) -> String {
@@ -58,24 +56,17 @@ pub(crate) struct Definition {
     pub(crate) image: String,
     nano_cpus: i64,
     memory: i64,
-    host_key: HostKey,
 }
 
 impl Definition {
-    pub(crate) fn new(id: &SandboxId, spec: &SandboxSpec, host_key: HostKey) -> Result<Self> {
+    pub(crate) fn new(id: &SandboxId, spec: &SandboxSpec) -> Result<Self> {
         let limits = &spec.resources;
         Ok(Self {
             identity: identity_labels(id, spec),
             image: spec.image.clone(),
             nano_cpus: docker_quantity(limits.cpu_millis.limit().checked_mul(NANOS_PER_MILLI))?,
             memory: docker_quantity(Some(limits.memory_bytes.limit()))?,
-            host_key,
         })
-    }
-
-    /// What `spec` makes of the sandbox, which keeps this definition's host key.
-    pub(crate) fn remade(self, id: &SandboxId, spec: &SandboxSpec) -> Result<Self> {
-        Self::new(id, spec, self.host_key)
     }
 
     /// The definition `container` was made from, read back from it.
@@ -91,12 +82,6 @@ impl Definition {
             .host_config
             .as_ref()
             .ok_or_else(|| unreadable("host config"))?;
-        let host_key = config
-            .env
-            .iter()
-            .flatten()
-            .find_map(|entry| entry.strip_prefix(HOST_KEY_ENV))
-            .ok_or_else(|| unreadable("host key"))?;
         // Docker adds the image's labels to the container's.
         let identity = config
             .labels
@@ -104,7 +89,7 @@ impl Definition {
             .flatten()
             .filter(|(key, _)| {
                 (key.as_str() == MANAGED_BY || key.starts_with(LABEL_DOMAIN))
-                    && ![HOST_KEY_FINGERPRINT, DEFINITION].contains(&key.as_str())
+                    && key.as_str() != DEFINITION
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
@@ -113,9 +98,6 @@ impl Definition {
             image: config.image.clone().ok_or_else(|| unreadable("image"))?,
             nano_cpus: host.nano_cpus.ok_or_else(|| unreadable("CPU limit"))?,
             memory: host.memory.ok_or_else(|| unreadable("memory limit"))?,
-            host_key: HostKey::from_openssh(host_key).map_err(|err| {
-                Error::internal(format!("read the host key of {}", name(id)), err)
-            })?,
         })
     }
 }
@@ -135,11 +117,7 @@ pub(crate) fn body(
     definition: &Definition,
     wiring: &Wiring,
 ) -> ContainerCreateBody {
-    let mut labels = definition.identity.clone();
-    labels.insert(
-        HOST_KEY_FINGERPRINT.to_owned(),
-        definition.host_key.fingerprint(),
-    );
+    let labels = definition.identity.clone();
     let host_config = HostConfig {
         mounts: Some(vec![
             Mount {
@@ -156,6 +134,10 @@ pub(crate) fn body(
                 ..Mount::default()
             },
         ]),
+        tmpfs: Some(HashMap::from([(
+            RUN_DIR.to_owned(),
+            "mode=0755".to_owned(),
+        )])),
         network_mode: Some(wiring.network.to_owned()),
         restart_policy: Some(RestartPolicy {
             name: Some(RestartPolicyNameEnum::NO),
@@ -169,10 +151,6 @@ pub(crate) fn body(
         image: Some(definition.image.clone()),
         user: Some(ROOT.to_owned()),
         entrypoint: Some(ENTRYPOINT.map(ToOwned::to_owned).to_vec()),
-        env: Some(vec![format!(
-            "{HOST_KEY_ENV}{}",
-            definition.host_key.private_openssh()
-        )]),
         labels: Some(labels),
         host_config: Some(host_config),
         ..ContainerCreateBody::default()
@@ -214,21 +192,14 @@ fn digest(body: &ContainerCreateBody) -> String {
         })
 }
 
-pub(crate) fn host_key_fingerprint(
-    id: &SandboxId,
-    container: &ContainerInspectResponse,
-) -> Result<String> {
+/// Whether the container has the directory where `corral-init` marks it ready, which one made by
+/// a Corral from before sessions went through the overlay's `corral-sshd` lacks.
+pub(crate) fn marks_readiness(container: &ContainerInspectResponse) -> bool {
     container
-        .config
+        .host_config
         .as_ref()
-        .and_then(|config| config.labels.as_ref()?.get(HOST_KEY_FINGERPRINT))
-        .cloned()
-        .ok_or_else(|| {
-            Error::internal(
-                format!("container {}", name(id)),
-                format!("has no label {HOST_KEY_FINGERPRINT}"),
-            )
-        })
+        .and_then(|host| host.tmpfs.as_ref())
+        .is_some_and(|tmpfs| tmpfs.contains_key(RUN_DIR))
 }
 
 fn identity_labels(id: &SandboxId, spec: &SandboxSpec) -> HashMap<String, String> {
@@ -253,10 +224,9 @@ mod tests {
     use corral_core::ports::SandboxSpec;
 
     use super::{
-        Definition, Wiring, body, host_key_fingerprint, is_made_from, name, replacement_name,
-        volume, volume_name,
+        Definition, Wiring, body, is_made_from, marks_readiness, name, replacement_name, volume,
+        volume_name,
     };
-    use crate::host_key::HostKey;
 
     const NETWORK: &str = "corral-sandboxes";
     const WIRING: Wiring = Wiring {
@@ -283,12 +253,12 @@ mod tests {
     }
 
     fn definition() -> Definition {
-        Definition::new(&id(), &spec(), HostKey::generate()).unwrap()
+        Definition::new(&id(), &spec()).unwrap()
     }
 
     /// The container Docker makes from `body`, which also carries the image's env and labels.
     fn made(body: &ContainerCreateBody, image_id: &str) -> ContainerInspectResponse {
-        let mut env = body.env.clone().unwrap();
+        let mut env = body.env.clone().unwrap_or_default();
         env.push("PATH=/usr/bin".to_owned());
         let mut labels = body.labels.clone().unwrap();
         labels.insert(
@@ -309,11 +279,8 @@ mod tests {
     }
 
     #[test]
-    fn container_wires_host_key_volume_network_and_labels() {
-        let host_key = HostKey::generate();
-        let (private, fingerprint) = (host_key.private_openssh(), host_key.fingerprint());
-        let definition = Definition::new(&id(), &spec(), host_key).unwrap();
-        let body = body(&id(), &definition, &WIRING);
+    fn container_wires_volume_overlay_run_dir_network_and_labels() {
+        let body = body(&id(), &definition(), &WIRING);
 
         assert_eq!(name(&id()), "corral-sbx-0123456789ab");
         assert_eq!(replacement_name(&id()), "corral-sbx-0123456789ab-next");
@@ -323,8 +290,8 @@ mod tests {
             Some("ghcr.io/adamaq01/corral-sandbox:1.0")
         );
         assert_eq!(
-            body.env.clone().unwrap(),
-            [format!("CORRAL_SSH_HOST_KEY={private}")]
+            body.env, None,
+            "variables never sit in the container's config"
         );
         assert_eq!(body.user.as_deref(), Some("0:0"));
         assert_eq!(
@@ -350,6 +317,11 @@ mod tests {
         assert_eq!(mounts[1].source.as_deref(), Some("sha256:overlay-one"));
         assert_eq!(mounts[1].target.as_deref(), Some("/opt/corral"));
         assert_eq!(mounts[1].read_only, Some(true));
+        assert_eq!(
+            host.tmpfs.clone().unwrap()["/run/corral"],
+            "mode=0755",
+            "emptied at every start"
+        );
         assert_eq!(host.network_mode.as_deref(), Some(NETWORK));
         assert_eq!(
             host.restart_policy.unwrap().name,
@@ -367,19 +339,14 @@ mod tests {
             assert_eq!(labels.get(key).map(String::as_str), Some(value), "{key}");
         }
         assert_eq!(labels["corral.adamaq01.fr/definition"].len(), 64);
+        assert!(marks_readiness(&made(&body, "sha256:one")));
+    }
 
-        let inspected = ContainerInspectResponse {
-            config: Some(ContainerConfig {
-                labels: body.labels,
-                ..ContainerConfig::default()
-            }),
-            ..ContainerInspectResponse::default()
-        };
-        assert_eq!(
-            host_key_fingerprint(&id(), &inspected).unwrap(),
-            fingerprint
-        );
-        assert!(host_key_fingerprint(&id(), &ContainerInspectResponse::default()).is_err());
+    #[test]
+    fn a_container_from_before_the_run_dir_does_not_mark_its_readiness() {
+        let mut container = made(&body(&id(), &definition(), &WIRING), "sha256:one");
+        container.host_config.as_mut().unwrap().tmpfs = None;
+        assert!(!marks_readiness(&container));
     }
 
     #[test]
@@ -432,18 +399,14 @@ mod tests {
     }
 
     #[test]
-    fn a_remade_definition_takes_the_spec_and_keeps_the_host_key() {
+    fn a_changed_spec_makes_the_container_stale() {
         let original = body(&id(), &definition(), &WIRING);
         let container = made(&original, "sha256:one");
         let mut changed = spec();
         changed.image = "ghcr.io/adamaq01/corral-sandbox:2.0".to_owned();
         changed.resources.memory_bytes = Allocation::new(1 << 30, 8 << 30).unwrap();
 
-        let remade = Definition::recorded(&id(), &container)
-            .unwrap()
-            .remade(&id(), &changed)
-            .unwrap();
-        let again = body(&id(), &remade, &WIRING);
+        let again = body(&id(), &Definition::new(&id(), &changed).unwrap(), &WIRING);
 
         assert!(!is_made_from(&container, &again, "sha256:one"));
         assert_eq!(
@@ -451,26 +414,17 @@ mod tests {
             Some("ghcr.io/adamaq01/corral-sandbox:2.0")
         );
         assert_eq!(again.host_config.unwrap().memory, Some(8 << 30));
-        let fingerprint = "corral.adamaq01.fr/host-key-fingerprint";
-        assert_eq!(
-            again.labels.unwrap()[fingerprint],
-            original.labels.unwrap()[fingerprint]
-        );
-        let unchanged = Definition::recorded(&id(), &container)
-            .unwrap()
-            .remade(&id(), &spec())
-            .unwrap();
         assert!(is_made_from(
             &container,
-            &body(&id(), &unchanged, &WIRING),
+            &body(&id(), &Definition::new(&id(), &spec()).unwrap(), &WIRING),
             "sha256:one"
         ));
     }
 
     #[test]
-    fn a_container_without_its_host_key_cannot_be_read_back() {
+    fn a_container_without_its_limits_cannot_be_read_back() {
         let mut container = made(&body(&id(), &definition(), &WIRING), "sha256:one");
-        container.config.as_mut().unwrap().env = Some(vec!["PATH=/usr/bin".to_owned()]);
+        container.host_config.as_mut().unwrap().memory = None;
         assert!(Definition::recorded(&id(), &container).is_err());
     }
 

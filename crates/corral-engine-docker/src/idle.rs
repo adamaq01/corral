@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use corral_activity::{ActivityLock, Sessions, Sweepable};
+use corral_activity::{ActivityLock, Sweepable};
 use corral_core::Result;
 use corral_core::domain::SandboxId;
 use corral_core::ports::SandboxEngine;
@@ -10,7 +10,6 @@ use crate::docker_exec::DockerExec;
 
 #[async_trait]
 impl Sweepable for DockerEngine {
-    const SESSIONS: Sessions = Sessions::Sshd;
     type Listed = ();
     type Exec = DockerExec;
 

@@ -1,0 +1,35 @@
+[package]
+name = "corral-frontdoor-gate"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+axum.workspace = true
+bytes = "1.12.2"
+corral-core = { path = "../corral-core" }
+getrandom = "0.4.3"
+ipnet = "2.12.2"
+reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
+# Pinned: the gate is internet-facing, and minor versions change the API. Update deliberately.
+russh = { version = "=0.65.4", default-features = false, features = ["ring", "rsa"] }
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle = "2.6.1"
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-util = { workspace = true, features = ["compat"] }
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+corral-core = { path = "../corral-core", features = ["fakes"] }
+corral-engine-docker = { path = "../corral-engine-docker" }
+sha2 = "0.11.1"
+ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "test-util", "time"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

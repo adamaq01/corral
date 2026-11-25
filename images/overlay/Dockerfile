@@ -74,9 +74,12 @@ RUN curl -fsSL -o openssh.tar.gz \
       --disable-lastlog --disable-utmp --disable-wtmp --disable-utmpx --disable-wtmpx \
       --with-default-path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$P/bin:$P/fallback \
       --with-pid-dir=/run >/dev/null \
- && make -j"$(nproc)" sshd sshd-session sshd-auth sftp-server >/dev/null \
+ && make -j"$(nproc)" sshd sshd-session sshd-auth sftp-server ssh-keygen >/dev/null \
  && install -D -m 0755 sshd /out$P/sbin/sshd \
- && install -D -m 0755 -t /out$P/libexec sshd-session sshd-auth sftp-server
+ && install -D -m 0755 -t /out$P/libexec sshd-session sshd-auth sftp-server \
+ && mkdir -p /out$P/etc \
+ && ./ssh-keygen -q -t ed25519 -N '' -C corral-sandbox -f /out$P/etc/ssh_host_ed25519_key \
+ && rm /out$P/etc/ssh_host_ed25519_key.pub
 
 # ftp.gnu.org often refuses connections from CI runners; the checksum makes any mirror safe.
 RUN for url in "https://ftpmirror.gnu.org/bash/bash-$BASH_VERSION.tar.gz" \
@@ -116,7 +119,12 @@ RUN install -m 0755 /bin/busybox.static /out$P/bin/busybox \
 
 COPY --from=corral-command /corral /out/opt/corral/bin/corral
 COPY --chmod=0755 images/overlay/corral-init images/overlay/corral-shell /out/opt/corral/bin/
-COPY images/overlay/sshd_config images/overlay/motd /out/opt/corral/etc/
+COPY --chmod=0755 images/overlay/corral-sshd /out/opt/corral/libexec/
+COPY images/overlay/motd /out/opt/corral/etc/
+# Every sandbox's sshd has this host key, readable by the sandbox user it runs as: the gate opens
+# the stream it speaks over through the engine, so it checks no host key, and the key is no
+# secret. sshd refuses a key that others can read only when the key is its own user's.
+RUN chmod 0644 /out/opt/corral/etc/ssh_host_ed25519_key
 COPY --chmod=0440 images/overlay/sudoers /out/opt/corral/etc/sudoers
 COPY images/overlay/skel/ /out/opt/corral/etc/skel/
 

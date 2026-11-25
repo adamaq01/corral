@@ -175,43 +175,29 @@ notice() {
   echo "$1" >>"$NOTICES.new"
 }
 
-# The bash a login runs: the image's, or the overlay's.
-bash_path() {
-  local shell
-  for shell in /bin/bash /usr/bin/bash $O/bin/bash; do
-    if [ -x "$shell" ]; then
-      echo "$shell"
-      return
-    fi
-  done
-}
-
 as_sandbox() {
   $B su -s $O/bin/sh sandbox -c "$O/bin/corral-init home"
 }
 
 case "${1:-}" in
   docker)
-    # Docker, as root: the accounts and the home, then the overlay's sshd.
+    # Docker, as root: the accounts and the home, then the mark that sessions, each an exec of
+    # corral-sshd, may start.
     system
-    $B mkdir -p $HOME_DIR /run /var/empty /etc/ssh /etc/corral
+    $B mkdir -p $HOME_DIR /run/corral
     if [ "$($B stat -c %u $HOME_DIR)" != $SANDBOX_ID ]; then
       $B chown $SANDBOX_ID:$SANDBOX_ID $HOME_DIR
       $B chmod 0750 $HOME_DIR
     fi
     as_sandbox
-    : "${CORRAL_SSH_HOST_KEY:?corral-init docker needs CORRAL_SSH_HOST_KEY}"
-    (umask 077 && printf '%s\n' "$CORRAL_SSH_HOST_KEY" >/etc/ssh/corral_host_key)
-    [ -e /etc/corral/sshd_env.conf ] || $B install -m 0600 /dev/null /etc/corral/sshd_env.conf
-    unset CORRAL_SSH_HOST_KEY
-    exec $O/sbin/sshd -D -e -f $O/etc/sshd_config
+    : >/run/corral/ready
+    exec $B sleep 2147483647
     ;;
   prepare)
     # Kubernetes init container, as root: the account files the sandbox container mounts from
     # the directory $2, and the home.
     dir=${2:?corral-init prepare needs a directory}
     accounts /etc
-    $B ln -sf "$(bash_path)" "$dir/bash"
     $B install -m 0644 /etc/passwd "$dir/passwd"
     $B install -m 0644 /etc/group "$dir/group"
     $B install -m 0600 /etc/shadow "$dir/shadow"

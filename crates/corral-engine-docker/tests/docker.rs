@@ -10,16 +10,16 @@ use corral_core::domain::{
     SandboxStatus, UserId, VariableName,
 };
 use corral_core::ports::{
-    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, VariableMap,
+    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SandboxStreams, VariableMap,
 };
-use corral_engine_docker::{DockerConfig, DockerEngine};
+use corral_engine_docker::{DockerConfig, DockerEngine, DockerStreams};
 use secrecy::{SecretSlice, SecretString};
-use ssh_key::PublicKey;
+use tokio::net::TcpListener;
 use tokio::task::JoinSet;
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::sync::CancellationToken;
 
 const WAKE: Duration = Duration::from_secs(60);
-const KNOWN_HOSTS: &str = "/root/.ssh/known_hosts";
 
 fn image() -> String {
     std::env::var("CORRAL_SANDBOX_IMAGE").unwrap_or_else(|_| "corral-sandbox:dev".to_owned())
@@ -97,19 +97,19 @@ fn docker_answers(args: &[&str]) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// A network with an SSH client container on it, standing in for the front door. Everything it
-/// and the sandboxes it records create is removed when it drops, even after a failed assertion.
+/// A network for the sandboxes the test makes, which the gate reaches through Docker. Everything
+/// it and the sandboxes it records create is removed when it drops, even after a failed assertion.
 struct Lab {
     network: String,
-    client: String,
-    proxy_public_key: Option<PublicKey>,
     sandboxes: Mutex<Vec<SandboxId>>,
+    streams: Arc<DockerStreams>,
+    key: std::path::PathBuf,
+    public_key: String,
 }
 
 impl Lab {
     fn open(test: &str) -> Option<Self> {
-        let image = image();
-        for needed in [&image, &overlay()] {
+        for needed in [&image(), &overlay()] {
             if !docker_answers(&["image", "inspect", needed]) {
                 assert!(
                     std::env::var_os("CI").is_none(),
@@ -123,31 +123,28 @@ impl Lab {
             }
         }
         let network = format!("corral-test-docker-{test}-{}", std::process::id());
-        let mut lab = Self {
-            client: format!("{network}-client"),
+        docker_ok(&["network", "create", &network]);
+        let key = std::env::temp_dir().join(format!("{network}-key"));
+        let _ = std::fs::remove_file(&key);
+        let made = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let public_key = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let public_key = public_key
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(Self {
             network,
-            proxy_public_key: None,
             sandboxes: Mutex::default(),
-        };
-        docker_ok(&["network", "create", &lab.network]);
-        docker_ok(&[
-            "run",
-            "--detach",
-            "--name",
-            &lab.client,
-            "--network",
-            &lab.network,
-            "--entrypoint",
-            "sleep",
-            &image,
-            "infinity",
-        ]);
-        lab.client_sh(
-            "mkdir -p -m 700 ~/.ssh && ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/proxy_key",
-        );
-        let public_key = lab.client_sh("cat ~/.ssh/proxy_key.pub");
-        lab.proxy_public_key = Some(PublicKey::from_openssh(&public_key).unwrap());
-        Some(lab)
+            streams: Arc::new(DockerStreams::connect().unwrap()),
+            key,
+            public_key,
+        })
     }
 
     async fn engine(&self, max_running: usize) -> Arc<DockerEngine> {
@@ -160,7 +157,6 @@ impl Lab {
                 network: self.network.clone(),
                 overlay_image: overlay.to_owned(),
             },
-            self.proxy_public_key.clone().unwrap(),
             max_running,
             Vec::new(),
         )
@@ -183,76 +179,49 @@ impl Lab {
         id
     }
 
-    fn client(&self, argv: &[&str]) -> String {
-        let mut exec = vec!["exec", self.client.as_str()];
-        exec.extend_from_slice(argv);
-        docker_ok(&exec)
+    /// An SSH session the way the gate opens one: OpenSSH to `corral-sshd`, run in the sandbox
+    /// through the engine's stream, here behind a local port.
+    async fn ssh_session(&self, id: &SandboxId, command: &str) -> tokio::process::Child {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (streams, id, public_key) = (self.streams.clone(), id.clone(), self.public_key.clone());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let argv = ["/opt/corral/libexec/corral-sshd", public_key.as_str()];
+            let mut stream = streams.open(&id, &argv).await.unwrap().compat();
+            let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+        });
+        tokio::process::Command::new("ssh")
+            .args(["-F", "/dev/null", "-i"])
+            .arg(&self.key)
+            .args(["-p", &port.to_string()])
+            .args(["-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"])
+            .args([
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+            ])
+            .args(["-o", "LogLevel=ERROR", "sandbox@127.0.0.1", command])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
     }
 
-    fn client_sh(&self, script: &str) -> String {
-        self.client(&["sh", "-c", script])
-    }
-
-    /// Trusts the host key the sandbox serves only if its fingerprint is the one the engine
-    /// reports, the way the front door pins it.
-    fn pin_host_key(&self, target: &SshTarget) {
-        let SshTarget::SshServer {
-            host,
-            host_key_fingerprint,
-            ..
-        } = target
-        else {
-            panic!("not an SSH server target: {target:?}");
-        };
-        let scanned = self.client(&["ssh-keyscan", "-t", "ed25519", host]);
-        self.client(&[
-            "sh",
-            "-c",
-            "printf '%s\\n' \"$1\" > \"$2\"",
-            "sh",
-            &scanned,
-            KNOWN_HOSTS,
-        ]);
-        let listed = self.client(&["ssh-keygen", "-lf", KNOWN_HOSTS]);
-        assert_eq!(
-            listed.split_whitespace().nth(1),
-            Some(host_key_fingerprint.as_str()),
-            "{listed}"
-        );
-    }
-
-    fn ssh_args<'a>(host: &'a str, command: &'a str) -> Vec<String> {
-        [
-            "ssh",
-            "-i",
-            "/root/.ssh/proxy_key",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            &format!("UserKnownHostsFile={KNOWN_HOSTS}"),
-            "-o",
-            "GlobalKnownHostsFile=/dev/null",
-            &format!("sandbox@{host}"),
-            command,
-        ]
-        .map(ToOwned::to_owned)
-        .to_vec()
-    }
-
-    fn ssh(&self, host: &str, command: &str) -> String {
-        let args = Self::ssh_args(host, command);
-        self.client(&args.iter().map(String::as_str).collect::<Vec<_>>())
-    }
-
-    fn ssh_in_background(&self, host: &str, command: &str) {
-        let mut args = vec!["exec", "--detach", self.client.as_str()];
-        let ssh = Self::ssh_args(host, command);
-        args.extend(ssh.iter().map(String::as_str));
-        docker_ok(&args);
+    /// What `command` prints, its last line break left out, run in an SSH session.
+    async fn ssh(&self, id: &SandboxId, command: &str) -> String {
+        let output = self
+            .ssh_session(id, command)
+            .await
+            .wait_with_output()
+            .await
+            .unwrap();
+        assert!(output.status.success(), "ssh {command}: {output:?}");
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_owned()
     }
 }
 
@@ -268,8 +237,9 @@ impl Drop for Lab {
             docker(&["rm", "--force", &name, &format!("{name}-next")]);
             docker(&["volume", "rm", &format!("corral-home-{}", id.0)]);
         }
-        docker(&["rm", "--force", &self.client]);
         docker(&["network", "rm", &self.network]);
+        let _ = std::fs::remove_file(&self.key);
+        let _ = std::fs::remove_file(self.key.with_extension("pub"));
     }
 }
 
@@ -277,7 +247,7 @@ async fn state(engine: &DockerEngine, id: &SandboxId) -> SandboxStatus {
     engine.status(id).await.unwrap()
 }
 
-async fn wake(engine: &DockerEngine, id: &SandboxId, env: VariableMap) -> SshTarget {
+async fn wake(engine: &DockerEngine, id: &SandboxId, env: VariableMap) {
     wake_with(
         engine,
         id,
@@ -286,15 +256,14 @@ async fn wake(engine: &DockerEngine, id: &SandboxId, env: VariableMap) -> SshTar
             ..Boot::default()
         },
     )
-    .await
-    .0
+    .await;
 }
 
-/// The target, and whether the start booted the sandbox.
-async fn wake_with(engine: &DockerEngine, id: &SandboxId, boot: Boot) -> (SshTarget, bool) {
+/// Whether the start booted the sandbox.
+async fn wake_with(engine: &DockerEngine, id: &SandboxId, boot: Boot) -> bool {
     let started = engine.start(id, None, boot, WAKE).await.unwrap();
     match started.readiness {
-        Readiness::Ready(target) => (target, started.booted),
+        Readiness::Ready => started.booted,
         Readiness::Waking => panic!("sandbox {} was not ready within {WAKE:?}", id.0),
     }
 }
@@ -340,35 +309,29 @@ async fn sandbox_lifecycle_over_real_ssh() {
         "a sandbox joins only the sandbox network"
     );
 
-    let target = wake(&engine, &id, VariableMap::new()).await;
+    wake(&engine, &id, VariableMap::new()).await;
     assert_eq!(state(&engine, &id).await, SandboxStatus::Running);
-    let SshTarget::SshServer {
-        host,
-        port,
-        username,
-        ..
-    } = &target
-    else {
-        panic!("not an SSH server target: {target:?}");
-    };
     assert_eq!(
-        (host.as_str(), *port, username.as_str()),
-        (name.as_str(), 22, "sandbox")
+        docker_ok(&["exec", &name, "/opt/corral/bin/busybox", "ps", "-o", "args"])
+            .lines()
+            .filter(|args| args.contains("sshd"))
+            .count(),
+        0,
+        "no sshd runs in the sandbox"
     );
-    lab.pin_host_key(&target);
-    assert_eq!(lab.ssh(host, "id -un"), "sandbox");
+    assert_eq!(lab.ssh(&id, "id -un").await, "sandbox");
     assert_eq!(
-        lab.ssh(host, "env | grep ^CORRAL_; true"),
+        lab.ssh(&id, "env | grep ^CORRAL_; true").await,
         "",
         "no CORRAL_ variable reaches the session"
     );
-    lab.ssh(host, "echo kept > ~/persist-check");
+    lab.ssh(&id, "echo kept > ~/persist-check").await;
 
     engine.stop(&id).await.unwrap();
     assert_eq!(state(&engine, &id).await, SandboxStatus::Sleeping);
     engine.stop(&id).await.unwrap();
-    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
-    assert_eq!(lab.ssh(host, "cat ~/persist-check"), "kept");
+    wake(&engine, &id, VariableMap::new()).await;
+    assert_eq!(lab.ssh(&id, "cat ~/persist-check").await, "kept");
 
     engine.delete(&id).await.unwrap();
     assert!(!exists("container", &name));
@@ -392,22 +355,22 @@ async fn variables_apply_at_each_start_and_stay_out_of_the_container_config() {
     let name = container_name(&id);
     let secret = |word: &str| format!("corral-test-{word}-{}", std::process::id());
 
-    let target = wake(&engine, &id, token(&secret("one"))).await;
-    lab.pin_host_key(&target);
-    assert_eq!(lab.ssh(&name, "printenv FOO_TOKEN"), secret("one"));
-    lab.ssh(&name, "echo kept > ~/persist-check");
+    wake(&engine, &id, token(&secret("one"))).await;
+    assert_eq!(lab.ssh(&id, "printenv FOO_TOKEN").await, secret("one"));
+    lab.ssh(&id, "echo kept > ~/persist-check").await;
 
     engine.stop(&id).await.unwrap();
     wake(&engine, &id, token(&secret("two"))).await;
     assert_eq!(
-        lab.ssh(&name, "printenv FOO_TOKEN; cat ~/persist-check"),
+        lab.ssh(&id, "printenv FOO_TOKEN; cat ~/persist-check")
+            .await,
         format!("{}\nkept", secret("two")),
         "a start after a stop applies the changed variable and keeps the home"
     );
 
     wake(&engine, &id, token(&secret("ignored"))).await;
     assert_eq!(
-        lab.ssh(&name, "printenv FOO_TOKEN"),
+        lab.ssh(&id, "printenv FOO_TOKEN").await,
         secret("two"),
         "a running sandbox keeps its variables"
     );
@@ -415,9 +378,9 @@ async fn variables_apply_at_each_start_and_stay_out_of_the_container_config() {
     let odd = r#"p#ss "word" it's $HOME \x\"#;
     engine.stop(&id).await.unwrap();
     wake(&engine, &id, env(&[("ODD_TOKEN", odd)])).await;
-    assert_eq!(lab.ssh(&name, "printenv ODD_TOKEN"), odd);
+    assert_eq!(lab.ssh(&id, "printenv ODD_TOKEN").await, odd);
     assert_eq!(
-        lab.ssh(&name, "printenv FOO_TOKEN; true"),
+        lab.ssh(&id, "printenv FOO_TOKEN; true").await,
         "",
         "a removed variable is gone"
     );
@@ -439,7 +402,6 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     };
     let engine = lab.engine(10).await;
     let id = lab.create(&engine, "main").await;
-    let name = container_name(&id);
     let boot = |files| Boot {
         env: VariableMap::new(),
         files: home_files(files),
@@ -447,7 +409,7 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     let listing = "for f in .config/corral/sandbox.json '.config/corral' 'notes dir/notes.txt'; do \
                    stat -c '%a %U %G %n' ~/\"$f\"; done; cat ~/.config/corral/sandbox.json";
 
-    let (target, booted) = wake_with(
+    let booted = wake_with(
         &engine,
         &id,
         boot(&[
@@ -457,20 +419,20 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     )
     .await;
     assert!(booted);
-    lab.pin_host_key(&target);
     assert_eq!(
-        lab.ssh(&name, listing),
+        lab.ssh(&id, listing).await,
         "600 sandbox sandbox /home/sandbox/.config/corral/sandbox.json\n\
          755 sandbox sandbox /home/sandbox/.config/corral\n\
          644 sandbox sandbox /home/sandbox/notes dir/notes.txt\n\
          first"
     );
     lab.ssh(
-        &name,
+        &id,
         "echo edited > ~/.config/corral/sandbox.json && echo mine > ~/kept",
-    );
+    )
+    .await;
 
-    let (_, booted) = wake_with(
+    let booted = wake_with(
         &engine,
         &id,
         boot(&[(".config/corral/sandbox.json", 0o600, "ignored")]),
@@ -478,12 +440,12 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     .await;
     assert!(!booted, "a running sandbox is not booted again");
     assert_eq!(
-        lab.ssh(&name, "cat ~/.config/corral/sandbox.json"),
+        lab.ssh(&id, "cat ~/.config/corral/sandbox.json").await,
         "edited"
     );
 
     engine.stop(&id).await.unwrap();
-    let (_, booted) = wake_with(
+    let booted = wake_with(
         &engine,
         &id,
         boot(&[(".config/corral/sandbox.json", 0o600, "second")]),
@@ -492,18 +454,20 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     assert!(booted);
     assert_eq!(
         lab.ssh(
-            &name,
+            &id,
             "cat ~/.config/corral/sandbox.json ~/kept; test -e ~/'notes dir/notes.txt' || echo gone"
-        ),
+        )
+        .await,
         "secondmine\ngone",
         "a start rewrites the files, removes those it no longer writes, and leaves the rest of \
          the home alone"
     );
     assert_eq!(
         lab.ssh(
-            &name,
+            &id,
             "stat -c %a /etc/corral/home-files; cat /etc/corral/home-files/manifest"
-        ),
+        )
+        .await,
         "700\n0 0600 .config/corral/sandbox.json"
     );
 }
@@ -566,7 +530,7 @@ fn inspect(container: &str, format: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_host_key() {
+async fn a_start_from_stopped_remakes_an_outdated_container_keeping_its_home() {
     let tags = Tags::default();
     let Some(lab) = Lab::open("converge") else {
         return;
@@ -584,17 +548,11 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
     };
     let id = lab.create_from(&engine, &spec).await;
     let name = container_name(&id);
-    let target = wake(&engine, &id, VariableMap::new()).await;
-    lab.pin_host_key(&target);
-    lab.ssh(&name, "echo kept > ~/kept");
+    wake(&engine, &id, VariableMap::new()).await;
+    lab.ssh(&id, "echo kept > ~/kept").await;
     engine.stop(&id).await.unwrap();
 
     // What an engine from before this one made: no definition label, and an env var it dropped.
-    let env: Vec<String> = serde_json::from_str(&inspect(&name, "{{json .Config.Env}}")).unwrap();
-    let host_key = env
-        .iter()
-        .find(|entry| entry.starts_with("CORRAL_SSH_HOST_KEY="))
-        .unwrap();
     let labels: BTreeMap<String, String> =
         serde_json::from_str(&inspect(&name, "{{json .Config.Labels}}")).unwrap();
     let volume = format!(
@@ -608,7 +566,6 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
         format!("--mount={volume}"),
         "--env=CORRAL_SSHD=1".to_owned(),
         "--env=CORRAL_RETIRED=1".to_owned(),
-        format!("--env={host_key}"),
         "--cpus=1".to_owned(),
         "--memory=1g".to_owned(),
     ];
@@ -622,16 +579,15 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
     docker_ok(&["rm", &name]);
     docker_ok(&old.iter().map(String::as_str).collect::<Vec<_>>());
 
-    let (again, booted) = wake_with(&engine, &id, Boot::default()).await;
+    let booted = wake_with(&engine, &id, Boot::default()).await;
     assert!(booted);
-    assert_eq!(again, target, "the same name and host key");
-    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    assert_eq!(lab.ssh(&id, "cat ~/kept").await, "kept");
     let env = inspect(&name, "{{json .Config.Env}}");
     assert!(!env.contains("CORRAL_RETIRED"), "{env}");
     let remade = inspect(&name, "{{.Id}}");
 
     tags.tag(&newer, &current);
-    let (_, booted) = wake_with(&engine, &id, Boot::default()).await;
+    let booted = wake_with(&engine, &id, Boot::default()).await;
     assert!(!booted);
     assert_eq!(
         inspect(&name, "{{.Id}}"),
@@ -640,13 +596,13 @@ async fn a_start_from_stopped_remakes_an_outdated_container_keeping_home_and_hos
     );
 
     engine.stop(&id).await.unwrap();
-    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
+    wake(&engine, &id, VariableMap::new()).await;
     assert_eq!(
         inspect(&name, "{{.Image}}"),
         newer_id,
         "the next start takes the image its reference names now"
     );
-    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    assert_eq!(lab.ssh(&id, "cat ~/kept").await, "kept");
     let remade = inspect(&name, "{{.Id}}");
 
     engine.stop(&id).await.unwrap();
@@ -669,9 +625,8 @@ async fn a_start_from_stopped_remakes_the_sandbox_from_the_spec_it_is_given() {
     let newer_id = tags.variant(&newer);
     let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
-    let target = wake(&engine, &id, VariableMap::new()).await;
-    lab.pin_host_key(&target);
-    lab.ssh(&name, "echo kept > ~/kept");
+    wake(&engine, &id, VariableMap::new()).await;
+    lab.ssh(&id, "echo kept > ~/kept").await;
 
     let mut edited = spec("main");
     edited.image.clone_from(&newer);
@@ -689,7 +644,7 @@ async fn a_start_from_stopped_remakes_the_sandbox_from_the_spec_it_is_given() {
         .await
         .unwrap();
     assert!(started.booted);
-    assert_eq!(started.readiness, Readiness::Ready(target));
+    assert_eq!(started.readiness, Readiness::Ready);
     assert_eq!(
         (
             inspect(&name, "{{.Image}}"),
@@ -697,7 +652,7 @@ async fn a_start_from_stopped_remakes_the_sandbox_from_the_spec_it_is_given() {
         ),
         (newer_id, (2u64 << 30).to_string())
     );
-    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    assert_eq!(lab.ssh(&id, "cat ~/kept").await, "kept");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -712,9 +667,8 @@ async fn a_start_from_stopped_mounts_the_overlay_the_engine_pinned() {
     let engine = lab.engine(10).await;
     let id = lab.create(&engine, "main").await;
     let name = container_name(&id);
-    let target = wake(&engine, &id, VariableMap::new()).await;
-    lab.pin_host_key(&target);
-    lab.ssh(&name, "echo kept > ~/kept");
+    wake(&engine, &id, VariableMap::new()).await;
+    lab.ssh(&id, "echo kept > ~/kept").await;
     let first = inspect(&name, "{{.Id}}");
     let mounts = inspect(&name, "{{json .HostConfig.Mounts}}");
     assert!(mounts.contains(&overlay_id), "{mounts}");
@@ -727,11 +681,11 @@ async fn a_start_from_stopped_mounts_the_overlay_the_engine_pinned() {
         "a running sandbox keeps its overlay"
     );
     upgraded.stop(&id).await.unwrap();
-    assert_eq!(wake(&upgraded, &id, VariableMap::new()).await, target);
+    wake(&upgraded, &id, VariableMap::new()).await;
     let mounts = inspect(&name, "{{json .HostConfig.Mounts}}");
     assert!(mounts.contains(&newer_id), "{mounts}");
     assert_ne!(inspect(&name, "{{.Id}}"), first);
-    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    assert_eq!(lab.ssh(&id, "cat ~/kept").await, "kept");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -754,25 +708,24 @@ async fn a_remake_cut_short_finishes_at_the_next_start() {
     let id = lab.create_from(&engine, &spec).await;
     let name = container_name(&id);
     let replacement = format!("{name}-next");
-    let target = wake(&engine, &id, VariableMap::new()).await;
-    lab.pin_host_key(&target);
-    lab.ssh(&name, "echo kept > ~/kept");
+    wake(&engine, &id, VariableMap::new()).await;
+    lab.ssh(&id, "echo kept > ~/kept").await;
     engine.stop(&id).await.unwrap();
 
     // Cut short before the old container went: its replacement is left over.
     tags.tag(&newer, &current);
     docker_ok(&["create", "--name", &replacement, &image()]);
-    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
+    wake(&engine, &id, VariableMap::new()).await;
     assert_eq!(inspect(&name, "{{.Image}}"), newer_id);
     assert!(!exists("container", &replacement));
-    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    assert_eq!(lab.ssh(&id, "cat ~/kept").await, "kept");
 
     // Cut short after: the complete replacement is all there is.
     engine.stop(&id).await.unwrap();
     docker_ok(&["rename", &name, &replacement]);
-    assert_eq!(wake(&engine, &id, VariableMap::new()).await, target);
+    wake(&engine, &id, VariableMap::new()).await;
     assert!(!exists("container", &replacement));
-    assert_eq!(lab.ssh(&name, "cat ~/kept"), "kept");
+    assert_eq!(lab.ssh(&id, "cat ~/kept").await, "kept");
 
     engine.stop(&id).await.unwrap();
     docker_ok(&["create", "--name", &replacement, &image()]);
@@ -844,13 +797,11 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
     let idle = lab.create(&engine, "idle").await;
     let ssh = lab.create(&engine, "ssh").await;
     let herdr = lab.create(&engine, "herdr").await;
-    let mut targets = Vec::new();
     for id in [&idle, &ssh, &herdr] {
-        targets.push(wake(&engine, id, VariableMap::new()).await);
+        wake(&engine, id, VariableMap::new()).await;
     }
 
-    lab.pin_host_key(&targets[1]);
-    lab.ssh_in_background(&container_name(&ssh), "sleep 120");
+    let _session = lab.ssh_session(&ssh, "sleep 120").await;
     let started = Instant::now();
     while !docker_ok(&[
         "exec",
@@ -916,33 +867,32 @@ async fn idle_sandboxes_sleep_and_busy_ones_stay_awake() {
 }
 
 #[tokio::test]
-async fn connect_refuses_a_missing_network() {
-    if !docker_answers(&["info"]) {
+async fn connect_makes_a_missing_network() {
+    if !docker_answers(&["image", "inspect", &overlay()]) {
         assert!(std::env::var_os("CI").is_none(), "CI needs a Docker daemon");
-        eprintln!("skipped: no Docker daemon");
+        eprintln!("skipped: no Docker daemon or overlay");
         return;
     }
-    let key =
-        ssh_key::PrivateKey::random(&mut ssh_key::rand_core::OsRng, ssh_key::Algorithm::Ed25519)
-            .unwrap()
-            .public_key()
-            .clone();
     let missing = format!("corral-test-docker-missing-{}", std::process::id());
-    let refused = DockerEngine::connect(
+    let connected = DockerEngine::connect(
         DockerConfig {
             network: missing.clone(),
-            ..DockerConfig::default()
+            overlay_image: overlay(),
         },
-        key,
         1,
         Vec::new(),
     )
     .await;
-    assert!(
-        matches!(&refused, Err(error @ Error::Internal { .. }) if error.to_string().contains(&missing)),
-        "{:?}",
-        refused.err()
-    );
+    let label = docker_ok(&[
+        "network",
+        "inspect",
+        "--format",
+        "{{index .Labels \"app.kubernetes.io/managed-by\"}}",
+        &missing,
+    ]);
+    docker(&["network", "rm", &missing]);
+    assert!(connected.is_ok(), "{:?}", connected.err());
+    assert_eq!(label, "corral");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

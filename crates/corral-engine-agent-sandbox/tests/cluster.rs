@@ -11,20 +11,21 @@ use corral_core::domain::{
 };
 use corral_core::ports::labels::SANDBOX_ID;
 use corral_core::ports::{
-    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SshTarget, VariableMap,
+    Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec, SandboxStreams, VariableMap,
 };
-use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine};
+use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine, PodStreams};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
-    ApiResource, AttachParams, AttachedProcess, DeleteParams, DynamicObject, GroupVersionKind,
-    ListParams, Patch, PatchParams,
+    ApiResource, DeleteParams, DynamicObject, GroupVersionKind, ListParams, Patch, PatchParams,
 };
 use kube::{Api, Client};
 use secrecy::{SecretSlice, SecretString};
 use serde_json::{Value, json};
-use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener;
+use tokio::process::{Child, Command};
 use tokio::sync::{Barrier, Mutex};
 use tokio::task::JoinSet;
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::sync::CancellationToken;
 
 const READY_WITHIN: Duration = Duration::from_secs(180);
@@ -32,8 +33,6 @@ const GONE_WITHIN: Duration = Duration::from_secs(120);
 const IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 const LIFECYCLE_INTERVAL: Duration = Duration::from_secs(10);
 const ASLEEP_WITHIN: Duration = Duration::from_secs(120);
-const AGENT: &str = "/opt/containerssh-agent/usr/bin/containerssh-agent";
-const CONTAINER: &str = "sandbox";
 
 // The tests share one namespace, and capacity checks and the idle reaper span all of it.
 static NAMESPACE: Mutex<()> = Mutex::const_new(());
@@ -41,6 +40,7 @@ static NAMESPACE: Mutex<()> = Mutex::const_new(());
 struct Cluster {
     namespace: String,
     engine: Arc<AgentSandboxEngine>,
+    streams: Arc<PodStreams>,
     sandboxes: Api<DynamicObject>,
     pods: Api<Pod>,
     secrets: Api<Secret>,
@@ -64,8 +64,6 @@ impl Cluster {
             namespace: namespace.clone(),
             service_account: "corral-sandbox".to_owned(),
             storage_class: None,
-            agent_image: std::env::var("CORRAL_AGENT_IMAGE")
-                .unwrap_or_else(|_| "containerssh/agent:v0.11.0".to_owned()),
             overlay_image: std::env::var("CORRAL_OVERLAY_IMAGE")
                 .unwrap_or_else(|_| "corral-overlay:dev".to_owned()),
             image_pull_secrets: Vec::new(),
@@ -76,6 +74,7 @@ impl Cluster {
         );
         Some(Self {
             engine: Arc::new(AgentSandboxEngine::new(client.clone(), config, max_running)),
+            streams: Arc::new(PodStreams::new(client.clone(), &namespace)),
             sandboxes: Api::namespaced_with(client.clone(), &namespace, &sandbox),
             pods: Api::namespaced(client.clone(), &namespace),
             secrets: Api::namespaced(client.clone(), &namespace),
@@ -87,6 +86,61 @@ impl Cluster {
     async fn exec(&self, id: &SandboxId, argv: &[&str]) -> (i32, String) {
         let output = self.engine.exec(id).run(argv).await.unwrap();
         (output.code, output.stdout)
+    }
+
+    /// An SSH session the way the gate opens one: OpenSSH to `corral-sshd`, run in the sandbox
+    /// through the engine's stream, here behind a local port.
+    async fn ssh_session(&self, id: &SandboxId, command: &str) -> Child {
+        let key =
+            std::env::temp_dir().join(format!("corral-cluster-test-{}", uuid::Uuid::new_v4()));
+        let made = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let public: Vec<&str> = public.split_whitespace().take(2).collect();
+        let public = public.join(" ");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (streams, id) = (self.streams.clone(), id.clone());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let argv = ["/opt/corral/libexec/corral-sshd", public.as_str()];
+            let mut stream = streams.open(&id, &argv).await.unwrap().compat();
+            let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+        });
+        Command::new("ssh")
+            .args(["-F", "/dev/null", "-i"])
+            .arg(&key)
+            .args(["-p", &port.to_string()])
+            .args(["-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"])
+            .args([
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+            ])
+            .args(["-o", "LogLevel=ERROR", "sandbox@127.0.0.1", command])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap()
+    }
+
+    async fn ssh(&self, id: &SandboxId, command: &str) -> (i32, String) {
+        let output = self
+            .ssh_session(id, command)
+            .await
+            .wait_with_output()
+            .await
+            .unwrap();
+        (
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
     }
 
     async fn claim_names(&self, id: &SandboxId) -> Vec<String> {
@@ -129,13 +183,7 @@ impl Cluster {
             .start(id, None, boot(pairs), READY_WITHIN)
             .await
             .unwrap();
-        assert_eq!(
-            started.readiness,
-            Readiness::Ready(SshTarget::KubernetesPod {
-                namespace: self.namespace.clone(),
-                pod: id.0.clone(),
-            })
-        );
+        assert_eq!(started.readiness, Readiness::Ready);
         assert_eq!(self.state(id).await, SandboxStatus::Running);
     }
 
@@ -232,8 +280,8 @@ async fn sessions_run_as_the_sandbox_user_with_their_variables(cluster: &Cluster
         "the overlay's account files make uid 1000 the sandbox user, with passwordless sudo"
     );
     assert_eq!(
-        cluster.exec(id, &["sh", "-c", SHELL_AND_GROUPS]).await,
-        (0, "1000\n/run/corral-accounts/bash\n5\n".to_owned()),
+        cluster.ssh(id, SHELL_AND_GROUPS).await,
+        (0, "1000\n/bin/bash\n5\n".to_owned()),
         "every session has its own group alone, and a SHELL naming a bash"
     );
     assert_eq!(
@@ -247,14 +295,16 @@ async fn sessions_run_as_the_sandbox_user_with_their_variables(cluster: &Cluster
         "the overlay's commands are on PATH"
     );
     assert_eq!(
-        cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
-        (0, "one\n".to_owned())
+        cluster.ssh(id, "printenv FOO_TOKEN").await,
+        (0, "one\n".to_owned()),
+        "a session gets the sandbox's variables"
     );
+    assert_eq!(cluster.ssh(id, "exit 3").await, (3, String::new()));
     assert_eq!(
-        cluster.exec(id, &["sh", "-c", "exit 3"]).await,
-        (3, String::new())
+        cluster.exec(id, &["printenv", "FOO_TOKEN"]).await.0,
+        1,
+        "the variables reach sessions alone"
     );
-    assert_eq!(cluster.exec(id, &["test", "-x", AGENT]).await.0, 0);
     assert_eq!(cluster.exec(id, &["corral-no-such-command"]).await.0, 127);
     assert_eq!(
         cluster.exec(id, &["sh", "-c", HOME_FILE_LISTING]).await,
@@ -315,7 +365,7 @@ async fn sleep_keeps_home_and_wake_applies_new_env(cluster: &Cluster, id: &Sandb
     assert_eq!(cluster.home_marker(id).await, "kept\n");
     assert_eq!(home_file(cluster, id).await, "two");
     assert_eq!(
-        cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
+        cluster.ssh(id, "printenv FOO_TOKEN").await,
         (0, "two\n".to_owned())
     );
     assert_eq!(cluster.claim_names(id).await, [format!("home-{}", id.0)]);
@@ -328,7 +378,7 @@ async fn stop_then_start_applies_new_env(cluster: &Cluster, id: &SandboxId) {
     cluster.wake(id, &three).await;
     assert_ne!(cluster.pod_uid(id).await.unwrap(), before);
     assert_eq!(
-        cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
+        cluster.ssh(id, "printenv FOO_TOKEN").await,
         (0, "three\n".to_owned())
     );
     assert_eq!(home_file(cluster, id).await, "three");
@@ -371,13 +421,13 @@ async fn a_wake_while_stopping_lets_the_stop_finish(cluster: &Cluster, id: &Sand
 
     assert!(matches!(
         waking.await.unwrap(),
-        Ok(started) if matches!(started.readiness, Readiness::Ready(_)) && started.booted
+        Ok(started) if matches!(started.readiness, Readiness::Ready) && started.booted
     ));
     stopping.await.unwrap().unwrap();
     assert_ne!(cluster.pod_uid(id).await.unwrap(), before);
     assert_eq!(cluster.state(id).await, SandboxStatus::Running);
     assert_eq!(
-        cluster.exec(id, &["printenv", "FOO_TOKEN"]).await,
+        cluster.ssh(id, "printenv FOO_TOKEN").await,
         (0, "four\n".to_owned())
     );
     assert_eq!(home_file(cluster, id).await, "four");
@@ -518,7 +568,7 @@ async fn outdated(cluster: Arc<Cluster>, id: SandboxId) {
         )
         .await
         .unwrap();
-    assert!(matches!(started.readiness, Readiness::Ready(_)) && started.booted);
+    assert!(matches!(started.readiness, Readiness::Ready) && started.booted);
     let pod = cluster.pods.get(&id.0).await.unwrap();
     let limits = pod.spec.unwrap().containers[0]
         .resources
@@ -648,7 +698,7 @@ async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
         cluster.wake(id, &[]).await;
     }
     start_a_plain_process_under_herdr(&cluster, &herdr).await;
-    let ssh_session = open_containerssh_session(&cluster, &session).await;
+    let mut ssh_session = cluster.ssh_session(&session, "sleep 600").await;
     let busy = [&herdr, &session];
 
     let shutdown = CancellationToken::new();
@@ -677,7 +727,7 @@ async fn idle_lifecycle(cluster: Arc<Cluster>, ids: Vec<SandboxId>) {
         .await
         .expect("the lifecycle stops on shutdown")
         .unwrap();
-    ssh_session.abort();
+    ssh_session.kill().await.unwrap();
 }
 
 async fn start_a_plain_process_under_herdr(cluster: &Cluster, id: &SandboxId) {
@@ -694,20 +744,6 @@ async fn start_a_plain_process_under_herdr(cluster: &Cluster, id: &SandboxId) {
     let terminal = &listing["terminals"][0];
     assert_eq!(terminal["state"], "live", "{listing}");
     assert!(terminal.get("status").is_none(), "{listing}");
-}
-
-async fn open_containerssh_session(cluster: &Cluster, id: &SandboxId) -> AttachedProcess {
-    let session = [AGENT, "console", "--pid", "--", "/bin/sleep", "600"];
-    let params = AttachParams::default().container(CONTAINER).stderr(false);
-    let mut process = cluster.pods.exec(&id.0, session, &params).await.unwrap();
-    let mut pid = [0; 4];
-    process
-        .stdout()
-        .unwrap()
-        .read_exact(&mut pid)
-        .await
-        .unwrap();
-    process
 }
 
 async fn wait_until<F, Fut>(what: &str, within: Duration, mut done: F)

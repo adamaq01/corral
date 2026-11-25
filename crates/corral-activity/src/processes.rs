@@ -6,7 +6,6 @@ use corral_core::{Error, Result};
 use crate::Exec;
 use crate::exec::unexpected_exit;
 
-pub(crate) const BUSYBOX: &str = "/opt/corral/bin/busybox";
 // The shell prints its PID, which `ps` keeps through `exec`, so the listing leaves itself out.
 const LIST: [&str; 3] = [
     "/opt/corral/bin/sh",

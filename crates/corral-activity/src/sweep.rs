@@ -11,12 +11,11 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::{Exec, IdleDecision, Sessions, decide, is_active};
+use crate::{Exec, IdleDecision, decide, is_active};
 
 /// What the idle sweep needs from an engine.
 #[async_trait]
 pub trait Sweepable: Send + Sync + 'static {
-    const SESSIONS: Sessions;
     /// What `suspend` needs from the listing, such as a version to suspend against.
     type Listed: Send + Sync;
     type Exec: Exec;
@@ -82,7 +81,7 @@ async fn sweep<E: Sweepable>(engine: &E, timeout: Duration) {
         .retain(|id, _| running.iter().any(|(listed, _)| listed == id));
     for (id, listed) in &running {
         let sandbox = id.0.as_str();
-        let activity = is_active(E::SESSIONS, &engine.exec(id)).await;
+        let activity = is_active(&engine.exec(id)).await;
         if let Err(error) = &activity {
             warn!(sandbox, %error, "activity probe failed, keeping the sandbox awake");
         }
@@ -121,7 +120,6 @@ mod tests {
 
     #[async_trait]
     impl Sweepable for Engine {
-        const SESSIONS: Sessions = Sessions::Sshd;
         type Listed = ();
         type Exec = ScriptedExec;
 

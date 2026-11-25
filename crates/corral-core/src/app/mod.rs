@@ -19,4 +19,4 @@ pub use failure_window::{Attempt, FailureWindow, Network};
 pub use inside::{CallingSandbox, SANDBOX_FILE, SandboxLinks};
 pub use keys::Keys;
 pub use sandboxes::{CreateSandbox, Limits, SandboxDetails, SandboxView, Sandboxes, UserDefaults};
-pub use ssh_access::SshAccess;
+pub use ssh_access::{Arrival, SshAccess};

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use bollard::models::{ContainerCreateBody, ContainerInspectResponse};
+use bollard::models::{ContainerCreateBody, ContainerInspectResponse, NetworkCreateRequest};
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
     RemoveVolumeOptions, RenameContainerOptionsBuilder, UploadToContainerOptionsBuilder,
@@ -12,27 +12,19 @@ use corral_activity::{ActivityLock, Exec};
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{
-    Boot, Inspection, Readiness, RegistryAccess, SandboxEngine, SandboxSpec, SshTarget, Started,
+    Boot, Inspection, Readiness, RegistryAccess, SandboxEngine, SandboxSpec, Started,
 };
 use corral_core::{Error, Result};
-use ssh_key::PublicKey;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::container;
 use crate::docker_error::is_not_found;
 use crate::docker_exec::DockerExec;
-use crate::host_key::HostKey;
 use crate::{DockerConfig, image, inspection, session_files, status};
 
-const SSH_PORT: u16 = 22;
-const SSH_USER: &str = "sandbox";
 const READY_POLL: Duration = Duration::from_millis(250);
-// sshd shows up in the process list before it listens; a TCP connect proves it accepts logins.
-const SSHD_ACCEPTS: [&str; 3] = [
-    "/opt/corral/bin/bash",
-    "-c",
-    "exec 3<>/dev/tcp/127.0.0.1/22",
-];
+/// `corral-init` marks the sandbox ready once its accounts and home are written.
+const MARKED_READY: [&str; 4] = ["/opt/corral/bin/busybox", "test", "-e", "/run/corral/ready"];
 // Image mounts, which bring the overlay into every sandbox, came with Docker Engine 28.
 const IMAGE_MOUNTS: (u32, u32) = (1, 48);
 
@@ -43,7 +35,6 @@ pub struct DockerEngine {
     overlay: String,
     /// The credentials pulls use, for the registries that need them.
     registries: Vec<RegistryAccess>,
-    proxy_public_key: PublicKey,
     max_running: usize,
     pub(crate) activity: ActivityLock,
 }
@@ -51,7 +42,6 @@ pub struct DockerEngine {
 impl DockerEngine {
     pub async fn connect(
         config: DockerConfig,
-        proxy_public_key: PublicKey,
         max_running: usize,
         registries: Vec<RegistryAccess>,
     ) -> Result<Self> {
@@ -60,14 +50,18 @@ impl DockerEngine {
         match docker.inspect_network(&config.network, None).await {
             Ok(_) => {}
             Err(err) if is_not_found(&err) => {
-                return Err(Error::internal(
-                    format!("Docker network {:?}", config.network),
-                    format!(
-                        "does not exist: create it with `docker network create {network}` and \
-                         attach only the SSH front door to it, never Corral",
-                        network = config.network
-                    ),
-                ));
+                let network = NetworkCreateRequest {
+                    name: config.network.clone(),
+                    labels: Some(HashMap::from([(MANAGED_BY.to_owned(), MANAGER.to_owned())])),
+                    ..NetworkCreateRequest::default()
+                };
+                docker.create_network(network).await.map_err(|err| {
+                    Error::internal(format!("create the Docker network {}", config.network), err)
+                })?;
+                info!(
+                    network = config.network,
+                    "created the network sandboxes join"
+                );
             }
             Err(err) => return Err(Error::internal("reach the Docker daemon", err)),
         }
@@ -91,7 +85,6 @@ impl DockerEngine {
             config,
             overlay,
             registries,
-            proxy_public_key,
             max_running,
             activity: ActivityLock::default(),
         })
@@ -145,8 +138,8 @@ impl DockerEngine {
     }
 
     /// Recreates a stopped container that is not what `create` would make today from `spec`, or
-    /// without one from what it was made from, keeping its home volume and host key. The
-    /// replacement is complete before the old container goes.
+    /// without one from what it was made from, keeping its home volume. The replacement is
+    /// complete before the old container goes.
     async fn converge(
         &self,
         id: &SandboxId,
@@ -155,7 +148,7 @@ impl DockerEngine {
     ) -> Result<ContainerInspectResponse> {
         let recorded = container::Definition::recorded(id, &current)?;
         let definition = match spec {
-            Some(spec) => recorded.remade(id, spec)?,
+            Some(spec) => container::Definition::new(id, spec)?,
             None => recorded,
         };
         let image_id =
@@ -223,7 +216,7 @@ impl DockerEngine {
         }
         let current = self.converge(id, spec, current).await?;
         let name = container::name(id);
-        let files = session_files::archive(&self.proxy_public_key, boot);
+        let files = session_files::archive(boot);
         let at_root = UploadToContainerOptionsBuilder::default().path("/").build();
         self.docker
             .upload_to_container(&name, Some(at_root), body_full(files.into()))
@@ -236,18 +229,18 @@ impl DockerEngine {
         Ok(current)
     }
 
-    async fn wait_for_sshd(&self, id: &SandboxId, patience: Duration) -> Result<bool> {
+    async fn wait_until_ready(&self, id: &SandboxId, patience: Duration) -> Result<bool> {
         let exec = DockerExec::new(self.docker.clone(), container::name(id));
-        let accepting = async {
+        let ready = async {
             loop {
-                if exec.run(&SSHD_ACCEPTS).await?.code == 0 {
+                if exec.run(&MARKED_READY).await?.code == 0 {
                     return Ok(());
                 }
                 tokio::time::sleep(READY_POLL).await;
             }
         };
-        match tokio::time::timeout(patience, accepting).await {
-            Ok(accepted) => accepted.map(|()| true),
+        match tokio::time::timeout(patience, ready).await {
+            Ok(ready) => ready.map(|()| true),
             Err(_) => Ok(false),
         }
     }
@@ -268,7 +261,7 @@ impl SandboxEngine for DockerEngine {
         if self.inspect(id).await?.is_some() {
             return Ok(());
         }
-        let definition = container::Definition::new(id, spec, HostKey::generate())?;
+        let definition = container::Definition::new(id, spec)?;
         image::ensure_present(&self.docker, &spec.image, &self.registries).await?;
         self.docker
             .create_volume(container::volume(id, spec))
@@ -286,24 +279,22 @@ impl SandboxEngine for DockerEngine {
         deadline: Duration,
     ) -> Result<Started> {
         let called = Instant::now();
-        let (target, booted) = {
+        let (current, booted) = {
             let _waking = self.activity.wake(id).await;
             let mut current = self.settled(id).await?.ok_or_else(|| missing(id))?;
             let booted = !status::is_running(&current);
             if booted {
                 current = Box::pin(self.boot(id, spec, current, &boot)).await?;
             }
-            let target = SshTarget::SshServer {
-                host_key_fingerprint: container::host_key_fingerprint(id, &current)?,
-                host: container::name(id),
-                port: SSH_PORT,
-                username: SSH_USER.to_owned(),
-            };
-            (target, booted)
+            (current, booted)
         };
+        // A container running since before it marked its readiness takes no session until its
+        // next start, which the session's refusal says.
         let patience = deadline.saturating_sub(called.elapsed());
-        let readiness = if self.wait_for_sshd(id, patience).await? {
-            Readiness::Ready(target)
+        let readiness = if !container::marks_readiness(&current)
+            || self.wait_until_ready(id, patience).await?
+        {
+            Readiness::Ready
         } else {
             Readiness::Waking
         };

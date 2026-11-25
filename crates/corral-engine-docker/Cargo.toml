@@ -14,9 +14,9 @@ secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.1"
-ssh-key = { workspace = true, features = ["ed25519", "getrandom"] }
 tar = "0.4.46"
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
+tokio-util = { workspace = true, features = ["compat", "io"] }
 tracing.workspace = true
 
 [dev-dependencies]

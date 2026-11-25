@@ -1,6 +1,5 @@
 mod decide;
 mod exec;
-mod forward;
 mod herdr;
 mod probe;
 mod processes;
@@ -10,5 +9,5 @@ mod testing;
 
 pub use decide::{IdleDecision, decide};
 pub use exec::{Exec, ExecOutput};
-pub use probe::{Sessions, is_active};
+pub use probe::is_active;
 pub use sweep::{ActivityLock, Sweepable, Waking, spawn};

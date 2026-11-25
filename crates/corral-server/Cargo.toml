@@ -14,7 +14,7 @@ corral-api = { path = "../corral-api" }
 corral-core = { path = "../corral-core" }
 corral-engine-agent-sandbox = { path = "../corral-engine-agent-sandbox" }
 corral-engine-docker = { path = "../corral-engine-docker" }
-corral-frontdoor-containerssh = { path = "../corral-frontdoor-containerssh" }
+corral-frontdoor-gate = { path = "../corral-frontdoor-gate" }
 corral-identity-local = { path = "../corral-identity-local" }
 corral-identity-oidc = { path = "../corral-identity-oidc" }
 corral-registry-oci = { path = "../corral-registry-oci" }

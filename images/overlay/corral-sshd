@@ -1,0 +1,31 @@
+#!/opt/corral/bin/sh
+# One SSH connection on standard input and output, run as the sandbox user by an exec the gate
+# opens through the engine. It lets in the one key the gate names, and gives sessions the
+# variables the engine wrote to /etc/corral/sshd_env.conf.
+set -eu
+
+if [ $# -ne 1 ]; then
+  echo "usage: corral-sshd '<key type> <base64 key>'" >&2
+  exit 2
+fi
+case "$1" in
+  *[!A-Za-z0-9@.+/=\ -]* | *' '*' '*) echo "corral-sshd: not a public key" >&2; exit 2 ;;
+esac
+config=/etc/corral/sshd_env.conf
+[ -r "$config" ] || config=/dev/null
+exec /opt/corral/sbin/sshd -i -e -f "$config" \
+  -h /opt/corral/etc/ssh_host_ed25519_key \
+  -o LogLevel=ERROR \
+  -o PidFile=none \
+  -o AllowUsers=sandbox \
+  -o AuthorizedKeysFile=none \
+  -o "AuthorizedKeysCommand=/opt/corral/bin/busybox echo $1" \
+  -o AuthorizedKeysCommandUser=sandbox \
+  -o PasswordAuthentication=no \
+  -o KbdInteractiveAuthentication=no \
+  -o PrintMotd=no \
+  -o X11Forwarding=no \
+  -o "Subsystem=sftp /opt/corral/libexec/sftp-server" \
+  -o "AcceptEnv=LANG LC_* COLORTERM NO_COLOR" \
+  -o ClientAliveInterval=30 \
+  -o ClientAliveCountMax=4

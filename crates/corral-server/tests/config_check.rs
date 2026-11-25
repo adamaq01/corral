@@ -19,7 +19,7 @@ fn check(config: &str) -> Output {
 fn a_valid_config_passes_without_any_environment() {
     let output = check(
         "[http]\nbase_url = \"http://corral.lan\"\n[identity.local]\n[ssh]\npublic_host = \"corral.lan\"\n\
-         [engine]\nkind = \"agent-sandbox\"\nnamespace = \"n\"\nservice_account = \"s\"\nagent_image = \"a\"",
+         [engine]\nkind = \"agent-sandbox\"\nnamespace = \"n\"\nservice_account = \"s\"",
     );
     assert!(output.status.success(), "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("is valid"));

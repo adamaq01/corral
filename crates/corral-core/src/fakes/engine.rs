@@ -9,8 +9,8 @@ use super::lock;
 use crate::domain::HomeFiles;
 use crate::domain::{SandboxId, SandboxStatus};
 use crate::ports::{
-    Boot, EngineEvent, EventKind, Fact, Inspection, Readiness, SandboxEngine, SandboxSpec,
-    SshTarget, Started, VariableMap,
+    Boot, EngineEvent, EventKind, Fact, Inspection, Readiness, SandboxEngine, SandboxSpec, Started,
+    VariableMap,
 };
 use crate::{Error, Result};
 
@@ -40,8 +40,8 @@ struct State {
     waking: bool,
     failing_creates: bool,
     deletes_before_failing: Option<usize>,
+    running_limit: Option<String>,
     sandboxes: BTreeMap<SandboxId, FakeSandbox>,
-    targets: BTreeMap<SandboxId, SshTarget>,
     /// The most recent first.
     events: BTreeMap<SandboxId, Vec<EngineEvent>>,
     calls: Vec<EngineCall>,
@@ -58,24 +58,12 @@ impl State {
             .get_mut(id)
             .ok_or_else(|| Error::NotFound(format!("sandbox {}", id.0)))
     }
-
-    fn target(&self, id: &SandboxId) -> SshTarget {
-        self.targets
-            .get(id)
-            .cloned()
-            .unwrap_or_else(|| SshTarget::KubernetesPod {
-                namespace: FakeEngine::NAMESPACE.to_owned(),
-                pod: id.0.clone(),
-            })
-    }
 }
 
 impl FakeEngine {
-    /// The namespace of the pod a sandbox is reached at, unless `set_target` says otherwise.
-    pub const NAMESPACE: &str = "fake";
-
-    pub fn set_target(&self, id: &SandboxId, target: SshTarget) {
-        lock(&self.state).targets.insert(id.clone(), target);
+    /// With `Some(why)`, a start from stopped is refused with `LimitReached(why)`.
+    pub fn set_running_limit(&self, why: Option<&str>) {
+        lock(&self.state).running_limit = why.map(str::to_owned);
     }
 
     /// Whether a start leaves a stopped sandbox still waking instead of ready.
@@ -162,9 +150,12 @@ impl SandboxEngine for FakeEngine {
             deadline,
         });
         let waking = state.waking;
-        let target = state.target(id);
+        let running_limit = state.running_limit.clone();
         let sandbox = state.sandbox(id)?;
         let booted = sandbox.status == SandboxStatus::Sleeping;
+        if let Some(why) = running_limit.filter(|_| booted) {
+            return Err(Error::LimitReached(why));
+        }
         if booted {
             sandbox.boot = boot;
         }
@@ -174,7 +165,7 @@ impl SandboxEngine for FakeEngine {
             Readiness::Waking
         } else {
             sandbox.status = SandboxStatus::Running;
-            Readiness::Ready(target)
+            Readiness::Ready
         };
         Ok(Started { readiness, booted })
     }

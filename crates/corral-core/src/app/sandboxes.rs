@@ -490,7 +490,7 @@ mod tests {
             ..unchanged(entry)
         }
     }
-    use crate::ports::{EventKind, Fact, Readiness, SandboxEngine, SshTarget, UserRepo};
+    use crate::ports::{EventKind, Fact, Readiness, SandboxEngine, UserRepo};
 
     #[tokio::test]
     async fn create_provisions_from_the_catalog_then_starts_without_waiting() {
@@ -705,10 +705,7 @@ mod tests {
         set("after-create").await;
         assert_eq!(
             w.sandboxes.wake(&adam, &main.name).await.unwrap(),
-            Readiness::Ready(SshTarget::KubernetesPod {
-                namespace: "fake".to_owned(),
-                pod: main.id.0.clone(),
-            })
+            Readiness::Ready
         );
         assert_eq!(env(), ["GH_TOKEN=after-create"]);
         assert!(matches!(
@@ -770,7 +767,7 @@ mod tests {
             let without = with_catalog(Catalog::new(images, sizes).unwrap());
             assert!(matches!(
                 without.wake(&adam, &main.name).await.unwrap(),
-                Readiness::Ready(_)
+                Readiness::Ready
             ));
             assert_eq!(started_from(), None, "it runs as it was last made");
         }
@@ -905,7 +902,7 @@ mod tests {
             .unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.wake(&adam, &main.name).await.unwrap();
-        w.access.route("main.adam").await.unwrap();
+        w.access.arrive("main.adam").await.unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         fresh().await;
 
@@ -959,7 +956,7 @@ mod tests {
         w.environment.delete(&adam, gh.id).await.unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
-        w.access.route("main.adam").await.unwrap();
+        w.access.arrive("main.adam").await.unwrap();
         w.sandboxes.wake(&adam, &dev.name).await.unwrap();
         assert_eq!(stale().await, [] as [&str; 0]);
         assert_eq!(

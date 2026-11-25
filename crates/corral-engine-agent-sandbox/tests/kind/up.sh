@@ -10,7 +10,6 @@ namespace=corral-dev
 agent_sandbox_version=v1.0.11
 sandbox_image=${CORRAL_SANDBOX_IMAGE:-corral-sandbox:dev}
 overlay_image=${CORRAL_OVERLAY_IMAGE:-corral-overlay:dev}
-agent_image=${CORRAL_AGENT_IMAGE:-containerssh/agent:v0.11.0}
 proxy_ca=/usr/local/share/ca-certificates/proxy-ca.crt
 
 if ! kind get clusters | grep -x "$cluster" >/dev/null; then
@@ -60,7 +59,6 @@ load() {
 }
 load "$sandbox_image" sandbox
 load "$overlay_image" overlay
-docker exec "$node" crictl pull "$agent_image" >/dev/null
 # The volume provisioner's helper image ships packed, so the prune below would drop its layers.
 helper_image=$(kubectl --context "$context" -n local-path-storage get configmap local-path-config \
   -o jsonpath='{.data.helperPod\.yaml}' | awk '$1 == "image:" { print $2 }')
@@ -68,4 +66,4 @@ docker exec "$node" crictl pull "$helper_image" >/dev/null
 # The node only needs the unpacked snapshots; dropping the layer blobs saves about 1 GB of Docker disk.
 docker exec "$node" ctr --namespace=k8s.io content prune references
 
-echo "kind cluster $cluster is ready: namespace $namespace, images $sandbox_image, $overlay_image and $agent_image"
+echo "kind cluster $cluster is ready: namespace $namespace, images $sandbox_image and $overlay_image"

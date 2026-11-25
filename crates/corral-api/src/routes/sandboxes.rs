@@ -70,7 +70,7 @@ async fn wake(
 ) -> Result<Json<Wake>, ApiError> {
     let readiness = state.sandboxes.wake(&user, &name).await?;
     Ok(Json(Wake {
-        ready: matches!(readiness, Readiness::Ready(_)),
+        ready: readiness == Readiness::Ready,
     }))
 }
 

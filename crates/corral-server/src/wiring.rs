@@ -35,6 +35,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     let Adapters {
         database_url,
         session_key,
+        gate_secret,
         secrets,
         engine,
         oidc,
@@ -107,8 +108,8 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         public = public.fallback_service(ui.router());
     }
     let internal = match &config.frontdoor {
-        FrontDoor::ContainerSsh(containerssh) => {
-            corral_frontdoor_containerssh::router(Arc::new(access), containerssh.clone())
+        FrontDoor::Gate(gate) => {
+            corral_frontdoor_gate::router(Arc::new(access), gate.clone(), gate_secret)
         }
     };
     Ok(App {
@@ -179,13 +180,8 @@ async fn start_engine(
     let interval = Duration::from_secs(config.idle.probe_interval_secs.get());
     let idle_timeout = Duration::from_secs(config.idle.timeout_secs);
     match choice {
-        EngineChoice::Docker {
-            config,
-            proxy_public_key,
-        } => {
-            let docker = Arc::new(
-                DockerEngine::connect(config, proxy_public_key, max_running, registries).await?,
-            );
+        EngineChoice::Docker(config) => {
+            let docker = Arc::new(DockerEngine::connect(config, max_running, registries).await?);
             let lifecycle =
                 corral_activity::spawn(docker.clone(), interval, idle_timeout, shutdown);
             Ok((docker, lifecycle))

@@ -72,7 +72,7 @@ mod tests {
 
     use super::DELETION_GRACE;
     use crate::Error;
-    use crate::app::CallingSandbox;
+    use crate::app::{Arrival, CallingSandbox};
     use crate::domain::{HomePath, SandboxStatus, User};
     use crate::fakes::{EngineCall, World, sandbox_name};
     use crate::ports::{Readiness, SandboxEngine};
@@ -179,16 +179,19 @@ mod tests {
         for refused in [
             w.sandboxes.wake(&adam, &main.name).await.map(drop),
             w.sandboxes.restart(&adam, &main.name).await,
-            w.access.route("main.adam").await.map(drop),
         ] {
             assert!(
                 matches!(
                     &refused,
                     Err(Error::Conflict(message)) if message.contains("cancel the deletion")
-                ) || matches!(refused, Err(Error::Forbidden)),
+                ),
                 "{refused:?}"
             );
         }
+        assert!(matches!(
+            w.access.arrive("main.adam").await.unwrap(),
+            Arrival::Refused(message) if message.contains("cancel the deletion")
+        ));
         assert_eq!(
             w.engine.status(&main.id).await.unwrap(),
             SandboxStatus::Sleeping
@@ -213,7 +216,7 @@ mod tests {
         assert_eq!(w.sandboxes.delete_due(at).await.unwrap().len(), 0);
         assert!(matches!(
             w.sandboxes.wake(&adam, &main.name).await,
-            Ok(Readiness::Ready(_))
+            Ok(Readiness::Ready)
         ));
 
         let calling_main = calling(&w, &adam, "main").await;
