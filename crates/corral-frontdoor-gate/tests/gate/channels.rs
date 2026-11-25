@@ -225,25 +225,28 @@ async fn local_forwards_reach_tcp_and_unix_sockets_in_the_sandbox(f: &Fixture) {
         .unwrap();
     let mut answered = String::new();
     for _ in 0..100 {
-        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", local_port)).await {
-            stream.write_all(b"over tcp").await.unwrap();
-            stream.read_to_string(&mut answered).await.unwrap();
-            if !answered.is_empty() {
-                break;
-            }
+        // The forward is up before the server in the sandbox listens: ssh then resets the stream.
+        if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", local_port)).await
+            && stream.write_all(b"over tcp").await.is_ok()
+            && stream.read_to_string(&mut answered).await.is_ok()
+            && !answered.is_empty()
+        {
+            break;
         }
+        answered.clear();
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(answered, "OVER TCP");
     let mut answered = String::new();
     for _ in 0..100 {
-        if let Ok(mut stream) = UnixStream::connect(&local_socket).await {
-            stream.write_all(b"over unix").await.unwrap();
-            stream.read_to_string(&mut answered).await.unwrap();
-            if !answered.is_empty() {
-                break;
-            }
+        if let Ok(mut stream) = UnixStream::connect(&local_socket).await
+            && stream.write_all(b"over unix").await.is_ok()
+            && stream.read_to_string(&mut answered).await.is_ok()
+            && !answered.is_empty()
+        {
+            break;
         }
+        answered.clear();
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(answered, "OVER UNIX");
