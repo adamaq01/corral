@@ -81,8 +81,9 @@ RUN curl -fsSL -o openssh.tar.gz \
  && ./ssh-keygen -q -t ed25519 -N '' -C corral-sandbox -f /out$P/etc/ssh_host_ed25519_key \
  && rm /out$P/etc/ssh_host_ed25519_key.pub
 
-# ftp.gnu.org often refuses connections from CI runners; the checksum makes any mirror safe.
-RUN for url in "https://ftpmirror.gnu.org/bash/bash-$BASH_VERSION.tar.gz" \
+# GNU's own servers often time out from CI runners; the checksum makes any mirror safe.
+RUN for url in "https://mirrors.kernel.org/gnu/bash/bash-$BASH_VERSION.tar.gz" \
+      "https://ftpmirror.gnu.org/bash/bash-$BASH_VERSION.tar.gz" \
       "https://ftp.gnu.org/gnu/bash/bash-$BASH_VERSION.tar.gz"; do \
       curl -fsSL --retry 3 --connect-timeout 30 -o bash.tar.gz "$url" && break; \
     done \
