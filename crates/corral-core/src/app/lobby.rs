@@ -51,7 +51,7 @@ pub struct Choice {
     pub repository: Option<Repository>,
 }
 
-/// A sandbox the lobby made, and the entries attached to it.
+/// A sandbox the lobby made, and the entries it gets: every required one, then those attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Made {
     pub view: SandboxView,

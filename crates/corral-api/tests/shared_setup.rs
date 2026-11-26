@@ -112,6 +112,26 @@ async fn the_admin_defines_a_required_entry_and_members_see_it_locked() {
         ]
     );
     assert_eq!(listed[0]["sandboxes"][0]["sandbox"], "main");
+    bob.call(
+        "PUT",
+        &format!("/api/sandboxes/main/setup/{}", id(&listed[1])),
+        None,
+    )
+    .await;
+    let held = bob.get("/api/sandboxes/main/setup").await.json();
+    let gets: Vec<Vec<&Value>> = held
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|attached| vec![&attached["entry"]["target"], &attached["override"]])
+        .collect();
+    assert_eq!(
+        gets,
+        [
+            [&json!("GATEWAY_URL"), &json!(null)],
+            [&json!("EDITOR"), &json!(null)]
+        ]
+    );
 
     let gateway = id(&gateway);
     let mut change = variable("GATEWAY_URL", "https://mine", false);

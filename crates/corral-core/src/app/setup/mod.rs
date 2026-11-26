@@ -268,21 +268,28 @@ impl Setup {
         self.changed(&reach.sandboxes).await
     }
 
-    /// The entries attached to the owner's sandbox `name`.
+    /// What the owner's sandbox `name` gets at its next start: every required entry, then the
+    /// entries attached to it.
     pub async fn of_sandbox(&self, owner: &User, name: &SandboxName) -> Result<Vec<Attached>> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
-        let attached = registry.attached(&sandbox.id);
+        let held: Vec<(EntryId, Option<StoredValue>)> = registry
+            .required()
+            .map(|entry| (entry.id, None))
+            .chain(
+                registry
+                    .attached(&sandbox.id)
+                    .into_iter()
+                    .map(|(entry, attachment)| (entry.id, attachment.overriding.clone())),
+            )
+            .collect();
         let views = self
-            .views(owner.id, &registry, attached.iter().map(|(e, _)| e.id))
+            .views(owner.id, &registry, held.iter().map(|(id, _)| *id))
             .await?;
         Ok(views
             .into_iter()
-            .zip(attached)
-            .map(|(view, (_, attachment))| Attached {
-                view,
-                overriding: attachment.overriding.clone(),
-            })
+            .zip(held)
+            .map(|(view, (_, overriding))| Attached { view, overriding })
             .collect())
     }
 

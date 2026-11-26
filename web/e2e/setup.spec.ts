@@ -438,7 +438,10 @@ test('a sandbox gets each required entry, locked, and attaches an offered one', 
 	page
 }) => {
 	const token = entry({});
-	let attached: AttachedEntry[] = [{ entry: token, override: null }];
+	let attached: AttachedEntry[] = [
+		{ entry: gateway, override: null },
+		{ entry: token, override: null }
+	];
 	await page.route('**/api/sandboxes/main', (route) => route.fulfill({ json: main }));
 	await page.route('**/api/setup', (route) => route.fulfill({ json: [gateway, openai, token] }));
 	await page.route('**/api/sandboxes/main/setup', (route) => route.fulfill({ json: attached }));
@@ -447,7 +450,7 @@ test('a sandbox gets each required entry, locked, and attaches an offered one', 
 		page,
 		'/api/sandboxes/main/setup/*',
 		() => {
-			attached = [{ entry: openai, override: null }, ...attached];
+			attached = [gateway, openai, token].map((entry) => ({ entry, override: null }));
 			return { status: 204 };
 		},
 		calls

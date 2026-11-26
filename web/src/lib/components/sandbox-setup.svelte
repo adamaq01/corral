@@ -19,15 +19,10 @@
 
 	let { sandbox, onchanged }: { sandbox: string; onchanged: () => Promise<void> } = $props();
 
-	// A required entry reaches every sandbox unattached, so the sandbox's own list leaves it out.
 	const here = new Remote(async () => {
-		const [attached, registry] = await Promise.all([setup.ofSandbox(sandbox), setup.list()]);
-		const ids = new Set(attached.map(({ entry }) => entry.id));
-		const required = registry.filter((entry) => entry.shared === 'required');
-		return {
-			gets: [...required.map((entry) => ({ entry, override: null })), ...attached],
-			attachable: registry.filter((entry) => entry.shared !== 'required' && !ids.has(entry.id))
-		};
+		const [gets, registry] = await Promise.all([setup.ofSandbox(sandbox), setup.list()]);
+		const ids = new Set(gets.map(({ entry }) => entry.id));
+		return { gets, attachable: registry.filter((entry) => !ids.has(entry.id)) };
 	});
 
 	let attaching = $state(false);

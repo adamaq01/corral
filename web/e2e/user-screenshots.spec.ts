@@ -207,6 +207,7 @@ const entries: SetupEntry[] = [
 ];
 
 const attached: AttachedEntry[] = [
+	{ entry: entries[0], override: null },
 	{ entry: entries[1], override: null },
 	{
 		entry: entries[2],
@@ -327,7 +328,7 @@ inEveryView((look) => {
 	test('a sandbox missing a setup change', async ({ page }) => {
 		await serve(page, {
 			'/api/sandboxes/agents': sandboxes[1],
-			'/api/sandboxes/agents/setup': [],
+			'/api/sandboxes/agents/setup': [{ entry: entries[0], override: null }],
 			'/api/setup': entries,
 			'/api/catalog': catalog
 		});

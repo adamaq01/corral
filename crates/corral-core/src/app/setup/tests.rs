@@ -1250,6 +1250,66 @@ async fn a_required_entry_reaches_every_sandbox_and_a_member_cannot_touch_it() {
 }
 
 #[tokio::test]
+async fn of_sandbox_lists_required_entries_first() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    for (name, shared) in [
+        ("OPENAI_BASE_URL", Shared::Offered),
+        ("GATEWAY_URL", Shared::Required),
+        ("ANTHROPIC_BASE_URL", Shared::Required),
+    ] {
+        w.setup
+            .create_shared(&root, shared_variable(name, "https://llm", shared))
+            .await
+            .unwrap();
+    }
+    let editor = w.entry(&adam, variable("EDITOR"), "vim", false).await;
+    let main = w.sandbox(&adam, "main").await;
+    w.setup
+        .set_override(&adam, &main.name, editor.id, Some(bytes("nano")))
+        .await
+        .unwrap();
+
+    let held: Vec<(String, Option<Shared>, bool)> = w
+        .setup
+        .of_sandbox(&adam, &main.name)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|attached| {
+            let entry = attached.view.entry;
+            (
+                entry.target.to_string(),
+                entry.owner.shared(),
+                attached.overriding.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        held,
+        [
+            (
+                "variable ANTHROPIC_BASE_URL".to_owned(),
+                Some(Shared::Required),
+                false
+            ),
+            (
+                "variable GATEWAY_URL".to_owned(),
+                Some(Shared::Required),
+                false
+            ),
+            (
+                "variable OPENAI_BASE_URL".to_owned(),
+                Some(Shared::Offered),
+                false
+            ),
+            ("variable EDITOR".to_owned(), None, true),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn making_an_entry_required_is_refused_while_members_have_its_name() {
     let w = World::new();
     let root = admin_proof(&w.admin("root").await);
