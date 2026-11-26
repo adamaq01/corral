@@ -1,18 +1,20 @@
 use std::num::NonZeroU64;
 
 use anyhow::{Context, Result, ensure};
-use corral_core::app::{Catalog, ImageOption, NamedImages, SizePreset};
+use corral_core::app::{Catalog, CatalogDefaults, ImageOption, NamedImages, SizePreset, Source};
 use corral_core::domain::{Allocation, ImageKey, Resources, SizeKey};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 
 use super::quantity;
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Entries {
-    images: Vec<ImageOption>,
-    sizes: Vec<SizeEntry>,
+    images: Option<Vec<ImageEntry>>,
+    sizes: Option<Vec<SizeEntry>>,
+    default_image: Option<ImageKey>,
+    default_size: Option<SizeKey>,
     /// Without it, sandboxes run the catalog's images alone.
     named_images: Option<NamedImagesEntry>,
 }
@@ -23,6 +25,18 @@ struct NamedImagesEntry {
     registries: Vec<String>,
     #[serde(deserialize_with = "quantity::bytes")]
     max_size: NonZeroU64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageEntry {
+    key: ImageKey,
+    label: String,
+    reference: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default = "enabled")]
+    enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -40,42 +54,51 @@ struct SizeEntry {
     memory_limit: NonZeroU64,
     #[serde(deserialize_with = "quantity::bytes")]
     home_size: NonZeroU64,
+    #[serde(default = "enabled")]
+    enabled: bool,
 }
 
-impl Default for Entries {
-    fn default() -> Self {
-        Self {
-            images: vec![ImageOption {
-                key: ImageKey::parse("ubuntu").expect("a valid key"),
-                label: "Ubuntu 24.04".to_owned(),
-                reference: "ghcr.io/adamaq01/corral-sandbox".to_owned(),
-            }],
-            sizes: vec![SizeEntry {
-                key: SizeKey::parse("small").expect("a valid key"),
-                label: "Small: 2 CPUs, 4 GiB".to_owned(),
-                cpu_request: const { NonZeroU64::new(500).unwrap() },
-                cpu_limit: const { NonZeroU64::new(2000).unwrap() },
-                memory_request: const { NonZeroU64::new(1 << 30).unwrap() },
-                memory_limit: const { NonZeroU64::new(4 << 30).unwrap() },
-                home_size: const { NonZeroU64::new(10 << 30).unwrap() },
-            }],
-            named_images: None,
-        }
-    }
+fn enabled() -> bool {
+    true
 }
 
 impl Entries {
     fn catalog(self) -> Result<Catalog> {
-        let sizes = self
-            .sizes
-            .into_iter()
-            .map(|size| {
-                let key = size.key.clone();
-                size.preset()
-                    .with_context(|| format!("size {key:?} is invalid"))
-            })
-            .collect::<Result<_>>()?;
-        let catalog = Catalog::new(self.images, sizes)?;
+        let builtin = Catalog::builtin();
+        let images = match self.images {
+            Some(images) => images.into_iter().map(ImageEntry::option).collect(),
+            None => builtin.images().to_vec(),
+        };
+        let sizes = match self.sizes {
+            Some(sizes) => sizes
+                .into_iter()
+                .map(|size| {
+                    let key = size.key.clone();
+                    size.preset()
+                        .with_context(|| format!("size {key:?} is invalid"))
+                })
+                .collect::<Result<_>>()?,
+            None => builtin.sizes().to_vec(),
+        };
+        let defaults = CatalogDefaults {
+            image: match self.default_image {
+                Some(key) => key,
+                None => images
+                    .iter()
+                    .find(|image| image.enabled)
+                    .map(|image| image.key.clone())
+                    .context("the catalog offers no enabled image")?,
+            },
+            size: match self.default_size {
+                Some(key) => key,
+                None => sizes
+                    .iter()
+                    .find(|size| size.enabled)
+                    .map(|size| size.key.clone())
+                    .context("the catalog offers no enabled size")?,
+            },
+        };
+        let catalog = Catalog::new(images, sizes, defaults)?;
         let Some(named) = self.named_images else {
             return Ok(catalog);
         };
@@ -90,6 +113,19 @@ impl Entries {
     }
 }
 
+impl ImageEntry {
+    fn option(self) -> ImageOption {
+        ImageOption {
+            key: self.key,
+            label: self.label,
+            reference: self.reference,
+            description: self.description,
+            enabled: self.enabled,
+            source: Source::Config,
+        }
+    }
+}
+
 impl SizeEntry {
     fn preset(self) -> Result<SizePreset> {
         Ok(SizePreset {
@@ -100,14 +136,14 @@ impl SizeEntry {
                 memory_bytes: Allocation::new(self.memory_request.get(), self.memory_limit.get())?,
                 home_bytes: self.home_size,
             },
+            enabled: self.enabled,
+            source: Source::Config,
         })
     }
 }
 
 pub(super) fn default() -> Catalog {
-    Entries::default()
-        .catalog()
-        .expect("the default catalog is valid")
+    Catalog::builtin()
 }
 
 pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Catalog, D::Error> {

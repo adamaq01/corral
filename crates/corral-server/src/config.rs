@@ -293,6 +293,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use corral_core::app::Source;
     use corral_identity_oidc::ExpiryPolicy;
     use corral_secrets_vault::VaultAuth;
 
@@ -501,7 +502,7 @@ mod tests {
         let message = rejection(&format!("{MINIMAL}\n{}", size("1", "lots")));
         assert!(message.contains("\"lots\""), "{message}");
         let message = rejection(&format!("{MINIMAL}\n[catalog]\nimages = []"));
-        assert!(message.contains("no image"), "{message}");
+        assert!(message.contains("no enabled image"), "{message}");
 
         let config = Config::parse(&format!(
             "{MINIMAL}\n[[catalog.images]]\nkey = \"debian\"\nlabel = \"Debian\"\n\
@@ -510,6 +511,39 @@ mod tests {
         .unwrap();
         assert_eq!(config.catalog.image(None).unwrap().key.as_str(), "debian");
         assert_eq!(config.catalog.size(None).unwrap().key.as_str(), "small");
+    }
+
+    #[test]
+    fn catalog_entries_take_descriptions_enabled_flags_and_defaults() {
+        let image = |key: &str, extra: &str| {
+            format!(
+                "[[catalog.images]]\nkey = \"{key}\"\nlabel = \"{key}\"\n\
+                 reference = \"example.org/{key}\"\n{extra}"
+            )
+        };
+        let images = [
+            image(
+                "old",
+                "description = \"Kept for old sandboxes\"\nenabled = false",
+            ),
+            image("new", ""),
+            image("next", ""),
+        ]
+        .join("\n");
+        let config = Config::parse(&format!("{MINIMAL}\n{images}")).unwrap();
+        let old = &config.catalog.images()[0];
+        assert_eq!(
+            (old.description.as_str(), old.enabled, old.source),
+            ("Kept for old sandboxes", false, Source::Config)
+        );
+        assert_eq!(config.catalog.image(None).unwrap().key.as_str(), "new");
+
+        let picking =
+            |key: &str| format!("{MINIMAL}\n[catalog]\ndefault_image = \"{key}\"\n{images}");
+        let config = Config::parse(&picking("next")).unwrap();
+        assert_eq!(config.catalog.image(None).unwrap().key.as_str(), "next");
+        let message = rejection(&picking("old"));
+        assert!(message.contains("not an enabled image"), "{message}");
     }
 
     #[test]

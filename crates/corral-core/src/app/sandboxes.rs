@@ -113,7 +113,7 @@ impl Sandboxes {
         self.limits.max_sandboxes_per_user
     }
 
-    /// The owner's picks, or the catalog's first in place of one it no longer offers or they never
+    /// The owner's picks, or the catalog's default in place of one it no longer has or they never
     /// made.
     pub async fn defaults(&self, owner: &User) -> Result<UserDefaults> {
         let picked = self.users.sandbox_defaults(owner.id).await?;
@@ -812,7 +812,9 @@ mod tests {
         let mut sizes = catalog().sizes().to_vec();
         images[1].reference = "ghcr.io/adamaq01/corral-tools:3".to_owned();
         sizes[1].resources = sizes[0].resources;
-        let edited = with_catalog(Catalog::new(images.clone(), sizes.clone()).unwrap());
+        let edited = with_catalog(
+            Catalog::new(images.clone(), sizes.clone(), catalog().defaults().clone()).unwrap(),
+        );
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
 
         edited.wake(&adam, &main.name).await.unwrap();
@@ -828,7 +830,8 @@ mod tests {
             (images.clone(), sizes[..1].to_vec()),
         ] {
             w.sandboxes.stop(&adam, &main.name).await.unwrap();
-            let without = with_catalog(Catalog::new(images, sizes).unwrap());
+            let without =
+                with_catalog(Catalog::new(images, sizes, catalog().defaults().clone()).unwrap());
             assert!(matches!(
                 without.wake(&adam, &main.name).await.unwrap(),
                 Readiness::Ready

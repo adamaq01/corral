@@ -9,8 +9,8 @@ use super::{
     MemorySandboxRepo, MemorySecretStore, MemoryUserRepo, RecordedSignals,
 };
 use crate::app::{
-    Accounts, Catalog, CreateSandbox, EntryChange, Environment, ImageOption, Keys, Limits, Lobby,
-    NewEntry, SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
+    Accounts, Catalog, CatalogDefaults, CreateSandbox, EntryChange, Environment, ImageOption, Keys,
+    Limits, Lobby, NewEntry, SandboxLinks, SandboxView, Sandboxes, SizePreset, Source, SshAccess,
 };
 use crate::domain::{
     Admin, Allocation, Entry, HomePath, IdleLimits, ImageKey, Resources, Role, Sandbox,
@@ -144,13 +144,20 @@ pub fn admin_proof(user: &User) -> Admin {
 }
 
 #[must_use]
-pub fn catalog() -> Catalog {
-    let image = |key: &str, reference: &str| ImageOption {
+pub fn image_option(key: &str, reference: &str) -> ImageOption {
+    ImageOption {
         key: ImageKey::parse(key).unwrap(),
         label: key.to_uppercase(),
         reference: reference.to_owned(),
-    };
-    let size = |key: &str, cpu_millis: u64, memory_gib: u64| SizePreset {
+        description: String::new(),
+        enabled: true,
+        source: Source::Database,
+    }
+}
+
+#[must_use]
+pub fn size_preset(key: &str, cpu_millis: u64, memory_gib: u64) -> SizePreset {
+    SizePreset {
         key: SizeKey::parse(key).unwrap(),
         label: key.to_uppercase(),
         resources: Resources {
@@ -158,13 +165,26 @@ pub fn catalog() -> Catalog {
             memory_bytes: Allocation::new(memory_gib << 29, memory_gib << 30).unwrap(),
             home_bytes: NonZeroU64::new(10 << 30).unwrap(),
         },
-    };
+        enabled: true,
+        source: Source::Database,
+    }
+}
+
+#[must_use]
+pub fn catalog() -> Catalog {
     Catalog::new(
         vec![
-            image("base", "ghcr.io/adamaq01/corral-sandbox:1"),
-            image("tools", "ghcr.io/adamaq01/corral-tools:2"),
+            image_option("base", "ghcr.io/adamaq01/corral-sandbox:1"),
+            ImageOption {
+                enabled: false,
+                ..image_option("tools", "ghcr.io/adamaq01/corral-tools:2")
+            },
         ],
-        vec![size("small", 1000, 2), size("large", 4000, 8)],
+        vec![size_preset("small", 1000, 2), size_preset("large", 4000, 8)],
+        CatalogDefaults {
+            image: ImageKey::parse("base").unwrap(),
+            size: SizeKey::parse("small").unwrap(),
+        },
     )
     .unwrap()
 }
