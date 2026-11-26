@@ -54,8 +54,8 @@ last segment of its URL without `.git`. The clone runs as `sandbox` with the ima
 minutes. A private repository needs its credential among the setup's files, such as
 `~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the setup's
 variables reach sessions, not the clone. One line in the notices says whether it cloned, and if
-not, why: the directory exists already, the image has no `git`, or git's last line of output.
-Later starts never clone.
+not, why: the directory exists already, the image has no `git`, or git's last `fatal:` line, else
+its last line of output. Later starts never clone.
 
 Sessions run through OpenSSH on both engines, so they get its environment: `USER`, `HOME`,
 `SHELL` and the rest from the sandbox user's account, and the sandbox's variables, which the

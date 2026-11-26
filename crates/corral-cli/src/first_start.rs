@@ -101,7 +101,7 @@ fn git_clone(
     if status.success() {
         return Ok(());
     }
-    Err(Failure::Failed(last_line(&mut output, status)))
+    Err(Failure::Failed(why_git_failed(&mut output, status)))
 }
 
 /// A file for git's output with no name left in the home. It is no pipe because git's own
@@ -117,14 +117,24 @@ fn output_file(home: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-fn last_line(output: &mut File, status: ExitStatus) -> String {
+/// Git's last `fatal:` line, which advice may follow, else its last line.
+fn why_git_failed(output: &mut File, status: ExitStatus) -> String {
     let mut text = Vec::new();
     let _ = output.rewind().and_then(|()| output.read_to_end(&mut text));
-    String::from_utf8_lossy(&text)
+    let text = String::from_utf8_lossy(&text);
+    let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
-        .rfind(|line| !line.is_empty())
-        .map_or_else(|| format!("git ended with {status}"), str::to_owned)
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines
+        .iter()
+        .rfind(|line| line.starts_with("fatal:"))
+        .or(lines.last())
+        .map_or_else(
+            || format!("git ended with {status}"),
+            |line| (*line).to_owned(),
+        )
 }
 
 /// `text` with the user, and any password, taken out of each URL in it.
@@ -159,7 +169,8 @@ mod tests {
     use crate::notices;
 
     /// Clones as git would, except into a directory named `missing`, where it fails as git does
-    /// for an unknown repository, and `slow`, where it never ends.
+    /// for an unknown repository, `private`, where it fails as git does when ssh is refused, and
+    /// `slow`, where it never ends.
     const FAKE_GIT: &str = r#"#!/bin/sh
 PATH=/usr/bin:/bin
 for arg; do url=$target; target=$arg; done
@@ -168,6 +179,15 @@ case "$target" in
     echo "Cloning into '$target'..." >&2
     echo "fatal: repository '$url' not found" >&2
     echo >&2
+    exit 128
+    ;;
+  */private)
+    echo "Cloning into '$target'..." >&2
+    echo "git@github.com: Permission denied (publickey)." >&2
+    echo "fatal: Could not read from remote repository." >&2
+    echo >&2
+    echo "Please make sure you have the correct access rights" >&2
+    echo "and the repository exists." >&2
     exit 128
     ;;
   */slow)
@@ -247,7 +267,7 @@ printf '%s\n' "$@" "GIT_TERMINAL_PROMPT=$GIT_TERMINAL_PROMPT" "GIT_SSH_COMMAND=$
     }
 
     #[test]
-    fn a_failed_clone_says_gits_last_line_without_the_urls_user() {
+    fn a_failed_clone_says_gits_fatal_line_without_the_urls_user() {
         let home = home(
             "failed",
             r#"{"url": "https://me@github.com/me/missing.git", "branch": null}"#,
@@ -260,6 +280,23 @@ printf '%s\n' "$@" "GIT_TERMINAL_PROMPT=$GIT_TERMINAL_PROMPT" "GIT_SSH_COMMAND=$
             ]
         );
         assert!(!home.join("missing").exists());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_failed_clone_quotes_gits_fatal_line_over_its_last_one() {
+        let home = home(
+            "private",
+            r#"{"url": "git@github.com:me/private.git", "branch": null}"#,
+        );
+        assert_eq!(
+            started(&home, fake_git()),
+            [
+                "Cloning git@github.com:me/private.git failed: fatal: Could not read from remote \
+                 repository."
+            ]
+        );
+        assert!(!home.join("private").exists());
         std::fs::remove_dir_all(&home).unwrap();
     }
 
