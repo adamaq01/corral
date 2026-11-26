@@ -214,6 +214,17 @@ test.describe('an admin', () => {
 		await context.close();
 	});
 
+	test('sees when People was refreshed and refreshes it on demand', async ({ page }) => {
+		await page.goto('/admin/people');
+		await expect(page.getByText(/Updated \d/)).toBeVisible();
+		const again = page.waitForRequest(
+			(request) =>
+				request.method() === 'GET' && new URL(request.url()).pathname === '/api/admin/users'
+		);
+		await page.getByRole('button', { name: 'Refresh' }).click();
+		await again;
+	});
+
 	test('cannot disable or delete themselves from People', async ({ page }) => {
 		await page.goto('/admin/people');
 		const self = page.getByRole('table', { name: 'People' }).getByRole('row', {

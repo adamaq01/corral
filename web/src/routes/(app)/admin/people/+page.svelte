@@ -1,5 +1,6 @@
 <script lang="ts">
 	import PlusIcon from '@lucide/svelte/icons/plus';
+	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import UsersIcon from '@lucide/svelte/icons/users';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { toast } from 'svelte-sonner';
@@ -15,9 +16,11 @@
 	import NewAccountDialog from '#lib/components/people/new-account-dialog.svelte';
 	import PeopleTable, { type RowDialog } from '#lib/components/people/people-table.svelte';
 	import ResetPasswordDialog from '#lib/components/people/reset-password-dialog.svelte';
+	import RefreshStatus from '#lib/components/refresh-status.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
+	import { Spinner } from '#lib/components/ui/spinner/index.js';
 	import { people, type Directory } from '#lib/people.js';
 	import { Remote } from '#lib/remote.svelte.js';
 	import type { PageProps } from './$types';
@@ -36,6 +39,14 @@
 		]);
 		return { users, accounts: listed, limit: limits.maxSandboxesPerMember.value };
 	});
+
+	let refreshing = $state(false);
+
+	async function refresh() {
+		refreshing = true;
+		await directory.reload();
+		refreshing = false;
+	}
 
 	const rows = $derived(
 		directory.value ? people(directory.value, data.providers, data.user.handle) : undefined
@@ -117,9 +128,21 @@
 <div class="space-y-6">
 	<PageHeader title="People" description="Everyone who uses Corral, however they sign in.">
 		{#snippet actions()}
-			{#if accountsUrl && rows?.length}
-				{@render newAccount()}
-			{/if}
+			<div class="flex flex-wrap items-center gap-x-3 gap-y-2">
+				<RefreshStatus remote={directory} time />
+				<Button variant="outline" disabled={refreshing} onclick={refresh}>
+					{#if refreshing}
+						<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+						Refreshing…
+					{:else}
+						<RefreshCwIcon />
+						Refresh
+					{/if}
+				</Button>
+				{#if accountsUrl && rows?.length}
+					{@render newAccount()}
+				{/if}
+			</div>
 		{/snippet}
 	</PageHeader>
 
