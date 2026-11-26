@@ -404,8 +404,8 @@
 >
 	<p>This deletes the sandbox and everything in its home directory. It cannot be undone.</p>
 	<p>
-		If you added it to Herdr, remove the machine from Herdr before you create a sandbox named
+		If you added it to Herdr, remove it from Herdr before you create a sandbox named
 		<span class="font-mono text-foreground">{name}</span> again: to Herdr, the new sandbox is a different
-		machine.
+		one.
 	</p>
 </ConfirmDialog>

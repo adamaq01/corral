@@ -73,11 +73,11 @@
 			entry.kind === 'variable' || entry.value.shown !== 'text'
 				? summary(entry.value)
 				: `${lines} ${lines === 1 ? 'line' : 'lines'}`;
-		const count = entry.sandboxes.length;
-		const attached =
-			count === 0
-				? 'attached to no sandbox'
-				: `attached to ${entry.sandboxes.map((used) => used.sandbox).join(', ')}`;
+		const on =
+			entry.sandboxes.length === 0
+				? 'no sandbox'
+				: entry.sandboxes.map((used) => used.sandbox).join(', ');
+		const attached = `${value ? 'attached' : 'Attached'} to ${on}`;
 		return [value, attached, entry.applyToNew ? 'new sandboxes get it' : null]
 			.filter(Boolean)
 			.join(' · ');

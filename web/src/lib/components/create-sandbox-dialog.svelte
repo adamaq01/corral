@@ -66,7 +66,7 @@
 	title="New sandbox"
 	description={full
 		? `You have ${count} of ${catalog.maxSandboxes} sandboxes, the most you can have. Delete one to make room.`
-		: `A persistent machine with its own home directory. You have ${count} of ${catalog.maxSandboxes} sandboxes.`}
+		: `A sandbox with its own home directory. You have ${count} of ${catalog.maxSandboxes} sandboxes.`}
 	submit="Create sandbox"
 	pendingLabel={named ? 'Checking the image…' : 'Creating…'}
 	ready={!full && valid}

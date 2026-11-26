@@ -374,7 +374,15 @@ test('files count their lines, keep their case, and are named by their path', as
 		secret: false,
 		value: { setAt, size: 3, shown: 'text', text: 'vim' }
 	});
-	await page.route('**/api/environment', (route) => route.fulfill({ json: [short, long, lower] }));
+	const empty = entry({
+		id: '1b9c0d1e-2f3a-4b4c-5d6e-7f8a9b0c1d2e',
+		target: 'EMPTY_VALUE',
+		secret: false,
+		value: { setAt, size: 0, shown: 'text', text: '' }
+	});
+	await page.route('**/api/environment', (route) =>
+		route.fulfill({ json: [short, long, lower, empty] })
+	);
 	await page.route(`**/api/environment/${long.id}`, (route) => route.fulfill({ json: long }));
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
 	await page.goto('/environment');
@@ -387,6 +395,9 @@ test('files count their lines, keep their case, and are named by their path', as
 			(element) => getComputedStyle(element, '::first-letter').textTransform
 		)
 	).toBe('none');
+	await expect(listed('EMPTY_VALUE')).toContainText(
+		'Attached to no sandbox · new sandboxes get it'
+	);
 
 	await page.goto(`/environment/${long.id}`);
 	await expect(page.getByRole('button', { name: 'Show all 20 lines' })).toBeVisible();

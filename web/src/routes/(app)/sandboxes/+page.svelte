@@ -60,7 +60,7 @@
 {/snippet}
 
 <div class="grid grid-cols-1 gap-6">
-	<PageHeader title="Sandboxes" description="Your persistent machines, reachable over SSH.">
+	<PageHeader title="Sandboxes" description="Your sandboxes, reachable over SSH.">
 		{#snippet actions()}
 			{#if list.value?.length}
 				{@render newSandbox()}
