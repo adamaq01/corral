@@ -18,7 +18,7 @@ use crate::ports::{
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Limits {
+pub struct SandboxLimits {
     pub max_sandboxes_per_user: usize,
     pub wake_deadline: Duration,
     pub idle: IdleLimits,
@@ -70,7 +70,7 @@ pub struct Sandboxes {
     registry: Arc<dyn ImageRegistry>,
     environment: Environment,
     catalog: Catalog,
-    limits: Limits,
+    limits: SandboxLimits,
 }
 
 /// The image and size a user's new sandboxes get unless they pick others.
@@ -90,7 +90,7 @@ impl Sandboxes {
         registry: Arc<dyn ImageRegistry>,
         environment: Environment,
         catalog: Catalog,
-        limits: Limits,
+        limits: SandboxLimits,
     ) -> Self {
         Self {
             repo,

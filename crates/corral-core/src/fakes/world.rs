@@ -6,11 +6,12 @@ use secrecy::{ExposeSecret, SecretSlice};
 
 use super::{
     FakeEngine, FakeProvider, FakeRegistry, MemoryEnvironmentRepo, MemoryKeyRepo,
-    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo, RecordedSignals,
+    MemorySandboxRepo, MemorySecretStore, MemorySettingsRepo, MemoryUserRepo, RecordedSignals,
 };
 use crate::app::{
-    Accounts, Catalog, CatalogDefaults, CreateSandbox, EntryChange, Environment, ImageOption, Keys,
-    Limits, Lobby, NewEntry, SandboxLinks, SandboxView, Sandboxes, SizePreset, Source, SshAccess,
+    Accounts, Catalog, CatalogChange, CatalogDefaults, Configured, CreateSandbox, EntryChange,
+    Environment, ImageOption, Keys, LimitsChange, Lobby, NewEntry, SandboxLimits, SandboxLinks,
+    SandboxView, Sandboxes, Settings, SizePreset, Source, SshAccess,
 };
 use crate::domain::{
     Admin, Allocation, Entry, HomePath, IdleLimits, ImageKey, Resources, Role, Sandbox,
@@ -26,7 +27,7 @@ pub const IDLE: IdleLimits = IdleLimits {
     max_timeout: Duration::from_hours(4),
     max_keep_awake: Duration::from_hours(24),
 };
-const LIMITS: Limits = Limits {
+const LIMITS: SandboxLimits = SandboxLimits {
     max_sandboxes_per_user: MAX_SANDBOXES,
     wake_deadline: WAKE_DEADLINE,
     idle: IDLE,
@@ -189,6 +190,17 @@ pub fn catalog() -> Catalog {
     .unwrap()
 }
 
+/// The catalog as the admin would store it.
+#[must_use]
+pub fn catalog_change(catalog: &Catalog) -> CatalogChange {
+    CatalogChange {
+        images: catalog.images().to_vec(),
+        sizes: catalog.sizes().to_vec(),
+        defaults: Some(catalog.defaults().clone()),
+        named_images: catalog.named_images().cloned(),
+    }
+}
+
 #[must_use]
 pub fn default_names(views: &[SandboxView]) -> Vec<&str> {
     views
@@ -216,6 +228,8 @@ pub struct World {
     pub secrets: Arc<MemorySecretStore>,
     pub engine: Arc<FakeEngine>,
     pub registry: Arc<FakeRegistry>,
+    pub settings: Settings,
+    pub settings_repo: Arc<MemorySettingsRepo>,
     pub sandboxes: Sandboxes,
     pub access: Arc<SshAccess>,
     pub lobby: Arc<Lobby>,
@@ -232,6 +246,16 @@ impl World {
     /// With `provider` and `others`.
     #[must_use]
     pub fn with_providers(others: Vec<Arc<dyn IdentityProvider>>) -> Self {
+        Self::build(others, Configured::default())
+    }
+
+    /// With what the config file sets, beside the catalog and limits the database holds.
+    #[must_use]
+    pub fn with_configured(configured: Configured) -> Self {
+        Self::build(Vec::new(), configured)
+    }
+
+    fn build(others: Vec<Arc<dyn IdentityProvider>>, configured: Configured) -> Self {
         let provider = Arc::new(FakeProvider::default());
         let mut providers: Vec<Arc<dyn IdentityProvider>> = vec![provider.clone()];
         providers.extend(others);
@@ -239,6 +263,19 @@ impl World {
         let sandbox_repo = Arc::new(MemorySandboxRepo::default());
         let environment_repo = Arc::new(MemoryEnvironmentRepo::default());
         let secrets = Arc::new(MemorySecretStore::default());
+        let settings_repo = Arc::new(MemorySettingsRepo::holding(
+            &catalog_change(&catalog()),
+            LimitsChange {
+                max_sandboxes_per_member: Some(MAX_SANDBOXES),
+                max_running: Some(6),
+            },
+        ));
+        let settings = Settings::new(
+            settings_repo.clone(),
+            sandbox_repo.clone(),
+            users.clone(),
+            configured,
+        );
         let environment = Environment::new(
             environment_repo.clone(),
             secrets.clone(),
@@ -277,6 +314,8 @@ impl World {
                 providers,
             ),
             keys: Keys::new(key_repo),
+            settings,
+            settings_repo,
             sandboxes,
             environment,
             environment_repo,

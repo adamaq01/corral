@@ -8,7 +8,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use corral_api::testing::trusting_provider;
 use corral_api::{Api, Key, SshEndpoint, router};
-use corral_core::app::{Accounts, Environment, Keys, Limits, Sandboxes};
+use corral_core::app::{Accounts, Environment, Keys, SandboxLimits, Sandboxes};
 use corral_core::fakes::{
     ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, FakeRegistry, MemorySecretStore, catalog, links,
 };
@@ -32,7 +32,7 @@ async fn app(databases: &Databases) -> Router {
         Arc::new(FakeRegistry::default()),
         environment.clone(),
         catalog(),
-        Limits {
+        SandboxLimits {
             max_sandboxes_per_user: 5,
             wake_deadline: Duration::from_secs(1),
             idle: corral_core::fakes::IDLE,

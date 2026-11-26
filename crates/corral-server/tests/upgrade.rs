@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use corral_core::app::{Environment, Limits, Sandboxes};
+use corral_core::app::{Environment, SandboxLimits, Sandboxes};
 use corral_core::domain::{Sandbox, User, UserId};
 use corral_core::fakes::{FakeEngine, FakeRegistry, catalog, exposed, links};
 use corral_core::ports::{SandboxEngine, SandboxRepo, SandboxSpec, SecretStore, UserRepo};
@@ -186,7 +186,7 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
         Arc::new(FakeRegistry::default()),
         environment,
         catalog(),
-        Limits {
+        SandboxLimits {
             max_sandboxes_per_user: 5,
             wake_deadline: Duration::from_secs(1),
             idle: corral_core::fakes::IDLE,

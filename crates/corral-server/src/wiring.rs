@@ -7,7 +7,7 @@ use axum::routing::get;
 use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
 use corral_core::app::{
-    Accounts, Environment, Keys, Limits, Lobby, SandboxLinks, Sandboxes, SshAccess,
+    Accounts, Environment, Keys, Lobby, SandboxLimits, SandboxLinks, Sandboxes, SshAccess,
 };
 use corral_core::ports::{
     ActivitySignals, IdentityProvider, RegistryAccess, SandboxEngine, SandboxRepo, SecretStore,
@@ -88,7 +88,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         Arc::new(OciRegistry::new(registries)),
         environment.clone(),
         config.catalog.clone(),
-        Limits {
+        SandboxLimits {
             max_sandboxes_per_user: config.limits.max_sandboxes_per_user,
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
             idle: config.idle.limits(),
