@@ -4,6 +4,8 @@
 mod activity;
 mod client;
 mod command;
+mod first_start;
+mod notices;
 mod sandbox_file;
 
 use std::path::PathBuf;
@@ -13,7 +15,7 @@ use serde_json::{Value, json};
 
 use crate::client::{Client, Corral};
 use crate::command::{Command, USAGE};
-use crate::sandbox_file::SandboxFile;
+use crate::sandbox_file::{Repository, SandboxFile};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -29,13 +31,19 @@ fn main() -> ExitCode {
         }
     };
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-    if command == Command::ReportActivity {
-        activity::run(&home);
+    match command {
+        Command::ReportActivity => activity::run(&home),
+        Command::FirstStart => {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            first_start::run(&home, &path, first_start::TIMEOUT);
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
     }
     let outcome = SandboxFile::read(&home)
         .and_then(|file| run(&command, &file, &Client::new(&file)))
         .map(|text| match command {
-            Command::Status => with_notices(text, &sandbox_file::notices(&home)),
+            Command::Status => with_notices(text, &notices::read(&home)),
             _ => text,
         });
     match outcome {
@@ -56,7 +64,7 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
     match command {
         Command::Status => {
             let reply = expect(corral.get("/api/sandbox")?, 200)?;
-            Ok(status(&reply))
+            Ok(status(&reply, file.repository.as_ref()))
         }
         Command::Restart => {
             expect(corral.post("/api/sandbox/restart", &json!({}))?, 202)?;
@@ -104,7 +112,7 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
                 file.web.trim_end_matches('/')
             ))
         }
-        Command::Help | Command::ReportActivity => Ok(USAGE.to_owned()),
+        Command::Help | Command::ReportActivity | Command::FirstStart => Ok(USAGE.to_owned()),
     }
 }
 
@@ -138,23 +146,37 @@ fn expect(reply: client::Reply, status: u16) -> Result<Value, String> {
     }
 }
 
-fn status(sandbox: &Value) -> String {
+fn status(sandbox: &Value, repository: Option<&Repository>) -> String {
     let field = |value: &Value| value.as_str().unwrap_or("?").to_owned();
+    let line = |label: &str, value: String| format!("{label:<10}  {value}");
     let mut lines = vec![
-        format!("Sandbox  {}", field(&sandbox["ssh"]["username"])),
-        format!("State    {}", field(&sandbox["state"])),
-        format!("Image    {}", field(&sandbox["image"])),
-        format!("Size     {}", field(&sandbox["size"])),
+        line("Sandbox", field(&sandbox["ssh"]["username"])),
+        line("State", field(&sandbox["state"])),
     ];
-    lines.push(format!(
-        "Sleeps   after {} with no work",
-        idle_timeout(sandbox)
+    if let Some(repository) = repository {
+        let branch = match &repository.branch {
+            Some(branch) => format!(", branch {branch}"),
+            None => String::new(),
+        };
+        lines.push(line("Repository", format!("{}{branch}", repository.url)));
+    }
+    lines.push(line("Image", field(&sandbox["image"])));
+    lines.push(line("Size", field(&sandbox["size"])));
+    lines.push(line(
+        "Sleeps",
+        format!("after {} with no work", idle_timeout(sandbox)),
     ));
     if let Some(until) = sandbox["idle"]["keepAwakeUntil"].as_str() {
-        lines.push(format!("Awake    until {until}, with or without work"));
+        lines.push(line(
+            "Awake",
+            format!("until {until}, with or without work"),
+        ));
     }
     if let Some(at) = sandbox["deleteAt"].as_str() {
-        lines.push(format!("Deletes  at {at}, unless cancelled in the web UI"));
+        lines.push(line(
+            "Deletes",
+            format!("at {at}, unless cancelled in the web UI"),
+        ));
     }
     lines.join("\n")
 }
@@ -168,7 +190,7 @@ mod tests {
     use super::{run, with_notices};
     use crate::client::{Corral, Reply};
     use crate::command::Command;
-    use crate::sandbox_file::SandboxFile;
+    use crate::sandbox_file::{Repository, SandboxFile};
 
     /// Answers every call with one reply and records the calls.
     struct Fake {
@@ -211,11 +233,20 @@ mod tests {
             web: "https://corral.example.com/".to_owned(),
             sandbox: "main".to_owned(),
             token: "corral_sbx_1".to_owned(),
+            repository: None,
         }
     }
 
     fn ran(command: &Command, corral: &Fake) -> (Result<String, String>, Vec<String>) {
-        let outcome = run(command, &file(), corral);
+        ran_in(&file(), command, corral)
+    }
+
+    fn ran_in(
+        file: &SandboxFile,
+        command: &Command,
+        corral: &Fake,
+    ) -> (Result<String, String>, Vec<String>) {
+        let outcome = run(command, file, corral);
         (outcome, corral.calls.borrow().clone())
     }
 
@@ -245,11 +276,46 @@ mod tests {
         let (outcome, calls) = ran(&Command::Status, &Fake::answering(200, sandbox));
         assert_eq!(
             outcome.unwrap(),
-            "Sandbox  main.adam\nState    running\nImage    ubuntu\nSize     small\n\
-             Sleeps   after 1 h 30 min with no work\n\
-             Awake    until 2026-11-25T18:00:00Z, with or without work"
+            "Sandbox     main.adam\nState       running\nImage       ubuntu\nSize        small\n\
+             Sleeps      after 1 h 30 min with no work\n\
+             Awake       until 2026-11-25T18:00:00Z, with or without work"
         );
         assert_eq!(calls, ["GET /api/sandbox"]);
+    }
+
+    #[test]
+    fn status_names_the_repository_after_the_state() {
+        let sandbox = json!({
+            "ssh": {"username": "main.adam"},
+            "state": "running",
+            "image": "ubuntu",
+            "size": "small",
+            "idle": {"timeoutSecs": 1800},
+        });
+        for (branch, line) in [
+            (
+                Some("main"),
+                "Repository  https://github.com/adamaq01/corral.git, branch main",
+            ),
+            (None, "Repository  https://github.com/adamaq01/corral.git"),
+        ] {
+            let cloning = SandboxFile {
+                repository: Some(Repository {
+                    url: "https://github.com/adamaq01/corral.git".to_owned(),
+                    branch: branch.map(str::to_owned),
+                }),
+                ..file()
+            };
+            let corral = Fake::answering(200, sandbox.clone());
+            let (outcome, _) = ran_in(&cloning, &Command::Status, &corral);
+            assert_eq!(
+                outcome.unwrap(),
+                format!(
+                    "Sandbox     main.adam\nState       running\n{line}\nImage       ubuntu\n\
+                     Size        small\nSleeps      after 30 min with no work"
+                )
+            );
+        }
     }
 
     #[test]

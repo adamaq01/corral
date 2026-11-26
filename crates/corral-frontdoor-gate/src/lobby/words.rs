@@ -1,5 +1,7 @@
 //! How the lobby words its choices, the same on a full screen and on lines.
 
+use corral_core::domain::Shared;
+
 use super::installer::{Installer, Phase, Step};
 use crate::api::{EntryKind, ImageChoice, OfferedEntry, SizeChoice};
 
@@ -49,10 +51,25 @@ pub(crate) fn kind(entry: &OfferedEntry) -> String {
     if entry.secret {
         words.push("secret");
     }
-    if entry.apply_to_new {
+    match entry.shared {
+        Some(Shared::Required) => words.push("required"),
+        Some(Shared::Offered) => words.push("offered"),
+        None => {}
+    }
+    if entry.apply_to_new && !entry.required() {
         words.push("for new sandboxes");
     }
     words.join(", ")
+}
+
+/// What an offered entry says while `own`, the owner's, is chosen in its place.
+pub(crate) fn replaced(own: &OfferedEntry) -> String {
+    format!("Your {} takes the place of the shared one.", own.name)
+}
+
+/// A required entry, which no choice leaves out.
+pub(crate) fn fixed(entry: &OfferedEntry) -> String {
+    format!("= {}  {}", entry.name, kind(entry))
 }
 
 pub(crate) fn step(step: &Step) -> &'static str {
@@ -60,7 +77,8 @@ pub(crate) fn step(step: &Step) -> &'static str {
         Step::Name => "Name",
         Step::Image | Step::Reference => "Image",
         Step::Size => "Size",
-        Step::Environment => "Environment",
+        Step::Setup => "Setup",
+        Step::Repository(_) => "Repository",
         Step::Summary | Step::Making(_) | Step::Failed(_) => "Summary",
     }
 }
@@ -81,7 +99,7 @@ pub(crate) fn chosen_size(installer: &Installer) -> String {
         .map_or_else(String::new, size)
 }
 
-pub(crate) fn chosen_environment(installer: &Installer) -> String {
+pub(crate) fn chosen_setup(installer: &Installer) -> String {
     let names: Vec<&str> = installer
         .chosen_entries()
         .map(|entry| entry.name.as_str())
@@ -90,6 +108,16 @@ pub(crate) fn chosen_environment(installer: &Installer) -> String {
         "none".to_owned()
     } else {
         names.join(", ")
+    }
+}
+
+pub(crate) fn chosen_repository(installer: &Installer) -> String {
+    match installer.repository() {
+        Some(repository) => match repository.branch() {
+            Some(branch) => format!("{} ({branch})", repository.url()),
+            None => repository.url().to_owned(),
+        },
+        None => "none".to_owned(),
     }
 }
 

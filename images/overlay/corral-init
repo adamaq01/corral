@@ -1,6 +1,7 @@
 #!/opt/corral/bin/sh
 # Makes any base image a Corral sandbox. It runs only the overlay's static busybox, never the
-# base image's tools, which may be missing or of any libc.
+# base image's tools, which may be missing or of any libc, except the image's own git, which the
+# sandbox user's first start clones a repository with.
 set -eu
 
 O=/opt/corral
@@ -81,9 +82,10 @@ system() {
 
 # Runs as the sandbox user: the skeleton on the first start, then the home files the engine
 # staged, each replacing what is at its path. A file written at an earlier start and no longer
-# staged is removed, unless it was changed since.
+# staged is removed, unless it was changed since. The first start then clones the sandbox's
+# repository, if it names one, and adds how it went to the notices.
 home() {
-  local skel
+  local skel first=
   if [ ! -e "$HOME_DIR/.corral-initialized" ]; then
     skel=$O/etc/skel
     if [ -n "$($B ls -A /etc/skel 2>/dev/null)" ]; then
@@ -91,6 +93,7 @@ home() {
     fi
     $B cp -R "$skel/." "$HOME_DIR/"
     : >"$HOME_DIR/.corral-initialized"
+    first=yes
   fi
   # Without its own directory, such as when a file sits at ~/.config, Corral still writes the
   # home files, and keeps no record.
@@ -110,6 +113,7 @@ home() {
   else
     $B rm -f "$NOTICES.new" "$NOTICES"
   fi
+  [ -z "$first" ] || HOME=$HOME_DIR $O/bin/corral first-start
 }
 
 # Writes each file of the manifest on stdin. One that cannot be written, such as one with a

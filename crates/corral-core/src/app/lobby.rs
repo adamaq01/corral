@@ -3,9 +3,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::ssh_access::active_login;
-use super::{Catalog, CreateSandbox, Environment, SandboxView, Sandboxes};
+use super::{Catalog, CreateSandbox, EntryView, SandboxView, Sandboxes, Setup};
 use crate::domain::{
-    Entry, EntryId, Handle, HomePath, ImageKey, SandboxDefaults, SandboxName, SizeKey, Target,
+    Entry, EntryId, Handle, HomePath, ImageKey, Repository, SandboxDefaults, SandboxName, SizeKey,
+    Target,
 };
 use crate::ports::UserRepo;
 use crate::{Error, Result};
@@ -14,7 +15,7 @@ use crate::{Error, Result};
 pub struct Lobby {
     users: Arc<dyn UserRepo>,
     sandboxes: Sandboxes,
-    environment: Environment,
+    setup: Setup,
 }
 
 /// Where a login with a terminal lands.
@@ -29,13 +30,13 @@ pub enum Entrance {
 }
 
 /// What the lobby starts from: the owner, the name the login gives the new sandbox if any, the
-/// owner's defaults and their environment entries.
+/// owner's defaults and their setup entries, each saying whether one of theirs takes its place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
     pub owner: Handle,
     pub name: Option<SandboxName>,
     pub defaults: SandboxDefaults,
-    pub entries: Vec<Entry>,
+    pub entries: Vec<EntryView>,
 }
 
 /// How a new sandbox is made. Without an image or a size, the owner's default; without a list
@@ -46,10 +47,11 @@ pub struct Choice {
     pub image: Option<String>,
     pub size: Option<String>,
     /// Each entry by its id, or by the variable or file it sets.
-    pub environment: Option<Vec<String>>,
+    pub setup: Option<Vec<String>>,
+    pub repository: Option<Repository>,
 }
 
-/// A sandbox the lobby made, and the entries attached to it.
+/// A sandbox the lobby made, and the entries it gets: every required one, then those attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Made {
     pub view: SandboxView,
@@ -58,11 +60,11 @@ pub struct Made {
 
 impl Lobby {
     #[must_use]
-    pub fn new(users: Arc<dyn UserRepo>, sandboxes: Sandboxes, environment: Environment) -> Self {
+    pub fn new(users: Arc<dyn UserRepo>, sandboxes: Sandboxes, setup: Setup) -> Self {
         Self {
             users,
             sandboxes,
-            environment,
+            setup,
         }
     }
 
@@ -89,12 +91,11 @@ impl Lobby {
         if exists {
             return Ok(Entrance::Sandbox);
         }
-        let entries = self.environment.list(&owner).await?;
         Ok(Entrance::Lobby(Offer {
+            entries: self.setup.list(&owner).await?,
             defaults: self.sandboxes.defaults(&owner).await?.defaults,
             owner: owner.handle,
             name,
-            entries: entries.into_iter().map(|view| view.entry).collect(),
         }))
     }
 
@@ -131,16 +132,17 @@ impl Lobby {
                 None => (None, Some(text)),
             },
         };
-        let environment = match choice.environment {
+        let setup = match choice.setup {
             None => None,
-            Some(wanted) => Some(chosen(&self.environment.list(&owner).await?, &wanted)?),
+            Some(wanted) => Some(chosen(&self.setup.list(&owner).await?, &wanted)?),
         };
         let request = CreateSandbox {
             name: name.clone(),
             image,
             image_reference,
             size: choice.size.as_deref().map(SizeKey::parse).transpose()?,
-            environment,
+            setup,
+            repository: choice.repository,
         };
         let view = self
             .sandboxes
@@ -153,7 +155,7 @@ impl Lobby {
                 Error::Conflict(_) => Error::Conflict(format!("sandbox {name} exists already")),
                 error => error,
             })?;
-        let attached = self.environment.of_sandbox(&owner, &name).await?;
+        let attached = self.setup.of_sandbox(&owner, &name).await?;
         Ok(Made {
             view,
             attached: attached
@@ -172,26 +174,32 @@ impl Lobby {
     }
 }
 
-/// The entries `wanted` names, each by its id or by its target.
-fn chosen(entries: &[crate::app::EntryView], wanted: &[String]) -> Result<Vec<EntryId>> {
+/// The entries `wanted` names, each by its id or by its target. Where the member's own entry and a
+/// shared one have the same target, the name picks the member's, which takes the shared one's
+/// place.
+fn chosen(entries: &[EntryView], wanted: &[String]) -> Result<Vec<EntryId>> {
     let mut ids = Vec::new();
     for named in wanted {
         let id = Uuid::parse_str(named).ok();
-        let matching: Vec<&Entry> = entries
+        let mut matching: Vec<&Entry> = entries
             .iter()
             .map(|view| &view.entry)
             .filter(|entry| Some(entry.id.0) == id || names(&entry.target, named))
             .collect();
+        let own: Vec<Target> = matching
+            .iter()
+            .filter(|entry| entry.owner.member().is_some())
+            .map(|entry| entry.target.clone())
+            .collect();
+        matching.retain(|entry| entry.owner.member().is_some() || !own.contains(&entry.target));
         let entry = match matching.as_slice() {
             [entry] => entry,
             [] => {
-                return Err(Error::Invalid(format!(
-                    "there is no environment entry {named:?}"
-                )));
+                return Err(Error::Invalid(format!("there is no setup entry {named:?}")));
             }
             _ => {
                 return Err(Error::Invalid(format!(
-                    "{named:?} names more than one environment entry: give its id"
+                    "{named:?} names more than one setup entry: give its id"
                 )));
             }
         };
@@ -214,9 +222,10 @@ mod tests {
     use super::{Choice, Entrance, Offer};
     use crate::Error;
     use crate::app::{EntryChange, NewEntry};
-    use crate::domain::{Entry, SandboxName, User};
+    use crate::domain::{Entry, Owner, SandboxName, Shared, User};
     use crate::fakes::{
-        MAX_SANDBOXES, World, admin_proof, defaults, entry, exposed, file, unchanged, variable,
+        MAX_SANDBOXES, World, admin_proof, defaults, entry, exposed, file, shared_variable,
+        unchanged, variable,
     };
 
     /// Adam, with `main`, a secret variable for new sandboxes and a plain one that is not.
@@ -230,12 +239,7 @@ mod tests {
             apply_to_new: false,
             ..unchanged(&extra)
         };
-        let extra = w
-            .environment
-            .change(&adam, extra.id, change)
-            .await
-            .unwrap()
-            .entry;
+        let extra = w.setup.change(&adam, extra.id, change).await.unwrap().entry;
         (w, adam, extra)
     }
 
@@ -264,7 +268,8 @@ mod tests {
         Choice {
             image: image.map(str::to_owned),
             size: size.map(str::to_owned),
-            environment: entries.map(|entries| entries.iter().map(|&e| e.to_owned()).collect()),
+            setup: entries.map(|entries| entries.iter().map(|&e| e.to_owned()).collect()),
+            repository: None,
         }
     }
 
@@ -289,10 +294,8 @@ mod tests {
             ("adam", Some("new"))
         );
         assert_eq!(offer.defaults, defaults("tools", "large"));
-        assert_eq!(
-            targets(&offer.entries),
-            ["variable EXTRA", "variable GH_TOKEN"]
-        );
+        let offered: Vec<Entry> = offer.entries.into_iter().map(|view| view.entry).collect();
+        assert_eq!(targets(&offered), ["variable EXTRA", "variable GH_TOKEN"]);
         assert_eq!(w.engine.calls().len(), calls, "the engine was not asked");
         assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 1);
     }
@@ -384,7 +387,7 @@ mod tests {
             apply_to_new: false,
             ..entry(file(".config/tool.toml"), "token = \"{{ EXTRA }}\"")
         };
-        w.environment.create(&adam, template).await.unwrap();
+        w.setup.create(&adam, template).await.unwrap();
         let calls = w.engine.calls().len();
         for (username, choice, why) in [
             (
@@ -400,7 +403,7 @@ mod tests {
             (
                 "new.adam",
                 choice(None, None, Some(&["NOPE"])),
-                "there is no environment entry \"NOPE\"",
+                "there is no setup entry \"NOPE\"",
             ),
             (
                 "new.adam",
@@ -446,7 +449,7 @@ mod tests {
             apply_to_new: false,
             ..entry(file("EXTRA"), "a file")
         };
-        w.environment.create(&adam, same_name).await.unwrap();
+        w.setup.create(&adam, same_name).await.unwrap();
         let error = w
             .lobby
             .create("new.adam", choice(None, None, Some(&["EXTRA"])))
@@ -454,7 +457,31 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             refusal(error),
-            "\"EXTRA\" names more than one environment entry: give its id"
+            "\"EXTRA\" names more than one setup entry: give its id"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_picks_the_members_entry_over_the_shared_one_it_shadows() {
+        let (w, adam, _) = adam().await;
+        let root = admin_proof(&w.admin("root").await);
+        let offered = shared_variable("ANTHROPIC_BASE_URL", "https://llm", Shared::Offered);
+        w.setup.create_shared(&root, offered).await.unwrap();
+        w.entry(&adam, variable("ANTHROPIC_BASE_URL"), "https://mine", false)
+            .await;
+        let made = w
+            .lobby
+            .create(
+                "new.adam",
+                choice(None, None, Some(&["ANTHROPIC_BASE_URL"])),
+            )
+            .await
+            .unwrap();
+        let owners: Vec<Owner> = made.attached.iter().map(|entry| entry.owner).collect();
+        assert_eq!(owners, [Owner::Member(adam.id)]);
+        assert_eq!(
+            exposed(&w.engine.env_of(&made.view.sandbox.id).unwrap()),
+            ["ANTHROPIC_BASE_URL=https://mine"]
         );
     }
 

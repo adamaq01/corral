@@ -285,7 +285,7 @@
 		<Card.Header>
 			<Card.Title>Delete your account</Card.Title>
 			<Card.Description>
-				Deletes your sandboxes with their home directories, your SSH keys, your environment and your
+				Deletes your sandboxes with their home directories, your SSH keys, your setup and your
 				account, for good.
 			</Card.Description>
 		</Card.Header>
@@ -307,6 +307,6 @@
 	confirmName={user.handle}
 	onconfirm={remove}
 >
-	Every sandbox you own is deleted with its home directory, along with your SSH keys and
-	environment. It cannot be undone.
+	Every sandbox you own is deleted with its home directory, along with your SSH keys and setup. It
+	cannot be undone.
 </ConfirmDialog>

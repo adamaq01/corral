@@ -12,7 +12,7 @@ export type Navigation = { main: NavItem[]; admin: NavItem[] | null };
 
 const main: NavItem[] = [
 	{ href: '/sandboxes', label: 'Sandboxes', icon: SquareTerminalIcon },
-	{ href: '/environment', label: 'Environment', icon: VariableIcon },
+	{ href: '/setup', label: 'Setup', icon: VariableIcon },
 	{ href: '/account', label: 'Account', icon: CircleUserRoundIcon }
 ];
 

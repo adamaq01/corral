@@ -16,7 +16,7 @@
 		size,
 		utf8Size,
 		variableTooLarge
-	} from '#lib/environment.js';
+	} from '#lib/setup.js';
 
 	let {
 		id,

@@ -2,10 +2,10 @@ import type { Page } from '@playwright/test';
 import type {
 	AttachedEntry,
 	Catalog,
-	EnvironmentEntry,
 	Me,
 	Sandbox,
 	SandboxStatus,
+	SetupEntry,
 	SshKey
 } from '../src/lib/api/generated/index.js';
 import { expect, test, idle } from './fixtures';
@@ -30,9 +30,7 @@ const catalog: Catalog = {
 function sandbox(
 	name: string,
 	status: SandboxStatus,
-	extra: Partial<
-		Pick<Sandbox, 'image' | 'size' | 'isDefault' | 'staleEnvironment' | 'deleteAt'>
-	> = {}
+	extra: Partial<Pick<Sandbox, 'image' | 'size' | 'isDefault' | 'staleSetup' | 'deleteAt'>> = {}
 ): Sandbox {
 	return {
 		name,
@@ -41,9 +39,10 @@ function sandbox(
 		isDefault: false,
 		ssh: { username: `${name}.bob`, host: 'corral.example.lan', port: 48291 },
 		createdAt: '2026-11-02T09:30:00Z',
-		staleEnvironment: false,
+		staleSetup: false,
 		idle,
 		deleteAt: null,
+		repository: null,
 		...status,
 		...extra
 	};
@@ -51,7 +50,7 @@ function sandbox(
 
 const sandboxes: Sandbox[] = [
 	sandbox('main', { state: 'running' }, { isDefault: true }),
-	sandbox('agents', { state: 'running' }, { staleEnvironment: true }),
+	sandbox('agents', { state: 'running' }, { staleSetup: true }),
 	sandbox('experiments', { state: 'starting' }, { size: 'large' }),
 	sandbox('docs', { state: 'sleeping' }, { image: 'python' }),
 	sandbox('broken', { state: 'failed', detail: 'the container exited with code 137' }),
@@ -77,7 +76,41 @@ const keys: SshKey[] = [
 
 const setAt = '2026-11-20T17:45:00Z';
 
-const entries: EnvironmentEntry[] = [
+const entries: SetupEntry[] = [
+	{
+		id: '1d9e0f1a-2b3c-4d4e-8f5a-6b7c8d9e0f1a',
+		kind: 'variable',
+		target: 'ANTHROPIC_BASE_URL',
+		secret: false,
+		template: false,
+		applyToNew: true,
+		value: { setAt, size: 40, shown: 'text', text: 'https://gateway.example.lan/v1/anthropic' },
+		createdAt: setAt,
+		sandboxes: sandboxes.map(({ name }) => ({ sandbox: name, overridden: false, unresolved: [] })),
+		executable: false,
+		references: [],
+		duplicate: false,
+		shared: 'required',
+		shadows: false,
+		shadowed: false
+	},
+	{
+		id: '2e0f1a2b-3c4d-4e5f-9a6b-7c8d9e0f1a2b',
+		kind: 'variable',
+		target: 'HF_TOKEN',
+		secret: true,
+		template: false,
+		applyToNew: false,
+		value: { setAt, size: 37, shown: 'hidden' },
+		createdAt: setAt,
+		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }],
+		executable: false,
+		references: [],
+		duplicate: false,
+		shared: 'offered',
+		shadows: false,
+		shadowed: false
+	},
 	{
 		id: '3f1c2a4e-5b6d-4e7f-8a9b-0c1d2e3f4a5b',
 		kind: 'variable',
@@ -93,7 +126,10 @@ const entries: EnvironmentEntry[] = [
 		],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '4a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
@@ -107,7 +143,10 @@ const entries: EnvironmentEntry[] = [
 		sandboxes: [],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '5b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e',
@@ -121,7 +160,10 @@ const entries: EnvironmentEntry[] = [
 		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '6c4d5e6f-7a8b-4c9d-0e1f-2a3b4c5d6e7f',
@@ -140,7 +182,10 @@ const entries: EnvironmentEntry[] = [
 		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }],
 		executable: false,
 		references: ['ANTHROPIC_API_KEY', 'OPENAI_BASE_URL'],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '7d5e6f7a-8b9c-4d0e-1f2a-3b4c5d6e7f8a',
@@ -154,17 +199,22 @@ const entries: EnvironmentEntry[] = [
 		sandboxes: [{ sandbox: 'agents', overridden: false, unresolved: [] }],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	}
 ];
 
 const attached: AttachedEntry[] = [
+	{ entry: entries[0], override: null },
+	{ entry: entries[1], override: null },
 	{
-		entry: entries[0],
+		entry: entries[2],
 		override: { setAt, size: 51, shown: 'masked', length: 51, head: 'sk-a', tail: 'Qw' }
 	},
-	{ entry: entries[2], override: null },
-	{ entry: entries[3], override: null }
+	{ entry: entries[4], override: null },
+	{ entry: entries[5], override: null }
 ];
 
 const picture = 'https://pictures.example/bob.svg';
@@ -193,18 +243,24 @@ inEveryView((look) => {
 	test.use({ role: 'member' });
 
 	test('sandboxes', async ({ page }) => {
-		await serve(page, { '/api/sandboxes': sandboxes, '/api/catalog': catalog });
+		await serve(page, {
+			'/api/sandboxes': sandboxes,
+			'/api/catalog': catalog,
+			'/api/setup': entries
+		});
 		await page.goto('/sandboxes');
 		await page.getByText('the container exited with code 137').waitFor();
 		await look(page, 'sandboxes');
 
 		await page.getByRole('button', { name: 'New sandbox' }).click();
-		await page.getByRole('dialog').waitFor();
+		const dialog = page.getByRole('dialog');
+		await dialog.getByRole('list', { name: 'What it comes with' }).waitFor();
+		await expect(dialog.getByRole('group', { name: 'Repository' })).toBeVisible();
 		await look(page, 'sandboxes-new', { fullPage: false });
 	});
 
 	test('sandboxes, empty, loading and failed', async ({ page }) => {
-		await serve(page, { '/api/sandboxes': [], '/api/catalog': catalog });
+		await serve(page, { '/api/sandboxes': [], '/api/catalog': catalog, '/api/setup': [] });
 		await page.goto('/sandboxes');
 		await page.getByText('No sandboxes yet').waitFor();
 		await look(page, 'sandboxes-empty');
@@ -227,8 +283,8 @@ inEveryView((look) => {
 	test('a sandbox', async ({ page }) => {
 		await serve(page, {
 			'/api/sandboxes/main': sandboxes[0],
-			'/api/sandboxes/main/environment': attached,
-			'/api/environment': entries,
+			'/api/sandboxes/main/setup': attached,
+			'/api/setup': entries,
 			'/api/catalog': catalog
 		});
 		await page.goto('/sandboxes/main');
@@ -269,23 +325,23 @@ inEveryView((look) => {
 		await look(page, 'unreachable');
 	});
 
-	test('a sandbox missing an environment change', async ({ page }) => {
+	test('a sandbox missing a setup change', async ({ page }) => {
 		await serve(page, {
 			'/api/sandboxes/agents': sandboxes[1],
-			'/api/sandboxes/agents/environment': [],
-			'/api/environment': entries,
+			'/api/sandboxes/agents/setup': [{ entry: entries[0], override: null }],
+			'/api/setup': entries,
 			'/api/catalog': catalog
 		});
 		await page.goto('/sandboxes/agents');
-		await page.getByText('Restart to apply your environment changes').waitFor();
-		await look(page, 'sandbox-stale-environment');
+		await page.getByText('Restart to apply your setup changes').waitFor();
+		await look(page, 'sandbox-stale-setup');
 	});
 
-	test("a sandbox's environment", async ({ page }) => {
+	test("a sandbox's setup", async ({ page }) => {
 		await serve(page, {
 			'/api/sandboxes/main': sandboxes[0],
-			'/api/sandboxes/main/environment': attached,
-			'/api/environment': entries,
+			'/api/sandboxes/main/setup': attached,
+			'/api/setup': entries,
 			'/api/catalog': catalog
 		});
 		await page.goto('/sandboxes/main');
@@ -293,17 +349,17 @@ inEveryView((look) => {
 			.getByRole('list', { name: 'Attached to main' })
 			.getByText('Override', { exact: true })
 			.waitFor();
-		await look(page, 'sandbox-environment');
+		await look(page, 'sandbox-setup');
 
 		await page.getByRole('button', { name: 'Attach', exact: true }).click();
 		await page.getByRole('dialog').waitFor();
-		await look(page, 'sandbox-environment-attach', { fullPage: false });
+		await look(page, 'sandbox-setup-attach', { fullPage: false });
 
 		await page.keyboard.press('Escape');
 		await page.getByRole('dialog').waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'Change override of ANTHROPIC_API_KEY' }).click();
 		await page.getByRole('dialog').getByLabel('Value', { exact: true }).fill('sk-ant-main');
-		await look(page, 'sandbox-environment-override', { fullPage: false });
+		await look(page, 'sandbox-setup-override', { fullPage: false });
 	});
 
 	test('a failed sandbox, and a missing one', async ({ page }) => {
@@ -317,11 +373,11 @@ inEveryView((look) => {
 		await look(page, 'sandbox-missing');
 	});
 
-	test('environment', async ({ page }) => {
-		await serve(page, { '/api/environment': entries });
-		await page.goto('/environment');
+	test('setup', async ({ page }) => {
+		await serve(page, { '/api/setup': entries });
+		await page.goto('/setup');
 		await page.getByText('ANTHROPIC_API_KEY').waitFor();
-		await look(page, 'environment');
+		await look(page, 'setup');
 
 		await page.getByRole('button', { name: 'Add variable' }).click();
 		const dialog = page.getByRole('dialog');
@@ -329,7 +385,7 @@ inEveryView((look) => {
 		await dialog.getByRole('switch', { name: 'Secret' }).click();
 		await dialog.getByLabel('Value', { exact: true }).fill('ghp_example0123456789');
 		await dialog.getByRole('button', { name: 'Show the value' }).click();
-		await look(page, 'environment-add-variable', { fullPage: false });
+		await look(page, 'setup-add-variable', { fullPage: false });
 
 		await page.keyboard.press('Escape');
 		await dialog.waitFor({ state: 'hidden' });
@@ -339,7 +395,7 @@ inEveryView((look) => {
 			.getByLabel('Value', { exact: true })
 			.fill('github.com:\n  oauth_token: {{ GH_TOKEN }}\n');
 		await dialog.getByRole('switch', { name: 'Template' }).click();
-		await look(page, 'environment-add-file', { fullPage: false });
+		await look(page, 'setup-add-file', { fullPage: false });
 
 		await page.keyboard.press('Escape');
 		await dialog.waitFor({ state: 'hidden' });
@@ -349,45 +405,45 @@ inEveryView((look) => {
 			.fill(
 				'# from the laptop\nexport OPENAI_BASE_URL=https://gateway.example.lan/v1\nHF_TOKEN="hf_example"\nnot a line'
 			);
-		await look(page, 'environment-import', { fullPage: false });
+		await look(page, 'setup-import', { fullPage: false });
 	});
 
-	test('environment, empty, loading and failed', async ({ page }) => {
-		await serve(page, { '/api/environment': [] });
-		await page.goto('/environment');
+	test('setup, empty, loading and failed', async ({ page }) => {
+		await serve(page, { '/api/setup': [] });
+		await page.goto('/setup');
 		await page.getByText('No variables or files yet').waitFor();
-		await look(page, 'environment-empty');
+		await look(page, 'setup-empty');
 
 		await page.unrouteAll();
-		await page.route('**/api/environment', () => {});
+		await page.route('**/api/setup', () => {});
 		await page.reload();
-		await page.getByRole('status', { name: 'Loading your environment' }).waitFor();
-		await look(page, 'environment-loading');
+		await page.getByRole('status', { name: 'Loading your setup' }).waitFor();
+		await look(page, 'setup-loading');
 
 		await page.unrouteAll();
-		await page.route('**/api/environment', (route) =>
+		await page.route('**/api/setup', (route) =>
 			route.fulfill({ status: 500, json: { error: 'internal error' } })
 		);
 		await page.reload();
-		await page.getByText('Loading your environment failed').waitFor();
-		await look(page, 'environment-failed');
+		await page.getByText('Loading your setup failed').waitFor();
+		await look(page, 'setup-failed');
 	});
 
-	test('an environment entry', async ({ page }) => {
+	test('a setup entry', async ({ page }) => {
 		for (const [name, entry] of [
-			['environment-secret-variable', entries[0]],
-			['environment-template-file', entries[3]],
-			['environment-secret-file', entries[4]]
+			['setup-secret-variable', entries[2]],
+			['setup-template-file', entries[5]],
+			['setup-secret-file', entries[6]]
 		] as const) {
 			await serve(page, {
-				[`/api/environment/${entry.id}`]: entry,
+				[`/api/setup/${entry.id}`]: entry,
 				'/api/sandboxes': sandboxes,
-				'/api/sandboxes/main/environment/*/preview': {
+				'/api/sandboxes/main/setup/*/preview': {
 					text: '[api]\nurl = "https://gateway.example.lan/v1/openai"\nkey = "••••••••"\nretries = 3\n',
 					unresolved: []
 				}
 			});
-			await page.goto(`/environment/${entry.id}`);
+			await page.goto(`/setup/${entry.id}`);
 			await page.getByRole('list', { name: 'Your sandboxes' }).waitFor();
 			if (entry.template) {
 				await page.getByRole('button', { name: 'Preview' }).click();
@@ -398,17 +454,25 @@ inEveryView((look) => {
 
 		await page.getByRole('button', { name: 'Replace value' }).click();
 		await page.getByRole('dialog').waitFor();
-		await look(page, 'environment-replace', { fullPage: false });
+		await look(page, 'setup-replace', { fullPage: false });
 
 		await page.keyboard.press('Escape');
 		await page.getByRole('dialog').waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'Delete file' }).click();
 		await page.getByRole('alertdialog').waitFor();
-		await look(page, 'environment-delete', { fullPage: false });
+		await look(page, 'setup-delete', { fullPage: false });
 
-		await page.goto('/environment/00000000-0000-0000-0000-000000000000');
+		await page.goto('/setup/00000000-0000-0000-0000-000000000000');
 		await page.getByText('No such variable or file').waitFor();
-		await look(page, 'environment-missing');
+		await look(page, 'setup-missing');
+	});
+
+	test('a shared setup entry', async ({ page }) => {
+		const [required] = entries;
+		await serve(page, { [`/api/setup/${required.id}`]: required, '/api/sandboxes': sandboxes });
+		await page.goto(`/setup/${required.id}`);
+		await page.getByText('Set by the admin in Settings > Shared setup').waitFor();
+		await look(page, 'setup-shared-entry');
 	});
 
 	test('account', async ({ page }) => {

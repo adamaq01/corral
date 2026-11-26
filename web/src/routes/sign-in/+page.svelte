@@ -28,7 +28,7 @@
 	<Card.Root class="w-full max-w-sm">
 		<Card.Header>
 			<Card.Title class="text-xl"><h1>Sign in</h1></Card.Title>
-			<Card.Description>Reach your sandboxes, keys and environment.</Card.Description>
+			<Card.Description>Reach your sandboxes, keys and setup.</Card.Description>
 		</Card.Header>
 		<Card.Content class="grid gap-6">
 			{#if data.error}

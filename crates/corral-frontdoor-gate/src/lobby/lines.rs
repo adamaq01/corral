@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use super::View;
-use super::installer::{Event, Installer, Step};
+use super::installer::{Event, Field, Installer, Step};
 use super::keys::{Key, keys};
 use super::words;
 
@@ -168,21 +168,25 @@ fn question(installer: &Installer) -> String {
             numbered(&mut out, installer.offer.sizes.iter().map(words::size));
             let _ = write!(out, "Size [{}]: ", installer.size + 1);
         }
-        Step::Environment => {
-            out.push_str("Environment entries to attach (their values stay hidden):\r\n");
+        Step::Setup => {
+            out.push_str("Setup entries to attach (their values stay hidden):\r\n");
+            for entry in installer.offer.entries.iter().filter(|e| e.required()) {
+                let _ = write!(out, "  {}\r\n", words::fixed(entry));
+            }
             numbered(
                 &mut out,
-                installer
-                    .offer
-                    .entries
-                    .iter()
-                    .map(|entry| format!("{}  {}", entry.name, words::kind(entry))),
+                installer.toggles().map(|(at, entry)| {
+                    let item = format!("{}  {}", entry.name, words::kind(entry));
+                    match installer.replaced_by(at) {
+                        Some(own) => format!("{item}\r\n     {}", words::replaced(own)),
+                        None => item,
+                    }
+                }),
             );
             let chosen: Vec<String> = installer
-                .chosen
-                .iter()
+                .toggles()
                 .enumerate()
-                .filter(|&(_, &chosen)| chosen)
+                .filter(|&(_, (at, _))| installer.gets(at))
                 .map(|(n, _)| (n + 1).to_string())
                 .collect();
             let chosen = if chosen.is_empty() {
@@ -190,8 +194,14 @@ fn question(installer: &Installer) -> String {
             } else {
                 chosen.join(" ")
             };
-            let _ = write!(out, "Entries, by number, or none [{chosen}]: ");
+            if installer.toggles().next().is_none() {
+                out.push_str("Press Enter to go on: ");
+            } else {
+                let _ = write!(out, "Entries, by number, or none [{chosen}]: ");
+            }
         }
+        Step::Repository(Field::Url) => out.push_str("Repository to clone, or empty for none: "),
+        Step::Repository(Field::Branch) => out.push_str("Branch, or empty for the default: "),
         Step::Summary => {
             for line in super::screen::summary(installer, "Create it? [Y/n]: ") {
                 out.push_str(&line.to_string());
@@ -215,7 +225,10 @@ fn question(installer: &Installer) -> String {
 
 #[cfg(test)]
 mod tests {
+    use corral_core::domain::Shared;
+
     use super::Lines;
+    use crate::api::OfferedEntry;
     use crate::lobby::View;
     use crate::lobby::installer::tests::offer;
     use crate::lobby::installer::{Effect, Event, Installer};
@@ -253,13 +266,34 @@ mod tests {
         let (out, _) = typed(&mut lines, &mut installer, "2\r");
         assert!(
             out.ends_with(
-                "  1) GH_TOKEN  variable, secret, for new sandboxes\r\n  2) .gitconfig  \
-                 file\r\nEntries, by number, or none [1]: "
+                "  = ANTHROPIC_BASE_URL  variable, required\r\n  1) GH_TOKEN  variable, secret, \
+                 for new sandboxes\r\n  2) .gitconfig  file\r\nEntries, by number, or none \
+                 [1]: "
             ),
             "{out:?}"
         );
         let (out, _) = typed(&mut lines, &mut installer, "none\r");
-        assert!(out.contains("Environment  none\r\n"), "{out:?}");
+        assert_eq!(out, "none\r\nRepository to clone, or empty for none: ");
+        let (out, _) = typed(&mut lines, &mut installer, "git@github.com\r");
+        assert_eq!(
+            out,
+            "git@github.com\r\nProblem: the repository must be an https://, ssh:// or \
+             git@host:path address\r\nRepository to clone, or empty for none: "
+        );
+        let (out, _) = typed(&mut lines, &mut installer, "git@github.com:me/x.git\r");
+        assert!(
+            out.ends_with("Branch, or empty for the default: "),
+            "{out:?}"
+        );
+        let (out, _) = typed(&mut lines, &mut installer, "\r");
+        assert!(
+            out.contains("Setup        ANTHROPIC_BASE_URL\r\n"),
+            "{out:?}"
+        );
+        assert!(
+            out.contains("Repository   git@github.com:me/x.git\r\n"),
+            "{out:?}"
+        );
         assert!(out.ends_with("Create it? [Y/n]: "), "{out:?}");
         let (out, effects) = typed(&mut lines, &mut installer, "\r");
         assert_eq!(out, "\r\nCreating new.adam... 0 s");
@@ -269,6 +303,65 @@ mod tests {
         installer.handle(Event::Made(Ok(())));
         assert_eq!(lines.show(&installer), "\r\nStarting new.adam... 0 s");
         assert_eq!(lines.close(), "\r\n");
+    }
+
+    #[test]
+    fn required_entries_alone_leave_nothing_to_choose() {
+        let mut offer = offer(Some("new"));
+        offer.entries.retain(|entry| entry.shared.is_some());
+        let mut installer = Installer::new(offer);
+        let mut lines = Lines::new();
+        lines.open(&installer);
+        typed(&mut lines, &mut installer, "\r");
+        let (out, _) = typed(&mut lines, &mut installer, "\r");
+        assert!(
+            out.ends_with(
+                ":\r\n  = ANTHROPIC_BASE_URL  variable, required\r\nPress Enter to go on: "
+            ),
+            "{out:?}"
+        );
+        let (out, _) = typed(&mut lines, &mut installer, "\r");
+        assert!(
+            out.ends_with("Repository to clone, or empty for none: "),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn an_offered_entry_says_whose_takes_its_place_and_is_chosen_without_it() {
+        let mut offer = offer(Some("new"));
+        let own = offer.entries[1].clone();
+        offer.entries.insert(
+            1,
+            OfferedEntry {
+                id: "id-3".to_owned(),
+                secret: false,
+                shared: Some(Shared::Offered),
+                shadowed: true,
+                ..own
+            },
+        );
+        let mut installer = Installer::new(offer);
+        let mut lines = Lines::new();
+        lines.open(&installer);
+        typed(&mut lines, &mut installer, "\r");
+        let (out, _) = typed(&mut lines, &mut installer, "\r");
+        assert!(
+            out.ends_with(
+                "  1) GH_TOKEN  variable, offered, for new sandboxes\r\n     Your GH_TOKEN takes \
+                 the place of the shared one.\r\n  2) GH_TOKEN  variable, secret, for new \
+                 sandboxes\r\n  3) .gitconfig  file\r\nEntries, by number, or none [2]: "
+            ),
+            "{out:?}"
+        );
+        for answer in ["1\r", "\r"] {
+            typed(&mut lines, &mut installer, answer);
+        }
+        let (_, effects) = typed(&mut lines, &mut installer, "\r");
+        match effects.as_slice() {
+            [Effect::Make(create)] => assert_eq!(create.spec.setup, Some(vec!["id-3".to_owned()])),
+            other => panic!("not one make: {other:?}"),
+        }
     }
 
     #[test]
@@ -287,7 +380,7 @@ mod tests {
         let mut installer = Installer::new(offer(Some("new")));
         let mut lines = Lines::new();
         lines.open(&installer);
-        for _ in 0..4 {
+        for _ in 0..5 {
             typed(&mut lines, &mut installer, "\r");
         }
         installer.handle(Event::Made(Err("at most 3 sandboxes per user".to_owned())));

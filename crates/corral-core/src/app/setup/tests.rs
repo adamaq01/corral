@@ -2,18 +2,26 @@ use std::collections::BTreeSet;
 
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretSlice};
+use serde_json::{Value, json};
 
-use super::{EntryChange, FILE_LIMIT, NewEntry, Preview, Use, VARIABLE_LIMIT};
-use crate::Error;
-use crate::app::SANDBOX_FILE;
-use crate::domain::{Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxName, Target, User};
-use crate::fakes::{
-    World, bytes, entry, exposed, file, sandbox_name, unchanged, variable, variable_name,
+use super::{
+    EntryChange, FILE_LIMIT, NewEntry, NewSharedEntry, Preview, SharedEntryChange, Use,
+    VARIABLE_LIMIT,
 };
-use crate::ports::{EnvironmentRepo, SecretStore};
+use crate::Error;
+use crate::app::{CreateSandbox, SANDBOX_FILE};
+use crate::domain::{
+    Entry, EntryId, Glimpse, HomePath, Kept, Repository, Sandbox, SandboxName, SandboxToken,
+    SecretId, Shared, Target, User, UserId,
+};
+use crate::fakes::{
+    World, admin_proof, bytes, entry, exposed, file, request, sandbox_name, shared_file,
+    shared_variable, unchanged, variable, variable_name,
+};
+use crate::ports::{SecretStore, SetupRepo};
 
 async fn attached(w: &World, owner: &User, sandbox: &Sandbox) -> Vec<String> {
-    w.environment
+    w.setup
         .of_sandbox(owner, &sandbox.name)
         .await
         .unwrap()
@@ -69,7 +77,7 @@ async fn a_new_sandbox_gets_each_entry_that_applies_to_new_sandboxes() {
     let eve = w.member("eve").await;
     let gh = w.entry(&adam, variable("GH_TOKEN"), "ghp_1", true).await;
     let notes = w.entry(&adam, file("notes.txt"), "hello", false).await;
-    w.environment
+    w.setup
         .create(
             &adam,
             NewEntry {
@@ -91,7 +99,7 @@ async fn a_new_sandbox_gets_each_entry_that_applies_to_new_sandboxes() {
         ["GH_TOKEN=ghp_1"]
     );
 
-    w.environment
+    w.setup
         .change(
             &adam,
             notes.id,
@@ -115,7 +123,7 @@ async fn a_new_sandbox_gets_each_entry_that_applies_to_new_sandboxes() {
     );
 
     let listed: Vec<(String, Vec<SandboxName>)> = w
-        .environment
+        .setup
         .list(&adam)
         .await
         .unwrap()
@@ -137,18 +145,10 @@ async fn a_new_sandbox_gets_each_entry_that_applies_to_new_sandboxes() {
             ("file notes.txt".to_owned(), vec![main.name.clone()]),
         ]
     );
-    assert_eq!(
-        w.environment
-            .get(&adam, gh.id)
-            .await
-            .unwrap()
-            .sandboxes
-            .len(),
-        2
-    );
+    assert_eq!(w.setup.get(&adam, gh.id).await.unwrap().sandboxes.len(), 2);
     for missing in [later.id, EntryId::generate()] {
         assert!(matches!(
-            w.environment.get(&eve, missing).await,
+            w.setup.get(&eve, missing).await,
             Err(Error::NotFound(_))
         ));
     }
@@ -167,7 +167,7 @@ async fn one_entry_per_target_and_colliding_files_never_meet() {
         (file("~/tools/a"), "already have file tools/a"),
     ] {
         let error = refused_saying(
-            w.environment
+            w.setup
                 .create(
                     &adam,
                     NewEntry {
@@ -183,12 +183,12 @@ async fn one_entry_per_target_and_colliding_files_never_meet() {
     w.entry(&adam, variable("gh_token"), "lower", false).await;
     for collides in [file("tools"), file("tools/a/b")] {
         refused_saying(
-            w.environment.create(&adam, entry(collides, "x")).await,
+            w.setup.create(&adam, entry(collides, "x")).await,
             &["cannot both be attached to new sandboxes"],
         );
     }
     let outer = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -200,7 +200,7 @@ async fn one_entry_per_target_and_colliding_files_never_meet() {
         .unwrap()
         .entry;
     refused_saying(
-        w.environment
+        w.setup
             .change(
                 &adam,
                 outer.id,
@@ -217,25 +217,19 @@ async fn one_entry_per_target_and_colliding_files_never_meet() {
         ..unchanged(&outer)
     };
     refused_saying(
-        w.environment.change(&adam, outer.id, renamed).await,
+        w.setup.change(&adam, outer.id, renamed).await,
         &["already have file tools/a"],
     );
 
     let main = w.sandbox(&adam, "main").await;
     let error = refused_saying(
-        w.environment.attach(&adam, &main.name, outer.id).await,
+        w.setup.attach(&adam, &main.name, outer.id).await,
         &["file tools/a", "sandbox main"],
     );
     assert!(matches!(error, Error::Conflict(_)));
-    w.environment
-        .detach(&adam, &main.name, inner.id)
-        .await
-        .unwrap();
+    w.setup.detach(&adam, &main.name, inner.id).await.unwrap();
     for _ in 0..2 {
-        w.environment
-            .attach(&adam, &main.name, outer.id)
-            .await
-            .unwrap();
+        w.setup.attach(&adam, &main.name, outer.id).await.unwrap();
     }
     assert_eq!(
         restarted(&w, &adam, &main).await,
@@ -257,9 +251,9 @@ async fn entries_made_before_targets_were_unique_are_marked_and_can_be_renamed()
         apply_to_new: false,
         ..first.clone()
     };
-    w.environment_repo.insert(&second).await.unwrap();
+    w.setup_repo.insert(&second).await.unwrap();
     let duplicates: Vec<(EntryId, bool)> = w
-        .environment
+        .setup
         .list(&adam)
         .await
         .unwrap()
@@ -268,7 +262,7 @@ async fn entries_made_before_targets_were_unique_are_marked_and_can_be_renamed()
         .collect();
     assert_eq!(duplicates, [(first.id, false), (second.id, true)]);
     let renamed = w
-        .environment
+        .setup
         .change(
             &adam,
             second.id,
@@ -291,7 +285,7 @@ async fn an_override_reaches_one_sandbox_and_stays_as_secret_as_its_entry() {
         .await;
     let main = w.sandbox(&adam, "main").await;
     let dev = w.sandbox(&adam, "dev").await;
-    w.environment
+    w.setup
         .set_override(
             &adam,
             &main.name,
@@ -300,7 +294,7 @@ async fn an_override_reaches_one_sandbox_and_stays_as_secret_as_its_entry() {
         )
         .await
         .unwrap();
-    let held = w.environment.of_sandbox(&adam, &main.name).await.unwrap();
+    let held = w.setup.of_sandbox(&adam, &main.name).await.unwrap();
     let Some(Kept::Secret(secret)) = held[0].overriding.as_ref().map(|value| &value.kept) else {
         panic!("{held:?}");
     };
@@ -320,7 +314,7 @@ async fn an_override_reaches_one_sandbox_and_stays_as_secret_as_its_entry() {
     assert_eq!(uses, [("dev".to_owned(), false), ("main".to_owned(), true)]);
     assert_eq!(w.secrets.count(), 2);
 
-    w.environment
+    w.setup
         .change(
             &adam,
             gh.id,
@@ -338,7 +332,7 @@ async fn an_override_reaches_one_sandbox_and_stays_as_secret_as_its_entry() {
     );
     assert_eq!(restarted(&w, &adam, &dev).await.0, ["GH_TOKEN=ghp_rotated"]);
 
-    w.environment
+    w.setup
         .set_override(&adam, &main.name, gh.id, None)
         .await
         .unwrap();
@@ -350,21 +344,18 @@ async fn an_override_reaches_one_sandbox_and_stays_as_secret_as_its_entry() {
 
     let notes = w.entry(&adam, file("notes"), "plain", false).await;
     assert!(matches!(
-        w.environment
+        w.setup
             .set_override(&adam, &main.name, notes.id, Some(bytes("x")))
             .await,
         Err(Error::NotFound(message)) if message.contains("not attached to sandbox main")
     ));
-    w.environment
-        .attach(&adam, &main.name, notes.id)
-        .await
-        .unwrap();
-    w.environment
+    w.setup.attach(&adam, &main.name, notes.id).await.unwrap();
+    w.setup
         .set_override(&adam, &main.name, notes.id, Some(bytes("main's notes")))
         .await
         .unwrap();
     assert_eq!(w.secrets.count(), 1, "a plain entry's override is plain");
-    w.environment
+    w.setup
         .set_override(&adam, &dev.name, gh.id, Some(bytes("dev's")))
         .await
         .unwrap();
@@ -388,12 +379,12 @@ async fn an_entry_changes_name_kind_and_secrecy_keeping_its_attachments_and_over
     let dev = w.sandbox(&adam, "dev").await;
     let token = w.entry(&adam, variable("TOKEN"), "everyone", false).await;
     for sandbox in [&main, &dev] {
-        w.environment
+        w.setup
             .attach(&adam, &sandbox.name, token.id)
             .await
             .unwrap();
     }
-    w.environment
+    w.setup
         .set_override(&adam, &main.name, token.id, Some(bytes("main's")))
         .await
         .unwrap();
@@ -404,7 +395,7 @@ async fn an_entry_changes_name_kind_and_secrecy_keeping_its_attachments_and_over
     };
 
     let secret = w
-        .environment
+        .setup
         .change(
             &adam,
             token.id,
@@ -420,11 +411,11 @@ async fn an_entry_changes_name_kind_and_secrecy_keeping_its_attachments_and_over
     assert_eq!(w.secrets.count(), 2, "the value and the override moved");
     assert_eq!(restarted(&w, &adam, &main).await.0, ["GH_TOKEN=main's"]);
     assert_eq!(restarted(&w, &adam, &dev).await.0, ["GH_TOKEN=everyone"]);
-    let held = w.environment.of_sandbox(&adam, &main.name).await.unwrap();
+    let held = w.setup.of_sandbox(&adam, &main.name).await.unwrap();
     assert!(held[0].overriding.as_ref().unwrap().is_secret());
 
     let as_file = w
-        .environment
+        .setup
         .change(
             &adam,
             token.id,
@@ -443,7 +434,7 @@ async fn an_entry_changes_name_kind_and_secrecy_keeping_its_attachments_and_over
     );
 
     let plain = w
-        .environment
+        .setup
         .change(&adam, token.id, change(&as_file, |c| c.secret = false))
         .await
         .unwrap()
@@ -455,7 +446,7 @@ async fn an_entry_changes_name_kind_and_secrecy_keeping_its_attachments_and_over
         [".config/gh/token 755 everyone"]
     );
 
-    w.environment
+    w.setup
         .set_override(&adam, &main.name, token.id, Some(bytes("two\nlines")))
         .await
         .unwrap();
@@ -464,11 +455,11 @@ async fn an_entry_changes_name_kind_and_secrecy_keeping_its_attachments_and_over
         c.executable = false;
     });
     refused_saying(
-        w.environment.change(&adam, token.id, back).await,
+        w.setup.change(&adam, token.id, back).await,
         &["override in sandbox main", "one line"],
     );
     refused_saying(
-        w.environment
+        w.setup
             .change(
                 &adam,
                 token.id,
@@ -478,7 +469,7 @@ async fn an_entry_changes_name_kind_and_secrecy_keeping_its_attachments_and_over
         &["cannot be executable"],
     );
     assert_eq!(
-        w.environment.get(&adam, token.id).await.unwrap().entry,
+        w.setup.get(&adam, token.id).await.unwrap().entry,
         plain,
         "a refused change leaves the entry as it was"
     );
@@ -491,7 +482,7 @@ async fn templates_take_the_variables_attached_to_the_sandbox_and_nothing_else()
     let name = w.entry(&adam, variable("GIT_NAME"), "Adam", false).await;
     let token = w.entry(&adam, variable("GH_TOKEN"), "ghp_x", true).await;
     let config = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -513,10 +504,7 @@ async fn templates_take_the_variables_attached_to_the_sandbox_and_nothing_else()
         "a template that takes a secret is the sandbox user's alone"
     );
     assert_eq!(
-        w.environment
-            .preview(&adam, &main.name, config.id)
-            .await
-            .unwrap(),
+        w.setup.preview(&adam, &main.name, config.id).await.unwrap(),
         Preview {
             text: "name = Adam\ntoken = ••••••••\n{{ end }}".to_owned(),
             unresolved: BTreeSet::new()
@@ -524,15 +512,15 @@ async fn templates_take_the_variables_attached_to_the_sandbox_and_nothing_else()
     );
 
     refused_saying(
-        w.environment.detach(&adam, &main.name, token.id).await,
+        w.setup.detach(&adam, &main.name, token.id).await,
         &["sandbox main", "~/.gitconfig", "GH_TOKEN"],
     );
     refused_saying(
-        w.environment.delete(&adam, token.id).await,
+        w.setup.delete(&adam, token.id).await,
         &["~/.gitconfig", "GH_TOKEN"],
     );
     refused_saying(
-        w.environment
+        w.setup
             .change(
                 &adam,
                 name.id,
@@ -545,7 +533,7 @@ async fn templates_take_the_variables_attached_to_the_sandbox_and_nothing_else()
         &["~/.gitconfig", "GIT_NAME"],
     );
     refused_saying(
-        w.environment
+        w.setup
             .change(
                 &adam,
                 name.id,
@@ -557,26 +545,14 @@ async fn templates_take_the_variables_attached_to_the_sandbox_and_nothing_else()
             .await,
         &["new sandboxes", "GIT_NAME"],
     );
-    w.environment
-        .detach(&adam, &main.name, config.id)
-        .await
-        .unwrap();
-    w.environment
-        .detach(&adam, &main.name, token.id)
-        .await
-        .unwrap();
+    w.setup.detach(&adam, &main.name, config.id).await.unwrap();
+    w.setup.detach(&adam, &main.name, token.id).await.unwrap();
     refused_saying(
-        w.environment.attach(&adam, &main.name, config.id).await,
+        w.setup.attach(&adam, &main.name, config.id).await,
         &["GH_TOKEN", "sandbox main"],
     );
-    w.environment
-        .attach(&adam, &main.name, token.id)
-        .await
-        .unwrap();
-    w.environment
-        .attach(&adam, &main.name, config.id)
-        .await
-        .unwrap();
+    w.setup.attach(&adam, &main.name, token.id).await.unwrap();
+    w.setup.attach(&adam, &main.name, config.id).await.unwrap();
 }
 
 #[tokio::test]
@@ -585,7 +561,7 @@ async fn a_templates_override_and_variables_reach_its_rendering() {
     let adam = w.member("adam").await;
     let name = w.entry(&adam, variable("GIT_NAME"), "Adam", false).await;
     let config = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -598,12 +574,12 @@ async fn a_templates_override_and_variables_reach_its_rendering() {
         .entry;
     let main = w.sandbox(&adam, "main").await;
     refused_saying(
-        w.environment
+        w.setup
             .set_override(&adam, &main.name, config.id, Some(bytes("{{ NOWHERE }}")))
             .await,
         &["NOWHERE"],
     );
-    w.environment
+    w.setup
         .set_override(
             &adam,
             &main.name,
@@ -616,7 +592,7 @@ async fn a_templates_override_and_variables_reach_its_rendering() {
         restarted(&w, &adam, &main).await.1,
         [".gitconfig 644 only Adam"]
     );
-    w.environment
+    w.setup
         .change(
             &adam,
             name.id,
@@ -638,7 +614,7 @@ async fn a_template_may_come_before_its_variables_but_not_reach_a_sandbox_withou
     let w = World::new();
     let adam = w.member("adam").await;
     refused_saying(
-        w.environment
+        w.setup
             .create(
                 &adam,
                 NewEntry {
@@ -650,7 +626,7 @@ async fn a_template_may_come_before_its_variables_but_not_reach_a_sandbox_withou
         &["new sandboxes", "GIT_NAME"],
     );
     let config = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -664,11 +640,11 @@ async fn a_template_may_come_before_its_variables_but_not_reach_a_sandbox_withou
         .entry;
     let main = w.sandbox(&adam, "main").await;
     refused_saying(
-        w.environment.attach(&adam, &main.name, config.id).await,
+        w.setup.attach(&adam, &main.name, config.id).await,
         &["GIT_NAME", "sandbox main"],
     );
     let git_name = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -679,14 +655,11 @@ async fn a_template_may_come_before_its_variables_but_not_reach_a_sandbox_withou
         .await
         .unwrap()
         .entry;
-    w.environment
+    w.setup
         .attach(&adam, &main.name, git_name.id)
         .await
         .unwrap();
-    w.environment
-        .attach(&adam, &main.name, config.id)
-        .await
-        .unwrap();
+    w.setup.attach(&adam, &main.name, config.id).await.unwrap();
     assert_eq!(
         restarted(&w, &adam, &main).await.1,
         [".gitconfig 644 Adam {{ x }} {{ .Values.y }}"]
@@ -697,7 +670,7 @@ async fn a_template_may_come_before_its_variables_but_not_reach_a_sandbox_withou
         .await;
     let utf8 = SecretSlice::from(vec![0xff, b'{']);
     refused_saying(
-        w.environment
+        w.setup
             .change(
                 &adam,
                 plain.id,
@@ -719,7 +692,7 @@ async fn views_tell_what_a_template_refers_to_and_what_a_sandbox_lacks() {
     let main = w.sandbox(&adam, "main").await;
     let dev = w.sandbox(&adam, "dev").await;
     let token = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -731,7 +704,7 @@ async fn views_tell_what_a_template_refers_to_and_what_a_sandbox_lacks() {
         .unwrap()
         .entry;
     let config = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -745,22 +718,22 @@ async fn views_tell_what_a_template_refers_to_and_what_a_sandbox_lacks() {
         .unwrap()
         .entry;
     for sandbox in [&main, &dev] {
-        w.environment
+        w.setup
             .attach(&adam, &sandbox.name, token.id)
             .await
             .unwrap();
-        w.environment
+        w.setup
             .attach(&adam, &sandbox.name, config.id)
             .await
             .unwrap();
     }
-    w.environment
+    w.setup
         .set_override(&adam, &dev.name, config.id, Some(bytes("plain")))
         .await
         .unwrap();
     // A start refuses this state, which only a sandbox from before checks can be in.
-    w.environment_repo.detach(&main.id, token.id).await.unwrap();
-    let view = w.environment.get(&adam, config.id).await.unwrap();
+    w.setup_repo.detach(&main.id, token.id).await.unwrap();
+    let view = w.setup.get(&adam, config.id).await.unwrap();
     assert_eq!(view.references, names(&["GH_TOKEN"]));
     assert_eq!(
         view.sandboxes,
@@ -778,10 +751,10 @@ async fn views_tell_what_a_template_refers_to_and_what_a_sandbox_lacks() {
         ]
     );
     refused_saying(
-        w.environment.preview(&adam, &main.name, config.id).await,
+        w.setup.preview(&adam, &main.name, config.id).await,
         &["only a template that is not secret"],
     );
-    w.environment
+    w.setup
         .set_override(
             &adam,
             &main.name,
@@ -846,7 +819,7 @@ async fn values_their_target_cannot_take_are_refused() {
     for (attempt, culprit) in attempts {
         let target = attempt.target.clone();
         let error = refused(
-            w.environment
+            w.setup
                 .create(
                     &adam,
                     NewEntry {
@@ -860,9 +833,9 @@ async fn values_their_target_cannot_take_are_refused() {
         assert!(message.contains(culprit), "{target}: {message}");
         assert!(!message.contains("one\ntwo"), "{message}");
     }
-    assert_eq!(w.environment.list(&adam).await.unwrap(), []);
+    assert_eq!(w.setup.list(&adam).await.unwrap(), []);
     assert_eq!(w.secrets.count(), 0);
-    w.environment
+    w.setup
         .create(
             &adam,
             NewEntry {
@@ -885,7 +858,7 @@ async fn a_sandbox_takes_no_more_files_than_one_mebibyte_once_staged() {
     let mut entries = Vec::new();
     for index in 0..4 {
         let held = w
-            .environment
+            .setup
             .create(
                 &adam,
                 NewEntry {
@@ -900,10 +873,10 @@ async fn a_sandbox_takes_no_more_files_than_one_mebibyte_once_staged() {
         entries.push(held.id);
     }
     for id in &entries[..3] {
-        w.environment.attach(&adam, &main.name, *id).await.unwrap();
+        w.setup.attach(&adam, &main.name, *id).await.unwrap();
     }
     let error = refused_saying(
-        w.environment.attach(&adam, &main.name, entries[3]).await,
+        w.setup.attach(&adam, &main.name, entries[3]).await,
         &["1 MiB", "sandbox main"],
     );
     assert!(matches!(error, Error::LimitReached(_)));
@@ -918,19 +891,19 @@ async fn deleting_an_entry_detaches_it_everywhere_with_its_values() {
     let gh = w.entry(&adam, variable("GH_TOKEN"), "ghp", true).await;
     let main = w.sandbox(&adam, "main").await;
     let dev = w.sandbox(&adam, "dev").await;
-    w.environment
+    w.setup
         .set_override(&adam, &dev.name, gh.id, Some(bytes("dev's")))
         .await
         .unwrap();
     assert_eq!(w.secrets.count(), 2);
-    w.environment.delete(&adam, gh.id).await.unwrap();
+    w.setup.delete(&adam, gh.id).await.unwrap();
     assert_eq!(w.secrets.count(), 0);
     for sandbox in [&main, &dev] {
         assert_eq!(attached(&w, &adam, sandbox).await, [] as [&str; 0]);
         assert_eq!(restarted(&w, &adam, sandbox).await.0, [] as [&str; 0]);
     }
     assert!(matches!(
-        w.environment.delete(&adam, gh.id).await,
+        w.setup.delete(&adam, gh.id).await,
         Err(Error::NotFound(_))
     ));
 }
@@ -940,7 +913,7 @@ async fn files_are_written_executable_on_request() {
     let w = World::new();
     let adam = w.member("adam").await;
     for (path, secret) in [("bin/tool", false), ("bin/secret-tool", true)] {
-        w.environment
+        w.setup
             .create(
                 &adam,
                 NewEntry {
@@ -998,7 +971,7 @@ async fn secret_entries_keep_their_values_in_the_store_and_show_a_glimpse() {
     assert_eq!(glimpse(&key), (15, None));
     assert_eq!(shown.value.kept, Kept::Plain(b"visible".to_vec()));
     assert_eq!(w.secrets.count(), 3);
-    let debug = format!("{:?}", w.environment.list(&adam).await.unwrap());
+    let debug = format!("{:?}", w.setup.list(&adam).await.unwrap());
     assert!(
         !debug.contains("0123456789") && !debug.contains("hunter2"),
         "{debug}"
@@ -1034,7 +1007,7 @@ async fn credentials_kept_before_entries_become_secret_variables_on_every_sandbo
     }
     w.secrets.keep_legacy(eve.id, &variable_name("EVES"), "eve");
     for user in [&adam, &eve] {
-        w.environment_repo.await_adoption(user.id);
+        w.setup_repo.await_adoption(user.id);
     }
     // An earlier run made GH_TOKEN and attached it to main before it stopped.
     let interrupted = w
@@ -1045,15 +1018,15 @@ async fn credentials_kept_before_entries_become_secret_variables_on_every_sandbo
             true,
         )
         .await;
-    w.environment
+    w.setup
         .attach(&adam, &main.name, interrupted.id)
         .await
         .unwrap();
 
-    assert_eq!(w.environment.adopt_credentials().await.unwrap(), 2);
-    assert_eq!(w.environment.adopt_credentials().await.unwrap(), 0);
+    assert_eq!(w.setup.adopt_credentials().await.unwrap(), 2);
+    assert_eq!(w.setup.adopt_credentials().await.unwrap(), 0);
     let adopted: Vec<(Target, bool, bool, Vec<SandboxName>)> = w
-        .environment
+        .setup
         .list(&adam)
         .await
         .unwrap()
@@ -1081,7 +1054,7 @@ async fn credentials_kept_before_entries_become_secret_variables_on_every_sandbo
             ["GH_TOKEN=ghp_0123456789abcdefghij", "SHORT=hunter2"]
         );
     }
-    assert_eq!(w.environment.list(&eve).await.unwrap().len(), 1);
+    assert_eq!(w.setup.list(&eve).await.unwrap().len(), 1);
     assert!(
         w.secrets
             .legacy_credentials(adam.id)
@@ -1099,7 +1072,7 @@ async fn a_failed_save_leaves_no_secret_behind() {
     let adam = w.member("adam").await;
     let main = w.sandbox(&adam, "main").await;
     let config = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -1110,18 +1083,12 @@ async fn a_failed_save_leaves_no_secret_behind() {
         .await
         .unwrap()
         .entry;
-    w.environment
-        .attach(&adam, &main.name, config.id)
-        .await
-        .unwrap();
+    w.setup.attach(&adam, &main.name, config.id).await.unwrap();
     let token = w.entry(&adam, variable("GH_TOKEN"), "applies", false).await;
-    w.environment
-        .attach(&adam, &main.name, token.id)
-        .await
-        .unwrap();
+    w.setup.attach(&adam, &main.name, token.id).await.unwrap();
     w.entry(&adam, variable("OTHER"), "elsewhere", false).await;
     let template = w
-        .environment
+        .setup
         .create(
             &adam,
             NewEntry {
@@ -1134,19 +1101,19 @@ async fn a_failed_save_leaves_no_secret_behind() {
         .await
         .unwrap()
         .entry;
-    w.environment
+    w.setup
         .attach(&adam, &main.name, template.id)
         .await
         .unwrap();
     assert_eq!(w.secrets.count(), 1);
     refused_saying(
-        w.environment
+        w.setup
             .set_override(&adam, &main.name, template.id, Some(bytes("{{ OTHER }}")))
             .await,
         &["OTHER"],
     );
     refused_saying(
-        w.environment
+        w.setup
             .create(
                 &adam,
                 NewEntry {
@@ -1158,9 +1125,9 @@ async fn a_failed_save_leaves_no_secret_behind() {
             .await,
         &["MISSING"],
     );
-    let token_now = w.environment.get(&adam, token.id).await.unwrap().entry;
+    let token_now = w.setup.get(&adam, token.id).await.unwrap().entry;
     refused_saying(
-        w.environment
+        w.setup
             .change(
                 &adam,
                 token.id,
@@ -1174,7 +1141,7 @@ async fn a_failed_save_leaves_no_secret_behind() {
         &["GH_TOKEN"],
     );
     let error = refused(
-        w.environment
+        w.setup
             .set_override(
                 &adam,
                 &main.name,
@@ -1186,9 +1153,559 @@ async fn a_failed_save_leaves_no_secret_behind() {
     assert!(matches!(error, Error::LimitReached(_)));
     assert_eq!(w.secrets.count(), 1, "only the template's own value");
     assert!(matches!(
-        w.environment
+        w.setup
             .attach(&adam, &sandbox_name("missing"), config.id)
             .await,
         Err(Error::NotFound(_))
     ));
+}
+
+/// The owner's sandboxes that run without their latest setup change.
+async fn stale(w: &World, owner: &User) -> Vec<String> {
+    w.sandboxes
+        .list(owner)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|view| view.stale_setup)
+        .map(|view| view.sandbox.name.to_string())
+        .collect()
+}
+
+fn secret_id(entry: &Entry) -> SecretId {
+    match &entry.value.kept {
+        Kept::Secret(secret) => secret.id,
+        Kept::Plain(_) => panic!("{entry:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_required_entry_reaches_every_sandbox_and_a_member_cannot_touch_it() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let eve = w.member("eve").await;
+    let main = w.sandbox(&adam, "main").await;
+    let lab = w.sandbox(&eve, "lab").await;
+    let gateway = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("GATEWAY_URL", "https://llm", Shared::Required),
+        )
+        .await
+        .unwrap()
+        .entry;
+    assert_eq!(stale(&w, &adam).await, ["main"]);
+    assert_eq!(stale(&w, &eve).await, ["lab"]);
+    assert_eq!(
+        restarted(&w, &adam, &main).await.0,
+        ["GATEWAY_URL=https://llm"]
+    );
+    assert_eq!(
+        restarted(&w, &eve, &lab).await.0,
+        ["GATEWAY_URL=https://llm"]
+    );
+    let later = w.sandbox(&adam, "later").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&later.id).unwrap()),
+        ["GATEWAY_URL=https://llm"]
+    );
+
+    let required = "variable GATEWAY_URL is required in every sandbox";
+    for refusal in [
+        refused(w.setup.attach(&adam, &main.name, gateway.id).await),
+        refused(w.setup.detach(&adam, &main.name, gateway.id).await),
+        refused(
+            w.setup
+                .set_override(&adam, &main.name, gateway.id, Some(bytes("x")))
+                .await,
+        ),
+    ] {
+        assert!(
+            matches!(&refusal, Error::Invalid(message) if message == required),
+            "{refusal:?}"
+        );
+    }
+    let mine = refused(
+        w.setup
+            .create(&adam, entry(variable("GATEWAY_URL"), "x"))
+            .await,
+    );
+    assert!(
+        matches!(&mine, Error::Conflict(message)
+            if message == "variable GATEWAY_URL is set for every sandbox by the admin"),
+        "{mine:?}"
+    );
+    let missing = format!("setup entry {}", gateway.id.0);
+    assert!(matches!(
+        w.setup.change(&adam, gateway.id, unchanged(&gateway)).await,
+        Err(Error::NotFound(message)) if message == missing
+    ));
+    assert!(matches!(
+        w.setup.delete(&adam, gateway.id).await,
+        Err(Error::NotFound(message)) if message == missing
+    ));
+    assert_eq!(w.setup.get(&adam, gateway.id).await.unwrap().entry, gateway);
+}
+
+#[tokio::test]
+async fn of_sandbox_lists_required_entries_first() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    for (name, shared) in [
+        ("OPENAI_BASE_URL", Shared::Offered),
+        ("GATEWAY_URL", Shared::Required),
+        ("ANTHROPIC_BASE_URL", Shared::Required),
+    ] {
+        w.setup
+            .create_shared(&root, shared_variable(name, "https://llm", shared))
+            .await
+            .unwrap();
+    }
+    let editor = w.entry(&adam, variable("EDITOR"), "vim", false).await;
+    let main = w.sandbox(&adam, "main").await;
+    w.setup
+        .set_override(&adam, &main.name, editor.id, Some(bytes("nano")))
+        .await
+        .unwrap();
+
+    let held: Vec<(String, Option<Shared>, bool)> = w
+        .setup
+        .of_sandbox(&adam, &main.name)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|attached| {
+            let entry = attached.view.entry;
+            (
+                entry.target.to_string(),
+                entry.owner.shared(),
+                attached.overriding.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        held,
+        [
+            (
+                "variable ANTHROPIC_BASE_URL".to_owned(),
+                Some(Shared::Required),
+                false
+            ),
+            (
+                "variable GATEWAY_URL".to_owned(),
+                Some(Shared::Required),
+                false
+            ),
+            (
+                "variable OPENAI_BASE_URL".to_owned(),
+                Some(Shared::Offered),
+                false
+            ),
+            ("variable EDITOR".to_owned(), None, true),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn making_an_entry_required_is_refused_while_members_have_its_name() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let mut theirs = Vec::new();
+    for handle in ["carol", "bob", "alice"] {
+        let member = w.member(handle).await;
+        let entry = w
+            .entry(&member, variable("ANTHROPIC_BASE_URL"), handle, false)
+            .await;
+        theirs.push((member, entry));
+    }
+    let required = shared_variable("ANTHROPIC_BASE_URL", "https://llm", Shared::Required);
+    let error = refused(w.setup.create_shared(&root, required).await);
+    assert!(
+        matches!(&error, Error::Conflict(message) if message
+            == "variable ANTHROPIC_BASE_URL is also set by alice, bob and carol; \
+                ask them to rename theirs first"),
+        "{error:?}"
+    );
+    assert_eq!(w.setup.list_shared(&root).await.unwrap(), []);
+
+    let (carol, carols) = &theirs[0];
+    w.setup.delete(carol, carols.id).await.unwrap();
+    let offered = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("ANTHROPIC_BASE_URL", "https://llm", Shared::Offered),
+        )
+        .await
+        .unwrap()
+        .entry;
+    let error = refused(
+        w.setup
+            .change_shared(
+                &root,
+                offered.id,
+                SharedEntryChange {
+                    shared: Shared::Required,
+                    change: unchanged(&offered),
+                },
+            )
+            .await,
+    );
+    assert!(
+        matches!(&error, Error::Conflict(message) if message
+            == "variable ANTHROPIC_BASE_URL is also set by alice and bob; \
+                ask them to rename theirs first"),
+        "{error:?}"
+    );
+    let listed = w.setup.list_shared(&root).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].entry, offered);
+    assert_eq!(listed[0].shared, Shared::Offered);
+    assert_eq!(
+        listed[0]
+            .shadowed_by
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["alice", "bob"]
+    );
+}
+
+#[tokio::test]
+async fn an_offered_entry_is_attached_detached_overridden_and_shadowed() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let offered = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("OPENAI_BASE_URL", "https://llm/v1", Shared::Offered),
+        )
+        .await
+        .unwrap()
+        .entry;
+    let new = w.sandbox(&adam, "new").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&new.id).unwrap()),
+        ["OPENAI_BASE_URL=https://llm/v1"]
+    );
+    w.setup.detach(&adam, &new.name, offered.id).await.unwrap();
+    assert_eq!(restarted(&w, &adam, &new).await.0, [] as [&str; 0]);
+    w.setup.attach(&adam, &new.name, offered.id).await.unwrap();
+    w.setup
+        .set_override(&adam, &new.name, offered.id, Some(bytes("https://mine")))
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &new).await.0,
+        ["OPENAI_BASE_URL=https://mine"]
+    );
+
+    let own = w
+        .entry(&adam, variable("OPENAI_BASE_URL"), "https://own", false)
+        .await;
+    let marks: Vec<(EntryId, bool, bool)> = w
+        .setup
+        .list(&adam)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|view| (view.entry.id, view.shadows, view.shadowed))
+        .collect();
+    assert_eq!(marks, [(offered.id, false, true), (own.id, true, false)]);
+    w.setup.attach(&adam, &new.name, own.id).await.unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &new).await.0,
+        ["OPENAI_BASE_URL=https://own"]
+    );
+    w.setup.detach(&adam, &new.name, own.id).await.unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &new).await.0,
+        ["OPENAI_BASE_URL=https://mine"]
+    );
+
+    let next = w.sandbox(&adam, "next").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&next.id).unwrap()),
+        ["OPENAI_BASE_URL=https://own"]
+    );
+    assert_eq!(
+        attached(&w, &adam, &next).await,
+        ["variable OPENAI_BASE_URL"]
+    );
+}
+
+#[tokio::test]
+async fn an_offered_template_resolves_across_layers() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let main = w.sandbox(&adam, "main").await;
+    let gateway = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("GATEWAY_URL", "https://llm", Shared::Required),
+        )
+        .await
+        .unwrap()
+        .entry;
+    let token = w
+        .setup
+        .create(
+            &adam,
+            NewEntry {
+                apply_to_new: false,
+                ..entry(variable("TOKEN"), "t0k")
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let template = w
+        .setup
+        .create_shared(
+            &root,
+            NewSharedEntry {
+                shared: Shared::Offered,
+                entry: NewEntry {
+                    template: true,
+                    apply_to_new: false,
+                    ..entry(file(".config/tool.toml"), "{{ GATEWAY_URL }} {{ TOKEN }}")
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let error = refused(w.setup.attach(&adam, &main.name, template.id).await);
+    let Error::Invalid(message) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(
+        message.contains("TOKEN") && !message.contains("GATEWAY_URL"),
+        "{message}"
+    );
+    w.setup.attach(&adam, &main.name, token.id).await.unwrap();
+    w.setup
+        .attach(&adam, &main.name, template.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &main).await.1,
+        [".config/tool.toml 644 https://llm t0k"]
+    );
+    assert_eq!(
+        w.setup
+            .preview(&adam, &main.name, template.id)
+            .await
+            .unwrap()
+            .text,
+        "https://llm t0k"
+    );
+    refused_saying(
+        w.setup.delete_shared(&root, gateway.id).await,
+        &["sandbox main of adam", "~/.config/tool.toml", "GATEWAY_URL"],
+    );
+}
+
+#[tokio::test]
+async fn a_required_template_may_refer_only_to_required_variables() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let required_ca = || {
+        let mut ca = shared_file("ca.pem", "{{ TOKEN }}", Shared::Required);
+        ca.entry.template = true;
+        ca
+    };
+    let refusal = "template ~/ca.pem applies to every sandbox and refers to TOKEN, which is \
+                   not required";
+    let error = refused(w.setup.create_shared(&root, required_ca()).await);
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "{error:?}"
+    );
+    let token = w
+        .setup
+        .create_shared(&root, shared_variable("TOKEN", "t0k", Shared::Offered))
+        .await
+        .unwrap()
+        .entry;
+    let error = refused(w.setup.create_shared(&root, required_ca()).await);
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "an offered variable is not required: {error:?}"
+    );
+    let token = w
+        .setup
+        .change_shared(
+            &root,
+            token.id,
+            SharedEntryChange {
+                shared: Shared::Required,
+                change: unchanged(&token),
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    w.setup.create_shared(&root, required_ca()).await.unwrap();
+    let error = refused(
+        w.setup
+            .change_shared(
+                &root,
+                token.id,
+                SharedEntryChange {
+                    shared: Shared::Offered,
+                    change: unchanged(&token),
+                },
+            )
+            .await,
+    );
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "{error:?}"
+    );
+    let error = refused(w.setup.delete_shared(&root, token.id).await);
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_offered_entry_forgets_overrides_and_marks_the_sandboxes() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let eve = w.member("eve").await;
+    let editor = w.entry(&adam, variable("EDITOR"), "vim", true).await;
+    let offered = w
+        .setup
+        .create_shared(
+            &root,
+            NewSharedEntry {
+                shared: Shared::Offered,
+                entry: NewEntry {
+                    secret: true,
+                    apply_to_new: false,
+                    ..entry(variable("API_KEY"), "shared-key")
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let main = w.sandbox(&adam, "main").await;
+    let lab = w.sandbox(&eve, "lab").await;
+    let mut kept = vec![secret_id(&offered)];
+    for (owner, sandbox) in [(&adam, &main), (&eve, &lab)] {
+        w.setup
+            .attach(owner, &sandbox.name, offered.id)
+            .await
+            .unwrap();
+        w.setup
+            .set_override(
+                owner,
+                &sandbox.name,
+                offered.id,
+                Some(bytes(&format!("{}-key", owner.handle))),
+            )
+            .await
+            .unwrap();
+        let attached = w.setup.of_sandbox(owner, &sandbox.name).await.unwrap();
+        let overriding = attached
+            .iter()
+            .find(|attached| attached.view.entry.id == offered.id)
+            .and_then(|attached| attached.overriding.as_ref())
+            .unwrap();
+        let Kept::Secret(secret) = &overriding.kept else {
+            panic!("{overriding:?}");
+        };
+        kept.push(secret.id);
+        restarted(&w, owner, sandbox).await;
+    }
+
+    w.setup.delete_shared(&root, offered.id).await.unwrap();
+    assert_eq!(stale(&w, &adam).await, ["main"]);
+    assert_eq!(stale(&w, &eve).await, ["lab"]);
+    for owner in [UserId::SHARED, adam.id, eve.id] {
+        assert!(w.secrets.get(owner, &kept).await.unwrap().is_empty());
+    }
+    assert_eq!(w.secrets.count(), 1, "adam's EDITOR alone");
+    let adams: Vec<Entry> = w
+        .setup
+        .list(&adam)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|view| view.entry)
+        .collect();
+    assert_eq!(adams, [editor]);
+    assert_eq!(w.setup.list(&eve).await.unwrap(), []);
+    assert_eq!(restarted(&w, &adam, &main).await.0, ["EDITOR=vim"]);
+    assert_eq!(restarted(&w, &eve, &lab).await.0, [] as [&str; 0]);
+}
+
+#[tokio::test]
+async fn shared_secret_values_live_under_the_shared_owner() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let shared = w
+        .setup
+        .create_shared(
+            &root,
+            NewSharedEntry {
+                shared: Shared::Required,
+                entry: NewEntry {
+                    secret: true,
+                    ..entry(variable("GATEWAY_TOKEN"), "sk-shared-0123456789")
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let id = secret_id(&shared);
+    let held = w.secrets.get(UserId::SHARED, &[id]).await.unwrap();
+    assert_eq!(held[&id].expose_secret(), b"sk-shared-0123456789");
+    assert!(w.secrets.get(adam.id, &[id]).await.unwrap().is_empty());
+    let listed = w.setup.list(&adam).await.unwrap();
+    assert!(listed[0].entry.is_secret());
+    let debug = format!("{listed:?}");
+    assert!(!debug.contains("0123456789"), "{debug}");
+    let main = w.sandbox(&adam, "main").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&main.id).unwrap()),
+        ["GATEWAY_TOKEN=sk-shared-0123456789"]
+    );
+}
+
+#[tokio::test]
+async fn the_sandbox_file_carries_the_repository() {
+    let w = World::new();
+    let adam = w.member("adam").await;
+    let url = "https://github.com/adamaq01/corral.git";
+    let request = CreateSandbox {
+        repository: Some(Repository::new(url, Some("main")).unwrap()),
+        ..request("cloning", None, None)
+    };
+    let cloning = w.sandboxes.create(&adam, request).await.unwrap().sandbox;
+    let plain = w.sandbox(&adam, "plain").await;
+    for (sandbox, repository) in [
+        (&cloning, json!({ "url": url, "branch": "main" })),
+        (&plain, Value::Null),
+    ] {
+        let token = SandboxToken::generate().unwrap();
+        let boot = w.setup.boot(sandbox, &token).await.unwrap();
+        let own = &boot.files[&HomePath::parse(SANDBOX_FILE).unwrap()];
+        let read: Value = serde_json::from_slice(own.content.expose_secret()).unwrap();
+        assert_eq!(read["sandbox"], json!(sandbox.name.as_str()));
+        assert_eq!(read["repository"], repository, "{}", sandbox.name);
+    }
 }

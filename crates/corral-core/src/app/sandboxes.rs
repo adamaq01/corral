@@ -7,10 +7,11 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use ts_rs::TS;
 
-use super::{Catalog, Environment, ImageOption, Settings, SizePreset};
+use super::{Catalog, ImageOption, Settings, Setup, SizePreset};
 use crate::domain::{
-    Admin, EntryId, Handle, IdleLimits, ImageKey, ImageReference, Sandbox, SandboxDefaults,
-    SandboxId, SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
+    Admin, EntryId, Handle, IdleLimits, ImageKey, ImageReference, Repository, Sandbox,
+    SandboxDefaults, SandboxId, SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey,
+    User, UserId,
 };
 use crate::ports::{
     ImageRegistry, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
@@ -35,11 +36,12 @@ pub struct CreateSandbox {
     pub image_reference: Option<String>,
     #[ts(optional)]
     pub size: Option<SizeKey>,
-    /// The environment entries to attach in place of those that apply to new sandboxes. Only the
-    /// lobby chooses them, so the web API never reads them.
-    #[serde(skip)]
-    #[ts(skip)]
-    pub environment: Option<Vec<EntryId>>,
+    /// The setup entries to attach in place of those that apply to new sandboxes.
+    #[ts(optional)]
+    pub setup: Option<Vec<EntryId>>,
+    /// What its first start clones into its home.
+    #[ts(optional)]
+    pub repository: Option<Repository>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,8 +50,8 @@ pub struct SandboxView {
     pub owner: User,
     pub is_default: bool,
     pub status: SandboxStatus,
-    /// Runs without the latest change to its environment, which a restart applies.
-    pub stale_environment: bool,
+    /// Runs without the latest change to its setup, which a restart applies.
+    pub stale_setup: bool,
     /// What its idle timeout and keep-awake are within.
     pub idle: IdleLimits,
 }
@@ -67,7 +69,7 @@ pub struct Sandboxes {
     pub(super) users: Arc<dyn UserRepo>,
     pub(super) engine: Arc<dyn SandboxEngine>,
     registry: Arc<dyn ImageRegistry>,
-    environment: Environment,
+    setup: Setup,
     settings: Settings,
     timeouts: Timeouts,
 }
@@ -87,7 +89,7 @@ impl Sandboxes {
         users: Arc<dyn UserRepo>,
         engine: Arc<dyn SandboxEngine>,
         registry: Arc<dyn ImageRegistry>,
-        environment: Environment,
+        setup: Setup,
         settings: Settings,
         timeouts: Timeouts,
     ) -> Self {
@@ -96,7 +98,7 @@ impl Sandboxes {
             users,
             engine,
             registry,
-            environment,
+            setup,
             settings,
             timeouts,
         }
@@ -161,7 +163,8 @@ impl Sandboxes {
             image: None,
             image_reference: None,
             size: None,
-            environment: None,
+            setup: None,
+            repository: None,
         };
         match self.provision(owner, request).await {
             // Another login made it first.
@@ -197,17 +200,18 @@ impl Sandboxes {
             size: size.key.clone(),
             created_at: Utc::now(),
             started_at: None,
-            environment_changed_at: None,
+            setup_changed_at: None,
             delete_at: None,
             idle_timeout: None,
             keep_awake_until: None,
+            repository: request.repository,
         };
         self.repo
             .insert(&sandbox, self.max_sandboxes_for(owner).await?)
             .await?;
         if let Err(error) = self
-            .environment
-            .attach_new(&sandbox, request.environment.as_deref())
+            .setup
+            .attach_new(&sandbox, request.setup.as_deref())
             .await
         {
             self.forget(&sandbox).await?;
@@ -304,7 +308,7 @@ impl Sandboxes {
     }
 
     async fn forget(&self, sandbox: &Sandbox) -> Result<()> {
-        self.environment.forget_sandbox(sandbox).await?;
+        self.setup.forget_sandbox(sandbox).await?;
         self.repo.delete(sandbox.owner, &sandbox.name).await?;
         Ok(())
     }
@@ -399,7 +403,7 @@ impl Sandboxes {
             .ok_or_else(|| Error::NotFound(format!("default sandbox of {}", owner.handle)))
     }
 
-    /// Starts the sandbox with its current environment, waiting up to the wake deadline.
+    /// Starts the sandbox with its current setup, waiting up to the wake deadline.
     pub async fn start(&self, sandbox: &Sandbox) -> Result<Readiness> {
         self.start_within(&mut sandbox.clone(), self.timeouts.wake_deadline)
             .await
@@ -409,10 +413,10 @@ impl Sandboxes {
     /// Issues the sandbox a token for the start, which it keeps only if the start boots it.
     async fn start_within(&self, sandbox: &mut Sandbox, deadline: Duration) -> Result<Readiness> {
         not_doomed(sandbox)?;
-        // Taken before the environment loads, so a change made while it starts counts as after it.
+        // Taken before the setup loads, so a change made while it starts counts as after it.
         let at = Utc::now();
         let token = SandboxToken::generate()?;
-        let boot = self.environment.boot(sandbox, &token).await?;
+        let boot = self.setup.boot(sandbox, &token).await?;
         let spec = self.spec(sandbox).await?;
         let started = self
             .engine
@@ -489,16 +493,16 @@ impl Sandboxes {
 
     async fn view(&self, sandbox: Sandbox, owner: User, is_default: bool) -> SandboxView {
         let status = self.status(&sandbox).await;
-        let stale_environment = status == SandboxStatus::Running
+        let stale_setup = status == SandboxStatus::Running
             && sandbox
-                .environment_changed_at
+                .setup_changed_at
                 .is_some_and(|changed| sandbox.started_at.is_none_or(|started| started < changed));
         SandboxView {
             sandbox,
             owner,
             is_default,
             status,
-            stale_environment,
+            stale_setup,
             idle: self.timeouts.idle,
         }
     }
@@ -782,7 +786,7 @@ mod tests {
             .await;
         let main = w.sandbox(&adam, "main").await;
         let set = async |value: &str| {
-            w.environment
+            w.setup
                 .change(&adam, gh.id, change(&gh, Some(value)))
                 .await
                 .unwrap();
@@ -946,13 +950,13 @@ mod tests {
         );
     }
 
-    /// The sandboxes that run without their latest environment change, as admins and their owner
+    /// The sandboxes that run without their latest setup change, as admins and their owner
     /// see them.
     async fn stale_ones(w: &World, root: &User, adam: &User) -> Vec<String> {
         let stale = |views: Vec<SandboxView>| -> Vec<String> {
             let mut names: Vec<String> = views
                 .into_iter()
-                .filter(|view| view.stale_environment)
+                .filter(|view| view.stale_setup)
                 .map(|view| format!("{}.{}", view.sandbox.name, view.owner.handle))
                 .collect();
             names.sort();
@@ -965,7 +969,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_environment_change_leaves_running_sandboxes_stale_until_they_start_again() {
+    async fn a_setup_change_leaves_running_sandboxes_stale_until_they_start_again() {
         let w = World::new();
         let adam = w.member("adam").await;
         let eve = w.member("eve").await;
@@ -984,7 +988,7 @@ mod tests {
         };
         assert_eq!(stale().await, [] as [&str; 0]);
 
-        w.environment
+        w.setup
             .change(&adam, gh.id, change(&gh, Some("one")))
             .await
             .unwrap();
@@ -994,7 +998,7 @@ mod tests {
         assert_eq!(stale().await, ["main.adam"]);
         fresh().await;
 
-        w.environment
+        w.setup
             .change(
                 &adam,
                 gh.id,
@@ -1011,37 +1015,31 @@ mod tests {
             "the flag reaches no sandbox"
         );
 
-        w.environment
-            .attach(&adam, &main.name, later.id)
-            .await
-            .unwrap();
+        w.setup.attach(&adam, &main.name, later.id).await.unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         fresh().await;
-        w.environment
+        w.setup
             .set_override(&adam, &main.name, later.id, Some(bytes("main's")))
             .await
             .unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         fresh().await;
-        w.environment
+        w.setup
             .change(&adam, later.id, change(&later, Some("everyone's")))
             .await
             .unwrap();
         assert_eq!(stale().await, [] as [&str; 0], "main keeps its override");
-        w.environment
+        w.setup
             .set_override(&adam, &main.name, later.id, None)
             .await
             .unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         fresh().await;
-        w.environment
-            .detach(&adam, &main.name, later.id)
-            .await
-            .unwrap();
+        w.setup.detach(&adam, &main.name, later.id).await.unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         fresh().await;
 
-        w.environment.delete(&adam, gh.id).await.unwrap();
+        w.setup.delete(&adam, gh.id).await.unwrap();
         assert_eq!(stale().await, ["main.adam"]);
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
         w.access.arrive("main.adam").await.unwrap();
@@ -1068,7 +1066,7 @@ mod tests {
                     owner: adam.clone(),
                     is_default: true,
                     status: SandboxStatus::Running,
-                    stale_environment: false,
+                    stale_setup: false,
                     idle: crate::fakes::IDLE,
                 },
                 SandboxView {
@@ -1076,7 +1074,7 @@ mod tests {
                     owner: adam.clone(),
                     is_default: false,
                     status: SandboxStatus::Sleeping,
-                    stale_environment: false,
+                    stale_setup: false,
                     idle: crate::fakes::IDLE,
                 },
             ]

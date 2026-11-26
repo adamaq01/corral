@@ -138,6 +138,7 @@ mod tests {
             web: "https://corral.example.com".to_owned(),
             sandbox: "main".to_owned(),
             token: "corral_sbx_secret".to_owned(),
+            repository: None,
         })
     }
 

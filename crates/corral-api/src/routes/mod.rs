@@ -1,11 +1,11 @@
 mod admin;
 mod auth;
 mod catalog;
-mod environment;
 mod inside;
 mod keys;
 mod me;
 mod sandboxes;
+mod setup;
 
 use axum::Router;
 use axum::routing::any;
@@ -35,7 +35,7 @@ pub(crate) fn all(providers: Vec<ProviderListing>) -> Router<AppState> {
         .merge(sandboxes::routes())
         .merge(inside::routes())
         .merge(keys::routes())
-        .merge(environment::routes())
+        .merge(setup::routes())
         .merge(admin::routes())
 }
 

@@ -7,21 +7,22 @@ use uuid::Uuid;
 use super::{at, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
-    Handle, ImageKey, ImageReference, Role, Sandbox, SandboxDefaults, SandboxId, SandboxImage,
-    SandboxName, SizeKey, SshKey, SshPublicKey, TokenHash, User, UserId, UserStatus,
+    Handle, ImageKey, ImageReference, Repository, Role, Sandbox, SandboxDefaults, SandboxId,
+    SandboxImage, SandboxName, SizeKey, SshKey, SshPublicKey, TokenHash, User, UserId, UserStatus,
 };
-use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
+use crate::ports::{Changed, KeyRepo, SandboxRepo, UserRepo};
 
 pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dyn SandboxRepo) {
     user_repo(users).await;
     sandbox_defaults(users).await;
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
+    a_repository_round_trips(users, sandboxes).await;
     sandbox_tokens(users, sandboxes).await;
     scheduled_deletions(users, sandboxes).await;
     idle_settings(users, sandboxes).await;
     client_states(users, sandboxes).await;
-    environment_change_times(users, sandboxes).await;
+    setup_change_times(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
     deleting_a_user_leaves_nothing_of_them(users, keys, sandboxes).await;
 }
@@ -324,7 +325,34 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
 }
 
-async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+async fn a_repository_round_trips(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+    let adam = seed_user(users, "adam").await;
+    let repository = |url: &str, branch: Option<&str>| Some(Repository::new(url, branch).unwrap());
+    let branched = Sandbox {
+        repository: repository("https://github.com/adamaq01/corral.git", Some("feat/setup")),
+        ..new_sandbox(adam.id, "branched", 1)
+    };
+    let unbranched = Sandbox {
+        repository: repository("git@github.com:me/y", None),
+        ..new_sandbox(adam.id, "unbranched", 2)
+    };
+    let plain = new_sandbox(adam.id, "plain", 3);
+    for sandbox in [&branched, &unbranched, &plain] {
+        sandboxes.insert(sandbox, 3).await.expect("insert sandbox");
+    }
+    assert_eq!(
+        sandboxes.list(adam.id).await.unwrap(),
+        vec![branched.clone(), unbranched.clone(), plain.clone()]
+    );
+    for sandbox in [branched, unbranched, plain] {
+        assert_eq!(
+            sandboxes.by_name(adam.id, &sandbox.name).await.unwrap(),
+            Some(sandbox)
+        );
+    }
+}
+
+async fn setup_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     let adam = seed_user(users, "adam").await;
     let (main, dev, other) = (
         new_sandbox(adam.id, "main", 1),
@@ -336,15 +364,18 @@ async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxR
     }
     let nothing = SandboxId(unique("sbx"));
     sandboxes
-        .record_environment_change(&[main.id.clone(), dev.id.clone(), nothing], at(5))
+        .record_setup_change(
+            Changed::Sandboxes(&[main.id.clone(), dev.id.clone(), nothing]),
+            at(5),
+        )
         .await
         .expect("record a change, of nothing too");
     sandboxes
-        .record_environment_change(std::slice::from_ref(&dev.id), at(6))
+        .record_setup_change(Changed::Sandboxes(std::slice::from_ref(&dev.id)), at(6))
         .await
         .expect("record a later change");
     sandboxes
-        .record_environment_change(&[], at(7))
+        .record_setup_change(Changed::Sandboxes(&[]), at(7))
         .await
         .expect("record a change of no sandbox");
     let changed: Vec<(String, Option<DateTime<Utc>>)> = sandboxes
@@ -352,7 +383,7 @@ async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxR
         .await
         .unwrap()
         .into_iter()
-        .map(|sandbox| (sandbox.name.to_string(), sandbox.environment_changed_at))
+        .map(|sandbox| (sandbox.name.to_string(), sandbox.setup_changed_at))
         .collect();
     assert_eq!(
         changed,
@@ -361,6 +392,18 @@ async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxR
             ("dev".to_owned(), Some(at(6))),
             ("other".to_owned(), None)
         ]
+    );
+    sandboxes
+        .record_setup_change(Changed::Every, at(8))
+        .await
+        .expect("record a change of every sandbox");
+    let every = sandboxes.list_all().await.unwrap();
+    assert!(every.iter().any(|sandbox| sandbox.id == other.id));
+    assert!(
+        every
+            .iter()
+            .all(|sandbox| sandbox.setup_changed_at == Some(at(8))),
+        "{every:?}"
     );
 }
 
@@ -738,9 +781,10 @@ pub(super) fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
         started_at: None,
-        environment_changed_at: None,
+        setup_changed_at: None,
         delete_at: None,
         idle_timeout: None,
         keep_awake_until: None,
+        repository: None,
     }
 }

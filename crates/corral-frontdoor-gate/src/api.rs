@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 
+use corral_core::domain::Shared;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const AUTHENTICATE: &str = "/gate/authenticate";
@@ -150,6 +151,7 @@ pub enum EntryKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct OfferedEntry {
     pub id: String,
     pub kind: EntryKind,
@@ -158,6 +160,32 @@ pub struct OfferedEntry {
     pub secret: bool,
     pub template: bool,
     pub apply_to_new: bool,
+    /// How the admin shares it with everyone, for an entry that is not the member's own.
+    pub shared: Option<Shared>,
+    /// For an offered entry: whether an entry of the member's takes its place.
+    pub shadowed: bool,
+}
+
+impl OfferedEntry {
+    /// Whether every sandbox gets it, whatever is chosen.
+    pub(crate) fn required(&self) -> bool {
+        self.shared == Some(Shared::Required)
+    }
+
+    /// Whether the two land on the same variable, or on files one inside the other.
+    pub(crate) fn collides(&self, other: &Self) -> bool {
+        let inside = |path: &str, dir: &str| {
+            path.strip_prefix(dir)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        self.kind == other.kind
+            && match self.kind {
+                EntryKind::Variable => self.name == other.name,
+                EntryKind::File => {
+                    inside(&self.name, &other.name) || inside(&other.name, &self.name)
+                }
+            }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,8 +209,9 @@ pub struct Create {
     pub spec: Spec,
 }
 
-/// How a new sandbox is made, as `corral-new` reads it. Each field left out takes the owner's
-/// default; without `environment`, the entries that apply to new sandboxes are attached.
+/// How a new sandbox is made, as `corral-new` reads it. Without an image or a size, the owner's
+/// default; without `setup`, the entries that apply to new sandboxes; without `repository`,
+/// nothing is cloned.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Spec {
@@ -190,7 +219,17 @@ pub struct Spec {
     pub image: Option<String>,
     pub size: Option<String>,
     /// Entries by id, or by the variable or file they set.
-    pub environment: Option<Vec<String>>,
+    pub setup: Option<Vec<String>>,
+    pub repository: Option<RepositorySpec>,
+}
+
+/// A git repository the sandbox's first start clones, and the branch to check out, else its
+/// default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositorySpec {
+    pub url: String,
+    pub branch: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,7 +248,8 @@ pub struct Made {
     /// A catalog image's key, or the image reference it was made from.
     pub image: String,
     pub size: String,
-    pub environment: Vec<MadeEntry>,
+    pub setup: Vec<MadeEntry>,
+    pub repository: Option<RepositorySpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

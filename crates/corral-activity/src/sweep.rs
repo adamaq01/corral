@@ -180,10 +180,11 @@ mod tests {
                     size: corral_core::domain::SizeKey::parse("small").unwrap(),
                     created_at: Utc::now(),
                     started_at: None,
-                    environment_changed_at: None,
+                    setup_changed_at: None,
                     delete_at: None,
                     idle_timeout: None,
                     keep_awake_until: None,
+                    repository: None,
                 };
                 repo.insert(&sandbox, 10).await.unwrap();
                 running.push(sandbox.id);

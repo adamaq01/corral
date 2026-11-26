@@ -13,7 +13,7 @@ ssh -p 48291 <sandbox>.<handle>@<ssh.publicHost>
 
 A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
 makes that sandbox, unless they already have as many sandboxes as their limit allows: on a
-terminal an installer asks for its image, size and environment, starting from their **Account**
+terminal an installer asks for its image, size and setup, starting from their **Account**
 defaults, then opens its shell; `corral-new` makes it from a JSON spec on stdin; any other
 command makes it from their Account defaults ([docs/lobby.md](../../../docs/lobby.md)). A
 connection that reaches no sandbox, such as one past that limit, to a sandbox scheduled for

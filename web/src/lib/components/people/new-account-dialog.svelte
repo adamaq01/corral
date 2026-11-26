@@ -23,7 +23,7 @@
 		{
 			value: 'member',
 			label: 'Member',
-			description: 'Manages their own sandboxes, SSH keys and environment.'
+			description: 'Manages their own sandboxes, SSH keys and setup.'
 		},
 		{
 			value: 'admin',

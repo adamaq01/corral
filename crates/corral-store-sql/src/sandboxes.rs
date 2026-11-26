@@ -3,9 +3,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use corral_core::domain::{
-    Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, TokenHash, UserId,
+    Repository, Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, TokenHash, UserId,
 };
-use corral_core::ports::SandboxRepo;
+use corral_core::ports::{Changed, SandboxRepo};
 use corral_core::{Error, Result};
 use uuid::Uuid;
 
@@ -16,8 +16,9 @@ use corral_sql::{db_error, on_pool, parsed, unique_as};
 macro_rules! select {
     ($rest:literal) => {
         concat!(
-            "select id, owner, name, image, size, created_at, started_at, environment_changed_at, \
-             delete_at, idle_timeout_secs, keep_awake_until from sandboxes ",
+            "select id, owner, name, image, size, created_at, started_at, setup_changed_at, \
+             delete_at, idle_timeout_secs, keep_awake_until, repository_url, repository_branch \
+             from sandboxes ",
             $rest
         )
     };
@@ -32,10 +33,12 @@ struct SandboxRow {
     size: String,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
-    environment_changed_at: Option<DateTime<Utc>>,
+    setup_changed_at: Option<DateTime<Utc>>,
     delete_at: Option<DateTime<Utc>>,
     idle_timeout_secs: Option<i64>,
     keep_awake_until: Option<DateTime<Utc>>,
+    repository_url: Option<String>,
+    repository_branch: Option<String>,
 }
 
 impl TryFrom<SandboxRow> for Sandbox {
@@ -50,7 +53,7 @@ impl TryFrom<SandboxRow> for Sandbox {
             size: parsed("size key", SizeKey::parse(&row.size))?,
             created_at: row.created_at,
             started_at: row.started_at,
-            environment_changed_at: row.environment_changed_at,
+            setup_changed_at: row.setup_changed_at,
             delete_at: row.delete_at,
             idle_timeout: row
                 .idle_timeout_secs
@@ -58,6 +61,15 @@ impl TryFrom<SandboxRow> for Sandbox {
                 .transpose()
                 .map_err(|err| Error::internal("stored idle timeout", err))?,
             keep_awake_until: row.keep_awake_until,
+            repository: row
+                .repository_url
+                .map(|url| {
+                    parsed(
+                        "repository",
+                        Repository::new(&url, row.repository_branch.as_deref()),
+                    )
+                })
+                .transpose()?,
         })
     }
 }
@@ -108,8 +120,8 @@ impl SandboxRepo for Store {
                 .execute(&mut *tx)
                 .await?;
             sqlx::query(
-                "insert into sandboxes (id, owner, name, image, size, created_at) \
-                 values ($1, $2, $3, $4, $5, $6)",
+                "insert into sandboxes (id, owner, name, image, size, created_at, \
+                 repository_url, repository_branch) values ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(&sandbox.id.0)
             .bind(sandbox.owner.0)
@@ -117,6 +129,8 @@ impl SandboxRepo for Store {
             .bind(sandbox.image.to_string())
             .bind(sandbox.size.as_str())
             .bind(sandbox.created_at)
+            .bind(sandbox.repository.as_ref().map(Repository::url))
+            .bind(sandbox.repository.as_ref().and_then(Repository::branch))
             .execute(&mut *tx)
             .await?;
             let count: i64 = sqlx::query_scalar("select count(*) from sandboxes where owner = $1")
@@ -200,19 +214,31 @@ impl SandboxRepo for Store {
         .map_err(db_error)
     }
 
-    async fn record_environment_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
-        for id in ids {
-            on_pool!(self.pool, |pool| {
-                sqlx::query("update sandboxes set environment_changed_at = $2 where id = $1")
-                    .bind(&id.0)
+    async fn record_setup_change(&self, which: Changed<'_>, at: DateTime<Utc>) -> Result<()> {
+        match which {
+            Changed::Sandboxes(ids) => {
+                for id in ids {
+                    on_pool!(self.pool, |pool| {
+                        sqlx::query("update sandboxes set setup_changed_at = $2 where id = $1")
+                            .bind(&id.0)
+                            .bind(at)
+                            .execute(pool)
+                            .await
+                            .map(drop)
+                    })
+                    .map_err(db_error)?;
+                }
+                Ok(())
+            }
+            Changed::Every => on_pool!(self.pool, |pool| {
+                sqlx::query("update sandboxes set setup_changed_at = $1")
                     .bind(at)
                     .execute(pool)
                     .await
                     .map(drop)
             })
-            .map_err(db_error)?;
+            .map_err(db_error),
         }
-        Ok(())
     }
 
     async fn revoke_token(&self, id: &SandboxId) -> Result<()> {

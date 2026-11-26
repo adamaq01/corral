@@ -86,10 +86,11 @@ mod tests {
             size: SizeKey::parse("small").unwrap(),
             created_at: Utc::now(),
             started_at: None,
-            environment_changed_at: None,
+            setup_changed_at: None,
             delete_at: None,
             idle_timeout,
             keep_awake_until: None,
+            repository: None,
         }
     }
 

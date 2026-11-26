@@ -1,7 +1,8 @@
 import type {
 	EntryChange,
 	EntryKind,
-	EnvironmentEntry,
+	SetupEntry,
+	Shared,
 	StoredValue,
 	ValueInput
 } from '#lib/api/generated/index.js';
@@ -46,9 +47,115 @@ export function summary(value: StoredValue): string {
 	}
 }
 
+/** How the admin shares an entry, as its badge and as its listing says it. */
+export const SHARING: Record<Shared, { badge: string; reach: string }> = {
+	required: { badge: 'Required', reach: 'set by the admin for every sandbox' },
+	offered: { badge: 'Offered', reach: 'offered to every sandbox' }
+};
+
+/** The member's setup as the Setup page lists it: what the admin shares, then their own. */
+export type Sections = { shared: SetupEntry[]; yours: SetupEntry[] };
+
+export function sections(entries: SetupEntry[]): Sections {
+	return {
+		shared: entries.filter((entry) => entry.shared !== null),
+		yours: entries.filter((entry) => entry.shared === null)
+	};
+}
+
+/** An entry of the New sandbox dialog the member may check. */
+export type Choice = {
+	entry: SetupEntry;
+	chosen: boolean;
+	/** For an offered entry: the member's own entries on its target, by id. */
+	replacedBy: string[];
+};
+
+/** What a new sandbox comes with, as the New sandbox dialog lists it. */
+export type NewSandboxSetup = {
+	/** The required shared entries, which every sandbox gets. */
+	required: SetupEntry[];
+	/** The offered shared entries, then the member's own, chosen when new sandboxes get them. */
+	choices: Choice[];
+};
+
+export function newSandboxSetup(entries: SetupEntry[]): NewSandboxSetup {
+	const yours = entries.filter((entry) => entry.shared === null);
+	const choice = (entry: SetupEntry, replacedBy: SetupEntry[]) => ({
+		entry,
+		chosen: entry.applyToNew,
+		replacedBy: replacedBy.map((own) => own.id)
+	});
+	return {
+		required: entries.filter((entry) => entry.shared === 'required'),
+		choices: [
+			...entries
+				.filter((entry) => entry.shared === 'offered')
+				.map((entry) =>
+					choice(
+						entry,
+						yours.filter((own) => collides(own, entry))
+					)
+				),
+			...yours.map((entry) => choice(entry, []))
+		]
+	};
+}
+
+/** The member's own checked entry that takes the place of `choice`, which is then left out. */
+export function replacement(setup: NewSandboxSetup, choice: Choice): SetupEntry | undefined {
+	return setup.choices.find((own) => own.chosen && choice.replacedBy.includes(own.entry.id))?.entry;
+}
+
+/** The entries a new sandbox gets beyond the required ones, by id. */
+export function chosenSetup(setup: NewSandboxSetup): string[] {
+	return setup.choices
+		.filter((choice) => choice.chosen && !replacement(setup, choice))
+		.map((choice) => choice.entry.id);
+}
+
+/** One line saying what the entry holds and which sandboxes get it. */
+export function described(entry: SetupEntry): string {
+	const lines = entry.value.shown === 'text' ? lineCount(entry.value.text) : 0;
+	const value =
+		entry.kind === 'variable' || entry.value.shown !== 'text'
+			? summary(entry.value)
+			: `${lines} ${lines === 1 ? 'line' : 'lines'}`;
+	const on =
+		entry.sandboxes.length === 0
+			? 'no sandbox'
+			: entry.sandboxes.map((used) => used.sandbox).join(', ');
+	const reach =
+		entry.shared === 'required'
+			? [SHARING.required.reach]
+			: [
+					entry.shared && SHARING[entry.shared].reach,
+					`attached to ${on}`,
+					entry.applyToNew ? 'new sandboxes get it' : null,
+					entry.shadowed ? 'yours replaces it' : null
+				];
+	const told = reach.filter(Boolean).join(' · ');
+	return value ? `${value} · ${told}` : `${told[0].toUpperCase()}${told.slice(1)}`;
+}
+
 /** How the entry lands in a sandbox: `NAME` or `~/path`. */
-export function where(entry: Pick<EnvironmentEntry, 'kind' | 'target'>): string {
+export function where(entry: Pick<SetupEntry, 'kind' | 'target'>): string {
 	return entry.kind === 'variable' ? entry.target : `~/${entry.target}`;
+}
+
+/** Whether two entries land on the same name, or on paths one inside the other. */
+export function collides(
+	a: Pick<SetupEntry, 'kind' | 'target'>,
+	b: Pick<SetupEntry, 'kind' | 'target'>
+): boolean {
+	if (a.kind !== b.kind) {
+		return false;
+	}
+	if (a.kind === 'variable') {
+		return a.target === b.target;
+	}
+	const inside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+	return inside(a.target, b.target) || inside(b.target, a.target);
 }
 
 /** `variable` or `file`. */
@@ -57,7 +164,7 @@ export function noun(kind: EntryKind): string {
 }
 
 /** A change that leaves the entry as it is, to spread a change over. */
-export function settings(entry: EnvironmentEntry): EntryChange {
+export function settings(entry: Omit<EntryChange, 'value'>): EntryChange {
 	const { kind, target, secret, template, executable, applyToNew } = entry;
 	return { kind, target, secret, template, executable, applyToNew };
 }
@@ -228,7 +335,7 @@ export function parseDotenv(text: string): {
 }
 
 /** A `.env` text of the plain variables, with a comment naming each secret one left out. */
-export function toDotenv(entries: EnvironmentEntry[]): string {
+export function toDotenv(entries: SetupEntry[]): string {
 	const lines = entries
 		.filter((entry) => entry.kind === 'variable')
 		.map((entry) =>

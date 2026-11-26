@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use corral_core::app::{Allowance, Registry};
-use corral_core::domain::{Handle, SandboxName, User, UserId};
+use corral_core::domain::{EntryId, Handle, SandboxName, User, UserId};
 use uuid::Uuid;
 
 use crate::auth::CurrentAdmin;
@@ -13,6 +13,7 @@ use crate::dto::{
 };
 use crate::error::ApiError;
 use crate::extract::{JsonBody, PathParam};
+use crate::setup_dto::{NewSharedEntryDto, SharedEntryChangeDto, SharedEntryDto};
 use crate::state::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -44,6 +45,14 @@ pub(crate) fn routes() -> Router<AppState> {
         .route(
             "/api/admin/settings/registries",
             get(registry_settings).put(set_registries),
+        )
+        .route(
+            "/api/admin/settings/shared-setup",
+            get(shared_setup).post(create_shared),
+        )
+        .route(
+            "/api/admin/settings/shared-setup/{id}",
+            get(shared_entry).put(change_shared).delete(delete_shared),
         )
 }
 
@@ -225,5 +234,55 @@ async fn set_registries(
 ) -> Result<StatusCode, ApiError> {
     let registries = rows.into_iter().map(Registry::from).collect();
     state.settings.set_registries(&admin, registries).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn shared_setup(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SharedEntryDto>>, ApiError> {
+    let views = state.setup.list_shared(&admin).await?;
+    Ok(Json(views.into_iter().map(SharedEntryDto::from).collect()))
+}
+
+async fn create_shared(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+    JsonBody(body): JsonBody<NewSharedEntryDto>,
+) -> Result<(StatusCode, Json<SharedEntryDto>), ApiError> {
+    let view = state.setup.create_shared(&admin, body.parse()?).await?;
+    Ok((StatusCode::CREATED, Json(SharedEntryDto::from(view))))
+}
+
+async fn shared_entry(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+    PathParam(id): PathParam<Uuid>,
+) -> Result<Json<SharedEntryDto>, ApiError> {
+    let view = state.setup.get_shared(&admin, EntryId(id)).await?;
+    Ok(Json(SharedEntryDto::from(view)))
+}
+
+async fn change_shared(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+    PathParam(id): PathParam<Uuid>,
+    JsonBody(body): JsonBody<SharedEntryChangeDto>,
+) -> Result<Json<SharedEntryDto>, ApiError> {
+    let view = state
+        .setup
+        .change_shared(&admin, EntryId(id), body.parse()?)
+        .await?;
+    Ok(Json(SharedEntryDto::from(view)))
+}
+
+/// Detaches the entry from every sandbox, which loses it at its next start, and forgets their
+/// overrides.
+async fn delete_shared(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+    PathParam(id): PathParam<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    state.setup.delete_shared(&admin, EntryId(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -5,15 +5,15 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { toast } from 'svelte-sonner';
 	import { failureMessage } from '#lib/api/client.js';
-	import { environment } from '#lib/api/environment.js';
-	import type { EnvironmentEntry } from '#lib/api/generated/index.js';
+	import { setup } from '#lib/api/setup.js';
+	import type { SetupEntry } from '#lib/api/generated/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
-	import { summary, where } from '#lib/environment.js';
+	import { SHARING, summary, where } from '#lib/setup.js';
 
 	let {
 		open = $bindable(),
@@ -24,7 +24,7 @@
 		open: boolean;
 		sandbox: string;
 		/** The entries not attached to the sandbox yet. */
-		entries: EnvironmentEntry[];
+		entries: SetupEntry[];
 		onAttached: () => Promise<void>;
 	} = $props();
 
@@ -37,7 +37,7 @@
 		entries.filter((entry) => where(entry).toLowerCase().includes(search.trim().toLowerCase()))
 	);
 
-	function toggle(entry: EnvironmentEntry, checked: boolean) {
+	function toggle(entry: SetupEntry, checked: boolean) {
 		if (checked) {
 			chosen.add(entry.id);
 		} else {
@@ -46,7 +46,7 @@
 	}
 
 	// Variables first, so a template finds the variables it refers to already attached.
-	function order(a: EnvironmentEntry, b: EnvironmentEntry) {
+	function order(a: SetupEntry, b: SetupEntry) {
 		return (
 			Number(a.template) - Number(b.template) ||
 			(a.kind === b.kind ? 0 : a.kind === 'variable' ? -1 : 1)
@@ -61,7 +61,7 @@
 		let attached = 0;
 		for (const entry of picked) {
 			try {
-				await environment.attach(sandbox, entry.id);
+				await setup.attach(sandbox, entry.id);
 				chosen.delete(entry.id);
 				attached += 1;
 			} catch (failure) {
@@ -95,7 +95,7 @@
 				<Dialog.Title>Attach to {sandbox}</Dialog.Title>
 				<Dialog.Description>
 					Each one reaches the sandbox at its next start. Add new variables and files on
-					<a class="underline underline-offset-4" href="/environment">Environment</a>.
+					<a class="underline underline-offset-4" href="/setup">Setup</a>.
 				</Dialog.Description>
 			</Dialog.Header>
 			{#if entries.length === 0}
@@ -133,6 +133,9 @@
 									<span class="flex flex-wrap items-center gap-1.5 text-sm font-medium">
 										<Icon class="size-3.5 text-muted-foreground" aria-hidden="true" />
 										<span class="font-mono break-all">{where(entry)}</span>
+										{#if entry.shared}
+											<Badge variant="outline">{SHARING[entry.shared].badge}</Badge>
+										{/if}
 										{#if entry.secret}
 											<Badge variant="secondary">Secret</Badge>
 										{/if}

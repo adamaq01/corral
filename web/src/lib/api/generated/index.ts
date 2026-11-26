@@ -14,7 +14,7 @@ export type AllowanceChange = { maxSandboxes: number | null, };
 /**
  * An entry attached to a sandbox, with the value it has there in place of its own, if any.
  */
-export type AttachedEntry = { entry: EnvironmentEntry, override: StoredValue | null, };
+export type AttachedEntry = { entry: SetupEntry, override: StoredValue | null, };
 
 export type Catalog = { images: Array<Choice>, sizes: Array<Choice>,
 /**
@@ -65,7 +65,15 @@ export type ConfirmDeletion = { confirm: string, };
  * Without an image or a size, the owner's default. An image reference names an image of the
  * owner's choosing in place of a catalog image, where the catalog lets users name images.
  */
-export type CreateSandbox = { name: SandboxName, image?: ImageKey, imageReference?: string, size?: SizeKey, };
+export type CreateSandbox = { name: SandboxName, image?: ImageKey, imageReference?: string, size?: SizeKey,
+/**
+ * The setup entries to attach in place of those that apply to new sandboxes.
+ */
+setup?: Array<EntryId>,
+/**
+ * What its first start clones into its home.
+ */
+repository?: Repository, };
 
 /**
  * Whether `corral delete` inside the user's sandboxes may schedule their deletion.
@@ -84,6 +92,8 @@ object: string, reason: string, message: string, };
  */
 export type EntryChange = { kind: EntryKind, target: string, secret: boolean, template: boolean, executable: boolean, applyToNew: boolean, value?: ValueInput, };
 
+export type EntryId = string;
+
 export type EntryKind = "variable" | "file";
 
 /**
@@ -100,38 +110,6 @@ overridden: boolean,
  */
 unresolved: Array<VariableName>, };
 
-export type EnvironmentEntry = { id: string, kind: EntryKind,
-/**
- * The variable's name, or the file's path relative to the home.
- */
-target: string, secret: boolean,
-/**
- * For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
- * the same sandbox.
- */
-template: boolean,
-/**
- * For a file: whether it is written executable.
- */
-executable: boolean,
-/**
- * Whether each new sandbox is attached to it.
- */
-applyToNew: boolean, value: StoredValue, createdAt: string,
-/**
- * The sandboxes it is attached to, by name.
- */
-sandboxes: Array<EntryUse>,
-/**
- * For a template: the variables its own value refers to.
- */
-references: Array<VariableName>,
-/**
- * Whether an entry made earlier has the same target, as only entries made before targets
- * were unique can.
- */
-duplicate: boolean, };
-
 /**
  * What every error answers with.
  */
@@ -140,7 +118,7 @@ export type ErrorBody = { error: string, };
 export type EventKind = "normal" | "warning";
 
 /**
- * The most bytes an environment file may hold.
+ * The most bytes a setup file may hold.
  */
 export const FILE_LIMIT = 262144;
 
@@ -256,6 +234,15 @@ export type NewKey = { label: string, publicKey: string, };
 export type NewPassword = { password: string, };
 
 /**
+ * An entry the admin shares with everyone, as they first give it.
+ */
+export type NewSharedEntry = { shared: Shared, kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home, which may start with `~/`.
+ */
+target: string, secret: boolean, template?: boolean, executable?: boolean, applyToNew: boolean, value: ValueInput, };
+
+/**
  * What a user's laptop needs to log in with opkssh, for the connect page.
  */
 export type OpksshLogin = { issuer: string, clientId: string,
@@ -270,13 +257,17 @@ export type OwnedSandbox = { owner: Owner, name: SandboxName,
  */
 image: string, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
- * Runs without the latest change to its environment, which a restart applies.
+ * Runs without the latest change to its setup, which a restart applies.
  */
-staleEnvironment: boolean,
+staleSetup: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
-deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+deleteAt: string | null, idle: Idle,
+/**
+ * What its first start clones into its home.
+ */
+repository: Repository | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
 
@@ -334,6 +325,12 @@ registry: string, username: string | null, passwordEnv: string | null,
  */
 plainHttp: boolean, };
 
+/**
+ * A git repository a sandbox clones at its first start, and the branch to check out, else the
+ * repository's default.
+ */
+export type Repository = { url: string, branch?: string | null, };
+
 export type Role = "member" | "admin";
 
 export type Sandbox = { name: SandboxName,
@@ -342,13 +339,17 @@ export type Sandbox = { name: SandboxName,
  */
 image: string, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
- * Runs without the latest change to its environment, which a restart applies.
+ * Runs without the latest change to its setup, which a restart applies.
  */
-staleEnvironment: boolean,
+staleSetup: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
-deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+deleteAt: string | null, idle: Idle,
+/**
+ * What its first start clones into its home.
+ */
+repository: Repository | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 /**
  * The image and size a user's new sandbox gets when its creation names none.
@@ -371,6 +372,99 @@ export type SandboxSsh = { username: SshUsername, host: string, port: number, };
 export type SandboxStatus = { "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" };
 
 export type ScheduledDeletion = { deleteAt: string, };
+
+/**
+ * An entry as a member sees it: their own, or one the admin shares, whose secret value shows
+ * nothing but its size.
+ */
+export type SetupEntry = {
+/**
+ * How the admin shares it, for an entry that is not the member's own.
+ */
+shared: Shared | null,
+/**
+ * The sandboxes it reaches, by name: those attached to it, or every one for a required
+ * entry.
+ */
+sandboxes: Array<EntryUse>,
+/**
+ * Whether an entry made earlier has the same target, as only entries made before targets
+ * were unique can.
+ */
+duplicate: boolean,
+/**
+ * For the member's own entry: whether it takes the place of an offered one.
+ */
+shadows: boolean,
+/**
+ * For an offered entry: whether an entry of the member's takes its place.
+ */
+shadowed: boolean, id: string, kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home.
+ */
+target: string, secret: boolean,
+/**
+ * For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
+ * the same sandbox.
+ */
+template: boolean,
+/**
+ * For a file: whether it is written executable.
+ */
+executable: boolean,
+/**
+ * Whether each new sandbox is attached to it.
+ */
+applyToNew: boolean, value: StoredValue, createdAt: string,
+/**
+ * For a template: the variables its own value refers to.
+ */
+references: Array<VariableName>, };
+
+/**
+ * How a shared entry reaches members' sandboxes.
+ */
+export type Shared = "required" | "offered";
+
+/**
+ * A shared entry as the admin sees it.
+ */
+export type SharedEntry = { shared: Shared,
+/**
+ * How many sandboxes are attached to it, none for a required entry, which reaches every one.
+ */
+attached: number,
+/**
+ * The members with an entry of their own in its place, by handle.
+ */
+shadowedBy: Array<Handle>, id: string, kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home.
+ */
+target: string, secret: boolean,
+/**
+ * For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
+ * the same sandbox.
+ */
+template: boolean,
+/**
+ * For a file: whether it is written executable.
+ */
+executable: boolean,
+/**
+ * Whether each new sandbox is attached to it.
+ */
+applyToNew: boolean, value: StoredValue, createdAt: string,
+/**
+ * For a template: the variables its own value refers to.
+ */
+references: Array<VariableName>, };
+
+/**
+ * What a shared entry becomes, how it is shared included.
+ */
+export type SharedEntryChange = { shared: Shared, kind: EntryKind, target: string, secret: boolean, template: boolean, executable: boolean, applyToNew: boolean, value?: ValueInput, };
 
 export type SizeKey = string;
 

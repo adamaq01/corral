@@ -32,7 +32,7 @@ pub fn api(world: &World) -> Api {
     Api {
         accounts: world.accounts.clone(),
         keys: world.keys.clone(),
-        environment: world.environment.clone(),
+        setup: world.setup.clone(),
         sandboxes: world.sandboxes.clone(),
         settings: world.settings.clone(),
         password_present: Arc::new(|variable: &str| variable == "CORRAL_TEST_PASSWORD"),

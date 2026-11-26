@@ -11,7 +11,7 @@ use crate::domain::{
     Handle, Sandbox, SandboxDefaults, SandboxId, SandboxName, SshKey, SshPublicKey, TokenHash,
     User, UserId,
 };
-use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
+use crate::ports::{Changed, KeyRepo, SandboxRepo, UserRepo};
 use crate::{Error, Result};
 
 #[derive(Default)]
@@ -258,10 +258,14 @@ impl SandboxRepo for MemorySandboxRepo {
         Ok(())
     }
 
-    async fn record_environment_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
+    async fn record_setup_change(&self, which: Changed<'_>, at: DateTime<Utc>) -> Result<()> {
         for sandbox in lock(&self.sandboxes).iter_mut() {
-            if ids.contains(&sandbox.id) {
-                sandbox.environment_changed_at = Some(at);
+            let reached = match which {
+                Changed::Sandboxes(ids) => ids.contains(&sandbox.id),
+                Changed::Every => true,
+            };
+            if reached {
+                sandbox.setup_changed_at = Some(at);
             }
         }
         Ok(())

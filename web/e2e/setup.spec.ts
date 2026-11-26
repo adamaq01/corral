@@ -1,12 +1,12 @@
 import type { Page, Route } from '@playwright/test';
-import type { AttachedEntry, EnvironmentEntry, Sandbox } from '../src/lib/api/generated/index.js';
+import type { AttachedEntry, Sandbox, SetupEntry } from '../src/lib/api/generated/index.js';
 import { expect, test, idle } from './fixtures';
 
 test.use({ role: 'member' });
 
 const setAt = '2026-11-20T17:45:00Z';
 
-function entry(extra: Partial<EnvironmentEntry>): EnvironmentEntry {
+function entry(extra: Partial<SetupEntry>): SetupEntry {
 	return {
 		id: '3f1c2a4e-5b6d-4e7f-8a9b-0c1d2e3f4a5b',
 		kind: 'variable',
@@ -20,9 +20,51 @@ function entry(extra: Partial<EnvironmentEntry>): EnvironmentEntry {
 		sandboxes: [],
 		references: [],
 		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false,
 		...extra
 	};
 }
+
+const main: Sandbox = {
+	name: 'main',
+	image: 'dev',
+	size: 'small',
+	isDefault: true,
+	ssh: { username: 'main.bob', host: 'corral.example.lan', port: 48291 },
+	createdAt: setAt,
+	staleSetup: false,
+	idle,
+	deleteAt: null,
+	repository: null,
+	state: 'running'
+};
+
+const gateway = entry({
+	id: '2a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d',
+	target: 'ANTHROPIC_BASE_URL',
+	secret: false,
+	shared: 'required',
+	value: { setAt, size: 23, shown: 'text', text: 'https://llm.example.lan' },
+	sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }]
+});
+
+const gatewayToken = entry({
+	id: '3b1c2d3e-4f5a-4b6c-9d7e-8f9a0b1c2d3e',
+	target: 'ANTHROPIC_AUTH_TOKEN',
+	shared: 'required',
+	value: { setAt, size: 23, shown: 'hidden' },
+	sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }]
+});
+
+const openai = entry({
+	id: '4c2d3e4f-5a6b-4c7d-8e8f-9a0b1c2d3e4f',
+	target: 'OPENAI_BASE_URL',
+	secret: false,
+	shared: 'offered',
+	value: { setAt, size: 26, shown: 'text', text: 'https://openai.example.lan' }
+});
 
 type Call = { method: string; path: string; body: unknown };
 
@@ -41,18 +83,16 @@ async function record(page: Page, path: string, reply: (route: Route) => unknown
 
 test('a secret variable shows while typed, and is sent as typed', async ({ page }) => {
 	const calls: Call[] = [];
-	await page.route('**/api/environment', async (route) => {
+	await page.route('**/api/setup', async (route) => {
 		if (route.request().method() === 'GET') {
 			return route.fulfill({ json: [] });
 		}
 		calls.push({ method: 'POST', path: '', body: route.request().postDataJSON() });
 		return route.fulfill({ status: 201, json: entry({}) });
 	});
-	await page.route(`**/api/environment/${entry({}).id}`, (route) =>
-		route.fulfill({ json: entry({}) })
-	);
+	await page.route(`**/api/setup/${entry({}).id}`, (route) => route.fulfill({ json: entry({}) }));
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Add a variable' });
 	const name = dialog.getByLabel('Name');
@@ -77,7 +117,7 @@ test('a secret variable shows while typed, and is sent as typed', async ({ page 
 	await dialog.getByRole('switch', { name: 'Apply to new sandboxes' }).click();
 	await dialog.getByRole('button', { name: 'Save variable' }).click();
 
-	await expect(page).toHaveURL(`/environment/${entry({}).id}`);
+	await expect(page).toHaveURL(`/setup/${entry({}).id}`);
 	await expect(page.getByRole('img', { name: 'Secret value, 40 characters' })).toContainText(
 		'ghp_••••••••••••Xz'
 	);
@@ -95,8 +135,8 @@ test('a secret variable shows while typed, and is sent as typed', async ({ page 
 });
 
 test('a variable refuses pasted lines and a value past its limit', async ({ page }) => {
-	await page.route('**/api/environment', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Add a variable' });
 	await dialog.getByLabel('Name').fill('http_proxy');
@@ -119,14 +159,14 @@ test('a variable refuses pasted lines and a value past its limit', async ({ page
 
 test('a file is sent as typed or as the bytes uploaded, up to the limit', async ({ page }) => {
 	const sent: unknown[] = [];
-	await page.route('**/api/environment', async (route) => {
+	await page.route('**/api/setup', async (route) => {
 		if (route.request().method() === 'GET') {
 			return route.fulfill({ json: [] });
 		}
 		sent.push(route.request().postDataJSON());
 		return route.fulfill({ status: 400, json: { error: 'refused to stay on the page' } });
 	});
-	await page.goto('/environment');
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add file' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Add a file' });
 	await dialog.getByLabel('Path in the home').fill('~/.config/corral/x');
@@ -192,7 +232,7 @@ test('an entry changes name, kind and secrecy, and an untouched value saves noth
 	const calls: Call[] = [];
 	await record(
 		page,
-		`/api/environment/${file.id}`,
+		`/api/setup/${file.id}`,
 		(route) => {
 			if (route.request().method() === 'GET') {
 				return { json: file };
@@ -203,7 +243,7 @@ test('an entry changes name, kind and secrecy, and an untouched value saves noth
 		calls
 	);
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
-	await page.goto(`/environment/${file.id}`);
+	await page.goto(`/setup/${file.id}`);
 	await expect(page.getByRole('img', { name: 'Secret value, 411 bytes' })).toBeVisible();
 
 	await page.getByRole('button', { name: 'Replace value' }).click();
@@ -264,27 +304,13 @@ test('a sandbox attaches several entries, overrides and detaches them', async ({
 		value: { setAt, size: 4, shown: 'text', text: 'Adam' }
 	});
 	let attached: AttachedEntry[] = [{ entry: token, override: null }];
-	const sandbox: Sandbox = {
-		name: 'main',
-		image: 'dev',
-		size: 'small',
-		isDefault: true,
-		ssh: { username: 'main.bob', host: 'corral.example.lan', port: 48291 },
-		createdAt: setAt,
-		staleEnvironment: false,
-		idle,
-		deleteAt: null,
-		state: 'running'
-	};
-	await page.route('**/api/sandboxes/main', (route) => route.fulfill({ json: sandbox }));
-	await page.route('**/api/environment', (route) => route.fulfill({ json: [token, notes, name] }));
-	await page.route('**/api/sandboxes/main/environment', (route) =>
-		route.fulfill({ json: attached })
-	);
+	await page.route('**/api/sandboxes/main', (route) => route.fulfill({ json: main }));
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [token, notes, name] }));
+	await page.route('**/api/sandboxes/main/setup', (route) => route.fulfill({ json: attached }));
 	const calls: Call[] = [];
 	await record(
 		page,
-		'/api/sandboxes/main/environment/*',
+		'/api/sandboxes/main/setup/*',
 		(route) => {
 			const request = route.request();
 			const id = new URL(request.url()).pathname.split('/').at(-1);
@@ -300,7 +326,7 @@ test('a sandbox attaches several entries, overrides and detaches them', async ({
 	);
 	await record(
 		page,
-		'/api/sandboxes/main/environment/*/override',
+		'/api/sandboxes/main/setup/*/override',
 		(route) => {
 			const overriding = route.request().method() === 'PUT';
 			attached = attached.map((held) =>
@@ -352,6 +378,110 @@ test('a sandbox attaches several entries, overrides and detaches them', async ({
 	]);
 });
 
+test('shared entries come first, a required one locked, and yours says what it replaces', async ({
+	page
+}) => {
+	const shadowed = { ...openai, shadowed: true };
+	const mine = entry({
+		id: '5d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a',
+		target: 'OPENAI_BASE_URL',
+		secret: false,
+		shadows: true,
+		value: { setAt, size: 24, shown: 'text', text: 'https://openai.local.lan' }
+	});
+	await page.route('**/api/setup', (route) =>
+		route.fulfill({ json: [gateway, gatewayToken, shadowed, mine, entry({})] })
+	);
+	await page.route(`**/api/setup/${gateway.id}`, (route) => route.fulfill({ json: gateway }));
+	await page.route(`**/api/setup/${openai.id}`, (route) => route.fulfill({ json: openai }));
+	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [main] }));
+	await page.goto('/setup');
+
+	await expect(page.getByRole('heading', { level: 2 })).toHaveText(['Shared', 'Yours']);
+	const shared = page.getByRole('list', { name: 'Shared' });
+	const yours = page.getByRole('list', { name: 'Yours' });
+	const required = shared.getByRole('link', { name: /ANTHROPIC_BASE_URL/ });
+	await expect(required).toContainText('Required');
+	await expect(required).toContainText(
+		'https://llm.example.lan · set by the admin for every sandbox'
+	);
+	await expect(shared.getByRole('link', { name: /ANTHROPIC_AUTH_TOKEN/ })).toContainText(
+		'Secret, 23 bytes · set by the admin for every sandbox'
+	);
+	const offered = shared.getByRole('link', { name: /OPENAI_BASE_URL/ });
+	await expect(offered).toContainText('Offered');
+	await expect(offered).toContainText(
+		'https://openai.example.lan · offered to every sandbox · attached to no sandbox · new sandboxes get it · yours replaces it'
+	);
+	await expect(yours.getByRole('listitem')).toHaveCount(2);
+	await expect(yours.getByRole('link', { name: /OPENAI_BASE_URL/ })).toContainText(
+		'Yours, in place of the shared one'
+	);
+	await expect(page.getByText('Yours, in place of the shared one')).toHaveCount(1);
+
+	await required.click();
+	await expect(page.getByRole('heading', { name: 'ANTHROPIC_BASE_URL' })).toBeVisible();
+	await expect(page.getByText('Set by the admin in Settings > Shared setup')).toBeVisible();
+	await expect(page.getByText('Every sandbox gets it.')).toBeVisible();
+	for (const name of ['Edit', 'Duplicate', 'Edit value', 'Replace value', 'Delete variable']) {
+		await expect(page.getByRole('button', { name, exact: true })).toHaveCount(0);
+	}
+	await expect(page.getByRole('button', { name: /^(Attach|Detach)/ })).toHaveCount(0);
+
+	await page.goto(`/setup/${openai.id}`);
+	await expect(page.getByText('Set by the admin in Settings > Shared setup')).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Attach to main' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+});
+
+test('a sandbox gets each required entry, locked, and attaches an offered one', async ({
+	page
+}) => {
+	const token = entry({});
+	let attached: AttachedEntry[] = [
+		{ entry: gateway, override: null },
+		{ entry: token, override: null }
+	];
+	await page.route('**/api/sandboxes/main', (route) => route.fulfill({ json: main }));
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [gateway, openai, token] }));
+	await page.route('**/api/sandboxes/main/setup', (route) => route.fulfill({ json: attached }));
+	const calls: Call[] = [];
+	await record(
+		page,
+		'/api/sandboxes/main/setup/*',
+		() => {
+			attached = [gateway, openai, token].map((entry) => ({ entry, override: null }));
+			return { status: 204 };
+		},
+		calls
+	);
+	await page.goto('/sandboxes/main');
+	const section = page.getByRole('list', { name: 'Attached to main' });
+	await expect(section.getByRole('listitem')).toHaveCount(2);
+	await expect(section.getByRole('listitem').first()).toContainText('ANTHROPIC_BASE_URL');
+	await expect(section.getByRole('listitem').first()).toContainText('Required');
+	await expect(page.getByRole('button', { name: 'Detach ANTHROPIC_BASE_URL' })).toHaveCount(0);
+	await expect(
+		page.getByRole('button', { name: 'Override for this sandbox: ANTHROPIC_BASE_URL' })
+	).toHaveCount(0);
+
+	await page.getByRole('button', { name: 'Attach', exact: true }).click();
+	const dialog = page.getByRole('dialog', { name: 'Attach to main' });
+	await expect(dialog.getByRole('listitem')).toHaveCount(1);
+	await expect(dialog.getByRole('listitem')).toContainText('OPENAI_BASE_URL');
+	await expect(dialog.getByRole('listitem')).toContainText('Offered');
+	await dialog.getByRole('checkbox').click();
+	await dialog.getByRole('button', { name: 'Attach', exact: true }).click();
+	await expect(dialog).toBeHidden();
+
+	await expect(section.getByRole('listitem')).toHaveCount(3);
+	await expect(section.getByRole('listitem').nth(1)).toContainText('Offered');
+	await expect(page.getByRole('button', { name: 'Detach OPENAI_BASE_URL' })).toBeVisible();
+	expect(calls.map(({ method, path }) => [method, path.split('/').at(-1)])).toEqual([
+		['PUT', openai.id]
+	]);
+});
+
 test('files count their lines, keep their case, and are named by their path', async ({ page }) => {
 	const short = entry({
 		id: '8e6f7a8b-9c0d-4e1f-2a3b-4c5d6e7f8a9b',
@@ -380,12 +510,10 @@ test('files count their lines, keep their case, and are named by their path', as
 		secret: false,
 		value: { setAt, size: 0, shown: 'text', text: '' }
 	});
-	await page.route('**/api/environment', (route) =>
-		route.fulfill({ json: [short, long, lower, empty] })
-	);
-	await page.route(`**/api/environment/${long.id}`, (route) => route.fulfill({ json: long }));
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [short, long, lower, empty] }));
+	await page.route(`**/api/setup/${long.id}`, (route) => route.fulfill({ json: long }));
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.goto('/setup');
 	const listed = (target: string) => page.getByRole('link', { name: new RegExp(target) });
 	await expect(listed('hushlogin')).toContainText('1 line · attached to no sandbox');
 	await expect(listed('notes')).toContainText('20 lines · attached to no sandbox');
@@ -399,7 +527,7 @@ test('files count their lines, keep their case, and are named by their path', as
 		'Attached to no sandbox · new sandboxes get it'
 	);
 
-	await page.goto(`/environment/${long.id}`);
+	await page.goto(`/setup/${long.id}`);
 	await expect(page.getByRole('button', { name: 'Show all 20 lines' })).toBeVisible();
 	await page.getByRole('button', { name: 'Duplicate' }).click();
 	const duplicate = page.getByRole('dialog', { name: 'Duplicate ~/notes/t.txt' });
@@ -415,8 +543,8 @@ test('files count their lines, keep their case, and are named by their path', as
 });
 
 test('an import names how many variables it would import', async ({ page }) => {
-	await page.route('**/api/environment', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Import .env' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Import variables' });
 	const button = (name: string) => dialog.getByRole('button', { name, exact: true });
@@ -431,7 +559,7 @@ test('an entry lives through Corral: made, renamed, made secret and deleted', as
 	const suffix = Math.random().toString(36).slice(2, 8);
 	const first = `e2e_${suffix}`;
 	const renamed = `E2E_${suffix.toUpperCase()}`;
-	await page.goto('/environment');
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const add = page.getByRole('dialog', { name: 'Add a variable' });
 	await add.getByLabel('Name').fill(first);
@@ -451,7 +579,7 @@ test('an entry lives through Corral: made, renamed, made secret and deleted', as
 		'sk-l••••••••••••ef'
 	);
 
-	await page.getByRole('link', { name: 'Environment' }).first().click();
+	await page.getByRole('link', { name: 'Setup' }).first().click();
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const again = page.getByRole('dialog', { name: 'Add a variable' });
 	await again.getByLabel('Name').fill(renamed);
@@ -465,6 +593,6 @@ test('an entry lives through Corral: made, renamed, made secret and deleted', as
 	const confirm = page.getByRole('alertdialog');
 	await confirm.getByLabel(`Type ${renamed} to confirm`).fill(renamed);
 	await confirm.getByRole('button', { name: 'Delete variable' }).click();
-	await expect(page).toHaveURL('/environment');
+	await expect(page).toHaveURL('/setup');
 	await expect(page.getByRole('link', { name: new RegExp(renamed) })).toHaveCount(0);
 });

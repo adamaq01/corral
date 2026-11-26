@@ -5,13 +5,13 @@ use std::time::Duration;
 use secrecy::{ExposeSecret, SecretSlice};
 
 use super::{
-    FakeEngine, FakeProvider, FakeRegistry, MemoryEnvironmentRepo, MemoryKeyRepo,
-    MemorySandboxRepo, MemorySecretStore, MemorySettingsRepo, MemoryUserRepo, RecordedSignals,
+    FakeEngine, FakeProvider, FakeRegistry, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore,
+    MemorySettingsRepo, MemorySetupRepo, MemoryUserRepo, RecordedSignals,
 };
 use crate::app::{
     Accounts, Catalog, CatalogChange, CatalogDefaults, Configured, CreateSandbox, EntryChange,
-    Environment, ImageOption, Keys, LimitsChange, Lobby, NewEntry, SandboxLinks, SandboxView,
-    Sandboxes, Settings, SizePreset, Source, SshAccess, Timeouts,
+    ImageOption, Keys, LimitsChange, Lobby, NewEntry, SandboxLinks, SandboxView, Sandboxes,
+    Settings, Setup, SizePreset, Source, SshAccess, Timeouts,
 };
 use crate::domain::{
     Admin, Allocation, Entry, HomePath, IdleLimits, ImageKey, Resources, Role, Sandbox,
@@ -118,7 +118,8 @@ pub fn request(name: &str, image: Option<&str>, size: Option<&str>) -> CreateSan
         image: image.map(|key| ImageKey::parse(key).unwrap()),
         image_reference: None,
         size: size.map(|key| SizeKey::parse(key).unwrap()),
-        environment: None,
+        setup: None,
+        repository: None,
     }
 }
 
@@ -221,8 +222,8 @@ pub struct World {
     pub provider: Arc<FakeProvider>,
     pub accounts: Accounts,
     pub keys: Keys,
-    pub environment: Environment,
-    pub environment_repo: Arc<MemoryEnvironmentRepo>,
+    pub setup: Setup,
+    pub setup_repo: Arc<MemorySetupRepo>,
     pub sandbox_repo: Arc<MemorySandboxRepo>,
     pub secrets: Arc<MemorySecretStore>,
     pub engine: Arc<FakeEngine>,
@@ -260,7 +261,7 @@ impl World {
         providers.extend(others);
         let users = Arc::new(MemoryUserRepo::default());
         let sandbox_repo = Arc::new(MemorySandboxRepo::default());
-        let environment_repo = Arc::new(MemoryEnvironmentRepo::default());
+        let setup_repo = Arc::new(MemorySetupRepo::default());
         let secrets = Arc::new(MemorySecretStore::default());
         let settings_repo = Arc::new(MemorySettingsRepo::holding(
             &catalog_change(&catalog()),
@@ -275,10 +276,11 @@ impl World {
             users.clone(),
             configured,
         );
-        let environment = Environment::new(
-            environment_repo.clone(),
+        let setup = Setup::new(
+            setup_repo.clone(),
             secrets.clone(),
             sandbox_repo.clone(),
+            users.clone(),
             links(),
         );
         let engine = Arc::new(FakeEngine::default());
@@ -288,7 +290,7 @@ impl World {
             users.clone(),
             engine.clone(),
             registry.clone(),
-            environment.clone(),
+            setup.clone(),
             settings.clone(),
             TIMEOUTS,
         );
@@ -299,25 +301,21 @@ impl World {
             sandboxes.clone(),
             providers.clone(),
         ));
-        let lobby = Arc::new(Lobby::new(
-            users.clone(),
-            sandboxes.clone(),
-            environment.clone(),
-        ));
+        let lobby = Arc::new(Lobby::new(users.clone(), sandboxes.clone(), setup.clone()));
         Self {
             accounts: Accounts::new(
                 users.clone(),
                 key_repo.clone(),
                 sandboxes.clone(),
-                environment.clone(),
+                setup.clone(),
                 providers,
             ),
             keys: Keys::new(key_repo),
             settings,
             settings_repo,
             sandboxes,
-            environment,
-            environment_repo,
+            setup,
+            setup_repo,
             sandbox_repo,
             secrets,
             engine,
@@ -364,7 +362,7 @@ impl World {
 
     /// An entry of the owner's that applies to new sandboxes.
     pub async fn entry(&self, owner: &User, target: Target, value: &str, secret: bool) -> Entry {
-        self.environment
+        self.setup
             .create(
                 owner,
                 NewEntry {

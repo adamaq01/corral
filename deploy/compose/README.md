@@ -91,7 +91,7 @@ block, and wakes, stops, restarts or deletes the sandbox.
   one set with **Make default** on its page.
 - Port forwarding works: `ssh -p 48291 -L 3000:127.0.0.1:3000 main.<name>@<public_host>`.
 - Connecting as `<sandbox>.<name>` to a sandbox you do not have yet makes it: on a terminal, an
-  installer asks for its image, size and environment, then opens its shell;
+  installer asks for its image, size and setup, then opens its shell;
   `ssh ... <sandbox>.<name>@<public_host> corral-new` makes it from a JSON spec on stdin, for
   scripts; any other command makes it from your defaults. [docs/lobby.md](../../docs/lobby.md)
   has the installer and the spec.
@@ -112,7 +112,7 @@ block, and wakes, stops, restarts or deletes the sandbox.
   next start from sleep, its home kept; a running sandbox keeps what it has until then. A
   sandbox whose image or size is no longer in the catalog keeps running as it was made. Docker
   volumes have no size, so `home_size` does nothing here.
-- **Environment** holds your variables (`NAME=value` in every SSH session, upper or lower case)
+- **Setup** holds your variables (`NAME=value` in every SSH session, upper or lower case)
   and files (written into the home at every start, replacing what is at their path, missing
   directories made). Each name or path is yours once. Either can be secret: a secret value is
   encrypted with `CORRAL_SECRETS_KEY` and never shown again, only its length, first 4 and last 2
@@ -136,7 +136,7 @@ block, and wakes, stops, restarts or deletes the sandbox.
   disable, enable or delete users, and give a user a sandbox allowance in place of the limit per
   member. **All sandboxes** lists every user's sandboxes, and admins act on any of them there.
 - Deleting a user, as an admin or from your own **Account**, deletes their sandboxes with their
-  homes, keys, environment and local account. The username is free again afterwards, and a new
+  homes, keys, setup and local account. The username is free again afterwards, and a new
   account with it starts empty. A deletion that fails part way leaves the user with status
   Deleting, unable to log in, and deleting them again finishes it.
 - A sandbox sleeps (its container stops) after 30 minutes with no work, and wakes on the next SSH
@@ -144,7 +144,7 @@ block, and wakes, stops, restarts or deletes the sandbox.
   traffic) or the sandbox's own processor and network use, which it reports to Corral every
   minute: an agent answering or running tools is at work, one waiting at its prompt is not. An open
   but untouched connection does not keep a sandbox awake, and neither does Herdr: while the sandbox
-  sleeps, the gate answers Herdr for it, so Herdr shows the machine connected with no terminals,
+  sleeps, the gate answers Herdr for it, so Herdr shows the sandbox connected with no terminals,
   and the first terminal opened there wakes it. Sleep keeps the container, so its files survive
   until the sandbox is deleted, and ends its programs.
 - Each sandbox's page sets how long it stays awake with no work, up to `max_timeout_secs`, and

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::Error;
 use corral_core::app::Allowance;
-use corral_core::contract::{environment, repos, settings};
+use corral_core::contract::{repos, settings, setup};
 use corral_core::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, User, UserId,
     UserStatus,
@@ -26,7 +26,7 @@ async fn meets_every_repo_contract(url: &str) {
             .expect("reopen a migrated database"),
     );
     repos::every_repo(&*store, &*store, &*store).await;
-    environment::environment_repo(&*store, &*store, &*store).await;
+    setup::setup_repo(&*store, &*store, &*store).await;
     settings::settings_repo(&*store, &*store).await;
 
     let gone = repos::deleting_a_user_leaves_nothing_of_them(&*store, &*store, &*store).await;
@@ -70,10 +70,11 @@ async fn a_scheduled_deletion_outlives_the_store(url: &str) {
         size: SizeKey::parse("small").unwrap(),
         created_at: Utc::now(),
         started_at: None,
-        environment_changed_at: None,
+        setup_changed_at: None,
         delete_at: None,
         idle_timeout: None,
         keep_awake_until: None,
+        repository: None,
     };
     let at = DateTime::from_timestamp(1_800_000_000, 0).unwrap();
     {
@@ -187,10 +188,11 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         size: SizeKey::parse("small").unwrap(),
         created_at: second + offset,
         started_at: None,
-        environment_changed_at: None,
+        setup_changed_at: None,
         delete_at: None,
         idle_timeout: None,
         keep_awake_until: None,
+        repository: None,
     })
     .collect();
 
@@ -201,4 +203,57 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         SandboxRepo::list(&store, owner.id).await.unwrap(),
         chronological
     );
+}
+
+/// An entry row is a member's, with an owner and no shared kind, or everyone's, with a shared kind
+/// and no owner.
+async fn a_row_with_both_or_neither_of_an_owner_and_a_shared_kind_is_refused(databases: Databases) {
+    let pool = databases.pool().await;
+    let store = Store::open(pool.clone()).await.expect("open");
+    let member = user();
+    UserRepo::insert(&store, &member).await.unwrap();
+    let insert = async |owner: Option<Uuid>, shared: Option<&str>| {
+        on_pool!(pool, |pool| {
+            sqlx::query(
+                "insert into setup_entries (id, owner, shared, kind, target, template, \
+                 executable, apply_to_new, content, size, set_at, created_at) \
+                 values ($1, $2, $3, 'variable', 'X', false, false, true, $4, 1, $5, $5)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(owner)
+            .bind(shared)
+            .bind(b"x".to_vec())
+            .bind(Utc::now())
+            .execute(pool)
+            .await
+            .map(drop)
+        })
+    };
+    for (owner, shared) in [
+        (None, None),
+        (Some(member.id.0), Some("offered")),
+        (None, Some("always")),
+    ] {
+        assert!(insert(owner, shared).await.is_err(), "{owner:?} {shared:?}");
+    }
+    for (owner, shared) in [
+        (Some(member.id.0), None),
+        (None, Some("required")),
+        (None, Some("offered")),
+    ] {
+        insert(owner, shared).await.expect("a well-formed row");
+    }
+}
+
+#[tokio::test]
+async fn sqlite_refuses_a_row_with_both_or_neither_of_an_owner_and_a_shared_kind() {
+    a_row_with_both_or_neither_of_an_owner_and_a_shared_kind_is_refused(Databases::sqlite()).await;
+}
+
+#[tokio::test]
+async fn postgres_refuses_a_row_with_both_or_neither_of_an_owner_and_a_shared_kind() {
+    a_row_with_both_or_neither_of_an_owner_and_a_shared_kind_is_refused(
+        Databases::postgres().await,
+    )
+    .await;
 }

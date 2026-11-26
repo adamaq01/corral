@@ -17,12 +17,13 @@ volume=$prefix-home
 server=$prefix-sandbox
 baked=$prefix-baked:test
 groups=$prefix-groups:test
+with_git=$prefix-git:test
 work=$(mktemp -d "${TMPDIR:-/tmp}/corral-overlay-test.XXXXXX")
 
 remove_resources() {
   docker rm --force "$server" >/dev/null 2>&1 || true
   docker volume rm "$volume" >/dev/null 2>&1 || true
-  docker rmi "$baked" "$groups" >/dev/null 2>&1 || true
+  docker rmi "$baked" "$groups" "$with_git" >/dev/null 2>&1 || true
 }
 trap 'remove_resources; rm -rf "$work"' EXIT
 trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
@@ -77,13 +78,16 @@ stage_home_files() {
     -cf "$work/home-files.tar" etc/corral/home-files
 }
 
-# As the Docker engine makes and starts a sandbox's container.
+# As the Docker engine makes and starts a sandbox's container from the image $1, with any more
+# options to docker create after it.
 start_server() {
+  local image=$1
+  shift
   docker create --name "$server" --network none --user 0 \
     --mount "type=volume,source=$volume,target=/home/sandbox" \
     --mount "type=image,source=$overlay,target=/opt/corral" \
-    --tmpfs /run/corral:mode=0755 \
-    --entrypoint /opt/corral/bin/tini "$1" -- /opt/corral/bin/corral-init docker >/dev/null
+    --tmpfs /run/corral:mode=0755 "$@" \
+    --entrypoint /opt/corral/bin/tini "$image" -- /opt/corral/bin/corral-init docker >/dev/null
   tar -C "$work/session" --owner=1000 --group=1000 --numeric-owner -cf - etc | docker cp - "$server:/"
   docker cp - "$server:/" <"$work/home-files.tar"
   docker start "$server" >/dev/null
@@ -93,12 +97,12 @@ start_server() {
     fi
     if [[ "$(docker inspect --format '{{.State.Running}}' "$server")" != true ]]; then
       docker logs "$server" >&2
-      fail "$1: the sandbox container exited"
+      fail "$image: the sandbox container exited"
     fi
     sleep 0.2
   done
   docker logs "$server" >&2
-  ssh_run true || fail "$1: ssh never succeeded"
+  ssh_run true || fail "$image: ssh never succeeded"
 }
 
 # The bash a base image's logins run: its own, or the overlay's.
@@ -223,9 +227,73 @@ MANIFEST
   docker volume rm "$volume" >/dev/null
 }
 
+# The sandbox file Corral writes, naming the repository $1, as the only staged home file.
+stage_repository() {
+  stage_home_files "{\"api\": \"http://corral.invalid\", \"web\": \"http://corral.invalid\",
+    \"sandbox\": \"main\", \"token\": \"corral_sbx_test\",
+    \"repository\": {\"url\": \"$1\", \"branch\": null}}" <<<'0 0600 .config/corral/sandbox.json'
+}
+
+# A bare repository of one commit, mounted read-only where the sandbox file names it.
+make_repository() {
+  local git=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=corral
+    -c user.email=corral@example.com)
+  "${git[@]}" init -q -b main "$work/source"
+  echo hello >"$work/source/README"
+  "${git[@]}" -C "$work/source" add README
+  "${git[@]}" -C "$work/source" commit -q -m first
+  "${git[@]}" clone -q --bare "$work/source" "$work/repo.git"
+  chmod -R a+rX "$work/repo.git"
+}
+
+# The first start clones the repository the sandbox file names, with the image's git.
+check_repository() {
+  local repository=(--mount "type=bind,source=$work/repo.git,target=/srv/repo.git,readonly")
+  base=$with_git
+  docker build --quiet --tag "$with_git" - >/dev/null <<'EOF2'
+FROM alpine:3.24
+RUN apk add --no-cache git
+EOF2
+  make_repository
+
+  stage_repository file:///srv/repo.git
+  start_server "$with_git" "${repository[@]}"
+  check "the first start clones the repository into the home" "hello
+Cloned file:///srv/repo.git into ~/repo" \
+    "$(ssh_run 'test -d ~/repo/.git && cat ~/repo/README ~/.config/corral/notices')"
+  ssh_run 'rm -rf ~/repo'
+  docker rm --force "$server" >/dev/null
+  start_server "$with_git" "${repository[@]}"
+  check "a later start clones nothing" "absent absent" \
+    "$(ssh_run 'echo $(test -e ~/repo || echo absent) $(test -e ~/.config/corral/notices || echo absent)')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+
+  stage_repository https://nowhere.invalid/x.git
+  start_server "$with_git"
+  [[ "$(ssh_run 'cat ~/.config/corral/notices')" == "Cloning https://nowhere.invalid/x.git failed: "?* ]] ||
+    fail "$base: the notice of a failed clone: $(ssh_run 'cat ~/.config/corral/notices')"
+  echo "ok - $base: a failed clone is a notice and the sandbox starts"
+  [[ "$(interactive_login | grep -A1 "^At this sandbox's last start:" | tail -n 1)" == \
+    "  Cloning https://nowhere.invalid/x.git failed: "?* ]] || fail "$base: the login's notices"
+  echo "ok - $base: an interactive login prints the failed clone under the last start"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+
+  base=alpine:3.24
+  stage_repository file:///srv/repo.git
+  start_server "$base" "${repository[@]}"
+  check "an image without git starts and says it cannot clone" \
+    "Cloning file:///srv/repo.git needs git, which this image does not have" \
+    "$(ssh_run 'cat ~/.config/corral/notices; test -e ~/repo && echo cloned; true')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+}
+
 for each in "${bases[@]}"; do
   check_base "$each"
 done
+check_repository
 
 # An image whose own uid 1000, and a group listing sandbox, would give the sandbox user more
 # groups.

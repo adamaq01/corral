@@ -10,6 +10,7 @@ import type {
 	RegistriesSettings,
 	SandboxDetails,
 	SandboxStatus,
+	SharedEntry,
 	User
 } from '../src/lib/api/generated/index.js';
 import { expect, test, idle } from './fixtures';
@@ -148,6 +149,43 @@ const registries: RegistriesSettings = {
 	shadowed: ['ghcr.io']
 };
 
+const sharedSetup: SharedEntry[] = [
+	sharedEntry({
+		target: 'ANTHROPIC_BASE_URL',
+		shared: 'required',
+		value: { shown: 'text', text: 'https://llm.homelab.lan', setAt: days(12), size: 23 }
+	}),
+	sharedEntry({
+		target: 'LITELLM_TOKEN',
+		shared: 'required',
+		secret: true,
+		value: { shown: 'masked', length: 51, head: 'sk-', tail: 'q9Xw', setAt: days(12), size: 51 }
+	}),
+	sharedEntry({
+		kind: 'file',
+		target: '.config/pip/pip.conf',
+		shared: 'offered',
+		template: true,
+		attached: 3,
+		shadowedBy: ['bob', 'grace-hopper'],
+		references: ['PIP_INDEX_URL'],
+		value: {
+			shown: 'text',
+			text: '[global]\nindex-url = {{ PIP_INDEX_URL }}\n',
+			setAt: days(4),
+			size: 41
+		}
+	}),
+	sharedEntry({
+		kind: 'file',
+		target: 'bin/homelab-ca-trust',
+		shared: 'offered',
+		executable: true,
+		applyToNew: false,
+		value: { shown: 'text', text: '#!/bin/sh\n', setAt: days(2), size: 10 }
+	})
+];
+
 const sandboxes: OwnedSandbox[] = [
 	sandbox('ada', 'main', 'dev', 'small', true, { state: 'running' }, 39),
 	{
@@ -156,7 +194,7 @@ const sandboxes: OwnedSandbox[] = [
 	},
 	{
 		...sandbox('bob', 'main', 'dev', 'small', true, { state: 'starting' }, 1),
-		staleEnvironment: true
+		staleSetup: true
 	},
 	sandbox(
 		'grace-hopper',
@@ -379,6 +417,17 @@ inEveryView((look) => {
 		await look(page, 'settings-registries');
 	});
 
+	test('settings, shared setup', async ({ page }) => {
+		await answer(page, '/api/admin/settings/shared-setup', sharedSetup);
+		await page.goto('/admin/settings/shared-setup');
+		await page.getByRole('table', { name: 'Shared setup' }).getByText('LITELLM_TOKEN').waitFor();
+		await look(page, 'settings-shared-setup');
+
+		await page.getByRole('button', { name: 'Add variable' }).click();
+		await page.getByRole('dialog', { name: 'Add a shared variable' }).waitFor();
+		await look(page, 'settings-shared-setup-add', { fullPage: false });
+	});
+
 	test('all sandboxes', async ({ page }) => {
 		await answer(page, '/api/admin/sandboxes', sandboxes);
 		await page.goto('/admin/sandboxes');
@@ -475,6 +524,24 @@ function user(
 	};
 }
 
+function sharedEntry(
+	entry: Pick<SharedEntry, 'target' | 'shared' | 'value'> & Partial<SharedEntry>
+): SharedEntry {
+	return {
+		id: crypto.randomUUID(),
+		kind: 'variable',
+		secret: false,
+		template: false,
+		executable: false,
+		applyToNew: true,
+		createdAt: entry.value.setAt,
+		references: [],
+		attached: 0,
+		shadowedBy: [],
+		...entry
+	};
+}
+
 function sandbox(
 	owner: string,
 	name: string,
@@ -492,9 +559,10 @@ function sandbox(
 		isDefault,
 		ssh: { username: `${name}.${owner}`, host: 'corral.example.com', port: 2222 },
 		createdAt: days(age),
-		staleEnvironment: false,
+		staleSetup: false,
 		idle,
 		deleteAt: null,
+		repository: null,
 		...status
 	};
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The Docker Compose install end to end: tests/e2e/compose.sh [smoke|all], or CORRAL_E2E_PART.
-# smoke, the default, checks the stack comes up, sign-in, SSH, refusals, the environment,
+# smoke, the default, checks the stack comes up, sign-in, SSH, refusals, the setup,
 # corral-new, persistence across restarts and deletion. all adds, in the same stack, Herdr, the
 # installer on a terminal, the corral command inside a sandbox, a slow wake, and idle sleep.
 # CORRAL_SERVER_IMAGE, CORRAL_SANDBOX_IMAGE and CORRAL_OVERLAY_IMAGE name prebuilt images; when
@@ -366,9 +366,9 @@ entry() {
 }
 attach() {
   local id
-  id=$(api adam POST api/environment "$(entry "$@")" | jq -r .id)
+  id=$(api adam POST api/setup "$(entry "$@")" | jq -r .id)
   [[ "$id" != null ]] || fail "creating $2 was refused"
-  api adam PUT "api/sandboxes/main/environment/$id" >/dev/null
+  api adam PUT "api/sandboxes/main/setup/$id" >/dev/null
   echo "$id"
 }
 attach variable E2E_PLAIN false false false plain-value >/dev/null
@@ -376,14 +376,14 @@ token_id=$(attach variable E2E_TOKEN true false true "$token")
 attach file .e2e/plain.txt false false false "plain file" >/dev/null
 attach file .e2e/secret.key true false false "secret-key-$token" >/dev/null
 attach file .e2e/config.toml false true false 'token = "{{ E2E_TOKEN }}"' >/dev/null
-api adam PUT "api/sandboxes/main/environment/$token_id/override" \
+api adam PUT "api/sandboxes/main/setup/$token_id/override" \
   "$(jq -cn --arg v "$token-main" '{text: $v}')" >/dev/null
-listed=$(api adam GET api/environment)
-expect "GET /api/environment" "E2E_PLAIN E2E_TOKEN .e2e/config.toml .e2e/plain.txt .e2e/secret.key" \
+listed=$(api adam GET api/setup)
+expect "GET /api/setup" "E2E_PLAIN E2E_TOKEN .e2e/config.toml .e2e/plain.txt .e2e/secret.key" \
   "$(jq -r '.[].target' <<<"$listed" | xargs)"
 expect "the secret variable as listed" "masked $((${#token})) e2e-" \
   "$(jq -r '.[] | select(.target == "E2E_TOKEN") | "\(.value.shown) \(.value.length) \(.value.head)"' <<<"$listed")"
-attached=$(api adam GET api/sandboxes/main/environment)
+attached=$(api adam GET api/sandboxes/main/setup)
 [[ "$listed$attached" != *"$token"* ]] || fail "the API returned a secret value"
 ok "a plain and a secret variable, a plain, a secret and a template file attached to main as it slept"
 
@@ -416,16 +416,16 @@ if [[ "$part" == all ]]; then
     --package corral-frontdoor-gate --test stack >>"$log" 2>&1 \
     || fail "the installer on a terminal: $(tail -n 40 "$log")"
   expect "lobby's size and entries" "roomy E2E_PLAIN E2E_TOKEN" \
-    "$(api adam GET api/sandboxes/lobby | jq -r .size) $(api adam GET api/sandboxes/lobby/environment \
+    "$(api adam GET api/sandboxes/lobby | jq -r .size) $(api adam GET api/sandboxes/lobby/setup \
       | jq -r '[.[].entry.target] | join(" ")')"
   api adam DELETE api/sandboxes/lobby >/dev/null
   ok "ssh lobby.adam on a terminal: the installer made it roomy with E2E_PLAIN, and its shell showed corral status and the variable"
 fi
 
 made=$(ssh -F ssh_config -i keys/adam script.adam@corral-e2e corral-new \
-  <<<'{"size": "roomy", "environment": ["E2E_PLAIN"]}')
+  <<<'{"size": "roomy", "setup": ["E2E_PLAIN"]}')
 expect "corral-new's output" "script script.adam dev roomy E2E_PLAIN" \
-  "$(jq -r '"\(.name) \(.sshUsername) \(.image) \(.size) \([.environment[].name] | join(" "))"' <<<"$made")"
+  "$(jq -r '"\(.name) \(.sshUsername) \(.image) \(.size) \([.setup[].name] | join(" "))"' <<<"$made")"
 expect "E2E_PLAIN in script" plain-value "$(as adam script.adam 'printenv E2E_PLAIN')"
 if out=$(ssh -F ssh_config -i keys/adam main.adam@corral-e2e corral-new <<<'{}' 2>&1); then
   fail "corral-new made main again: $out"
@@ -451,14 +451,14 @@ docker compose up -d --wait >>"$log" 2>&1
 login adam "$admin_password"
 expect "keys after the restart" 1 "$(api adam GET api/keys | jq length)"
 expect "sandboxes after the restart" main "$(api adam GET api/sandboxes | jq -r '.[].name')"
-expect "entries after the restart" 5 "$(api adam GET api/environment | jq length)"
+expect "entries after the restart" 5 "$(api adam GET api/setup | jq length)"
 expect "ssh after the restart" sandbox "$(as adam main.adam "id -un")"
 api adam POST api/sandboxes/main/restart >/dev/null
 expect "the variable after an API restart" "$token-main" "$(as adam main.adam 'printenv E2E_TOKEN')"
 expect "the files after an API restart" "plain.txt 644 sandbox plain file
 secret.key 600 sandbox secret-key-$token
 config.toml 600 sandbox token = \"$token-main\"" "$(files)"
-ok "after docker compose restart corral, the user, key, sandbox and environment persist, and a restart delivers it"
+ok "after docker compose restart corral, the user, key, sandbox and setup persist, and a restart delivers it"
 
 if [[ "$part" == all ]]; then
   started_at() {
@@ -676,8 +676,8 @@ fi
 
 api adam POST "api/admin/users/$bob_id/enable" >/dev/null
 login bob "$bob_password"
-api bob POST api/environment "$(entry variable BOB_TOKEN true false true bob-secret)" >/dev/null
-expect "bob's sandboxes, keys and environment" "1 1 1" "$(for listing in sandboxes keys environment; do
+api bob POST api/setup "$(entry variable BOB_TOKEN true false true bob-secret)" >/dev/null
+expect "bob's sandboxes, keys and setup" "1 1 1" "$(for listing in sandboxes keys setup; do
   api bob GET "api/$listing" | jq length; done | xargs)"
 api adam DELETE "api/admin/users/$bob_id" >/dev/null
 expect "bob's containers after deleting bob" "" \
@@ -693,7 +693,7 @@ ok "deleting bob removed his container and home, and his key is refused over SSH
 api adam POST auth/local/accounts \
   "$(jq -cn --arg p "$bob_password" '{username: "bob", password: $p, role: "member"}')" >/dev/null
 login bob "$bob_password"
-expect "the new bob's sandboxes, keys and environment" "0 0 0" "$(for listing in sandboxes keys environment; do
+expect "the new bob's sandboxes, keys and setup" "0 0 0" "$(for listing in sandboxes keys setup; do
   api bob GET "api/$listing" | jq length; done | xargs)"
 new_bob_id=$(api adam GET api/admin/users | jq -r '.[] | select(.handle == "bob") | .id')
 [[ -n "$new_bob_id" && "$new_bob_id" != "$bob_id" ]] || fail "the new bob reused id [$new_bob_id]"

@@ -64,7 +64,7 @@
 					{#if details.value.sandbox.deleteAt}
 						<Badge variant="destructive">Deletion scheduled</Badge>
 					{/if}
-					{#if details.value.sandbox.staleEnvironment}
+					{#if details.value.sandbox.staleSetup}
 						<Badge variant="outline">Restart pending</Badge>
 					{/if}
 				{/if}

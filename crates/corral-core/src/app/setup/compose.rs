@@ -50,7 +50,7 @@ pub(super) fn compose(
         match &entry.target {
             Target::Variable(name) => {
                 let text = std::str::from_utf8(bytes).map_err(|_| {
-                    Error::internal("environment", format!("variable {name} is not text"))
+                    Error::internal("setup", format!("variable {name} is not text"))
                 })?;
                 if entry.is_secret() || value.is_secret() {
                     secret_variables.insert(name.clone());
@@ -79,9 +79,7 @@ pub(super) fn compose(
         let content = if entry.template {
             let template = std::str::from_utf8(bytes)
                 .map(Template::parse)
-                .map_err(|_| {
-                    Error::internal("environment", format!("template {path} is not text"))
-                })?;
+                .map_err(|_| Error::internal("setup", format!("template {path} is not text")))?;
             secret |= template
                 .names()
                 .iter()
@@ -204,7 +202,7 @@ fn bytes_of<'a>(
             .map(ExposeSecret::expose_secret)
             .ok_or_else(|| {
                 Error::internal(
-                    "environment",
+                    "setup",
                     format!("the secret store has no value for {}", entry.target),
                 )
             }),
@@ -230,7 +228,7 @@ mod tests {
     use super::{FILE_LIMIT, FILES_LIMIT, VARIABLES_LIMIT, compose};
     use crate::Error;
     use crate::domain::{
-        Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, SecretId, SecretRef,
+        Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, Owner, SecretId, SecretRef,
         StoredValue, Target, UserId, VariableName,
     };
     use crate::fakes::exposed;
@@ -266,7 +264,7 @@ mod tests {
             };
             let entry = Entry {
                 id: EntryId::generate(),
-                owner: UserId(uuid::Uuid::nil()),
+                owner: Owner::Member(UserId(uuid::Uuid::new_v4())),
                 target,
                 template,
                 executable: false,

@@ -2,13 +2,15 @@
 //! on a full screen, or answers typed on a line.
 
 use corral_core::Error;
-use corral_core::domain::SandboxName;
+use corral_core::domain::{Repository, SandboxName};
 
 use super::keys::Key;
-use crate::api::{Create, Offer, OfferedEntry, Spec};
+use crate::api::{Create, Offer, OfferedEntry, RepositorySpec, Spec};
 
 const MAX_NAME: usize = 32;
 const MAX_REFERENCE: usize = 512;
+const MAX_URL: usize = 1024;
+const MAX_BRANCH: usize = 255;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
@@ -18,11 +20,19 @@ pub(crate) enum Step {
     /// An image of the person's own naming, in place of the catalog's.
     Reference,
     Size,
-    Environment,
+    Setup,
+    /// A repository to clone at the first start: its URL, then, given one, its branch.
+    Repository(Field),
     Summary,
     Making(Phase),
     /// Making refused, for this reason: nothing was made.
     Failed(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Field {
+    Url,
+    Branch,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,9 +70,12 @@ pub(crate) struct Installer {
     pub(crate) image: usize,
     pub(crate) reference: String,
     pub(crate) size: usize,
+    /// For each entry, whether it is chosen: always, for a required one.
     pub(crate) chosen: Vec<bool>,
     /// The entry the cursor is on.
     pub(crate) entry: usize,
+    pub(crate) url: String,
+    pub(crate) branch: String,
     /// What is wrong with the last answer, shown with its step.
     pub(crate) problem: Option<String>,
     pub(crate) checking: bool,
@@ -70,8 +83,10 @@ pub(crate) struct Installer {
 }
 
 impl Installer {
-    /// Starts from the owner's defaults, with the entries for new sandboxes chosen.
-    pub(crate) fn new(offer: Offer) -> Self {
+    /// Starts from the owner's defaults, with the entries for new sandboxes chosen and the
+    /// required ones first.
+    pub(crate) fn new(mut offer: Offer) -> Self {
+        offer.entries.sort_by_key(|entry| !entry.required());
         let image = offer
             .images
             .iter()
@@ -82,7 +97,16 @@ impl Installer {
             .iter()
             .position(|size| size.key == offer.default_size)
             .unwrap_or(0);
-        let chosen = offer.entries.iter().map(|e| e.apply_to_new).collect();
+        let chosen = offer
+            .entries
+            .iter()
+            .map(|entry| entry.required() || entry.apply_to_new)
+            .collect();
+        let entry = offer
+            .entries
+            .iter()
+            .position(|entry| !entry.required())
+            .unwrap_or(0);
         Self {
             step: if offer.name.is_some() {
                 Step::Image
@@ -94,7 +118,9 @@ impl Installer {
             reference: String::new(),
             size,
             chosen,
-            entry: 0,
+            entry,
+            url: String::new(),
+            branch: String::new(),
             problem: None,
             checking: false,
             seconds: 0,
@@ -124,12 +150,55 @@ impl Installer {
         }
     }
 
+    /// The entries the sandbox gets.
     pub(crate) fn chosen_entries(&self) -> impl Iterator<Item = &OfferedEntry> {
         self.offer
             .entries
             .iter()
+            .enumerate()
+            .filter_map(|(at, entry)| self.gets(at).then_some(entry))
+    }
+
+    /// Whether the sandbox gets the entry at `at`: chosen, and not set aside.
+    pub(crate) fn gets(&self, at: usize) -> bool {
+        self.chosen[at] && self.replaced_by(at).is_none()
+    }
+
+    /// The owner's chosen entry that sets aside the offered entry at `at`, which then can be
+    /// neither chosen nor attached.
+    pub(crate) fn replaced_by(&self, at: usize) -> Option<&OfferedEntry> {
+        let offered = &self.offer.entries[at];
+        if !offered.shadowed {
+            return None;
+        }
+        self.offer
+            .entries
+            .iter()
             .zip(&self.chosen)
-            .filter_map(|(entry, &chosen)| chosen.then_some(entry))
+            .find(|&(own, &chosen)| chosen && own.shared.is_none() && own.collides(offered))
+            .map(|(own, _)| own)
+    }
+
+    /// The entries the person may leave out, with their place among all the entries.
+    pub(crate) fn toggles(&self) -> impl Iterator<Item = (usize, &OfferedEntry)> {
+        self.offer
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.required())
+    }
+
+    /// The repository to clone, unless the URL is left empty.
+    pub(crate) fn repository(&self) -> Option<Repository> {
+        self.typed_repository().and_then(Result::ok)
+    }
+
+    /// The repository the URL and branch typed make, the repository's default branch for an
+    /// empty one, unless the URL is left empty.
+    fn typed_repository(&self) -> Option<corral_core::Result<Repository>> {
+        let url = self.url.trim();
+        let branch = Some(self.branch.trim()).filter(|branch| !branch.is_empty());
+        (!url.is_empty()).then(|| Repository::new(url, branch))
     }
 
     /// The steps this lobby goes through, for a guide to where the person is.
@@ -144,8 +213,9 @@ impl Installer {
         }
         steps.push(Step::Size);
         if !self.offer.entries.is_empty() {
-            steps.push(Step::Environment);
+            steps.push(Step::Setup);
         }
+        steps.push(Step::Repository(Field::Url));
         steps.push(Step::Summary);
         steps
     }
@@ -198,7 +268,7 @@ impl Installer {
                     _ => None,
                 }
             }
-            (Step::Reference, Key::Up) => {
+            (Step::Reference | Step::Repository(_), Key::Up) => {
                 self.back();
                 None
             }
@@ -208,6 +278,20 @@ impl Installer {
                 }
                 match key {
                     Key::Enter => self.submit_reference(),
+                    _ => None,
+                }
+            }
+            (Step::Repository(field), key) => {
+                let field = *field;
+                let max = match field {
+                    Field::Url => MAX_URL,
+                    Field::Branch => MAX_BRANCH,
+                };
+                if self.edit(key, max, |installer| installer.field(field)) {
+                    return None;
+                }
+                match key {
+                    Key::Enter => self.submit_repository(field),
                     _ => None,
                 }
             }
@@ -224,9 +308,12 @@ impl Installer {
                 self.move_cursor(true);
                 None
             }
-            (Step::Environment, Key::Char(' ' | 'x')) => {
-                if let Some(chosen) = self.chosen.get_mut(self.entry) {
-                    *chosen = !*chosen;
+            (Step::Setup, Key::Char(' ' | 'x')) => {
+                if let Some(entry) = self.offer.entries.get(self.entry)
+                    && !entry.required()
+                    && self.replaced_by(self.entry).is_none()
+                {
+                    self.chosen[self.entry] = !self.chosen[self.entry];
                 }
                 None
             }
@@ -261,7 +348,7 @@ impl Installer {
         let (cursor, count) = match self.step {
             Step::Image => (&mut self.image, self.offer.images.len()),
             Step::Size => (&mut self.size, self.offer.sizes.len()),
-            Step::Environment => (&mut self.entry, self.offer.entries.len()),
+            Step::Setup => (&mut self.entry, self.offer.entries.len()),
             _ => return,
         };
         let count = if self.step == Step::Image {
@@ -281,9 +368,9 @@ impl Installer {
         self.step = match self.step {
             Step::Image if self.another_image() => Step::Reference,
             Step::Image => Step::Size,
-            Step::Size if self.offer.entries.is_empty() => Step::Summary,
-            Step::Size => Step::Environment,
-            Step::Environment => Step::Summary,
+            Step::Size if self.offer.entries.is_empty() => Step::Repository(Field::Url),
+            Step::Size => Step::Setup,
+            Step::Setup => Step::Repository(Field::Url),
             Step::Summary => return Some(self.make()),
             _ => return None,
         };
@@ -296,9 +383,12 @@ impl Installer {
             Step::Image if self.offer.name.is_none() => Step::Name,
             Step::Size if self.another_image() => Step::Reference,
             Step::Reference | Step::Size => Step::Image,
-            Step::Environment => Step::Size,
-            Step::Summary if self.offer.entries.is_empty() => Step::Size,
-            Step::Summary => Step::Environment,
+            Step::Setup => Step::Size,
+            Step::Repository(Field::Url) if self.offer.entries.is_empty() => Step::Size,
+            Step::Repository(Field::Url) => Step::Setup,
+            Step::Repository(Field::Branch) => Step::Repository(Field::Url),
+            Step::Summary if self.url.trim().is_empty() => Step::Repository(Field::Url),
+            Step::Summary => Step::Repository(Field::Branch),
             ref step => step.clone(),
         };
     }
@@ -327,13 +417,50 @@ impl Installer {
         Some(Effect::CheckImage(reference.to_owned()))
     }
 
+    fn field(&mut self, field: Field) -> &mut String {
+        match field {
+            Field::Url => &mut self.url,
+            Field::Branch => &mut self.branch,
+        }
+    }
+
+    /// Goes on from the URL to its branch, or past both when the URL is left empty, once what
+    /// is typed makes a repository.
+    fn submit_repository(&mut self, field: Field) -> Option<Effect> {
+        let checked = match (field, self.typed_repository()) {
+            (_, None) => Ok(Step::Summary),
+            (Field::Url, Some(_)) => {
+                Repository::new(&self.url, None).map(|_| Step::Repository(Field::Branch))
+            }
+            (Field::Branch, Some(typed)) => typed.map(|_| Step::Summary),
+        };
+        match checked {
+            Ok(step) => {
+                self.problem = None;
+                self.step = step;
+            }
+            Err(Error::Invalid(why)) => self.problem = Some(why),
+            Err(error) => self.problem = Some(error.to_string()),
+        }
+        None
+    }
+
     fn make(&mut self) -> Effect {
         self.step = Step::Making(Phase::Creating);
         self.seconds = 0;
         let spec = Spec {
             image: Some(self.image_spec()),
             size: self.offer.sizes.get(self.size).map(|size| size.key.clone()),
-            environment: Some(self.chosen_entries().map(|e| e.id.clone()).collect()),
+            setup: Some(
+                self.chosen_entries()
+                    .filter(|entry| !entry.required())
+                    .map(|entry| entry.id.clone())
+                    .collect(),
+            ),
+            repository: self.repository().map(|repository| RepositorySpec {
+                url: repository.url().to_owned(),
+                branch: repository.branch().map(str::to_owned),
+            }),
         };
         Effect::Make(Create {
             username: self.login(),
@@ -366,9 +493,13 @@ impl Installer {
                 self.pick(answer, count).map(|size| self.size = size)?;
                 self.next()
             }
-            Step::Environment => {
+            Step::Setup => {
                 self.choose(answer)?;
                 self.next()
+            }
+            Step::Repository(field) => {
+                answer.clone_into(self.field(field));
+                self.submit_repository(field)
             }
             Step::Summary => match answer.to_ascii_lowercase().as_str() {
                 "" | "y" | "yes" => Some(self.make()),
@@ -407,17 +538,24 @@ impl Installer {
         }
     }
 
-    /// Chooses exactly the entries an answer numbers, or none for `none`.
+    /// Chooses exactly the entries an answer numbers among those it may leave out, or none of
+    /// them for `none`.
     fn choose(&mut self, answer: &str) -> Option<()> {
         if answer.is_empty() {
             return Some(());
         }
-        let count = self.offer.entries.len();
-        let mut chosen = vec![false; count];
+        let toggles: Vec<usize> = self.toggles().map(|(at, _)| at).collect();
+        let count = toggles.len();
+        let mut chosen: Vec<bool> = self
+            .offer
+            .entries
+            .iter()
+            .map(OfferedEntry::required)
+            .collect();
         if answer != "none" {
             for part in answer.split([' ', ',']).filter(|part| !part.is_empty()) {
                 match part.parse::<usize>() {
-                    Ok(n) if (1..=count).contains(&n) => chosen[n - 1] = true,
+                    Ok(n) if (1..=count).contains(&n) => chosen[toggles[n - 1]] = true,
                     _ => {
                         self.problem =
                             Some(format!("answer with numbers from 1 to {count}, or none"));
@@ -443,11 +581,15 @@ impl Installer {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{Effect, Event, Installer, Phase, Step};
+    use corral_core::domain::Shared;
+
+    use super::{Effect, Event, Field, Installer, Phase, Step};
     use crate::api::{
-        Create, EntryKind, ImageChoice, NamedImages, Offer, OfferedEntry, SizeChoice, Spec,
+        Create, EntryKind, ImageChoice, NamedImages, Offer, OfferedEntry, RepositorySpec,
+        SizeChoice, Spec,
     };
     use crate::lobby::keys::Key;
+    use crate::lobby::words;
 
     pub(crate) fn offer(name: Option<&str>) -> Offer {
         let image = |key: &str, label: &str| ImageChoice {
@@ -468,6 +610,8 @@ pub(crate) mod tests {
             secret,
             template: false,
             apply_to_new,
+            shared: None,
+            shadowed: false,
         };
         Offer {
             handle: "adam".to_owned(),
@@ -484,6 +628,16 @@ pub(crate) mod tests {
             default_image: "tools".to_owned(),
             default_size: "small".to_owned(),
             entries: vec![
+                OfferedEntry {
+                    shared: Some(Shared::Required),
+                    ..entry(
+                        "id-0",
+                        EntryKind::Variable,
+                        "ANTHROPIC_BASE_URL",
+                        false,
+                        true,
+                    )
+                },
                 entry("id-1", EntryKind::Variable, "GH_TOKEN", true, true),
                 entry("id-2", EntryKind::File, ".gitconfig", false, false),
             ],
@@ -500,25 +654,30 @@ pub(crate) mod tests {
         text.chars().map(Key::Char).collect()
     }
 
-    fn make(image: &str, size: &str, environment: &[&str]) -> Effect {
+    fn make(image: &str, size: &str, setup: &[&str]) -> Effect {
         Effect::Make(Create {
             username: "new.adam".to_owned(),
             spec: Spec {
                 image: Some(image.to_owned()),
                 size: Some(size.to_owned()),
-                environment: Some(environment.iter().map(|&id| id.to_owned()).collect()),
+                setup: Some(setup.iter().map(|&id| id.to_owned()).collect()),
+                repository: None,
             },
         })
+    }
+
+    fn repository_made(effects: &[Effect]) -> Option<RepositorySpec> {
+        match effects {
+            [Effect::Make(create)] => create.spec.repository.clone(),
+            other => panic!("not one make: {other:?}"),
+        }
     }
 
     #[test]
     fn the_defaults_and_the_entries_for_new_sandboxes_come_chosen() {
         let mut installer = Installer::new(offer(Some("new")));
         assert_eq!(installer.step, Step::Image);
-        let made = keys(
-            &mut installer,
-            &[Key::Enter, Key::Enter, Key::Enter, Key::Enter],
-        );
+        let made = keys(&mut installer, &[Key::Enter; 5]);
         assert_eq!(made, [make("tools", "small", &["id-1"])]);
         assert_eq!(installer.step, Step::Making(Phase::Creating));
     }
@@ -538,9 +697,12 @@ pub(crate) mod tests {
                 Key::Down,
                 Key::Char(' '),
                 Key::Enter,
-                Key::Left,
+                Key::Enter,
                 Key::Left,
                 Key::Up,
+                Key::Left,
+                Key::Up,
+                Key::Enter,
                 Key::Enter,
                 Key::Enter,
             ],
@@ -554,8 +716,171 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_required_entry_cannot_be_toggled() {
+        let mut installer = Installer::new(offer(Some("new")));
+        keys(&mut installer, &[Key::Enter, Key::Enter]);
+        assert_eq!(installer.step, Step::Setup);
+        keys(
+            &mut installer,
+            &[Key::Up, Key::Up, Key::Char(' '), Key::Char('x')],
+        );
+        assert_eq!(installer.entry, 0);
+        assert_eq!(
+            words::chosen_setup(&installer),
+            "ANTHROPIC_BASE_URL, GH_TOKEN"
+        );
+        installer.handle(Event::Answer("none".to_owned()));
+        assert_eq!(words::chosen_setup(&installer), "ANTHROPIC_BASE_URL");
+        installer.handle(Event::Answer(String::new()));
+        assert_eq!(
+            installer.handle(Event::Answer("y".to_owned())),
+            Some(make("tools", "small", &[]))
+        );
+    }
+
+    #[test]
+    fn an_offered_entry_is_set_aside_only_while_the_members_own_is_chosen() {
+        let offered = |id: &str, kind, name: &str| OfferedEntry {
+            id: id.to_owned(),
+            kind,
+            name: name.to_owned(),
+            secret: false,
+            template: false,
+            apply_to_new: true,
+            shared: Some(Shared::Offered),
+            shadowed: true,
+        };
+        let mut offer = offer(Some("new"));
+        offer.entries.splice(
+            1..1,
+            [
+                offered("id-3", EntryKind::Variable, "GH_TOKEN"),
+                offered("id-4", EntryKind::File, ".gitconfig"),
+            ],
+        );
+        let attached = |installer: &Installer| -> Vec<String> {
+            installer
+                .chosen_entries()
+                .map(|entry| entry.id.clone())
+                .collect()
+        };
+        let mut installer = Installer::new(offer);
+        keys(&mut installer, &[Key::Enter, Key::Enter]);
+        assert_eq!(attached(&installer), ["id-0", "id-4", "id-1"]);
+
+        keys(&mut installer, &[Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-4", "id-1"]);
+        keys(&mut installer, &[Key::Down, Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-1"]);
+        keys(&mut installer, &[Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-4", "id-1"]);
+
+        keys(&mut installer, &[Key::Down, Key::Down, Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-1", "id-2"]);
+        keys(&mut installer, &[Key::Up, Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-3", "id-2"]);
+        assert_eq!(
+            keys(&mut installer, &[Key::Enter; 3]),
+            [make("tools", "small", &["id-3", "id-2"])]
+        );
+    }
+
+    #[test]
+    fn an_empty_repository_skips_the_branch() {
+        let mut installer = Installer::new(offer(Some("new")));
+        keys(&mut installer, &[Key::Enter; 3]);
+        assert_eq!(installer.step, Step::Repository(Field::Url));
+        keys(&mut installer, &[Key::Enter]);
+        assert_eq!(installer.step, Step::Summary);
+        assert_eq!(words::chosen_repository(&installer), "none");
+
+        keys(&mut installer, &[Key::Left]);
+        assert_eq!(installer.step, Step::Repository(Field::Url));
+        keys(
+            &mut installer,
+            &typed("https://github.com/adamaq01/corral.git"),
+        );
+        keys(&mut installer, &[Key::Enter]);
+        assert_eq!(installer.step, Step::Repository(Field::Branch));
+        keys(&mut installer, &[Key::Enter]);
+        assert_eq!(installer.step, Step::Summary);
+        assert_eq!(
+            words::chosen_repository(&installer),
+            "https://github.com/adamaq01/corral.git"
+        );
+        keys(&mut installer, &[Key::Left]);
+        assert_eq!(installer.step, Step::Repository(Field::Branch));
+        keys(&mut installer, &typed("main"));
+        keys(&mut installer, &[Key::Enter]);
+        assert_eq!(
+            words::chosen_repository(&installer),
+            "https://github.com/adamaq01/corral.git (main)"
+        );
+        assert_eq!(
+            repository_made(&keys(&mut installer, &[Key::Enter])),
+            Some(RepositorySpec {
+                url: "https://github.com/adamaq01/corral.git".to_owned(),
+                branch: Some("main".to_owned()),
+            })
+        );
+
+        let mut installer = Installer::new(offer(Some("new")));
+        for answer in ["", "", ""] {
+            installer.handle(Event::Answer(answer.to_owned()));
+        }
+        assert_eq!(installer.step, Step::Repository(Field::Url));
+        installer.handle(Event::Answer(String::new()));
+        assert_eq!(installer.step, Step::Summary);
+        assert_eq!(repository_made(&keys(&mut installer, &[Key::Enter])), None);
+    }
+
+    #[test]
+    fn a_bad_repository_url_shows_its_problem() {
+        let mut installer = Installer::new(offer(Some("new")));
+        keys(&mut installer, &[Key::Enter; 3]);
+        keys(&mut installer, &typed("ftp://example.com/x.git"));
+        keys(&mut installer, &[Key::Enter]);
+        assert_eq!(
+            (&installer.step, installer.problem.as_deref()),
+            (
+                &Step::Repository(Field::Url),
+                Some("the repository must be an https://, ssh:// or git@host:path address")
+            )
+        );
+        keys(&mut installer, &[Key::Backspace; 23]);
+        assert_eq!(installer.problem, None);
+        keys(
+            &mut installer,
+            &typed("https://me:tok3n@github.com/me/x.git"),
+        );
+        keys(&mut installer, &[Key::Enter]);
+        assert_eq!(installer.step, Step::Repository(Field::Url));
+        let problem = installer.problem.clone().unwrap_or_default();
+        assert!(
+            problem.starts_with("the repository URL carries a login"),
+            "{problem}"
+        );
+        assert!(!problem.contains("tok3n"), "{problem}");
+
+        installer.handle(Event::Answer("git@github.com:me/x.git".to_owned()));
+        installer.handle(Event::Answer("-x".to_owned()));
+        assert_eq!(
+            (&installer.step, installer.problem.as_deref()),
+            (
+                &Step::Repository(Field::Branch),
+                Some("branch \"-x\" is not a git branch name")
+            )
+        );
+        keys(&mut installer, &[Key::Up]);
+        assert_eq!(
+            (&installer.step, installer.problem.as_deref()),
+            (&Step::Repository(Field::Url), None)
+        );
+    }
+
+    #[test]
     fn esc_or_q_leaves_at_any_step_before_making_and_q_is_typed_in_a_field() {
-        for steps in [0, 1, 2, 3] {
+        for steps in [0, 1, 2, 4] {
             let mut installer = Installer::new(offer(Some("new")));
             keys(&mut installer, &vec![Key::Enter; steps]);
             assert_eq!(keys(&mut installer, &[Key::Char('q')]), [Effect::Leave]);
@@ -569,7 +894,13 @@ pub(crate) mod tests {
         assert_eq!(keys(&mut installer, &[Key::Interrupt]), [Effect::Leave]);
 
         let mut installer = Installer::new(offer(Some("new")));
-        keys(&mut installer, &[Key::Enter; 4]);
+        keys(&mut installer, &[Key::Enter; 3]);
+        assert_eq!(keys(&mut installer, &typed("q")), []);
+        assert_eq!(installer.url, "q");
+        assert_eq!(keys(&mut installer, &[Key::Esc]), [Effect::Leave]);
+
+        let mut installer = Installer::new(offer(Some("new")));
+        keys(&mut installer, &[Key::Enter; 5]);
         assert_eq!(keys(&mut installer, &[Key::Esc, Key::Char('q')]), []);
     }
 
@@ -592,7 +923,7 @@ pub(crate) mod tests {
         keys(&mut installer, &[Key::Left]);
         assert_eq!(installer.step, Step::Name);
         assert_eq!(
-            keys(&mut installer, &[Key::Enter; 5]),
+            keys(&mut installer, &[Key::Enter; 6]),
             [make("tools", "small", &["id-1"])]
         );
     }
@@ -636,7 +967,7 @@ pub(crate) mod tests {
     #[test]
     fn a_refused_make_shows_why_and_goes_back_to_the_summary() {
         let mut installer = Installer::new(offer(Some("new")));
-        keys(&mut installer, &[Key::Enter; 4]);
+        keys(&mut installer, &[Key::Enter; 5]);
         installer.handle(Event::Made(Err("at most 3 sandboxes per user".to_owned())));
         assert_eq!(
             installer.step,
@@ -667,13 +998,14 @@ pub(crate) mod tests {
         );
         assert_eq!(answer(&mut installer, ""), None);
         assert_eq!(answer(&mut installer, "2"), None);
-        assert_eq!(installer.step, Step::Environment);
+        assert_eq!(installer.step, Step::Setup);
         assert_eq!(answer(&mut installer, "2 x"), None);
         assert!(installer.problem.is_some());
         assert_eq!(answer(&mut installer, "2"), None);
+        assert_eq!(answer(&mut installer, ""), None);
         assert_eq!(answer(&mut installer, "n"), None);
         assert_eq!(installer.step, Step::Name);
-        for text in ["", "", "", ""] {
+        for text in ["", "", "", "", ""] {
             assert_eq!(answer(&mut installer, text), None);
         }
         assert_eq!(

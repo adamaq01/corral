@@ -3,7 +3,7 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import VariableIcon from '@lucide/svelte/icons/variable';
 	import { toast } from 'svelte-sonner';
-	import { environment } from '#lib/api/environment.js';
+	import { setup } from '#lib/api/setup.js';
 	import type { AttachedEntry, ValueInput } from '#lib/api/generated/index.js';
 	import AttachEntryDialog from '#lib/components/attach-entry-dialog.svelte';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
@@ -14,18 +14,16 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
-	import { baseName, where } from '#lib/environment.js';
+	import { SHARING, baseName, where } from '#lib/setup.js';
 	import { Remote } from '#lib/remote.svelte.js';
 
 	let { sandbox, onchanged }: { sandbox: string; onchanged: () => Promise<void> } = $props();
 
-	const attached = new Remote(() => environment.ofSandbox(sandbox));
-	const registry = new Remote(environment.list);
-	const unattached = $derived(
-		(registry.value ?? []).filter(
-			(entry) => !attached.value?.some((held) => held.entry.id === entry.id)
-		)
-	);
+	const here = new Remote(async () => {
+		const [gets, registry] = await Promise.all([setup.ofSandbox(sandbox), setup.list()]);
+		const ids = new Set(gets.map(({ entry }) => entry.id));
+		return { gets, attachable: registry.filter((entry) => !ids.has(entry.id)) };
+	});
 
 	let attaching = $state(false);
 	let overriding = $state<AttachedEntry | null>(null);
@@ -34,7 +32,7 @@
 	let detaching = $state<AttachedEntry | null>(null);
 
 	async function changed() {
-		await Promise.all([attached.reload(), registry.reload(), onchanged()]);
+		await Promise.all([here.reload(), onchanged()]);
 	}
 
 	function openOverride(held: AttachedEntry) {
@@ -44,20 +42,20 @@
 
 	async function saveOverride(value: ValueInput) {
 		if (overriding) {
-			await environment.override(sandbox, overriding.entry.id, value);
+			await setup.override(sandbox, overriding.entry.id, value);
 			toast.success(`Saved the override of ${where(overriding.entry)} for ${sandbox}`);
 			await changed();
 		}
 	}
 
 	async function clearOverride(held: AttachedEntry) {
-		await environment.clearOverride(sandbox, held.entry.id);
+		await setup.clearOverride(sandbox, held.entry.id);
 		toast.success(`${sandbox} takes ${where(held.entry)}'s own value again`);
 		await changed();
 	}
 
 	async function detach(held: AttachedEntry) {
-		await environment.detach(sandbox, held.entry.id);
+		await setup.detach(sandbox, held.entry.id);
 		toast.success(`Detached ${where(held.entry)} from ${sandbox}`);
 		await changed();
 	}
@@ -65,20 +63,15 @@
 
 <Card.Root>
 	<Card.Header>
-		<Card.Title>Environment</Card.Title>
+		<Card.Title>Setup</Card.Title>
 		<Card.Description>
 			The variables and files this sandbox gets at each start, from
-			<a class="underline underline-offset-4" href="/environment">Environment</a>. An override gives
-			one of them another value here alone.
+			<a class="underline underline-offset-4" href="/setup">Setup</a>. An override gives one of them
+			another value here alone.
 		</Card.Description>
-		{#if attached.value?.length}
+		{#if here.value?.gets.length}
 			<Card.Action>
-				<Button
-					variant="outline"
-					size="sm"
-					disabled={!registry.value}
-					onclick={() => (attaching = true)}
-				>
+				<Button variant="outline" size="sm" onclick={() => (attaching = true)}>
 					<PlusIcon />
 					Attach
 				</Button>
@@ -86,37 +79,38 @@
 		{/if}
 	</Card.Header>
 	<Card.Content>
-		{#if attached.current.state === 'loading'}
-			<div class="grid gap-2" role="status" aria-label="Loading the sandbox's environment">
+		{#if here.current.state === 'loading'}
+			<div class="grid gap-2" role="status" aria-label="Loading the sandbox's setup">
 				<Skeleton class="h-14 rounded-lg" />
 			</div>
-		{:else if attached.current.state === 'failed'}
+		{:else if here.current.state === 'failed'}
 			<LoadFailed
-				title="Loading the sandbox's environment failed"
-				error={attached.current.error}
-				onretry={() => attached.reload()}
+				title="Loading the sandbox's setup failed"
+				error={here.current.error}
+				onretry={() => here.reload()}
 			/>
-		{:else if attached.current.value.length === 0}
+		{:else if here.current.value.gets.length === 0}
+			{@const choices = here.current.value.attachable.length}
 			<div
 				class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed p-4"
 			>
 				<p class="text-sm text-muted-foreground">
-					Nothing is attached to this sandbox. {(registry.value?.length ?? 0) > 0
-						? `You have ${registry.value?.length} to choose from.`
-						: 'Add an API key, a token or a config file on Environment first.'}
+					Nothing is attached to this sandbox. {choices > 0
+						? `You have ${choices} to choose from.`
+						: 'Add an API key, a token or a config file on Setup first.'}
 				</p>
-				{#if (registry.value?.length ?? 0) > 0}
+				{#if choices > 0}
 					<Button variant="outline" size="sm" onclick={() => (attaching = true)}>
 						<PlusIcon />
 						Attach variables and files
 					</Button>
 				{:else}
-					<Button variant="outline" size="sm" href="/environment">Go to Environment</Button>
+					<Button variant="outline" size="sm" href="/setup">Go to Setup</Button>
 				{/if}
 			</div>
 		{:else}
 			<ul class="grid divide-y" aria-label="Attached to {sandbox}">
-				{#each attached.current.value as held (held.entry.id)}
+				{#each here.current.value.gets as held (held.entry.id)}
 					{@const entry = held.entry}
 					{@const Icon = entry.kind === 'variable' ? VariableIcon : FileTextIcon}
 					{@const unresolved =
@@ -126,9 +120,12 @@
 							<Icon class="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 							<div class="grid min-w-0 flex-1 gap-1.5">
 								<p class="flex flex-wrap items-center gap-2 text-sm font-medium">
-									<a class="font-mono break-all hover:underline" href="/environment/{entry.id}">
+									<a class="font-mono wrap-anywhere hover:underline" href="/setup/{entry.id}">
 										{where(entry)}
 									</a>
+									{#if entry.shared}
+										<Badge variant="outline">{SHARING[entry.shared].badge}</Badge>
+									{/if}
 									{#if entry.secret}
 										<Badge variant="secondary">Secret</Badge>
 									{/if}
@@ -152,36 +149,38 @@
 								{/if}
 							</div>
 						</div>
-						<div class="flex flex-wrap items-start gap-2 sm:justify-end">
-							<Button
-								variant="outline"
-								size="sm"
-								aria-label="{held.override
-									? 'Change override of'
-									: 'Override for this sandbox:'} {where(entry)}"
-								onclick={() => openOverride(held)}
-							>
-								{held.override ? 'Change override' : 'Override for this sandbox'}
-							</Button>
-							{#if held.override}
+						{#if entry.shared !== 'required'}
+							<div class="flex flex-wrap items-start gap-2 sm:justify-end">
 								<Button
 									variant="outline"
 									size="sm"
-									aria-label="Remove override of {where(entry)}"
-									onclick={() => (clearing = held)}
+									aria-label="{held.override
+										? 'Change override of'
+										: 'Override for this sandbox:'} {where(entry)}"
+									onclick={() => openOverride(held)}
 								>
-									Remove override
+									{held.override ? 'Change override' : 'Override for this sandbox'}
 								</Button>
-							{/if}
-							<Button
-								variant="ghost"
-								size="sm"
-								aria-label="Detach {where(entry)}"
-								onclick={() => (detaching = held)}
-							>
-								Detach
-							</Button>
-						</div>
+								{#if held.override}
+									<Button
+										variant="outline"
+										size="sm"
+										aria-label="Remove override of {where(entry)}"
+										onclick={() => (clearing = held)}
+									>
+										Remove override
+									</Button>
+								{/if}
+								<Button
+									variant="ghost"
+									size="sm"
+									aria-label="Detach {where(entry)}"
+									onclick={() => (detaching = held)}
+								>
+									Detach
+								</Button>
+							</div>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -189,7 +188,12 @@
 	</Card.Content>
 </Card.Root>
 
-<AttachEntryDialog bind:open={attaching} {sandbox} entries={unattached} onAttached={changed} />
+<AttachEntryDialog
+	bind:open={attaching}
+	{sandbox}
+	entries={here.value?.attachable ?? []}
+	onAttached={changed}
+/>
 
 {#if overriding}
 	{@const entry = overriding.entry}

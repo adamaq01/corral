@@ -1,11 +1,11 @@
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretSlice};
 
-use super::Environment;
+use super::Setup;
 use crate::Result;
-use crate::domain::{Attachment, Entry, EntryId, Target, UserId};
+use crate::domain::{Attachment, Entry, EntryId, Owner, Target, UserId};
 
-impl Environment {
+impl Setup {
     /// Makes each credential kept before entries existed a secret variable that applies to new
     /// sandboxes, attached to each sandbox its owner has, then forgets the credential. Picks up
     /// where an interrupted run stopped. Returns how many it made.
@@ -36,7 +36,7 @@ impl Environment {
                 let value = SecretSlice::from(value.expose_secret().as_bytes().to_vec());
                 let entry = Entry {
                     id: EntryId::generate(),
-                    owner: user,
+                    owner: Owner::Member(user),
                     template: false,
                     executable: false,
                     apply_to_new: true,

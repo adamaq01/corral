@@ -18,9 +18,10 @@ const sandbox: Sandbox = {
 	isDefault: true,
 	ssh: { username: 'main.bob', host: lan, port: 2222 },
 	createdAt: '2026-11-02T09:30:00Z',
-	staleEnvironment: false,
+	staleSetup: false,
 	idle,
 	deleteAt: null,
+	repository: null,
 	state: 'running'
 };
 

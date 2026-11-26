@@ -21,7 +21,7 @@
 	import CopySnippet from '#lib/components/copy-snippet.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import RefreshStatus from '#lib/components/refresh-status.svelte';
-	import SandboxEnvironment from '#lib/components/sandbox-environment.svelte';
+	import SandboxSetup from '#lib/components/sandbox-setup.svelte';
 	import SandboxSleep from '#lib/components/sandbox-sleep.svelte';
 	import SandboxStateBadge from '#lib/components/sandbox-state-badge.svelte';
 	import StateAnnouncer from '#lib/components/state-announcer.svelte';
@@ -244,21 +244,19 @@
 			</Alert.Root>
 		{/if}
 
-		{#if current.staleEnvironment}
+		{#if current.staleSetup}
 			<Alert.Root>
 				<VariableIcon />
-				<Alert.Title>Restart to apply your environment changes</Alert.Title>
+				<Alert.Title>Restart to apply your setup changes</Alert.Title>
 				<Alert.Description>
-					Its environment changed after this sandbox started. Until it restarts, its SSH sessions
-					and home get what it started with.
+					Its setup changed after this sandbox started. Until it restarts, its SSH sessions and home
+					get what it started with.
 				</Alert.Description>
 			</Alert.Root>
 		{/if}
 
 		{#if presentation.manageable && !current.deleteAt}
-			{@const available = current.staleEnvironment
-				? (['restart', 'stop'] as const)
-				: presentation.powers}
+			{@const available = current.staleSetup ? (['restart', 'stop'] as const) : presentation.powers}
 			<div class="grid gap-3">
 				<div class="flex flex-wrap gap-2">
 					{#each available as action, index (action)}
@@ -368,7 +366,7 @@
 			<SandboxSleep sandbox={current} onchanged={() => sandbox.reload()} />
 		{/if}
 
-		<SandboxEnvironment sandbox={name} onchanged={() => sandbox.reload()} />
+		<SandboxSetup sandbox={name} onchanged={() => sandbox.reload()} />
 
 		{#if presentation.manageable}
 			<Card.Root class="ring-destructive/30">

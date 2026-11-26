@@ -9,8 +9,8 @@
 	import VariableIcon from '@lucide/svelte/icons/variable';
 	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
-	import { environment } from '#lib/api/environment.js';
-	import type { EntryKind, EnvironmentEntry } from '#lib/api/generated/index.js';
+	import { setup } from '#lib/api/setup.js';
+	import type { EntryKind, SetupEntry } from '#lib/api/generated/index.js';
 	import EntryDialog from '#lib/components/entry-dialog.svelte';
 	import ImportVariablesDialog from '#lib/components/import-variables-dialog.svelte';
 	import ListSkeleton from '#lib/components/list-skeleton.svelte';
@@ -24,10 +24,10 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as Item from '#lib/components/ui/item/index.js';
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
-	import { download, lineCount, summary, toDotenv, where } from '#lib/environment.js';
+	import { SHARING, described, download, sections, toDotenv, where } from '#lib/setup.js';
 	import { Remote, keepFresh } from '#lib/remote.svelte.js';
 
-	const list = new Remote(environment.list);
+	const list = new Remote(setup.list);
 	keepFresh(list);
 
 	let adding = $state(false);
@@ -36,24 +36,24 @@
 	let search = $state('');
 	let show = $state<'all' | EntryKind | 'secret'>('all');
 
-	const shown = $derived(
-		(list.value ?? []).filter((entry) => {
-			const matches =
-				where(entry).toLowerCase().includes(search.trim().toLowerCase()) ||
-				entry.sandboxes.some((used) => used.sandbox.includes(search.trim().toLowerCase()));
-			const kept = show === 'all' || (show === 'secret' ? entry.secret : entry.kind === show);
-			return matches && kept;
-		})
-	);
+	const parts = $derived(sections(list.value ?? []));
+
+	function shown(entry: SetupEntry): boolean {
+		const matches =
+			where(entry).toLowerCase().includes(search.trim().toLowerCase()) ||
+			entry.sandboxes.some((used) => used.sandbox.includes(search.trim().toLowerCase()));
+		const kept = show === 'all' || (show === 'secret' ? entry.secret : entry.kind === show);
+		return matches && kept;
+	}
 
 	function add(which: EntryKind) {
 		kind = which;
 		adding = true;
 	}
 
-	async function created(entry: EnvironmentEntry) {
+	async function created(entry: SetupEntry) {
 		toast.success(`Added ${where(entry)}`);
-		await goto(`/environment/${entry.id}`);
+		await goto(`/setup/${entry.id}`);
 	}
 
 	async function imported(count: number) {
@@ -63,24 +63,8 @@
 		await list.reload();
 	}
 
-	function exportVariables(entries: EnvironmentEntry[]) {
+	function exportVariables(entries: SetupEntry[]) {
 		download('corral.env', toDotenv(entries));
-	}
-
-	function described(entry: EnvironmentEntry): string {
-		const lines = entry.value.shown === 'text' ? lineCount(entry.value.text) : 0;
-		const value =
-			entry.kind === 'variable' || entry.value.shown !== 'text'
-				? summary(entry.value)
-				: `${lines} ${lines === 1 ? 'line' : 'lines'}`;
-		const on =
-			entry.sandboxes.length === 0
-				? 'no sandbox'
-				: entry.sandboxes.map((used) => used.sandbox).join(', ');
-		const attached = `${value ? 'attached' : 'Attached'} to ${on}`;
-		return [value, attached, entry.applyToNew ? 'new sandboxes get it' : null]
-			.filter(Boolean)
-			.join(' · ');
 	}
 </script>
 
@@ -101,13 +85,78 @@
 	</div>
 {/snippet}
 
+{#snippet noneYet()}
+	<Empty.Root class="border">
+		<Empty.Header>
+			<Empty.Media variant="icon"><VariableIcon /></Empty.Media>
+			<Empty.Title>No variables or files yet</Empty.Title>
+			<Empty.Description>
+				Store an API key, a git token or a config file once, and attach it to any sandbox you own.
+			</Empty.Description>
+		</Empty.Header>
+		<Empty.Content>
+			{@render addButtons(true)}
+		</Empty.Content>
+	</Empty.Root>
+{/snippet}
+
+{#snippet listed(label: string, entries: SetupEntry[])}
+	{@const matching = entries.filter(shown)}
+	{#if matching.length === 0}
+		<p class="text-sm text-muted-foreground">Nothing matches.</p>
+	{:else}
+		<ul class="grid gap-2" aria-label={label}>
+			{#each matching as entry (entry.id)}
+				{@const Icon = entry.kind === 'variable' ? VariableIcon : FileTextIcon}
+				<li>
+					<Item.Root variant="outline">
+						{#snippet child({ props })}
+							<a href="/setup/{entry.id}" {...props}>
+								<Item.Media variant="icon">
+									<Icon class="text-muted-foreground" />
+								</Item.Media>
+								<Item.Content class="min-w-0">
+									<Item.Title class="max-w-full flex-wrap font-mono wrap-anywhere">
+										{where(entry)}
+										{#if entry.shared}
+											<Badge variant="outline">{SHARING[entry.shared].badge}</Badge>
+										{/if}
+										{#if entry.shadows}
+											<Badge variant="outline">Yours, in place of the shared one</Badge>
+										{/if}
+										{#if entry.secret}
+											<Badge variant="secondary">Secret</Badge>
+										{/if}
+										{#if entry.template}
+											<Badge variant="outline">Template</Badge>
+										{/if}
+										{#if entry.duplicate}
+											<Badge variant="destructive">Duplicate</Badge>
+										{/if}
+									</Item.Title>
+									<Item.Description class="wrap-anywhere">
+										{described(entry)}
+									</Item.Description>
+								</Item.Content>
+								<Item.Actions>
+									<ChevronRightIcon class="size-4 text-muted-foreground" aria-hidden="true" />
+								</Item.Actions>
+							</a>
+						{/snippet}
+					</Item.Root>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+{/snippet}
+
 <div class="grid grid-cols-1 gap-6">
 	<PageHeader
-		title="Environment"
-		description="Variables and files your sandboxes receive, such as API keys and tool settings."
+		title="Setup"
+		description="Variables and files your sandboxes come with, such as API keys and tool settings."
 	>
 		{#snippet actions()}
-			{#if list.value?.length}
+			{#if parts.yours.length > 0}
 				{@render addButtons(true)}
 			{/if}
 		{/snippet}
@@ -125,28 +174,16 @@
 	</Alert.Root>
 
 	{#if list.current.state === 'loading'}
-		<ListSkeleton what="your environment" />
+		<ListSkeleton what="your setup" />
 	{:else if list.current.state === 'failed'}
 		<LoadFailed
-			title="Loading your environment failed"
+			title="Loading your setup failed"
 			error={list.current.error}
 			onretry={() => list.reload()}
 		/>
 	{:else if list.current.value.length === 0}
-		<Empty.Root class="border">
-			<Empty.Header>
-				<Empty.Media variant="icon"><VariableIcon /></Empty.Media>
-				<Empty.Title>No variables or files yet</Empty.Title>
-				<Empty.Description>
-					Store an API key, a git token or a config file once, and attach it to any sandbox you own.
-				</Empty.Description>
-			</Empty.Header>
-			<Empty.Content>
-				{@render addButtons(true)}
-			</Empty.Content>
-		</Empty.Root>
+		{@render noneYet()}
 	{:else}
-		{@const entries = list.current.value}
 		<div class="grid gap-3">
 			<div class="flex flex-wrap items-center gap-2">
 				<div class="relative min-w-48 flex-1">
@@ -168,57 +205,29 @@
 					<NativeSelect.Option value="file">Files</NativeSelect.Option>
 					<NativeSelect.Option value="secret">Secret</NativeSelect.Option>
 				</NativeSelect.Root>
-				{#if entries.some((entry) => entry.kind === 'variable')}
-					<Button variant="ghost" onclick={() => exportVariables(entries)}>
+				{#if parts.yours.some((entry) => entry.kind === 'variable')}
+					<Button variant="ghost" onclick={() => exportVariables(parts.yours)}>
 						<DownloadIcon />
 						Export .env
 					</Button>
 				{/if}
 			</div>
 			<RefreshStatus remote={list} />
-			{#if shown.length === 0}
-				<p class="text-sm text-muted-foreground">Nothing matches.</p>
+			{#if parts.shared.length === 0}
+				{@render listed('Setup', parts.yours)}
 			{:else}
-				<ul class="grid gap-2" aria-label="Environment">
-					{#each shown as entry (entry.id)}
-						{@const Icon = entry.kind === 'variable' ? VariableIcon : FileTextIcon}
-						<li>
-							<Item.Root variant="outline">
-								{#snippet child({ props })}
-									<a href="/environment/{entry.id}" {...props}>
-										<Item.Media variant="icon">
-											<Icon class="text-muted-foreground" />
-										</Item.Media>
-										<Item.Content class="min-w-0">
-											<Item.Title class="max-w-full font-mono break-all">
-												{where(entry)}
-												{#if entry.secret}
-													<Badge variant="secondary">Secret</Badge>
-												{/if}
-												{#if entry.template}
-													<Badge variant="outline">Template</Badge>
-												{/if}
-												{#if entry.duplicate}
-													<Badge variant="destructive">Duplicate</Badge>
-												{/if}
-											</Item.Title>
-											<Item.Description class="break-all">
-												{described(entry)}
-											</Item.Description>
-										</Item.Content>
-										<Item.Actions>
-											<ChevronRightIcon class="size-4 text-muted-foreground" aria-hidden="true" />
-										</Item.Actions>
-									</a>
-								{/snippet}
-							</Item.Root>
-						</li>
-					{/each}
-				</ul>
+				<h2 class="mt-3 text-lg font-semibold tracking-tight">Shared</h2>
+				{@render listed('Shared', parts.shared)}
+				<h2 class="mt-3 text-lg font-semibold tracking-tight">Yours</h2>
+				{#if parts.yours.length === 0}
+					{@render noneYet()}
+				{:else}
+					{@render listed('Yours', parts.yours)}
+				{/if}
 			{/if}
 		</div>
 	{/if}
 </div>
 
 <EntryDialog bind:open={adding} start={{ kind }} onsaved={created} />
-<ImportVariablesDialog bind:open={importing} existing={list.value ?? []} onimported={imported} />
+<ImportVariablesDialog bind:open={importing} existing={parts.yours} onimported={imported} />
