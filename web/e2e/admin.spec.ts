@@ -192,6 +192,9 @@ test.describe('an admin', () => {
 		await rowAction(sandboxes, 'probe.dana', 'Sleep');
 		await expect(page.getByText('Put probe.dana to sleep')).toBeVisible();
 		await expect(probe).toContainText('Sleeping');
+		await rowAction(sandboxes, 'probe.dana', 'Wake');
+		await expect(page.getByText('Woke probe.dana')).toBeVisible();
+		await expect(probe).toContainText('Running');
 
 		await rowAction(sandboxes, 'probe.dana', 'Delete sandbox…');
 		const confirm = page.getByRole('alertdialog', { name: 'Delete probe.dana?' });

@@ -27,6 +27,7 @@ pub(crate) fn routes() -> Router<AppState> {
             "/api/admin/sandboxes/{handle}/{name}",
             get(sandbox).delete(delete_sandbox),
         )
+        .route("/api/admin/sandboxes/{handle}/{name}/wake", post(wake))
         .route("/api/admin/sandboxes/{handle}/{name}/stop", post(stop))
         .route(
             "/api/admin/sandboxes/{handle}/{name}/restart",
@@ -126,6 +127,17 @@ async fn sandbox(
 ) -> Result<Json<SandboxDetailsDto>, ApiError> {
     let details = state.sandboxes.inspect(&admin, &handle, &name).await?;
     Ok(Json(SandboxDetailsDto::new(details, &state.ssh)))
+}
+
+async fn wake(
+    CurrentAdmin(admin): CurrentAdmin,
+    State(state): State<AppState>,
+    PathParam((handle, name)): PathParam<(Handle, SandboxName)>,
+) -> Result<Json<OwnedSandbox>, ApiError> {
+    let owner = state.sandboxes.owner(&admin, &handle).await?;
+    state.sandboxes.wake(&owner, &name).await?;
+    let view = state.sandboxes.get(&owner, &name).await?;
+    Ok(Json(OwnedSandbox::new(view, &state.ssh)))
 }
 
 async fn stop(

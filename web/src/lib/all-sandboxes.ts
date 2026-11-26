@@ -15,16 +15,13 @@ export function ownerOf(url: { searchParams: Pick<URLSearchParams, 'get'> }): Ha
 	return url.searchParams.get(OWNER) || null;
 }
 
-/** A power the admin can use on anyone's sandbox. */
-export type AdminPower = Exclude<Power, 'wake'>;
-
 /** A row of All sandboxes. */
 export type Row = {
 	sandbox: OwnedSandbox;
 	/** `<name>.<handle>`, unique across owners, as the admin's texts name it. */
 	fullName: string;
-	/** What the admin can do to its power from here. */
-	powers: AdminPower[];
+	/** What the admin can do to its power from here, as its owner can. */
+	powers: Power[];
 	deletable: boolean;
 };
 
@@ -49,9 +46,7 @@ export function shown(sandboxes: OwnedSandbox[] | undefined, owner: Handle | nul
 			.map((sandbox) => ({
 				sandbox,
 				fullName: `${sandbox.name}.${sandbox.owner.handle}`,
-				powers: states[sandbox.state].powers.filter(
-					(power): power is AdminPower => power !== 'wake'
-				),
+				powers: states[sandbox.state].powers,
 				deletable: states[sandbox.state].manageable
 			}))
 	};

@@ -7,7 +7,7 @@
 	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { ownerOf, sandboxesOf, shown, type AdminPower, type Row } from '#lib/all-sandboxes.js';
+	import { ownerOf, sandboxesOf, shown, type Row } from '#lib/all-sandboxes.js';
 	import * as admin from '#lib/api/admin.js';
 	import { failureMessage } from '#lib/api/client.js';
 	import type { Handle } from '#lib/api/generated/index.js';
@@ -32,7 +32,7 @@
 	import * as Table from '#lib/components/ui/table/index.js';
 	import UserAvatar from '#lib/components/user-avatar.svelte';
 	import { Remote, keepFresh } from '#lib/remote.svelte.js';
-	import { states } from '#lib/sandbox-status.js';
+	import { states, type Power } from '#lib/sandbox-status.js';
 
 	const wide = 'hidden sm:table-cell';
 	const columns = [wide, '', '', wide, wide, wide, ''];
@@ -62,14 +62,20 @@
 	}
 
 	const powers: Record<
-		AdminPower,
+		Power,
 		{
 			label: string;
 			pending: string;
-			run: (handle: Handle, name: string) => Promise<void>;
+			run: (handle: Handle, name: string) => Promise<unknown>;
 			done: (fullName: string) => string;
 		}
 	> = {
+		wake: {
+			label: 'Wake',
+			pending: 'Waking…',
+			run: admin.wakeSandbox,
+			done: (fullName) => `Woke ${fullName}`
+		},
 		stop: {
 			label: 'Sleep',
 			pending: 'Going to sleep…',
@@ -85,10 +91,10 @@
 	};
 
 	/** The powers in flight, by the full name of their sandbox. */
-	const pending = new SvelteMap<string, AdminPower>();
+	const pending = new SvelteMap<string, Power>();
 	let failure = $state<{ title: string; message: string } | null>(null);
 
-	async function act({ sandbox, fullName }: Row, power: AdminPower) {
+	async function act({ sandbox, fullName }: Row, power: Power) {
 		failure = null;
 		pending.set(fullName, power);
 		try {

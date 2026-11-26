@@ -565,6 +565,7 @@ const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
     ("DELETE", "/api/admin/sandboxes/adam/main", None),
     ("POST", "/api/admin/sandboxes/adam/main/stop", None),
     ("POST", "/api/admin/sandboxes/adam/main/restart", None),
+    ("POST", "/api/admin/sandboxes/adam/main/wake", None),
     ("GET", "/api/admin/settings/catalog", None),
     (
         "PUT",

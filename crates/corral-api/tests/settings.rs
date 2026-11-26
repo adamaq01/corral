@@ -372,6 +372,41 @@ async fn registry_settings_say_whether_each_password_is_set() {
 }
 
 #[tokio::test]
+async fn an_admin_wakes_a_sleeping_sandbox() {
+    let corral = Corral::new();
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let mut eve = corral.signed_in("eve", Role::Member).await;
+    eve.post("/api/sandboxes", json!({ "name": "main" })).await;
+    eve.post("/api/sandboxes/main/stop", json!({})).await;
+    assert_eq!(
+        eve.get("/api/sandboxes/main").await.json()["state"],
+        "sleeping"
+    );
+
+    let woken = root
+        .post("/api/admin/sandboxes/eve/main/wake", json!({}))
+        .await;
+    assert_eq!(woken.status, StatusCode::OK, "{}", woken.text());
+    let sandbox = woken.json();
+    assert_eq!(
+        (
+            &sandbox["owner"]["handle"],
+            &sandbox["name"],
+            &sandbox["state"]
+        ),
+        (&json!("eve"), &json!("main"), &json!("running"))
+    );
+    assert_eq!(
+        eve.get("/api/sandboxes/main").await.json()["state"],
+        "running"
+    );
+    let missing = root
+        .post("/api/admin/sandboxes/eve/spare/wake", json!({}))
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn admins_act_on_anyones_sandbox_and_members_cannot() {
     let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;

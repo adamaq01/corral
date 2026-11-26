@@ -32,6 +32,11 @@ export function sandboxDetails(handle: string, name: string): Promise<SandboxDet
 	return api.get<SandboxDetails>(sandbox(handle, name));
 }
 
+/** Wakes the sandbox of `handle`, answering it as it is once started. */
+export function wakeSandbox(handle: string, name: string): Promise<OwnedSandbox> {
+	return api.post<OwnedSandbox>(`${sandbox(handle, name)}/wake`);
+}
+
 /** Puts the sandbox of `handle` to sleep. */
 export function stopSandbox(handle: string, name: string): Promise<void> {
 	return api.post(`${sandbox(handle, name)}/stop`);
