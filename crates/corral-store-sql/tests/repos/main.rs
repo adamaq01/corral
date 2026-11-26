@@ -3,12 +3,14 @@ mod migration;
 use std::sync::Arc;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use corral_core::contract::{environment, repos};
+use corral_core::Error;
+use corral_core::app::Allowance;
+use corral_core::contract::{environment, repos, settings};
 use corral_core::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, User, UserId,
     UserStatus,
 };
-use corral_core::ports::{SandboxRepo, UserRepo};
+use corral_core::ports::{SandboxRepo, SettingsRepo, UserRepo};
 use corral_sql::testing::Databases;
 use corral_sql::{Pool, on_pool};
 use corral_store_sql::Store;
@@ -25,6 +27,7 @@ async fn meets_every_repo_contract(url: &str) {
     );
     repos::every_repo(&*store, &*store, &*store).await;
     environment::environment_repo(&*store, &*store, &*store).await;
+    settings::settings_repo(&*store, &*store).await;
 
     let gone = repos::deleting_a_user_leaves_nothing_of_them(&*store, &*store, &*store).await;
     let pool = Pool::connect(url).await.expect("raw connection");
@@ -104,6 +107,47 @@ async fn sqlite_keeps_a_scheduled_deletion_across_a_restart() {
 async fn postgres_keeps_a_scheduled_deletion_across_a_restart() {
     let postgres = Databases::postgres().await;
     a_scheduled_deletion_outlives_the_store(&postgres.url().await).await;
+}
+
+#[tokio::test]
+async fn a_corrupt_settings_row_is_an_internal_error() {
+    let sqlite = Databases::sqlite();
+    let pool = sqlite.pool().await;
+    let store = Store::open(pool.clone()).await.expect("open");
+    on_pool!(pool, |pool| {
+        sqlx::query(
+            "insert into settings (key, value, updated_at) values ('catalog', '{\"images\":', $1)",
+        )
+        .bind(Utc::now())
+        .execute(pool)
+        .await
+        .map(drop)
+    })
+    .unwrap();
+    assert!(matches!(
+        SettingsRepo::catalog(&store).await,
+        Err(Error::Internal { context, .. }) if context == "stored catalog"
+    ));
+}
+
+#[tokio::test]
+async fn deleting_a_user_removes_their_allowance() {
+    let sqlite = Databases::sqlite();
+    let store = Store::open(sqlite.pool().await).await.expect("open");
+    let owner = user();
+    UserRepo::insert(&store, &owner).await.unwrap();
+    let allowance = Allowance { max_sandboxes: 7 };
+    store
+        .set_allowance(owner.id, Some(&allowance))
+        .await
+        .unwrap();
+    assert!(UserRepo::delete(&store, owner.id).await.unwrap());
+    assert_eq!(store.allowance(owner.id).await.unwrap(), None);
+    store
+        .set_allowance(owner.id, Some(&allowance))
+        .await
+        .unwrap();
+    assert_eq!(store.allowance(owner.id).await.unwrap(), None);
 }
 
 fn user() -> User {

@@ -304,9 +304,11 @@ mod tests {
                 "environment_attachments",
                 "environment_entries",
                 "local_accounts",
+                "member_allowances",
                 "sandbox_client_states",
                 "sandboxes",
                 "secrets",
+                "settings",
                 "ssh_keys",
                 "users",
             ]
