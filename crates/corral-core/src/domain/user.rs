@@ -9,6 +9,11 @@ use crate::{Error, Result};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct UserId(pub Uuid);
 
+impl UserId {
+    /// Whom the secret store keeps the values of shared entries under, which no user is.
+    pub const SHARED: UserId = UserId(Uuid::nil());
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {

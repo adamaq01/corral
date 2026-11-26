@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use corral_core::domain::{
     Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, TokenHash, UserId,
 };
-use corral_core::ports::SandboxRepo;
+use corral_core::ports::{Changed, SandboxRepo};
 use corral_core::{Error, Result};
 use uuid::Uuid;
 
@@ -200,19 +200,31 @@ impl SandboxRepo for Store {
         .map_err(db_error)
     }
 
-    async fn record_setup_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
-        for id in ids {
-            on_pool!(self.pool, |pool| {
-                sqlx::query("update sandboxes set setup_changed_at = $2 where id = $1")
-                    .bind(&id.0)
+    async fn record_setup_change(&self, which: Changed<'_>, at: DateTime<Utc>) -> Result<()> {
+        match which {
+            Changed::Sandboxes(ids) => {
+                for id in ids {
+                    on_pool!(self.pool, |pool| {
+                        sqlx::query("update sandboxes set setup_changed_at = $2 where id = $1")
+                            .bind(&id.0)
+                            .bind(at)
+                            .execute(pool)
+                            .await
+                            .map(drop)
+                    })
+                    .map_err(db_error)?;
+                }
+                Ok(())
+            }
+            Changed::Every => on_pool!(self.pool, |pool| {
+                sqlx::query("update sandboxes set setup_changed_at = $1")
                     .bind(at)
                     .execute(pool)
                     .await
                     .map(drop)
             })
-            .map_err(db_error)?;
+            .map_err(db_error),
         }
-        Ok(())
     }
 
     async fn revoke_token(&self, id: &SandboxId) -> Result<()> {

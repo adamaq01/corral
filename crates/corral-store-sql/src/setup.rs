@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use corral_core::domain::{
-    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, SandboxId, SecretId, SecretRef,
-    StoredValue, Target, UserId, VariableName,
+    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Owner, SandboxId, SecretId, SecretRef,
+    Shared, StoredValue, Target, UserId, VariableName,
 };
 use corral_core::ports::SetupRepo;
 use corral_core::{Error, Result};
@@ -13,11 +13,14 @@ use crate::Store;
 
 const VARIABLE: &str = "variable";
 const FILE: &str = "file";
+const REQUIRED: &str = "required";
+const OFFERED: &str = "offered";
 
 #[derive(sqlx::FromRow)]
 struct EntryRow {
     id: Uuid,
-    owner: Uuid,
+    owner: Option<Uuid>,
+    shared: Option<String>,
     kind: String,
     target: String,
     template: bool,
@@ -114,6 +117,27 @@ fn amount(column: &str, value: i64) -> Result<usize> {
     parsed(column, usize::try_from(value))
 }
 
+/// The owner as its columns hold it: a member's id, or how the entry is shared.
+fn owner_columns(owner: &Owner) -> (Option<Uuid>, Option<&'static str>) {
+    match owner {
+        Owner::Member(id) => (Some(id.0), None),
+        Owner::Everyone(Shared::Required) => (None, Some(REQUIRED)),
+        Owner::Everyone(Shared::Offered) => (None, Some(OFFERED)),
+    }
+}
+
+fn owner(id: Option<Uuid>, shared: Option<&str>) -> Result<Owner> {
+    match (id, shared) {
+        (Some(id), None) => Ok(Owner::Member(UserId(id))),
+        (None, Some(REQUIRED)) => Ok(Owner::Everyone(Shared::Required)),
+        (None, Some(OFFERED)) => Ok(Owner::Everyone(Shared::Offered)),
+        (id, shared) => Err(Error::internal(
+            "stored entry owner",
+            format!("{id:?} sharing as {shared:?} is neither a member's nor everyone's"),
+        )),
+    }
+}
+
 impl TryFrom<EntryRow> for Entry {
     type Error = Error;
 
@@ -132,7 +156,7 @@ impl TryFrom<EntryRow> for Entry {
         };
         Ok(Self {
             id: EntryId(row.id),
-            owner: UserId(row.owner),
+            owner: owner(row.owner, row.shared.as_deref())?,
             target,
             template: row.template,
             executable: row.executable,
@@ -189,7 +213,26 @@ fn kind_and_target(target: &Target) -> (&'static str, &str) {
 macro_rules! entry_columns {
     () => {
         "id, owner, kind, target, template, apply_to_new, content, secret_id, size, \
-         glimpse_length, glimpse_head, glimpse_tail, set_at, created_at, executable"
+         glimpse_length, glimpse_head, glimpse_tail, set_at, created_at, executable, shared"
+    };
+}
+
+/// The attachments `a` that `$rest` after the `from` picks.
+macro_rules! select_attachments {
+    ($rest:literal) => {
+        concat!(
+            "select a.sandbox_id, a.entry_id, a.override_content, a.override_secret_id, \
+             a.override_size, a.override_glimpse_length, a.override_glimpse_head, \
+             a.override_glimpse_tail, a.override_set_at from setup_attachments a ",
+            $rest
+        )
+    };
+}
+
+/// The entries `$rest` after the `from` picks.
+macro_rules! select_entries {
+    ($rest:literal) => {
+        concat!("select ", entry_columns!(), " from setup_entries ", $rest)
     };
 }
 
@@ -197,12 +240,32 @@ macro_rules! entry_columns {
 impl SetupRepo for Store {
     async fn entries(&self, owner: UserId) -> Result<Vec<Entry>> {
         let rows: Vec<EntryRow> = on_pool!(self.pool, |pool| {
-            sqlx::query_as(concat!(
-                "select ",
-                entry_columns!(),
-                " from setup_entries where owner = $1 order by created_at, id"
+            sqlx::query_as(select_entries!("where owner = $1 order by created_at, id"))
+                .bind(owner.0)
+                .fetch_all(pool)
+                .await
+        })
+        .map_err(db_error)?;
+        rows.into_iter().map(Entry::try_from).collect()
+    }
+
+    async fn shared_entries(&self) -> Result<Vec<Entry>> {
+        let rows: Vec<EntryRow> = on_pool!(self.pool, |pool| {
+            sqlx::query_as(select_entries!(
+                "where shared is not null order by created_at, id"
             ))
-            .bind(owner.0)
+            .fetch_all(pool)
+            .await
+        })
+        .map_err(db_error)?;
+        rows.into_iter().map(Entry::try_from).collect()
+    }
+
+    async fn every_member_entry(&self) -> Result<Vec<Entry>> {
+        let rows: Vec<EntryRow> = on_pool!(self.pool, |pool| {
+            sqlx::query_as(select_entries!(
+                "where owner is not null order by created_at, id"
+            ))
             .fetch_all(pool)
             .await
         })
@@ -212,15 +275,16 @@ impl SetupRepo for Store {
 
     async fn insert(&self, entry: &Entry) -> Result<()> {
         let (kind, target) = kind_and_target(&entry.target);
+        let (owner, shared) = owner_columns(&entry.owner);
         let value = Columns::of(&entry.value);
         on_pool!(self.pool, |pool| {
             sqlx::query(concat!(
                 "insert into setup_entries (",
                 entry_columns!(),
-                ") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
+                ") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)"
             ))
             .bind(entry.id.0)
-            .bind(entry.owner.0)
+            .bind(owner)
             .bind(kind)
             .bind(target)
             .bind(entry.template)
@@ -234,6 +298,7 @@ impl SetupRepo for Store {
             .bind(value.set_at)
             .bind(entry.created_at)
             .bind(entry.executable)
+            .bind(shared)
             .execute(pool)
             .await
             .map(drop)
@@ -243,6 +308,7 @@ impl SetupRepo for Store {
 
     async fn update(&self, entry: &Entry, overrides: &[Attachment]) -> Result<bool> {
         let (kind, target) = kind_and_target(&entry.target);
+        let (owner, shared) = owner_columns(&entry.owner);
         let value = Columns::of(&entry.value);
         let overrides: Vec<(&Attachment, Option<Columns>)> = overrides
             .iter()
@@ -253,11 +319,11 @@ impl SetupRepo for Store {
             let updated = sqlx::query(
                 "update setup_entries set kind = $3, target = $4, template = $5, \
                  executable = $6, apply_to_new = $7, content = $8, secret_id = $9, size = $10, \
-                 glimpse_length = $11, glimpse_head = $12, glimpse_tail = $13, set_at = $14 \
-                 where id = $1 and owner = $2",
+                 glimpse_length = $11, glimpse_head = $12, glimpse_tail = $13, set_at = $14, \
+                 shared = $15 where id = $1 and owner is not distinct from $2",
             )
             .bind(entry.id.0)
-            .bind(entry.owner.0)
+            .bind(owner)
             .bind(kind)
             .bind(target)
             .bind(entry.template)
@@ -270,6 +336,7 @@ impl SetupRepo for Store {
             .bind(&value.glimpse_head)
             .bind(&value.glimpse_tail)
             .bind(value.set_at)
+            .bind(shared)
             .execute(&mut *tx)
             .await?
             .rows_affected();
@@ -303,14 +370,19 @@ impl SetupRepo for Store {
         .map_err(db_error)
     }
 
-    async fn delete(&self, owner: UserId, id: EntryId) -> Result<bool> {
+    async fn delete(&self, owner: &Owner, id: EntryId) -> Result<bool> {
+        let (owner, shared) = owner_columns(owner);
         let deleted = on_pool!(self.pool, |pool| {
-            sqlx::query("delete from setup_entries where id = $1 and owner = $2")
-                .bind(id.0)
-                .bind(owner.0)
-                .execute(pool)
-                .await
-                .map(|done| done.rows_affected())
+            sqlx::query(
+                "delete from setup_entries where id = $1 and owner is not distinct from $2 \
+                 and shared is not distinct from $3",
+            )
+            .bind(id.0)
+            .bind(owner)
+            .bind(shared)
+            .execute(pool)
+            .await
+            .map(|done| done.rows_affected())
         })
         .map_err(db_error)?;
         Ok(deleted > 0)
@@ -318,16 +390,23 @@ impl SetupRepo for Store {
 
     async fn attachments(&self, owner: UserId) -> Result<Vec<Attachment>> {
         let rows: Vec<AttachmentRow> = on_pool!(self.pool, |pool| {
-            sqlx::query_as(
-                "select a.sandbox_id, a.entry_id, a.override_content, a.override_secret_id, \
-                 a.override_size, a.override_glimpse_length, a.override_glimpse_head, \
-                 a.override_glimpse_tail, a.override_set_at \
-                 from setup_attachments a \
-                 join setup_entries e on e.id = a.entry_id where e.owner = $1",
-            )
+            sqlx::query_as(select_attachments!(
+                "join setup_entries e on e.id = a.entry_id where e.owner = $1"
+            ))
             .bind(owner.0)
             .fetch_all(pool)
             .await
+        })
+        .map_err(db_error)?;
+        rows.into_iter().map(Attachment::try_from).collect()
+    }
+
+    async fn attachments_of(&self, entry: EntryId) -> Result<Vec<Attachment>> {
+        let rows: Vec<AttachmentRow> = on_pool!(self.pool, |pool| {
+            sqlx::query_as(select_attachments!("where a.entry_id = $1"))
+                .bind(entry.0)
+                .fetch_all(pool)
+                .await
         })
         .map_err(db_error)?;
         rows.into_iter().map(Attachment::try_from).collect()

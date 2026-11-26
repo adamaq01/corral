@@ -12,14 +12,15 @@ use secrecy::{ExposeSecret, SecretSlice};
 
 use compose::{Composed, amount, compose, template_of, unresolved};
 pub use compose::{FILE_LIMIT, FILES_LIMIT, VARIABLE_LIMIT, VARIABLES_LIMIT};
-use registry::{Registry, Scope};
+use registry::{Registry, Scope, by_target};
 
 use super::inside::SandboxLinks;
 use crate::domain::{
-    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxId, SandboxName,
-    SandboxToken, SecretId, SecretRef, StoredValue, Target, Template, User, UserId, VariableName,
+    Admin, Attachment, Entry, EntryId, Glimpse, Handle, HomePath, Kept, Owner, Sandbox, SandboxId,
+    SandboxName, SandboxToken, SecretId, SecretRef, Shared, StoredValue, Target, Template, User,
+    UserId, VariableName,
 };
-use crate::ports::{Boot, SandboxRepo, SecretStore, SetupRepo};
+use crate::ports::{Boot, Changed, SandboxRepo, SecretStore, SetupRepo, UserRepo};
 use crate::{Error, Result};
 
 /// The directory in the home where Corral keeps the sandbox's own files.
@@ -27,12 +28,14 @@ const OWN_DIR: &str = ".config/corral";
 /// What a preview shows in place of a secret variable's value.
 const MASK: &str = "••••••••";
 
-/// Each user's variables and files, and the sandboxes they are attached to.
+/// Each member's variables and files, those the admin shares with everyone, and the sandboxes
+/// they are attached to.
 #[derive(Clone)]
 pub struct Setup {
     repo: Arc<dyn SetupRepo>,
     secrets: Arc<dyn SecretStore>,
     sandboxes: Arc<dyn SandboxRepo>,
+    users: Arc<dyn UserRepo>,
     links: SandboxLinks,
 }
 
@@ -59,16 +62,45 @@ pub struct EntryChange {
     pub value: Option<SecretSlice<u8>>,
 }
 
-/// An entry with the sandboxes it is attached to.
+/// An entry the admin shares with everyone, as they first give it.
+pub struct NewSharedEntry {
+    pub shared: Shared,
+    pub entry: NewEntry,
+}
+
+/// What a shared entry becomes, how it is shared included.
+pub struct SharedEntryChange {
+    pub shared: Shared,
+    pub change: EntryChange,
+}
+
+/// An entry with the member's sandboxes it reaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntryView {
     pub entry: Entry,
+    /// Those attached to it, or every one for a required entry.
     pub sandboxes: Vec<Use>,
     /// For a template: the variables its own value refers to.
     pub references: BTreeSet<VariableName>,
     /// Whether an entry made earlier has the same target, which only entries made before
     /// targets were unique can have.
     pub duplicate: bool,
+    /// For the member's own entry: whether it takes the place of an offered one.
+    pub shadows: bool,
+    /// For an offered entry: whether an entry of the member's takes its place.
+    pub shadowed: bool,
+}
+
+/// A shared entry as the admin sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedEntryView {
+    pub entry: Entry,
+    /// For a template: the variables its own value refers to.
+    pub references: BTreeSet<VariableName>,
+    /// How many sandboxes are attached to it.
+    pub attached: usize,
+    /// The members with an entry of their own in its place, by handle.
+    pub shadowed_by: Vec<Handle>,
 }
 
 /// An entry's attachment to one sandbox.
@@ -95,7 +127,7 @@ pub struct Preview {
     pub unresolved: BTreeSet<VariableName>,
 }
 
-/// Where a change lands: some of the owner's sandboxes, and new sandboxes.
+/// Where a change lands: some of a member's sandboxes, and their new sandboxes.
 #[derive(Default)]
 struct Reach {
     sandboxes: BTreeSet<SandboxId>,
@@ -108,20 +140,27 @@ impl Setup {
         repo: Arc<dyn SetupRepo>,
         secrets: Arc<dyn SecretStore>,
         sandboxes: Arc<dyn SandboxRepo>,
+        users: Arc<dyn UserRepo>,
         links: SandboxLinks,
     ) -> Self {
         Self {
             repo,
             secrets,
             sandboxes,
+            users,
             links,
         }
     }
 
+    /// Every shared entry, then the member's own.
     pub async fn list(&self, owner: &User) -> Result<Vec<EntryView>> {
         let registry = self.registry(owner.id).await?;
-        self.views(owner.id, &registry, registry.entries.iter().map(|e| e.id))
-            .await
+        let ids = registry
+            .shared
+            .iter()
+            .chain(&registry.entries)
+            .map(|e| e.id);
+        self.views(owner.id, &registry, ids).await
     }
 
     pub async fn get(&self, owner: &User, id: EntryId) -> Result<EntryView> {
@@ -137,7 +176,7 @@ impl Setup {
         check_content(&new.target, new.template, new.value.expose_secret())?;
         let entry = Entry {
             id: EntryId::generate(),
-            owner: owner.id,
+            owner: Owner::Member(owner.id),
             template: new.template,
             executable: new.executable,
             apply_to_new: new.apply_to_new,
@@ -154,7 +193,7 @@ impl Setup {
             ..Reach::default()
         };
         self.settle(owner.id, [&entry.value], async {
-            self.validate(owner.id, &registry, &proposed, &reach)
+            self.validate(owner.id, None, &registry, &proposed, &reach)
                 .await?;
             self.repo.insert(&entry).await
         })
@@ -172,81 +211,33 @@ impl Setup {
         change: EntryChange,
     ) -> Result<EntryView> {
         let registry = self.registry(owner.id).await?;
-        let before = registry.entry(id)?.clone();
+        let before = registry.own(id)?.clone();
         check_target(&registry, &change.target, Some(id))?;
         check_shape(&change.target, change.template, change.executable)?;
-        let shift = Shift {
-            kind: change.target.is_file() != before.target.is_file(),
-            secrecy: change.secret != before.is_secret(),
-            template: change.template && !before.template,
-        };
-        let mut rekept = Rekept::default();
-        let refitted = async {
-            let own = match &change.value {
-                Some(value) => {
-                    check_content(&change.target, change.template, value.expose_secret())?;
-                    let kept = self
-                        .keep(owner.id, &change.target, change.secret, value)
-                        .await?;
-                    rekept.record(&kept, &before.value);
-                    kept
-                }
-                None => self
-                    .refit(owner.id, &change, &shift, &before.value, &mut rekept)
-                    .await?
-                    .unwrap_or_else(|| before.value.clone()),
-            };
-            let overrides = self
-                .refit_overrides(owner.id, &registry, id, &change, &shift, &mut rekept)
-                .await?;
-            Ok((own, overrides))
-        }
-        .await;
-        let (own, overrides) = match refitted {
-            Ok(refitted) => refitted,
-            Err(error) => {
-                self.forget_all(owner.id, rekept.kept.iter().map(StoredValue::secret_id))
-                    .await;
-                return Err(error);
-            }
-        };
-
-        let after = Entry {
-            target: change.target,
-            template: change.template,
-            executable: change.executable,
-            apply_to_new: change.apply_to_new,
-            value: own,
-            ..before.clone()
-        };
+        let attachments: Vec<Attachment> = registry.attachments_of(id).cloned().collect();
+        let labels = self
+            .sandbox_names(owner.id)
+            .await?
+            .into_iter()
+            .map(|(id, name)| (id, name.to_string()))
+            .collect();
+        let (after, overrides, rekept) = self
+            .refitted(&before, &change, &attachments, &labels)
+            .await?;
         let mut proposed = registry.clone();
         proposed.put_entry(after.clone());
         for attachment in &overrides {
             proposed.put_attachment(attachment.clone());
         }
-        let lands = after.target != before.target
-            || after.template != before.template
-            || after.executable != before.executable
-            || shift.secrecy;
-        let affected: BTreeSet<SandboxId> = registry
-            .attachments_of(id)
-            .filter(|attachment| {
-                lands || (change.value.is_some() && attachment.overriding.is_none())
-            })
-            .map(|attachment| attachment.sandbox.clone())
-            .collect();
+        let affected = affected(&before, &after, change.value.is_some(), &attachments);
         let reach = Reach {
             sandboxes: affected.clone(),
             new: before.apply_to_new || after.apply_to_new,
         };
         self.settle(owner.id, &rekept.kept, async {
-            self.validate(owner.id, &registry, &proposed, &reach)
+            self.validate(owner.id, None, &registry, &proposed, &reach)
                 .await?;
-            if self.repo.update(&after, &overrides).await? {
-                Ok(())
-            } else {
-                Err(Error::NotFound(format!("setup entry {}", id.0)))
-            }
+            self.update(&after, &overrides).await
         })
         .await?;
         self.forget_all(owner.id, rekept.gone).await;
@@ -258,7 +249,7 @@ impl Setup {
     /// template that stays would refer to it.
     pub async fn delete(&self, owner: &User, id: EntryId) -> Result<()> {
         let registry = self.registry(owner.id).await?;
-        let entry = registry.entry(id)?.clone();
+        let entry = registry.own(id)?.clone();
         let attachments: Vec<Attachment> = registry.attachments_of(id).cloned().collect();
         let mut proposed = registry.clone();
         proposed.remove_entry(id);
@@ -266,10 +257,10 @@ impl Setup {
             sandboxes: attachments.iter().map(|a| a.sandbox.clone()).collect(),
             new: entry.apply_to_new,
         };
-        self.validate(owner.id, &registry, &proposed, &reach)
+        self.validate(owner.id, None, &registry, &proposed, &reach)
             .await?;
-        if !self.repo.delete(owner.id, id).await? {
-            return Err(Error::NotFound(format!("setup entry {}", id.0)));
+        if !self.repo.delete(&entry.owner, id).await? {
+            return Err(not_found(id));
         }
         self.forget(owner.id, entry.value.secret_id()).await;
         self.forget_all(owner.id, attachments.iter().map(overriding_secret))
@@ -299,7 +290,7 @@ impl Setup {
     pub async fn attach(&self, owner: &User, name: &SandboxName, id: EntryId) -> Result<()> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
-        registry.entry(id)?;
+        registry.attachable(id)?;
         if registry.attachment(&sandbox.id, id).is_some() {
             return Ok(());
         }
@@ -310,7 +301,7 @@ impl Setup {
         };
         let mut proposed = registry.clone();
         proposed.put_attachment(attachment.clone());
-        self.validate(owner.id, &registry, &proposed, &Reach::of(&sandbox))
+        self.validate(owner.id, None, &registry, &proposed, &Reach::of(&sandbox))
             .await?;
         self.repo.attach(&attachment).await?;
         self.changed(&[sandbox.id]).await
@@ -320,13 +311,14 @@ impl Setup {
     pub async fn detach(&self, owner: &User, name: &SandboxName, id: EntryId) -> Result<()> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
+        let keeper = registry.attachable(id)?.owner.secrets_owner();
         let attachment = attached(&registry, &sandbox, id)?.clone();
         let mut proposed = registry.clone();
         proposed.remove_attachment(&sandbox.id, id);
-        self.validate(owner.id, &registry, &proposed, &Reach::of(&sandbox))
+        self.validate(owner.id, None, &registry, &proposed, &Reach::of(&sandbox))
             .await?;
         self.repo.detach(&sandbox.id, id).await?;
-        self.forget(owner.id, overriding_secret(&attachment)).await;
+        self.forget(keeper, overriding_secret(&attachment)).await;
         self.changed(&[sandbox.id]).await
     }
 
@@ -341,7 +333,8 @@ impl Setup {
     ) -> Result<()> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
-        let entry = registry.entry(id)?;
+        let entry = registry.attachable(id)?;
+        let keeper = entry.owner.secrets_owner();
         let before = attached(&registry, &sandbox, id)?.clone();
         if value.is_none() && before.overriding.is_none() {
             return Ok(());
@@ -350,7 +343,7 @@ impl Setup {
             Some(value) => {
                 check_content(&entry.target, entry.template, value.expose_secret())?;
                 Some(
-                    self.keep(owner.id, &entry.target, entry.is_secret(), value)
+                    self.keep(keeper, &entry.target, entry.is_secret(), value)
                         .await?,
                 )
             }
@@ -362,13 +355,13 @@ impl Setup {
         };
         let mut proposed = registry.clone();
         proposed.put_attachment(after.clone());
-        self.settle(owner.id, after.overriding.iter(), async {
-            self.validate(owner.id, &registry, &proposed, &Reach::of(&sandbox))
+        self.settle(keeper, after.overriding.iter(), async {
+            self.validate(owner.id, None, &registry, &proposed, &Reach::of(&sandbox))
                 .await?;
             self.repo.attach(&after).await
         })
         .await?;
-        self.forget(owner.id, overriding_secret(&before)).await;
+        self.forget(keeper, overriding_secret(&before)).await;
         self.changed(&[sandbox.id]).await
     }
 
@@ -378,8 +371,13 @@ impl Setup {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
         let entry = registry.entry(id)?;
-        let attachment = attached(&registry, &sandbox, id)?;
-        let value = attachment.overriding.as_ref().unwrap_or(&entry.value);
+        let effective = registry.effective(Scope::Sandbox(&sandbox.id));
+        let Some((_, value)) = effective.iter().find(|(held, _)| held.id == id) else {
+            return Err(Error::NotFound(format!(
+                "{} is not attached to sandbox {}",
+                entry.target, sandbox.name
+            )));
+        };
         let text = match (&entry.target, &value.kept) {
             (Target::File(_), Kept::Plain(text)) if entry.template => {
                 String::from_utf8_lossy(text).into_owned()
@@ -391,10 +389,9 @@ impl Setup {
                 )));
             }
         };
-        let variables: BTreeMap<&VariableName, &StoredValue> = registry
-            .effective(Scope::Sandbox(&sandbox.id))
-            .into_iter()
-            .filter_map(|(entry, value)| match &entry.target {
+        let variables: BTreeMap<&VariableName, &StoredValue> = effective
+            .iter()
+            .filter_map(|&(entry, value)| match &entry.target {
                 Target::Variable(name) => Some((name, value)),
                 Target::File(_) => None,
             })
@@ -414,18 +411,146 @@ impl Setup {
         Ok(Preview { text, unresolved })
     }
 
+    /// Every shared entry, variables before files, each kind by name.
+    pub async fn list_shared(&self, _: &Admin) -> Result<Vec<SharedEntryView>> {
+        let mut shared = self.repo.shared_entries().await?;
+        by_target(&mut shared);
+        self.shared_views(shared).await
+    }
+
+    pub async fn get_shared(&self, _: &Admin, id: EntryId) -> Result<SharedEntryView> {
+        let entry = self.shared_entry(id).await?;
+        self.shared_view(entry).await
+    }
+
+    /// A required entry reaches every sandbox at its next start; an offered one, new sandboxes
+    /// when it applies to them.
+    pub async fn create_shared(&self, _: &Admin, new: NewSharedEntry) -> Result<SharedEntryView> {
+        let NewSharedEntry { shared, entry: new } = new;
+        let mut proposed = self.repo.shared_entries().await?;
+        check_shared_target(&proposed, &new.target, None)?;
+        check_shape(&new.target, new.template, new.executable)?;
+        check_content(&new.target, new.template, new.value.expose_secret())?;
+        if shared == Shared::Required {
+            self.check_members_lack(&new.target).await?;
+        }
+        let owner = Owner::Everyone(shared);
+        let entry = Entry {
+            id: EntryId::generate(),
+            owner,
+            template: new.template,
+            executable: new.executable,
+            apply_to_new: new.apply_to_new,
+            value: self
+                .keep(owner.secrets_owner(), &new.target, new.secret, &new.value)
+                .await?,
+            target: new.target,
+            created_at: Utc::now(),
+        };
+        proposed.push(entry.clone());
+        self.settle(UserId::SHARED, [&entry.value], async {
+            self.check_required(&proposed).await?;
+            self.validate_everyone(None, Some(&entry), &[]).await?;
+            self.repo.insert(&entry).await
+        })
+        .await?;
+        if shared == Shared::Required {
+            self.changed_everywhere().await?;
+        }
+        self.shared_view(entry).await
+    }
+
+    /// Changes the shared entry in place, as [`Self::change`] does a member's. An offered entry
+    /// made required reaches every sandbox, so it is detached from those attached to it and
+    /// their overrides are forgotten.
+    pub async fn change_shared(
+        &self,
+        _: &Admin,
+        id: EntryId,
+        change: SharedEntryChange,
+    ) -> Result<SharedEntryView> {
+        let SharedEntryChange { shared, change } = change;
+        let mut proposed = self.repo.shared_entries().await?;
+        let before = proposed
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .ok_or_else(|| not_found(id))?;
+        check_shared_target(&proposed, &change.target, Some(id))?;
+        check_shape(&change.target, change.template, change.executable)?;
+        let required = shared == Shared::Required;
+        if required {
+            self.check_members_lack(&change.target).await?;
+        }
+        let attachments = self.repo.attachments_of(id).await?;
+        let refitting = if required { &[][..] } else { &attachments };
+        let labels = self.every_sandbox_label().await?;
+        let (after, overrides, rekept) =
+            self.refitted(&before, &change, refitting, &labels).await?;
+        let after = Entry {
+            owner: Owner::Everyone(shared),
+            ..after
+        };
+        proposed.retain(|entry| entry.id != id);
+        proposed.push(after.clone());
+        self.settle(UserId::SHARED, &rekept.kept, async {
+            self.check_required(&proposed).await?;
+            self.validate_everyone(Some(&before), Some(&after), &overrides)
+                .await?;
+            self.update(&after, &overrides).await
+        })
+        .await?;
+        self.forget_all(UserId::SHARED, rekept.gone).await;
+        if required {
+            for attachment in &attachments {
+                self.repo.detach(&attachment.sandbox, id).await?;
+                self.forget(UserId::SHARED, overriding_secret(attachment))
+                    .await;
+            }
+        }
+        if required || before.owner.shared() == Some(Shared::Required) {
+            self.changed_everywhere().await?;
+        } else {
+            let valued = change.value.is_some();
+            self.changed(&affected(&before, &after, valued, &attachments))
+                .await?;
+        }
+        self.shared_view(after).await
+    }
+
+    /// Detaches the shared entry from every sandbox, which loses it at its next start, and
+    /// forgets their overrides.
+    pub async fn delete_shared(&self, _: &Admin, id: EntryId) -> Result<()> {
+        let mut proposed = self.repo.shared_entries().await?;
+        let entry = proposed
+            .iter()
+            .find(|entry| entry.id == id)
+            .cloned()
+            .ok_or_else(|| not_found(id))?;
+        proposed.retain(|entry| entry.id != id);
+        self.check_required(&proposed).await?;
+        self.validate_everyone(Some(&entry), None, &[]).await?;
+        let attachments = self.repo.attachments_of(id).await?;
+        if !self.repo.delete(&entry.owner, id).await? {
+            return Err(not_found(id));
+        }
+        self.forget(UserId::SHARED, entry.value.secret_id()).await;
+        self.forget_all(UserId::SHARED, attachments.iter().map(overriding_secret))
+            .await;
+        if entry.owner.shared() == Some(Shared::Required) {
+            self.changed_everywhere().await
+        } else {
+            self.changed(attachments.iter().map(|attachment| &attachment.sandbox))
+                .await
+        }
+    }
+
     /// What the sandbox gets at a start that issues it `token`. Refuses when a template file
     /// attached to it names a variable that is not.
     pub(super) async fn boot(&self, sandbox: &Sandbox, token: &SandboxToken) -> Result<Boot> {
         let registry = self.registry(sandbox.owner).await?;
         let composed = self
-            .compose(
-                sandbox.owner,
-                &registry,
-                Scope::Sandbox(&sandbox.id),
-                &sandbox.name,
-                token,
-            )
+            .compose(&registry, Scope::Sandbox(&sandbox.id), &sandbox.name, token)
             .await?;
         if let Some((path, names)) = composed.unknown.first_key_value() {
             return Err(Error::Invalid(format!(
@@ -452,13 +577,7 @@ impl Setup {
         }
         let scope = chosen.map_or(Scope::New, Scope::Chosen);
         let composed = self
-            .compose(
-                sandbox.owner,
-                &registry,
-                scope,
-                &sandbox.name,
-                &SandboxToken::generate()?,
-            )
+            .compose(&registry, scope, &sandbox.name, &SandboxToken::generate()?)
             .await?;
         if let Some((path, names)) = composed.unknown.first_key_value() {
             let one = names.len() == 1;
@@ -475,6 +594,9 @@ impl Setup {
             }));
         }
         for (entry, _) in registry.effective(scope) {
+            if entry.owner.shared() == Some(Shared::Required) {
+                continue;
+            }
             self.repo
                 .attach(&Attachment {
                     sandbox: sandbox.id.clone(),
@@ -488,27 +610,45 @@ impl Setup {
 
     /// Detaches every entry from a sandbox that is going away.
     pub(super) async fn forget_sandbox(&self, sandbox: &Sandbox) -> Result<()> {
-        for attachment in self.repo.attachments(sandbox.owner).await? {
-            if attachment.sandbox == sandbox.id {
-                self.repo.detach(&sandbox.id, attachment.entry).await?;
-                self.forget(sandbox.owner, overriding_secret(&attachment))
-                    .await;
-            }
+        let registry = self.registry(sandbox.owner).await?;
+        for (entry, attachment) in registry.attached(&sandbox.id) {
+            self.repo.detach(&sandbox.id, entry.id).await?;
+            self.forget(entry.owner.secrets_owner(), overriding_secret(attachment))
+                .await;
         }
         Ok(())
     }
 
     pub(super) async fn remove_all(&self, owner: UserId) -> Result<()> {
         for entry in self.repo.entries(owner).await? {
-            self.repo.delete(owner, entry.id).await?;
+            self.repo.delete(&entry.owner, entry.id).await?;
         }
         self.secrets.remove_all(owner).await
     }
 
     async fn registry(&self, owner: UserId) -> Result<Registry> {
+        let shared = self.repo.shared_entries().await?;
+        let mut attachments = self.repo.attachments(owner).await?;
+        let offered: Vec<EntryId> = shared
+            .iter()
+            .filter(|entry| entry.owner.shared() == Some(Shared::Offered))
+            .map(|entry| entry.id)
+            .collect();
+        if !offered.is_empty() {
+            let theirs = self.sandbox_names(owner).await?;
+            for id in offered {
+                let attached = self.repo.attachments_of(id).await?;
+                attachments.extend(
+                    attached
+                        .into_iter()
+                        .filter(|attachment| theirs.contains_key(&attachment.sandbox)),
+                );
+            }
+        }
         Ok(Registry::new(
             self.repo.entries(owner).await?,
-            self.repo.attachments(owner).await?,
+            shared,
+            attachments,
         ))
     }
 
@@ -529,11 +669,172 @@ impl Setup {
             .collect())
     }
 
+    async fn shared_entry(&self, id: EntryId) -> Result<Entry> {
+        self.repo
+            .shared_entries()
+            .await?
+            .into_iter()
+            .find(|entry| entry.id == id)
+            .ok_or_else(|| not_found(id))
+    }
+
+    async fn shared_view(&self, entry: Entry) -> Result<SharedEntryView> {
+        let id = entry.id;
+        self.shared_views(vec![entry])
+            .await?
+            .pop()
+            .ok_or_else(|| not_found(id))
+    }
+
+    async fn shared_views(&self, entries: Vec<Entry>) -> Result<Vec<SharedEntryView>> {
+        let members = self.repo.every_member_entry().await?;
+        let handles = self.handles().await?;
+        let wanted = secret_ids(
+            entries
+                .iter()
+                .filter(|entry| entry.template)
+                .map(|entry| (entry, &entry.value)),
+        );
+        let secrets = self.secrets_of(wanted).await?;
+        let mut views = Vec::new();
+        for entry in entries {
+            let shadowing: BTreeSet<UserId> = members
+                .iter()
+                .filter(|member| member.target.collides(&entry.target))
+                .filter_map(|member| member.owner.member())
+                .collect();
+            views.push(SharedEntryView {
+                references: references(&entry, &secrets),
+                attached: self.repo.attachments_of(entry.id).await?.len(),
+                shadowed_by: handles_of(&handles, &shadowing),
+                entry,
+            });
+        }
+        Ok(views)
+    }
+
+    async fn handles(&self) -> Result<BTreeMap<UserId, Handle>> {
+        Ok(self
+            .users
+            .list()
+            .await?
+            .into_iter()
+            .map(|user| (user.id, user.handle))
+            .collect())
+    }
+
+    /// Each sandbox by its name and its member's handle.
+    async fn every_sandbox_label(&self) -> Result<BTreeMap<SandboxId, String>> {
+        let handles = self.handles().await?;
+        Ok(self
+            .sandboxes
+            .list_all()
+            .await?
+            .into_iter()
+            .map(|sandbox| {
+                let label = match handles.get(&sandbox.owner) {
+                    Some(handle) => format!("{} of {handle}", sandbox.name),
+                    None => sandbox.name.to_string(),
+                };
+                (sandbox.id, label)
+            })
+            .collect())
+    }
+
+    /// Refuses a target for a required entry that an entry of a member collides with, naming
+    /// the members.
+    async fn check_members_lack(&self, target: &Target) -> Result<()> {
+        let members: BTreeSet<UserId> = self
+            .repo
+            .every_member_entry()
+            .await?
+            .into_iter()
+            .filter(|entry| entry.target.collides(target))
+            .filter_map(|entry| entry.owner.member())
+            .collect();
+        if members.is_empty() {
+            return Ok(());
+        }
+        let handles = handles_of(&self.handles().await?, &members);
+        Err(Error::Conflict(format!(
+            "{target} is also set by {}; ask them to rename theirs first",
+            and_listed(&handles)
+        )))
+    }
+
+    /// Refuses shared entries among which a required template refers to a variable that is not
+    /// required.
+    async fn check_required(&self, shared: &[Entry]) -> Result<()> {
+        let required: Vec<(&Entry, &StoredValue)> = shared
+            .iter()
+            .filter(|entry| entry.owner.shared() == Some(Shared::Required))
+            .map(|entry| (entry, &entry.value))
+            .collect();
+        let wanted = secret_ids(required.iter().copied().filter(|(entry, _)| entry.template));
+        let secrets = self.secrets_of(wanted).await?;
+        if let Some((path, names)) = unresolved(&required, &secrets).first_key_value() {
+            return Err(Error::Invalid(format!(
+                "template ~/{path} applies to every sandbox and refers to {}, which {} not \
+                 required",
+                listed(names),
+                if names.len() == 1 { "is" } else { "are" }
+            )));
+        }
+        Ok(())
+    }
+
+    /// Refuses a change of a shared entry from `before` to `after`, with `overrides` kept anew,
+    /// that would keep a member's sandbox it reaches, or their new sandboxes, from starting.
+    async fn validate_everyone(
+        &self,
+        before: Option<&Entry>,
+        after: Option<&Entry>,
+        overrides: &[Attachment],
+    ) -> Result<()> {
+        let Some(id) = after.or(before).map(|entry| entry.id) else {
+            return Ok(());
+        };
+        let either = || before.into_iter().chain(after);
+        let required = either().any(|entry| entry.owner.shared() == Some(Shared::Required));
+        let new = required || either().any(|entry| entry.apply_to_new);
+        if !new && self.repo.attachments_of(id).await?.is_empty() {
+            return Ok(());
+        }
+        for user in self.users.list().await? {
+            let current = self.registry(user.id).await?;
+            let mut proposed = current.clone();
+            match after {
+                Some(after) => proposed.put_entry(after.clone()),
+                None => proposed.remove_entry(id),
+            }
+            for attachment in overrides {
+                if current
+                    .attachment(&attachment.sandbox, attachment.entry)
+                    .is_some()
+                {
+                    proposed.put_attachment(attachment.clone());
+                }
+            }
+            let sandboxes = if required {
+                self.sandbox_names(user.id).await?.into_keys().collect()
+            } else {
+                current
+                    .attachments_of(id)
+                    .map(|attachment| attachment.sandbox.clone())
+                    .collect()
+            };
+            let reach = Reach { sandboxes, new };
+            self.validate(user.id, Some(&user.handle), &current, &proposed, &reach)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn view(&self, owner: UserId, registry: &Registry, id: EntryId) -> Result<EntryView> {
         self.views(owner, registry, [id])
             .await?
             .pop()
-            .ok_or_else(|| Error::NotFound(format!("setup entry {}", id.0)))
+            .ok_or_else(|| not_found(id))
     }
 
     /// The views of `ids`, in their order. Templates read their secret values to tell what they
@@ -546,15 +847,19 @@ impl Setup {
     ) -> Result<Vec<EntryView>> {
         let ids: Vec<EntryId> = ids.into_iter().collect();
         let names = self.sandbox_names(owner).await?;
-        let templates = registry.entries.iter().filter(|entry| entry.template);
+        let templates = registry
+            .shared
+            .iter()
+            .chain(&registry.entries)
+            .filter(|entry| entry.template);
         let wanted = secret_ids(templates.flat_map(|entry| {
-            std::iter::once(&entry.value).chain(
+            std::iter::once((entry, &entry.value)).chain(
                 registry
                     .attachments_of(entry.id)
-                    .filter_map(|a| a.overriding.as_ref()),
+                    .filter_map(move |a| Some((entry, a.overriding.as_ref()?))),
             )
         }));
-        let secrets = self.secrets_of(owner, wanted).await?;
+        let secrets = self.secrets_of(wanted).await?;
         let mut unresolved_in = BTreeMap::new();
         ids.into_iter()
             .map(|id| {
@@ -563,18 +868,24 @@ impl Setup {
                     Target::File(path) if entry.template => Some(path),
                     _ => None,
                 };
-                let mut sandboxes: Vec<Use> = registry
-                    .attachments_of(id)
-                    .filter_map(|attachment| {
-                        let sandbox = names.get(&attachment.sandbox)?;
+                let reached: Vec<(&SandboxId, bool)> =
+                    if entry.owner.shared() == Some(Shared::Required) {
+                        names.keys().map(|sandbox| (sandbox, false)).collect()
+                    } else {
+                        registry
+                            .attachments_of(id)
+                            .map(|a| (&a.sandbox, a.overriding.is_some()))
+                            .collect()
+                    };
+                let mut sandboxes: Vec<Use> = reached
+                    .into_iter()
+                    .filter_map(|(id, overridden)| {
+                        let sandbox = names.get(id)?;
                         let missing = match path {
                             Some(path) => unresolved_in
-                                .entry(attachment.sandbox.clone())
+                                .entry(id.clone())
                                 .or_insert_with(|| {
-                                    unresolved(
-                                        &registry.effective(Scope::Sandbox(&attachment.sandbox)),
-                                        &secrets,
-                                    )
+                                    unresolved(&registry.effective(Scope::Sandbox(id)), &secrets)
                                 })
                                 .get(path)
                                 .cloned()
@@ -583,22 +894,17 @@ impl Setup {
                         };
                         Some(Use {
                             sandbox: sandbox.clone(),
-                            overridden: attachment.overriding.is_some(),
+                            overridden,
                             unresolved: missing,
                         })
                     })
                     .collect();
                 sandboxes.sort_by(|a, b| a.sandbox.cmp(&b.sandbox));
                 Ok(EntryView {
-                    references: match path {
-                        Some(_) => template_of(&entry.value, &secrets)
-                            .names()
-                            .into_iter()
-                            .cloned()
-                            .collect(),
-                        None => BTreeSet::new(),
-                    },
+                    references: references(entry, &secrets),
                     duplicate: registry.is_duplicate(entry),
+                    shadows: registry.shadows(entry),
+                    shadowed: registry.shadowed(entry),
                     entry: entry.clone(),
                     sandboxes,
                 })
@@ -608,17 +914,17 @@ impl Setup {
 
     async fn compose(
         &self,
-        owner: UserId,
         registry: &Registry,
         scope: Scope<'_>,
         name: &SandboxName,
         token: &SandboxToken,
     ) -> Result<Composed> {
-        let ids = secret_ids(registry.effective(scope).into_iter().map(|(_, v)| v));
-        let secrets = self.secrets_of(owner, ids).await?;
         let effective = registry.effective(scope);
+        let secrets = self
+            .secrets_of(secret_ids(effective.iter().copied()))
+            .await?;
         compose(
-            &whose(scope, name),
+            &whose(scope, name, None),
             &effective,
             &secrets,
             self.links.sandbox_file(name, token),
@@ -627,10 +933,11 @@ impl Setup {
 
     /// Refuses a change that would leave a sandbox it reaches, or new sandboxes, with colliding
     /// entries, beyond a limit, or with a template referring to a variable they do not get,
-    /// which the current state did not already do.
+    /// which the current state did not already do. Refusals name the member `of` when given.
     async fn validate(
         &self,
         owner: UserId,
+        of: Option<&Handle>,
         current: &Registry,
         proposed: &Registry,
         reach: &Reach,
@@ -650,17 +957,17 @@ impl Setup {
         if reach.new {
             scopes.push((Scope::New, &longest));
         }
-        let ids = secret_ids(scopes.iter().flat_map(|(scope, _)| {
+        let wanted = secret_ids(scopes.iter().flat_map(|(scope, _)| {
             current
                 .effective(*scope)
                 .into_iter()
                 .chain(proposed.effective(*scope))
-                .map(|(_, value)| value)
         }));
-        let secrets = self.secrets_of(owner, ids).await?;
+        let secrets = self.secrets_of(wanted).await?;
         for (scope, name) in scopes {
+            let whose = whose(scope, name, of);
             let composed = compose(
-                &whose(scope, name),
+                &whose,
                 &proposed.effective(scope),
                 &secrets,
                 self.links.sandbox_file(name, &token),
@@ -677,12 +984,12 @@ impl Setup {
                 let names = listed(&new);
                 return Err(Error::Invalid(match scope {
                     Scope::Sandbox(_) | Scope::Chosen(_) => format!(
-                        "sandbox {name} could not start: template ~/{path} would refer to \
-                         {names}, not attached to it"
+                        "{whose} could not start: template ~/{path} would refer to {names}, not \
+                         attached to it"
                     ),
                     Scope::New => format!(
-                        "new sandboxes could not start: template ~/{path} applies to them and \
-                         would refer to {names}, which would not"
+                        "{whose} could not start: template ~/{path} applies to them and would \
+                         refer to {names}, which would not"
                     ),
                 }));
             }
@@ -721,23 +1028,80 @@ impl Setup {
         Ok(Some(kept))
     }
 
-    /// The overrides of the entry `id` as [`Self::refit`] keeps them, each that changes.
+    /// The entry as `change` makes it, each override among `attachments` it keeps anew, and
+    /// what was kept anew; leaves nothing kept anew behind when it fails. `labels` name the
+    /// sandboxes to refuse an override in.
+    async fn refitted(
+        &self,
+        before: &Entry,
+        change: &EntryChange,
+        attachments: &[Attachment],
+        labels: &BTreeMap<SandboxId, String>,
+    ) -> Result<(Entry, Vec<Attachment>, Rekept)> {
+        let keeper = before.owner.secrets_owner();
+        let shift = Shift {
+            kind: change.target.is_file() != before.target.is_file(),
+            secrecy: change.secret != before.is_secret(),
+            template: change.template && !before.template,
+        };
+        let mut rekept = Rekept::default();
+        let refitted = async {
+            let own = match &change.value {
+                Some(value) => {
+                    check_content(&change.target, change.template, value.expose_secret())?;
+                    let kept = self
+                        .keep(keeper, &change.target, change.secret, value)
+                        .await?;
+                    rekept.record(&kept, &before.value);
+                    kept
+                }
+                None => self
+                    .refit(keeper, change, &shift, &before.value, &mut rekept)
+                    .await?
+                    .unwrap_or_else(|| before.value.clone()),
+            };
+            let overrides = self
+                .refit_overrides(keeper, attachments, labels, change, &shift, &mut rekept)
+                .await?;
+            Ok((own, overrides))
+        }
+        .await;
+        match refitted {
+            Ok((value, overrides)) => {
+                let after = Entry {
+                    target: change.target.clone(),
+                    template: change.template,
+                    executable: change.executable,
+                    apply_to_new: change.apply_to_new,
+                    value,
+                    ..before.clone()
+                };
+                Ok((after, overrides, rekept))
+            }
+            Err(error) => {
+                self.forget_all(keeper, rekept.kept.iter().map(StoredValue::secret_id))
+                    .await;
+                Err(error)
+            }
+        }
+    }
+
+    /// The overrides among `attachments` as [`Self::refit`] keeps them, each that changes.
     async fn refit_overrides(
         &self,
         owner: UserId,
-        registry: &Registry,
-        id: EntryId,
+        attachments: &[Attachment],
+        labels: &BTreeMap<SandboxId, String>,
         change: &EntryChange,
         shift: &Shift,
         rekept: &mut Rekept,
     ) -> Result<Vec<Attachment>> {
-        let names = self.sandbox_names(owner).await?;
         let mut overrides = Vec::new();
-        for attachment in registry.attachments_of(id) {
+        for attachment in attachments {
             let Some(overriding) = &attachment.overriding else {
                 continue;
             };
-            let sandbox = names.get(&attachment.sandbox).map_or("", |n| n.as_str());
+            let sandbox = labels.get(&attachment.sandbox).map_or("", String::as_str);
             let refitted = self
                 .refit(owner, change, shift, overriding, rekept)
                 .await
@@ -759,14 +1123,14 @@ impl Setup {
     /// The values the store holds for `ids`.
     async fn secrets_of(
         &self,
-        owner: UserId,
-        ids: BTreeSet<SecretId>,
+        ids: BTreeMap<UserId, BTreeSet<SecretId>>,
     ) -> Result<BTreeMap<SecretId, SecretSlice<u8>>> {
-        if ids.is_empty() {
-            return Ok(BTreeMap::new());
+        let mut secrets = BTreeMap::new();
+        for (owner, ids) in ids {
+            let ids: Vec<SecretId> = ids.into_iter().collect();
+            secrets.extend(self.secrets.get(owner, &ids).await?);
         }
-        let ids: Vec<SecretId> = ids.into_iter().collect();
-        self.secrets.get(owner, &ids).await
+        Ok(secrets)
     }
 
     async fn keep(
@@ -838,6 +1202,14 @@ impl Setup {
         }
     }
 
+    async fn update(&self, entry: &Entry, overrides: &[Attachment]) -> Result<()> {
+        if self.repo.update(entry, overrides).await? {
+            Ok(())
+        } else {
+            Err(not_found(entry.id))
+        }
+    }
+
     // Recorded after the write, so a start that loaded the earlier values began before it.
     async fn changed<'a>(&self, sandboxes: impl IntoIterator<Item = &'a SandboxId>) -> Result<()> {
         let sandboxes: Vec<SandboxId> = sandboxes.into_iter().cloned().collect();
@@ -845,7 +1217,13 @@ impl Setup {
             return Ok(());
         }
         self.sandboxes
-            .record_setup_change(&sandboxes, Utc::now())
+            .record_setup_change(Changed::Sandboxes(&sandboxes), Utc::now())
+            .await
+    }
+
+    async fn changed_everywhere(&self) -> Result<()> {
+        self.sandboxes
+            .record_setup_change(Changed::Every, Utc::now())
             .await
     }
 }
@@ -883,18 +1261,69 @@ impl Reach {
     }
 }
 
-fn secret_ids<'a>(values: impl IntoIterator<Item = &'a StoredValue>) -> BTreeSet<SecretId> {
-    values
-        .into_iter()
-        .filter_map(StoredValue::secret_id)
-        .collect()
+/// The ids of the secret values among `values`, by whom the store keeps each under: its entry's
+/// owner.
+fn secret_ids<'a>(
+    values: impl IntoIterator<Item = (&'a Entry, &'a StoredValue)>,
+) -> BTreeMap<UserId, BTreeSet<SecretId>> {
+    let mut ids: BTreeMap<UserId, BTreeSet<SecretId>> = BTreeMap::new();
+    for (entry, value) in values {
+        if let Some(id) = value.secret_id() {
+            ids.entry(entry.owner.secrets_owner())
+                .or_default()
+                .insert(id);
+        }
+    }
+    ids
 }
 
-fn whose(scope: Scope<'_>, name: &SandboxName) -> String {
-    match scope {
+fn whose(scope: Scope<'_>, name: &SandboxName, of: Option<&Handle>) -> String {
+    let whose = match scope {
         Scope::Sandbox(_) | Scope::Chosen(_) => format!("sandbox {name}"),
         Scope::New => "new sandboxes".to_owned(),
+    };
+    match of {
+        Some(handle) => format!("{whose} of {handle}"),
+        None => whose,
     }
+}
+
+fn not_found(id: EntryId) -> Error {
+    Error::NotFound(format!("setup entry {}", id.0))
+}
+
+/// For a template: the variables its own value refers to.
+fn references(
+    entry: &Entry,
+    secrets: &BTreeMap<SecretId, SecretSlice<u8>>,
+) -> BTreeSet<VariableName> {
+    match &entry.target {
+        Target::File(_) if entry.template => template_of(&entry.value, secrets)
+            .names()
+            .into_iter()
+            .cloned()
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// The sandboxes among `attachments` whose next start the change from `before` to `after`
+/// alters, `valued` when it gives the entry another value.
+fn affected(
+    before: &Entry,
+    after: &Entry,
+    valued: bool,
+    attachments: &[Attachment],
+) -> BTreeSet<SandboxId> {
+    let lands = after.target != before.target
+        || after.template != before.template
+        || after.executable != before.executable
+        || after.is_secret() != before.is_secret();
+    attachments
+        .iter()
+        .filter(|attachment| lands || (valued && attachment.overriding.is_none()))
+        .map(|attachment| attachment.sandbox.clone())
+        .collect()
 }
 
 fn attached<'a>(registry: &'a Registry, sandbox: &Sandbox, id: EntryId) -> Result<&'a Attachment> {
@@ -914,13 +1343,29 @@ fn overriding_secret(attachment: &Attachment) -> Option<SecretId> {
         .and_then(StoredValue::secret_id)
 }
 
-/// Refuses a target Corral keeps for itself, and one another entry of the owner already has.
-fn check_target(registry: &Registry, target: &Target, except: Option<EntryId>) -> Result<()> {
+/// Refuses a target Corral keeps for itself.
+fn check_own_dir(target: &Target) -> Result<()> {
     if let Target::File(path) = target
         && path.overlaps(&HomePath::parse(OWN_DIR).expect("a valid home path"))
     {
         return Err(Error::Invalid(format!(
             "~/{path} is where Corral keeps the sandbox's own files, in ~/{OWN_DIR}"
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses a target Corral keeps for itself, one a required entry has, and one another entry of
+/// the member already has.
+fn check_target(registry: &Registry, target: &Target, except: Option<EntryId>) -> Result<()> {
+    check_own_dir(target)?;
+    if let Some(required) = registry
+        .required()
+        .find(|required| required.target.collides(target))
+    {
+        return Err(Error::Conflict(format!(
+            "{} is set for every sandbox by the admin",
+            required.target
         )));
     }
     if registry
@@ -1012,10 +1457,48 @@ fn reworded(error: Error, with: impl FnOnce(String) -> String) -> Error {
     }
 }
 
+/// Refuses a target Corral keeps for itself, and one colliding with another shared entry.
+fn check_shared_target(shared: &[Entry], target: &Target, except: Option<EntryId>) -> Result<()> {
+    check_own_dir(target)?;
+    if let Some(other) = shared
+        .iter()
+        .find(|other| Some(other.id) != except && other.target.collides(target))
+    {
+        return Err(Error::Conflict(format!(
+            "the shared setup already has {}",
+            other.target
+        )));
+    }
+    Ok(())
+}
+
 fn listed(names: &BTreeSet<VariableName>) -> String {
     names
         .iter()
         .map(VariableName::as_str)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The handles of `ids`, in order.
+fn handles_of(handles: &BTreeMap<UserId, Handle>, ids: &BTreeSet<UserId>) -> Vec<Handle> {
+    let mut handles: Vec<Handle> = ids
+        .iter()
+        .filter_map(|id| handles.get(id))
+        .cloned()
+        .collect();
+    handles.sort();
+    handles
+}
+
+/// The handles, joined with commas and the last with "and".
+fn and_listed(handles: &[Handle]) -> String {
+    match handles {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => {
+            let rest: Vec<String> = rest.iter().map(ToString::to_string).collect();
+            format!("{} and {last}", rest.join(", "))
+        }
+    }
 }

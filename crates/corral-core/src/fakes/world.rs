@@ -279,6 +279,7 @@ impl World {
             setup_repo.clone(),
             secrets.clone(),
             sandbox_repo.clone(),
+            users.clone(),
             links(),
         );
         let engine = Arc::new(FakeEngine::default());

@@ -1,4 +1,6 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 use super::{HomePath, SandboxId, StoredValue, UserId, VariableName};
@@ -48,18 +50,60 @@ impl std::fmt::Display for Target {
     }
 }
 
-/// One of a user's variables or files, which sandboxes they attach it to receive.
+/// How a shared entry reaches members' sandboxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+pub enum Shared {
+    /// In every sandbox, which members cannot detach, override or shadow.
+    Required,
+    /// Attached where members choose, and to new sandboxes when it applies to them.
+    Offered,
+}
+
+/// Whose an entry is: one member's, or the admin's for everyone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    Member(UserId),
+    Everyone(Shared),
+}
+
+impl Owner {
+    #[must_use]
+    pub fn member(&self) -> Option<UserId> {
+        match self {
+            Self::Member(id) => Some(*id),
+            Self::Everyone(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn shared(&self) -> Option<Shared> {
+        match self {
+            Self::Member(_) => None,
+            Self::Everyone(shared) => Some(*shared),
+        }
+    }
+
+    /// Who the secret store keeps the entry's secret values under, its overrides' included.
+    #[must_use]
+    pub fn secrets_owner(&self) -> UserId {
+        self.member().unwrap_or(UserId::SHARED)
+    }
+}
+
+/// A variable or a file, which sandboxes attached to it receive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub id: EntryId,
-    pub owner: UserId,
+    pub owner: Owner,
     pub target: Target,
     /// For a file whose text is a template: each `{{ NAME }}` in it takes the value the variable
     /// `NAME` has in the sandbox.
     pub template: bool,
     /// For a file: whether it is written executable.
     pub executable: bool,
-    /// Whether each new sandbox of the owner is attached to it.
+    /// Whether each new sandbox of its member, or of every member for a shared entry, is attached
+    /// to it.
     pub apply_to_new: bool,
     /// Its value. An override is kept as secret as the entry.
     pub value: StoredValue,

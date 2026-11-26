@@ -25,6 +25,7 @@ async fn app(databases: &Databases) -> Router {
         store.clone(),
         Arc::new(MemorySecretStore::default()),
         store.clone(),
+        store.clone(),
         links(),
     );
     store

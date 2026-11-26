@@ -10,7 +10,7 @@ use crate::domain::{
     Handle, ImageKey, ImageReference, Role, Sandbox, SandboxDefaults, SandboxId, SandboxImage,
     SandboxName, SizeKey, SshKey, SshPublicKey, TokenHash, User, UserId, UserStatus,
 };
-use crate::ports::{KeyRepo, SandboxRepo, UserRepo};
+use crate::ports::{Changed, KeyRepo, SandboxRepo, UserRepo};
 
 pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dyn SandboxRepo) {
     user_repo(users).await;
@@ -336,15 +336,18 @@ async fn setup_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     }
     let nothing = SandboxId(unique("sbx"));
     sandboxes
-        .record_setup_change(&[main.id.clone(), dev.id.clone(), nothing], at(5))
+        .record_setup_change(
+            Changed::Sandboxes(&[main.id.clone(), dev.id.clone(), nothing]),
+            at(5),
+        )
         .await
         .expect("record a change, of nothing too");
     sandboxes
-        .record_setup_change(std::slice::from_ref(&dev.id), at(6))
+        .record_setup_change(Changed::Sandboxes(std::slice::from_ref(&dev.id)), at(6))
         .await
         .expect("record a later change");
     sandboxes
-        .record_setup_change(&[], at(7))
+        .record_setup_change(Changed::Sandboxes(&[]), at(7))
         .await
         .expect("record a change of no sandbox");
     let changed: Vec<(String, Option<DateTime<Utc>>)> = sandboxes
@@ -361,6 +364,18 @@ async fn setup_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
             ("dev".to_owned(), Some(at(6))),
             ("other".to_owned(), None)
         ]
+    );
+    sandboxes
+        .record_setup_change(Changed::Every, at(8))
+        .await
+        .expect("record a change of every sandbox");
+    let every = sandboxes.list_all().await.unwrap();
+    assert!(every.iter().any(|sandbox| sandbox.id == other.id));
+    assert!(
+        every
+            .iter()
+            .all(|sandbox| sandbox.setup_changed_at == Some(at(8))),
+        "{every:?}"
     );
 }
 

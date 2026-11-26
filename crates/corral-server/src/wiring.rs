@@ -139,6 +139,7 @@ async fn setup(
         store.clone(),
         secrets,
         store.clone(),
+        store.clone(),
         SandboxLinks {
             api: config.http.sandbox_base_url().as_str().to_owned(),
             web: config.http.base_url.as_str().to_owned(),

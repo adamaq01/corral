@@ -25,7 +25,7 @@ pub use settings::{
     RegistriesView, Registry, Settings,
 };
 pub use setup::{
-    Attached, EntryChange, EntryView, FILE_LIMIT, FILES_LIMIT, NewEntry, Preview, Setup, Use,
-    VARIABLE_LIMIT, VARIABLES_LIMIT,
+    Attached, EntryChange, EntryView, FILE_LIMIT, FILES_LIMIT, NewEntry, NewSharedEntry, Preview,
+    Setup, SharedEntryChange, SharedEntryView, Use, VARIABLE_LIMIT, VARIABLES_LIMIT,
 };
 pub use ssh_access::{Arrival, SshAccess};

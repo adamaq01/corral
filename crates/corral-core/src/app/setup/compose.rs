@@ -228,7 +228,7 @@ mod tests {
     use super::{FILE_LIMIT, FILES_LIMIT, VARIABLES_LIMIT, compose};
     use crate::Error;
     use crate::domain::{
-        Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, SecretId, SecretRef,
+        Entry, EntryId, FileMode, Glimpse, HomeFile, HomePath, Kept, Owner, SecretId, SecretRef,
         StoredValue, Target, UserId, VariableName,
     };
     use crate::fakes::exposed;
@@ -264,7 +264,7 @@ mod tests {
             };
             let entry = Entry {
                 id: EntryId::generate(),
-                owner: UserId(uuid::Uuid::nil()),
+                owner: Owner::Member(UserId(uuid::Uuid::new_v4())),
                 target,
                 template,
                 executable: false,

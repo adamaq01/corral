@@ -76,7 +76,7 @@ mod user;
 mod variable_name;
 
 pub use catalog_key::{ImageKey, SizeKey};
-pub use entry::{Attachment, Entry, EntryId, Target};
+pub use entry::{Attachment, Entry, EntryId, Owner, Shared, Target};
 pub use handle::Handle;
 pub use home_file::{FileMode, HomeFile, HomeFiles, HomePath};
 pub use idle::{IdleLimits, MIN_IDLE_TIMEOUT};

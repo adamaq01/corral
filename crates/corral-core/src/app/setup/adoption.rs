@@ -3,7 +3,7 @@ use secrecy::{ExposeSecret, SecretSlice};
 
 use super::Setup;
 use crate::Result;
-use crate::domain::{Attachment, Entry, EntryId, Target, UserId};
+use crate::domain::{Attachment, Entry, EntryId, Owner, Target, UserId};
 
 impl Setup {
     /// Makes each credential kept before entries existed a secret variable that applies to new
@@ -36,7 +36,7 @@ impl Setup {
                 let value = SecretSlice::from(value.expose_secret().as_bytes().to_vec());
                 let entry = Entry {
                     id: EntryId::generate(),
-                    owner: user,
+                    owner: Owner::Member(user),
                     template: false,
                     executable: false,
                     apply_to_new: true,

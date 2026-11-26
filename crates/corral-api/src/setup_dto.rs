@@ -246,6 +246,7 @@ impl From<EntryView> for EntryDto {
             sandboxes,
             references,
             duplicate,
+            ..
         } = view;
         let Entry {
             id,

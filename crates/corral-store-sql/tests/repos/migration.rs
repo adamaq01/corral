@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
 use corral_core::domain::{
-    Attachment, Entry, EntryId, Kept, SandboxId, SandboxName, StoredValue, Target, UserId,
+    Attachment, Entry, EntryId, Kept, Owner, SandboxId, SandboxName, StoredValue, Target, UserId,
     VariableName,
 };
 use corral_core::ports::{SandboxRepo, SetupRepo};
@@ -141,8 +141,9 @@ async fn postgres_upgrades_a_database_with_real_rows() {
     upgrades_a_database_with_real_rows(Databases::postgres().await).await;
 }
 
-/// A database with an entry attached to a sandbox with an override reads back the entry, the
-/// attachment and when the sandbox's setup last changed once its tables take the setup's names.
+/// A database with an entry attached to a sandbox with an override reads back the entry as the
+/// member's, the attachment and when the sandbox's setup last changed once its tables take the
+/// setup's names.
 async fn keeps_entries_and_attachments_under_the_setups_names(databases: Databases) {
     let pool = databases.pool().await;
     migrate_before(&pool, BEFORE_SETUP).await;
@@ -198,7 +199,7 @@ async fn keeps_entries_and_attachments_under_the_setups_names(databases: Databas
         store.entries(owner).await.unwrap(),
         [Entry {
             id: EntryId(entry),
-            owner,
+            owner: Owner::Member(owner),
             target: Target::Variable(VariableName::parse("EDITOR").unwrap()),
             template: false,
             executable: false,
@@ -221,6 +222,7 @@ async fn keeps_entries_and_attachments_under_the_setups_names(databases: Databas
             }),
         }]
     );
+    assert_eq!(store.shared_entries().await.unwrap(), []);
     let main = store
         .by_name(owner, &SandboxName::parse("main").unwrap())
         .await

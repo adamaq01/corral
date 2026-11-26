@@ -130,7 +130,13 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
             .await
             .unwrap(),
     );
-    let setup = Setup::new(store.clone(), secrets.clone(), store.clone(), links());
+    let setup = Setup::new(
+        store.clone(),
+        secrets.clone(),
+        store.clone(),
+        store.clone(),
+        links(),
+    );
     assert_eq!(setup.adopt_credentials().await.unwrap(), 2);
     assert_eq!(setup.adopt_credentials().await.unwrap(), 0);
     assert!(

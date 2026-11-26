@@ -38,6 +38,13 @@ pub trait KeyRepo: Send + Sync {
     async fn by_public_key(&self, public_key: &SshPublicKey) -> Result<Option<SshKey>>;
 }
 
+/// Which sandboxes a setup change reaches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Changed<'a> {
+    Sandboxes(&'a [SandboxId]),
+    Every,
+}
+
 #[async_trait]
 pub trait SandboxRepo: Send + Sync {
     async fn list(&self, owner: UserId) -> Result<Vec<Sandbox>>;
@@ -60,7 +67,7 @@ pub trait SandboxRepo: Send + Sync {
         token: &TokenHash,
     ) -> Result<()>;
     /// Sets `setup_changed_at` of each of the sandboxes that exists.
-    async fn record_setup_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()>;
+    async fn record_setup_change(&self, which: Changed<'_>, at: DateTime<Utc>) -> Result<()>;
     /// Leaves the sandbox without a token.
     async fn revoke_token(&self, id: &SandboxId) -> Result<()>;
     async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>>;

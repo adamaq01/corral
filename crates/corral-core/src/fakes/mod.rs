@@ -17,7 +17,7 @@ pub use registry::FakeRegistry;
 pub use repos::{MemoryKeyRepo, MemorySandboxRepo, MemoryUserRepo};
 pub use secrets::MemorySecretStore;
 pub use settings::MemorySettingsRepo;
-pub use setup::MemorySetupRepo;
+pub use setup::{MemorySetupRepo, shared_file, shared_variable};
 pub use world::*;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

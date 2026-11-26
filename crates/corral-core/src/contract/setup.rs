@@ -3,8 +3,8 @@ use uuid::Uuid;
 use super::repos::new_sandbox;
 use super::{at, seed_user};
 use crate::domain::{
-    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SecretId, SecretRef, StoredValue,
-    Target, UserId, VariableName,
+    Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Owner, Sandbox, SecretId, SecretRef,
+    Shared, StoredValue, Target, UserId, VariableName,
 };
 use crate::ports::{SandboxRepo, SetupRepo, UserRepo};
 
@@ -14,6 +14,8 @@ pub async fn setup_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo, setup
     attachments_hold_any_override(users, sandboxes, setup).await;
     deleting_an_entry_detaches_it(users, sandboxes, setup).await;
     fresh_users_await_no_adoption(users, setup).await;
+    shared_entries_belong_to_everyone(users, setup).await;
+    attachments_of_an_entry_list_every_sandbox(users, sandboxes, setup).await;
 }
 
 fn plain(content: &[u8], second: i64) -> StoredValue {
@@ -37,7 +39,7 @@ fn secret(size: usize, glimpse: Option<Glimpse>, second: i64) -> StoredValue {
 fn entry(owner: UserId, target: Target, value: StoredValue, created: i64) -> Entry {
     Entry {
         id: EntryId::generate(),
-        owner,
+        owner: Owner::Member(owner),
         target,
         template: false,
         executable: false,
@@ -187,7 +189,7 @@ async fn update_changes_an_entry_in_place(
     );
 
     let stranger = Entry {
-        owner: UserId(Uuid::new_v4()),
+        owner: Owner::Member(UserId(Uuid::new_v4())),
         ..changed.clone()
     };
     assert!(!setup.update(&stranger, &[]).await.unwrap());
@@ -281,9 +283,10 @@ async fn deleting_an_entry_detaches_it(
             .await
             .unwrap();
     }
-    assert!(!setup.delete(UserId(Uuid::new_v4()), gone.id).await.unwrap());
-    assert!(setup.delete(adam.id, gone.id).await.unwrap());
-    assert!(!setup.delete(adam.id, gone.id).await.unwrap());
+    let stranger = Owner::Member(UserId(Uuid::new_v4()));
+    assert!(!setup.delete(&stranger, gone.id).await.unwrap());
+    assert!(setup.delete(&gone.owner, gone.id).await.unwrap());
+    assert!(!setup.delete(&gone.owner, gone.id).await.unwrap());
     assert_eq!(
         setup.entries(adam.id).await.unwrap(),
         std::slice::from_ref(&kept)
@@ -306,4 +309,99 @@ async fn fresh_users_await_no_adoption(users: &dyn UserRepo, setup: &dyn SetupRe
         .adopted(UserId(Uuid::new_v4()))
         .await
         .expect("adopt a stranger");
+}
+
+async fn shared_entries_belong_to_everyone(users: &dyn UserRepo, setup: &dyn SetupRepo) {
+    let adam = seed_user(users, "adam").await;
+    let shared = Entry {
+        owner: Owner::Everyone(Shared::Offered),
+        ..entry(
+            adam.id,
+            variable("GATEWAY_URL"),
+            plain(b"https://llm", 1),
+            1,
+        )
+    };
+    let adams = entry(adam.id, variable("GATEWAY_URL"), plain(b"mine", 1), 1);
+    for entry in [&shared, &adams] {
+        setup.insert(entry).await.expect("insert entry");
+    }
+    assert_eq!(
+        setup.entries(adam.id).await.unwrap(),
+        std::slice::from_ref(&adams)
+    );
+    let everyone = setup.shared_entries().await.unwrap();
+    assert!(everyone.contains(&shared), "{everyone:?}");
+    assert!(everyone.iter().all(|entry| entry.owner.shared().is_some()));
+    let members = setup.every_member_entry().await.unwrap();
+    assert!(members.contains(&adams), "{members:?}");
+    assert!(members.iter().all(|entry| entry.owner.member().is_some()));
+
+    let required = Entry {
+        owner: Owner::Everyone(Shared::Required),
+        value: plain(b"https://llm/v2", 2),
+        ..shared.clone()
+    };
+    assert!(setup.update(&required, &[]).await.unwrap());
+    assert!(setup.shared_entries().await.unwrap().contains(&required));
+    let claimed = Entry {
+        owner: Owner::Member(adam.id),
+        ..required.clone()
+    };
+    assert!(!setup.update(&claimed, &[]).await.unwrap());
+    assert!(!setup.delete(&claimed.owner, shared.id).await.unwrap());
+    assert!(!setup.delete(&shared.owner, shared.id).await.unwrap());
+    assert!(setup.delete(&required.owner, shared.id).await.unwrap());
+    let left = setup.shared_entries().await.unwrap();
+    assert!(!left.iter().any(|entry| entry.id == shared.id), "{left:?}");
+    assert_eq!(setup.entries(adam.id).await.unwrap(), [adams]);
+}
+
+async fn attachments_of_an_entry_list_every_sandbox(
+    users: &dyn UserRepo,
+    sandboxes: &dyn SandboxRepo,
+    setup: &dyn SetupRepo,
+) {
+    let adam = seed_user(users, "adam").await;
+    let eve = seed_user(users, "eve").await;
+    let main = sandbox(sandboxes, adam.id, "main").await;
+    let lab = sandbox(sandboxes, eve.id, "lab").await;
+    let offered = Entry {
+        owner: Owner::Everyone(Shared::Offered),
+        ..entry(
+            adam.id,
+            variable("OPENAI_BASE_URL"),
+            plain(b"https://llm", 1),
+            1,
+        )
+    };
+    let adams = entry(adam.id, variable("EDITOR"), plain(b"vim", 1), 1);
+    for entry in [&offered, &adams] {
+        setup.insert(entry).await.unwrap();
+    }
+    let attach = |sandbox: &Sandbox, entry: &Entry, overriding: Option<StoredValue>| Attachment {
+        sandbox: sandbox.id.clone(),
+        entry: entry.id,
+        overriding,
+    };
+    let shared = vec![
+        attach(&main, &offered, Some(secret(4, None, 2))),
+        attach(&lab, &offered, None),
+    ];
+    for attachment in shared.iter().chain([&attach(&main, &adams, None)]) {
+        setup.attach(attachment).await.expect("attach");
+    }
+    assert_eq!(
+        sorted_attachments(setup.attachments_of(offered.id).await.unwrap()),
+        sorted_attachments(shared)
+    );
+    assert_eq!(
+        setup.attachments_of(adams.id).await.unwrap(),
+        [attach(&main, &adams, None)]
+    );
+    assert_eq!(setup.attachments_of(EntryId::generate()).await.unwrap(), []);
+    assert_eq!(
+        setup.attachments(adam.id).await.unwrap(),
+        [attach(&main, &adams, None)]
+    );
 }

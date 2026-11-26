@@ -3,12 +3,19 @@ use std::collections::BTreeSet;
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretSlice};
 
-use super::{EntryChange, FILE_LIMIT, NewEntry, Preview, Use, VARIABLE_LIMIT};
+use super::{
+    EntryChange, FILE_LIMIT, NewEntry, NewSharedEntry, Preview, SharedEntryChange, Use,
+    VARIABLE_LIMIT,
+};
 use crate::Error;
 use crate::app::SANDBOX_FILE;
-use crate::domain::{Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxName, Target, User};
+use crate::domain::{
+    Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxName, SecretId, Shared, Target, User,
+    UserId,
+};
 use crate::fakes::{
-    World, bytes, entry, exposed, file, sandbox_name, unchanged, variable, variable_name,
+    World, admin_proof, bytes, entry, exposed, file, sandbox_name, shared_file, shared_variable,
+    unchanged, variable, variable_name,
 };
 use crate::ports::{SecretStore, SetupRepo};
 
@@ -1150,4 +1157,469 @@ async fn a_failed_save_leaves_no_secret_behind() {
             .await,
         Err(Error::NotFound(_))
     ));
+}
+
+/// The owner's sandboxes that run without their latest setup change.
+async fn stale(w: &World, owner: &User) -> Vec<String> {
+    w.sandboxes
+        .list(owner)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|view| view.stale_setup)
+        .map(|view| view.sandbox.name.to_string())
+        .collect()
+}
+
+fn secret_id(entry: &Entry) -> SecretId {
+    match &entry.value.kept {
+        Kept::Secret(secret) => secret.id,
+        Kept::Plain(_) => panic!("{entry:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_required_entry_reaches_every_sandbox_and_a_member_cannot_touch_it() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let eve = w.member("eve").await;
+    let main = w.sandbox(&adam, "main").await;
+    let lab = w.sandbox(&eve, "lab").await;
+    let gateway = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("GATEWAY_URL", "https://llm", Shared::Required),
+        )
+        .await
+        .unwrap()
+        .entry;
+    assert_eq!(stale(&w, &adam).await, ["main"]);
+    assert_eq!(stale(&w, &eve).await, ["lab"]);
+    assert_eq!(
+        restarted(&w, &adam, &main).await.0,
+        ["GATEWAY_URL=https://llm"]
+    );
+    assert_eq!(
+        restarted(&w, &eve, &lab).await.0,
+        ["GATEWAY_URL=https://llm"]
+    );
+    let later = w.sandbox(&adam, "later").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&later.id).unwrap()),
+        ["GATEWAY_URL=https://llm"]
+    );
+
+    let required = "variable GATEWAY_URL is required in every sandbox";
+    for refusal in [
+        refused(w.setup.attach(&adam, &main.name, gateway.id).await),
+        refused(w.setup.detach(&adam, &main.name, gateway.id).await),
+        refused(
+            w.setup
+                .set_override(&adam, &main.name, gateway.id, Some(bytes("x")))
+                .await,
+        ),
+    ] {
+        assert!(
+            matches!(&refusal, Error::Invalid(message) if message == required),
+            "{refusal:?}"
+        );
+    }
+    let mine = refused(
+        w.setup
+            .create(&adam, entry(variable("GATEWAY_URL"), "x"))
+            .await,
+    );
+    assert!(
+        matches!(&mine, Error::Conflict(message)
+            if message == "variable GATEWAY_URL is set for every sandbox by the admin"),
+        "{mine:?}"
+    );
+    let missing = format!("setup entry {}", gateway.id.0);
+    assert!(matches!(
+        w.setup.change(&adam, gateway.id, unchanged(&gateway)).await,
+        Err(Error::NotFound(message)) if message == missing
+    ));
+    assert!(matches!(
+        w.setup.delete(&adam, gateway.id).await,
+        Err(Error::NotFound(message)) if message == missing
+    ));
+    assert_eq!(w.setup.get(&adam, gateway.id).await.unwrap().entry, gateway);
+}
+
+#[tokio::test]
+async fn making_an_entry_required_is_refused_while_members_have_its_name() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let mut theirs = Vec::new();
+    for handle in ["carol", "bob", "alice"] {
+        let member = w.member(handle).await;
+        let entry = w
+            .entry(&member, variable("ANTHROPIC_BASE_URL"), handle, false)
+            .await;
+        theirs.push((member, entry));
+    }
+    let required = shared_variable("ANTHROPIC_BASE_URL", "https://llm", Shared::Required);
+    let error = refused(w.setup.create_shared(&root, required).await);
+    assert!(
+        matches!(&error, Error::Conflict(message) if message
+            == "variable ANTHROPIC_BASE_URL is also set by alice, bob and carol; \
+                ask them to rename theirs first"),
+        "{error:?}"
+    );
+    assert_eq!(w.setup.list_shared(&root).await.unwrap(), []);
+
+    let (carol, carols) = &theirs[0];
+    w.setup.delete(carol, carols.id).await.unwrap();
+    let offered = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("ANTHROPIC_BASE_URL", "https://llm", Shared::Offered),
+        )
+        .await
+        .unwrap()
+        .entry;
+    let error = refused(
+        w.setup
+            .change_shared(
+                &root,
+                offered.id,
+                SharedEntryChange {
+                    shared: Shared::Required,
+                    change: unchanged(&offered),
+                },
+            )
+            .await,
+    );
+    assert!(
+        matches!(&error, Error::Conflict(message) if message
+            == "variable ANTHROPIC_BASE_URL is also set by alice and bob; \
+                ask them to rename theirs first"),
+        "{error:?}"
+    );
+    let listed = w.setup.list_shared(&root).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].entry, offered);
+    assert_eq!(
+        listed[0]
+            .shadowed_by
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["alice", "bob"]
+    );
+}
+
+#[tokio::test]
+async fn an_offered_entry_is_attached_detached_overridden_and_shadowed() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let offered = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("OPENAI_BASE_URL", "https://llm/v1", Shared::Offered),
+        )
+        .await
+        .unwrap()
+        .entry;
+    let new = w.sandbox(&adam, "new").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&new.id).unwrap()),
+        ["OPENAI_BASE_URL=https://llm/v1"]
+    );
+    w.setup.detach(&adam, &new.name, offered.id).await.unwrap();
+    assert_eq!(restarted(&w, &adam, &new).await.0, [] as [&str; 0]);
+    w.setup.attach(&adam, &new.name, offered.id).await.unwrap();
+    w.setup
+        .set_override(&adam, &new.name, offered.id, Some(bytes("https://mine")))
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &new).await.0,
+        ["OPENAI_BASE_URL=https://mine"]
+    );
+
+    let own = w
+        .entry(&adam, variable("OPENAI_BASE_URL"), "https://own", false)
+        .await;
+    let marks: Vec<(EntryId, bool, bool)> = w
+        .setup
+        .list(&adam)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|view| (view.entry.id, view.shadows, view.shadowed))
+        .collect();
+    assert_eq!(marks, [(offered.id, false, true), (own.id, true, false)]);
+    w.setup.attach(&adam, &new.name, own.id).await.unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &new).await.0,
+        ["OPENAI_BASE_URL=https://own"]
+    );
+    w.setup.detach(&adam, &new.name, own.id).await.unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &new).await.0,
+        ["OPENAI_BASE_URL=https://mine"]
+    );
+
+    let next = w.sandbox(&adam, "next").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&next.id).unwrap()),
+        ["OPENAI_BASE_URL=https://own"]
+    );
+    assert_eq!(
+        attached(&w, &adam, &next).await,
+        ["variable OPENAI_BASE_URL"]
+    );
+}
+
+#[tokio::test]
+async fn an_offered_template_resolves_across_layers() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let main = w.sandbox(&adam, "main").await;
+    let gateway = w
+        .setup
+        .create_shared(
+            &root,
+            shared_variable("GATEWAY_URL", "https://llm", Shared::Required),
+        )
+        .await
+        .unwrap()
+        .entry;
+    let token = w
+        .setup
+        .create(
+            &adam,
+            NewEntry {
+                apply_to_new: false,
+                ..entry(variable("TOKEN"), "t0k")
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let template = w
+        .setup
+        .create_shared(
+            &root,
+            NewSharedEntry {
+                shared: Shared::Offered,
+                entry: NewEntry {
+                    template: true,
+                    apply_to_new: false,
+                    ..entry(file(".config/tool.toml"), "{{ GATEWAY_URL }} {{ TOKEN }}")
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let error = refused(w.setup.attach(&adam, &main.name, template.id).await);
+    let Error::Invalid(message) = &error else {
+        panic!("{error:?}");
+    };
+    assert!(
+        message.contains("TOKEN") && !message.contains("GATEWAY_URL"),
+        "{message}"
+    );
+    w.setup.attach(&adam, &main.name, token.id).await.unwrap();
+    w.setup
+        .attach(&adam, &main.name, template.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted(&w, &adam, &main).await.1,
+        [".config/tool.toml 644 https://llm t0k"]
+    );
+    assert_eq!(
+        w.setup
+            .preview(&adam, &main.name, template.id)
+            .await
+            .unwrap()
+            .text,
+        "https://llm t0k"
+    );
+    refused_saying(
+        w.setup.delete_shared(&root, gateway.id).await,
+        &["sandbox main of adam", "~/.config/tool.toml", "GATEWAY_URL"],
+    );
+}
+
+#[tokio::test]
+async fn a_required_template_may_refer_only_to_required_variables() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let required_ca = || {
+        let mut ca = shared_file("ca.pem", "{{ TOKEN }}", Shared::Required);
+        ca.entry.template = true;
+        ca
+    };
+    let refusal = "template ~/ca.pem applies to every sandbox and refers to TOKEN, which is \
+                   not required";
+    let error = refused(w.setup.create_shared(&root, required_ca()).await);
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "{error:?}"
+    );
+    let token = w
+        .setup
+        .create_shared(&root, shared_variable("TOKEN", "t0k", Shared::Offered))
+        .await
+        .unwrap()
+        .entry;
+    let error = refused(w.setup.create_shared(&root, required_ca()).await);
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "an offered variable is not required: {error:?}"
+    );
+    let token = w
+        .setup
+        .change_shared(
+            &root,
+            token.id,
+            SharedEntryChange {
+                shared: Shared::Required,
+                change: unchanged(&token),
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    w.setup.create_shared(&root, required_ca()).await.unwrap();
+    let error = refused(
+        w.setup
+            .change_shared(
+                &root,
+                token.id,
+                SharedEntryChange {
+                    shared: Shared::Offered,
+                    change: unchanged(&token),
+                },
+            )
+            .await,
+    );
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "{error:?}"
+    );
+    let error = refused(w.setup.delete_shared(&root, token.id).await);
+    assert!(
+        matches!(&error, Error::Invalid(message) if message == refusal),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_offered_entry_forgets_overrides_and_marks_the_sandboxes() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let eve = w.member("eve").await;
+    let editor = w.entry(&adam, variable("EDITOR"), "vim", true).await;
+    let offered = w
+        .setup
+        .create_shared(
+            &root,
+            NewSharedEntry {
+                shared: Shared::Offered,
+                entry: NewEntry {
+                    secret: true,
+                    apply_to_new: false,
+                    ..entry(variable("API_KEY"), "shared-key")
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let main = w.sandbox(&adam, "main").await;
+    let lab = w.sandbox(&eve, "lab").await;
+    let mut kept = vec![secret_id(&offered)];
+    for (owner, sandbox) in [(&adam, &main), (&eve, &lab)] {
+        w.setup
+            .attach(owner, &sandbox.name, offered.id)
+            .await
+            .unwrap();
+        w.setup
+            .set_override(
+                owner,
+                &sandbox.name,
+                offered.id,
+                Some(bytes(&format!("{}-key", owner.handle))),
+            )
+            .await
+            .unwrap();
+        let attached = w.setup.of_sandbox(owner, &sandbox.name).await.unwrap();
+        let overriding = attached
+            .iter()
+            .find(|attached| attached.view.entry.id == offered.id)
+            .and_then(|attached| attached.overriding.as_ref())
+            .unwrap();
+        let Kept::Secret(secret) = &overriding.kept else {
+            panic!("{overriding:?}");
+        };
+        kept.push(secret.id);
+        restarted(&w, owner, sandbox).await;
+    }
+
+    w.setup.delete_shared(&root, offered.id).await.unwrap();
+    assert_eq!(stale(&w, &adam).await, ["main"]);
+    assert_eq!(stale(&w, &eve).await, ["lab"]);
+    for owner in [UserId::SHARED, adam.id, eve.id] {
+        assert!(w.secrets.get(owner, &kept).await.unwrap().is_empty());
+    }
+    assert_eq!(w.secrets.count(), 1, "adam's EDITOR alone");
+    let adams: Vec<Entry> = w
+        .setup
+        .list(&adam)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|view| view.entry)
+        .collect();
+    assert_eq!(adams, [editor]);
+    assert_eq!(w.setup.list(&eve).await.unwrap(), []);
+    assert_eq!(restarted(&w, &adam, &main).await.0, ["EDITOR=vim"]);
+    assert_eq!(restarted(&w, &eve, &lab).await.0, [] as [&str; 0]);
+}
+
+#[tokio::test]
+async fn shared_secret_values_live_under_the_shared_owner() {
+    let w = World::new();
+    let root = admin_proof(&w.admin("root").await);
+    let adam = w.member("adam").await;
+    let shared = w
+        .setup
+        .create_shared(
+            &root,
+            NewSharedEntry {
+                shared: Shared::Required,
+                entry: NewEntry {
+                    secret: true,
+                    ..entry(variable("GATEWAY_TOKEN"), "sk-shared-0123456789")
+                },
+            },
+        )
+        .await
+        .unwrap()
+        .entry;
+    let id = secret_id(&shared);
+    let held = w.secrets.get(UserId::SHARED, &[id]).await.unwrap();
+    assert_eq!(held[&id].expose_secret(), b"sk-shared-0123456789");
+    assert!(w.secrets.get(adam.id, &[id]).await.unwrap().is_empty());
+    let listed = w.setup.list(&adam).await.unwrap();
+    assert!(listed[0].entry.is_secret());
+    let debug = format!("{listed:?}");
+    assert!(!debug.contains("0123456789"), "{debug}");
+    let main = w.sandbox(&adam, "main").await;
+    assert_eq!(
+        exposed(&w.engine.env_of(&main.id).unwrap()),
+        ["GATEWAY_TOKEN=sk-shared-0123456789"]
+    );
 }

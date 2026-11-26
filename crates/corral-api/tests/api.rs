@@ -147,6 +147,7 @@ impl Options {
                 world.setup_repo.clone(),
                 secrets,
                 world.sandbox_repo.clone(),
+                world.users.clone(),
                 links(),
             );
         }

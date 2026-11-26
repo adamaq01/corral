@@ -202,3 +202,56 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         chronological
     );
 }
+
+/// An entry row is a member's, with an owner and no shared kind, or everyone's, with a shared kind
+/// and no owner.
+async fn a_row_with_both_or_neither_of_an_owner_and_a_shared_kind_is_refused(databases: Databases) {
+    let pool = databases.pool().await;
+    let store = Store::open(pool.clone()).await.expect("open");
+    let member = user();
+    UserRepo::insert(&store, &member).await.unwrap();
+    let insert = async |owner: Option<Uuid>, shared: Option<&str>| {
+        on_pool!(pool, |pool| {
+            sqlx::query(
+                "insert into setup_entries (id, owner, shared, kind, target, template, \
+                 executable, apply_to_new, content, size, set_at, created_at) \
+                 values ($1, $2, $3, 'variable', 'X', false, false, true, $4, 1, $5, $5)",
+            )
+            .bind(Uuid::new_v4())
+            .bind(owner)
+            .bind(shared)
+            .bind(b"x".to_vec())
+            .bind(Utc::now())
+            .execute(pool)
+            .await
+            .map(drop)
+        })
+    };
+    for (owner, shared) in [
+        (None, None),
+        (Some(member.id.0), Some("offered")),
+        (None, Some("always")),
+    ] {
+        assert!(insert(owner, shared).await.is_err(), "{owner:?} {shared:?}");
+    }
+    for (owner, shared) in [
+        (Some(member.id.0), None),
+        (None, Some("required")),
+        (None, Some("offered")),
+    ] {
+        insert(owner, shared).await.expect("a well-formed row");
+    }
+}
+
+#[tokio::test]
+async fn sqlite_refuses_a_row_with_both_or_neither_of_an_owner_and_a_shared_kind() {
+    a_row_with_both_or_neither_of_an_owner_and_a_shared_kind_is_refused(Databases::sqlite()).await;
+}
+
+#[tokio::test]
+async fn postgres_refuses_a_row_with_both_or_neither_of_an_owner_and_a_shared_kind() {
+    a_row_with_both_or_neither_of_an_owner_and_a_shared_kind_is_refused(
+        Databases::postgres().await,
+    )
+    .await;
+}
