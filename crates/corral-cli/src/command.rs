@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::first_start::Part;
+
 pub const USAGE: &str = "\
 corral acts on the Corral sandbox it runs in.
 
@@ -25,8 +27,8 @@ pub enum Command {
     KeepAwake(Option<Duration>),
     /// Run by the sandbox itself at its start.
     ReportActivity,
-    /// Run by `corral-init` at the sandbox's first start.
-    FirstStart,
+    /// Run by `corral-init` at the sandbox's first start, one part at a time.
+    FirstStart(Part),
     /// Run by `corral-init` at each start, after the home files.
     AgentsApply,
     Help,
@@ -59,7 +61,8 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         ["keep-awake", "off"] => Ok(Command::KeepAwake(None)),
         ["keep-awake", time] => duration(time).map(|time| Command::KeepAwake(Some(time))),
         ["report-activity"] => Ok(Command::ReportActivity),
-        ["first-start"] => Ok(Command::FirstStart),
+        ["first-start", "dotfiles"] => Ok(Command::FirstStart(Part::Dotfiles)),
+        ["first-start", "repository"] => Ok(Command::FirstStart(Part::Repository)),
         ["agents-apply"] => Ok(Command::AgentsApply),
         ["delete"] => Ok(Command::Delete(None)),
         ["delete", "--confirm", name] => Ok(Command::Delete(Some((*name).to_owned()))),
@@ -76,6 +79,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{Command, parse};
+    use crate::first_start::Part;
 
     fn parsed(line: &str) -> Result<Command, String> {
         let args: Vec<String> = line.split_whitespace().map(str::to_owned).collect();
@@ -111,7 +115,14 @@ mod tests {
         );
         assert_eq!(parsed("keep-awake off"), Ok(Command::KeepAwake(None)));
         assert_eq!(parsed("report-activity"), Ok(Command::ReportActivity));
-        assert_eq!(parsed("first-start"), Ok(Command::FirstStart));
+        assert_eq!(
+            parsed("first-start dotfiles"),
+            Ok(Command::FirstStart(Part::Dotfiles))
+        );
+        assert_eq!(
+            parsed("first-start repository"),
+            Ok(Command::FirstStart(Part::Repository))
+        );
         assert_eq!(parsed("agents-apply"), Ok(Command::AgentsApply));
         for wrong in [
             "keep-awake",
@@ -126,6 +137,8 @@ mod tests {
             "delete main",
             "delete --confirm",
             "status -v",
+            "first-start",
+            "first-start home",
         ] {
             assert!(parsed(wrong).is_err(), "{wrong}");
         }

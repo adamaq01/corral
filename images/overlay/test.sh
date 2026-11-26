@@ -70,13 +70,14 @@ interactive_login() {
     tr -d '\r'
 }
 
-# The home files the engine stages, as corral-init reads them: "<key> <mode> <path>" lines.
+# The home files the engine stages, as corral-init reads them: "<key> <mode> <path>" lines on
+# stdin, key 0 holding $1, key 1 holding $2 or "plain", and key 2 "blocked".
 stage_home_files() {
   local dir=$work/home-files/etc/corral/home-files
   rm -rf "$work/home-files" && mkdir -p "$dir"
   cat >"$dir/manifest"
   printf "%s" "$1" >"$dir/0"
-  printf "plain" >"$dir/1"
+  printf "%s" "${2:-plain}" >"$dir/1"
   printf "blocked" >"$dir/2"
   chmod 0700 "$dir" && chmod 0600 "$dir"/*
   tar -C "$work/home-files" --owner=1000 --group=1000 --numeric-owner \
@@ -321,6 +322,23 @@ Dotfiles from file:///srv/dotfiles.git checked out into the home" \
   start_server "$with_git" "${dotfiles[@]}"
   check "a later start checks nothing out" "# changed absent absent" \
     "$(ssh_run 'echo $(cat ~/.bashrc) $(test -e ~/.config/tool/x || echo absent) $(test -e ~/.config/corral/notices || echo absent)')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+
+  make_repository mine .gitconfig '[user] name = From the dotfiles' .inputrc 'set bell-style none'
+  local mine=(--mount "type=bind,source=$work/mine.git,target=/srv/mine.git,readonly")
+  stage_home_files '{"url": "file:///srv/mine.git", "branch": null}' \
+    "$(printf '[user]\n\tname = From the setup\n')" <<'MANIFEST'
+0 0644 .config/corral-agents/dotfiles.json
+1 0644 .gitconfig
+MANIFEST
+  start_server "$with_git" "${mine[@]}"
+  check "the setup's file wins over the dotfiles' at the same path, and their other files are there" \
+    "From the setup
+set bell-style none
+Dotfiles from file:///srv/mine.git checked out into the home
+2" "$(ssh_run 'git config --global user.name; cat ~/.inputrc ~/.config/corral/notices
+      wc -l <~/.config/corral/home-files')"
   docker rm --force "$server" >/dev/null
   docker volume rm "$volume" >/dev/null
 

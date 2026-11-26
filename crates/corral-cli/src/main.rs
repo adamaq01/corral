@@ -35,9 +35,9 @@ fn main() -> ExitCode {
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     match command {
         Command::ReportActivity => activity::run(&home),
-        Command::FirstStart => {
+        Command::FirstStart(part) => {
             let path = std::env::var_os("PATH").unwrap_or_default();
-            first_start::run(&home, &path, first_start::TIMEOUT);
+            first_start::run(part, &home, &path, first_start::TIMEOUT);
             return ExitCode::SUCCESS;
         }
         Command::AgentsApply => {
@@ -122,7 +122,7 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
                 file.web.trim_end_matches('/')
             ))
         }
-        Command::Help | Command::ReportActivity | Command::FirstStart | Command::AgentsApply => {
+        Command::Help | Command::ReportActivity | Command::FirstStart(_) | Command::AgentsApply => {
             Ok(USAGE.to_owned())
         }
     }

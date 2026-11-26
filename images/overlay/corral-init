@@ -81,11 +81,12 @@ system() {
 }
 
 # Runs as the sandbox user: the skeleton on the first start, then the home files the engine
-# staged, each replacing what is at its path. A file written at an earlier start and no longer
-# staged is removed, unless it was changed since. Every start then applies the setup's MCP
-# servers and gateway addresses to the agents' own files, and the first start checks out the
-# setup's dotfiles and clones the sandbox's repository, each if there is one, each adding how it
-# went to the notices.
+# staged, each replacing what is at its path. The first start then checks out the setup's
+# dotfiles, if any, and writes the home files again, so the setup's file at a path the dotfiles
+# also hold is the one that stays. A file written at an earlier start and no longer staged is
+# removed, unless it was changed since. Every start then applies the setup's MCP servers and
+# gateway addresses to the agents' own files, and the first start clones the sandbox's
+# repository, if any. Each of those adds how it went to the notices.
 home() {
   local skel first=
   if [ ! -e "$HOME_DIR/.corral-initialized" ]; then
@@ -105,18 +106,29 @@ home() {
     NOTICES=$OWN_DIR/notices
   fi
   [ -f "$WRITTEN" ] || : >"$WRITTEN"
-  : >"$WRITTEN.new"
-  : >"$NOTICES.new"
-  [ ! -f "$STAGED/manifest" ] || write_staged <"$STAGED/manifest"
+  $B rm -f "$NOTICES"
+  write_files
+  if [ -n "$first" ]; then
+    HOME=$HOME_DIR $O/bin/corral first-start dotfiles
+    write_files
+  fi
   remove_unstaged <"$WRITTEN"
   $B mv "$WRITTEN.new" "$WRITTEN"
+  [ ! -f "$NOTICES" ] || $B cat "$NOTICES" >>"$NOTICES.new"
   if [ -s "$NOTICES.new" ]; then
     $B mv "$NOTICES.new" "$NOTICES"
   else
     $B rm -f "$NOTICES.new" "$NOTICES"
   fi
   HOME=$HOME_DIR $O/bin/corral agents-apply
-  [ -z "$first" ] || HOME=$HOME_DIR $O/bin/corral first-start
+  [ -z "$first" ] || HOME=$HOME_DIR $O/bin/corral first-start repository
+}
+
+# Writes the staged home files, starting afresh the record of what it wrote and its notices.
+write_files() {
+  : >"$WRITTEN.new"
+  : >"$NOTICES.new"
+  [ ! -f "$STAGED/manifest" ] || write_staged <"$STAGED/manifest"
 }
 
 # Writes each file of the manifest on stdin. One that cannot be written, such as one with a

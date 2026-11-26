@@ -1,7 +1,8 @@
-//! `corral first-start`, which `corral-init` runs at the sandbox's first start, after the home
-//! files: checks out the dotfiles the setup names into the home, then clones the repository the
-//! sandbox was made with into the home, each with the image's own `git`, and adds how each went
-//! to the notices. Nothing it meets keeps the sandbox from starting.
+//! `corral first-start dotfiles` and `corral first-start repository`, which `corral-init` runs at
+//! the sandbox's first start: the first checks out the dotfiles the setup names into the home,
+//! after the home files, which `corral-init` then writes again; the second clones the repository
+//! the sandbox was made with into the home. Each runs the image's own `git` and adds how it went
+//! to the notices. Nothing either meets keeps the sandbox from starting.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt::Display;
@@ -23,23 +24,31 @@ const SSH: &str = "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes";
 const DOTFILES: &str = ".config/corral-agents/dotfiles.json";
 const DOTFILES_GIT: &str = ".config/corral-agents/dotfiles.git";
 
+/// A part of the first start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    Dotfiles,
+    Repository,
+}
+
 enum Failure {
     NoGit,
     /// Why, in a line.
     Failed(String),
 }
 
-/// Checks out the dotfiles of the setup in `home`, then clones the repository of its sandbox
-/// file, each if there is one, with the first `git` on `path`, each git stopped after `timeout`.
-pub fn run(home: &Path, path: &OsStr, timeout: Duration) {
-    if let Some(said) = dotfiles(home, path, timeout) {
+/// Checks out the dotfiles of the setup in `home`, or clones the repository of its sandbox file,
+/// if there is one, with the first `git` on `path`, stopped after `timeout`.
+pub fn run(part: Part, home: &Path, path: &OsStr, timeout: Duration) {
+    let said = match part {
+        Part::Dotfiles => dotfiles(home, path, timeout),
+        Part::Repository => SandboxFile::read(home)
+            .ok()
+            .and_then(|file| file.repository)
+            .map(|repository| clone(home, &repository, path, timeout)),
+    };
+    if let Some(said) = said {
         tell(home, &said);
-    }
-    if let Some(repository) = SandboxFile::read(home)
-        .ok()
-        .and_then(|file| file.repository)
-    {
-        tell(home, &clone(home, &repository, path, timeout));
     }
 }
 
@@ -239,7 +248,7 @@ mod tests {
     use rustix::io::Errno;
     use rustix::process::{Pid, test_kill_process};
 
-    use super::run;
+    use super::{Part, run};
     use crate::notices;
 
     /// Clones as git would, except into a directory named `missing`, where it fails as git does
@@ -348,9 +357,50 @@ record "$@" >"$dir/invocation"
         std::fs::write(home.join(".config/corral-agents/dotfiles.json"), dotfiles).unwrap();
     }
 
+    /// Runs the first start's two parts in `corral-init`'s order.
     fn started(home: &Path, path: &Path) -> Vec<String> {
-        run(home, path.as_os_str(), Duration::from_secs(60));
+        for part in [Part::Dotfiles, Part::Repository] {
+            run(part, home, path.as_os_str(), Duration::from_secs(60));
+        }
         notices::read(home)
+    }
+
+    #[test]
+    fn each_part_runs_alone() {
+        let home = home(
+            "parts",
+            r#"{"url": "file:///srv/repo.git", "branch": null}"#,
+        );
+        write_dotfiles(
+            &home,
+            r#"{"url": "file:///srv/dotfiles.git", "branch": null}"#,
+        );
+        run(
+            Part::Dotfiles,
+            &home,
+            fake_git().as_os_str(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            notices::read(&home),
+            ["Dotfiles from file:///srv/dotfiles.git checked out into the home"]
+        );
+        assert!(!home.join("repo").exists());
+
+        run(
+            Part::Repository,
+            &home,
+            fake_git().as_os_str(),
+            Duration::from_secs(60),
+        );
+        assert_eq!(
+            notices::read(&home),
+            [
+                "Dotfiles from file:///srv/dotfiles.git checked out into the home",
+                "Cloned file:///srv/repo.git into ~/repo"
+            ]
+        );
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
@@ -581,7 +631,12 @@ record "$@" >"$dir/invocation"
             r#"{"url": "https://github.com/me/slow", "branch": null}"#,
         );
         let began = Instant::now();
-        run(&home, fake_git().as_os_str(), Duration::from_secs(1));
+        run(
+            Part::Repository,
+            &home,
+            fake_git().as_os_str(),
+            Duration::from_secs(1),
+        );
         assert!(began.elapsed() < Duration::from_secs(10));
         assert_eq!(
             notices::read(&home),
@@ -597,7 +652,12 @@ record "$@" >"$dir/invocation"
             "stalled",
             r#"{"url": "git@github.com:me/stalled.git", "branch": null}"#,
         );
-        run(&home, fake_git().as_os_str(), Duration::from_secs(1));
+        run(
+            Part::Repository,
+            &home,
+            fake_git().as_os_str(),
+            Duration::from_secs(1),
+        );
         assert_eq!(
             notices::read(&home),
             ["Cloning git@github.com:me/stalled.git failed: git took too long and was stopped"]
