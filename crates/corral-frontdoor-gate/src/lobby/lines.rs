@@ -175,14 +175,18 @@ fn question(installer: &Installer) -> String {
             }
             numbered(
                 &mut out,
-                installer
-                    .toggles()
-                    .map(|(_, entry)| format!("{}  {}", entry.name, words::kind(entry))),
+                installer.toggles().map(|(at, entry)| {
+                    let item = format!("{}  {}", entry.name, words::kind(entry));
+                    match installer.replaced_by(at) {
+                        Some(own) => format!("{item}\r\n     {}", words::replaced(own)),
+                        None => item,
+                    }
+                }),
             );
             let chosen: Vec<String> = installer
                 .toggles()
                 .enumerate()
-                .filter(|&(_, (at, _))| installer.chosen[at])
+                .filter(|&(_, (at, _))| installer.gets(at))
                 .map(|(n, _)| (n + 1).to_string())
                 .collect();
             let chosen = if chosen.is_empty() {
@@ -221,7 +225,10 @@ fn question(installer: &Installer) -> String {
 
 #[cfg(test)]
 mod tests {
+    use corral_core::domain::Shared;
+
     use super::Lines;
+    use crate::api::OfferedEntry;
     use crate::lobby::View;
     use crate::lobby::installer::tests::offer;
     use crate::lobby::installer::{Effect, Event, Installer};
@@ -318,6 +325,43 @@ mod tests {
             out.ends_with("Repository to clone, or empty for none: "),
             "{out:?}"
         );
+    }
+
+    #[test]
+    fn an_offered_entry_says_whose_takes_its_place_and_is_chosen_without_it() {
+        let mut offer = offer(Some("new"));
+        let own = offer.entries[1].clone();
+        offer.entries.insert(
+            1,
+            OfferedEntry {
+                id: "id-3".to_owned(),
+                secret: false,
+                shared: Some(Shared::Offered),
+                shadowed: true,
+                ..own
+            },
+        );
+        let mut installer = Installer::new(offer);
+        let mut lines = Lines::new();
+        lines.open(&installer);
+        typed(&mut lines, &mut installer, "\r");
+        let (out, _) = typed(&mut lines, &mut installer, "\r");
+        assert!(
+            out.ends_with(
+                "  1) GH_TOKEN  variable, offered, for new sandboxes\r\n     Your GH_TOKEN takes \
+                 the place of the shared one.\r\n  2) GH_TOKEN  variable, secret, for new \
+                 sandboxes\r\n  3) .gitconfig  file\r\nEntries, by number, or none [2]: "
+            ),
+            "{out:?}"
+        );
+        for answer in ["1\r", "\r"] {
+            typed(&mut lines, &mut installer, answer);
+        }
+        let (_, effects) = typed(&mut lines, &mut installer, "\r");
+        match effects.as_slice() {
+            [Effect::Make(create)] => assert_eq!(create.spec.setup, Some(vec!["id-3".to_owned()])),
+            other => panic!("not one make: {other:?}"),
+        }
     }
 
     #[test]

@@ -62,6 +62,11 @@ pub(crate) fn kind(entry: &OfferedEntry) -> String {
     words.join(", ")
 }
 
+/// What an offered entry says while `own`, the owner's, is chosen in its place.
+pub(crate) fn replaced(own: &OfferedEntry) -> String {
+    format!("Your {} takes the place of the shared one.", own.name)
+}
+
 /// A required entry, which no choice leaves out.
 pub(crate) fn fixed(entry: &OfferedEntry) -> String {
     format!("= {}  {}", entry.name, kind(entry))

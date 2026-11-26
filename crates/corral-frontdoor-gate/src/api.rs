@@ -171,6 +171,21 @@ impl OfferedEntry {
     pub(crate) fn required(&self) -> bool {
         self.shared == Some(Shared::Required)
     }
+
+    /// Whether the two land on the same variable, or on files one inside the other.
+    pub(crate) fn collides(&self, other: &Self) -> bool {
+        let inside = |path: &str, dir: &str| {
+            path.strip_prefix(dir)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        self.kind == other.kind
+            && match self.kind {
+                EntryKind::Variable => self.name == other.name,
+                EntryKind::File => {
+                    inside(&self.name, &other.name) || inside(&other.name, &self.name)
+                }
+            }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

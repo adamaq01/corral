@@ -6,8 +6,8 @@ use std::time::Duration;
 use corral_core::app::{EntryChange, NewEntry};
 use corral_core::domain::{Repository, SandboxId, SandboxName, Shared};
 use corral_core::fakes::{
-    EngineCall, admin_proof, entry, exposed, file, sandbox_name, shared_variable, unchanged,
-    variable,
+    EngineCall, admin_proof, entry, exposed, file, sandbox_name, shared_file, shared_variable,
+    unchanged, variable,
 };
 use corral_frontdoor_gate::Limits;
 use serde_json::Value;
@@ -58,6 +58,16 @@ fn made(f: &Fixture, name: &str) -> Option<SandboxId> {
 
 fn terminal(f: &Fixture, username: &str, term: &str, extra: &[&str]) -> Pty {
     Pty::ssh(&f.ssh_args(username, extra), term, 24, 80, f.dir.path())
+}
+
+/// Whether `rows` show one under the other inside the installer's frame, each without its
+/// indentation.
+fn shows(screen: &str, rows: &[&str]) -> bool {
+    let framed: Vec<&str> = screen
+        .lines()
+        .map(|line| line.trim_matches(|c: char| c == '│' || c.is_whitespace()))
+        .collect();
+    framed.windows(rows.len()).any(|window| window == rows)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -288,32 +298,57 @@ async fn the_installer_shows_required_entries_fixed_and_asks_for_a_repository() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_installer_lists_the_members_entry_in_place_of_the_shared_one() {
+async fn the_installer_sets_an_offered_entry_aside_only_while_the_members_own_is_chosen() {
     let f = Fixture::without_container(Limits::default()).await;
     entries(&f).await;
     let root = admin_proof(&f.world.admin("root").await);
-    for name in ["GH_TOKEN", "OPENAI_BASE_URL"] {
-        let offered = shared_variable(name, "https://llm", Shared::Offered);
+    for name in ["EXTRA_TOKEN", "GH_TOKEN"] {
+        let offered = shared_variable(name, "offered", Shared::Offered);
         f.world.setup.create_shared(&root, offered).await.unwrap();
     }
+    let mut template = shared_file(".tool.toml", "token = {{ EXTRA_TOKEN }}", Shared::Offered);
+    template.entry.template = true;
+    f.world.setup.create_shared(&root, template).await.unwrap();
     let mut pty = terminal(&f, "fresh.adam", "xterm-256color", &[]);
     pty.until("Choose the image:").await;
     pty.send(ENTER);
     pty.until("Choose the size:").await;
     pty.send(ENTER);
     let screen = pty.until("Choose the setup entries").await;
-    for wanted in [
-        "> [x] OPENAI_BASE_URL  variable, offered, for new sandboxes",
-        "  [ ] EXTRA_TOKEN  variable",
-        "  [x] GH_TOKEN  variable, secret, for new sandboxes",
-    ] {
-        assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
-    }
-    assert_eq!(screen.matches("GH_TOKEN").count(), 1, "{screen}");
+    let listed = [
+        "> [x] EXTRA_TOKEN  variable, offered, for new sandboxes",
+        "[ ] GH_TOKEN  variable, offered, for new sandboxes",
+        "Your GH_TOKEN takes the place of the shared one.",
+        "[x] .tool.toml  file, template, offered, for new sandboxes",
+        "[ ] EXTRA_TOKEN  variable",
+        "[x] GH_TOKEN  variable, secret, for new sandboxes",
+    ];
+    assert!(shows(&screen, &listed), "{screen}");
+    pty.send(DOWN);
+    pty.send(SPACE);
+    pty.send(DOWN);
+    pty.send(DOWN);
+    pty.send(SPACE);
+    let screen = pty
+        .until("Your EXTRA_TOKEN takes the place of the shared one.")
+        .await;
+    let listed = [
+        "[ ] EXTRA_TOKEN  variable, offered, for new sandboxes",
+        "Your EXTRA_TOKEN takes the place of the shared one.",
+        "[ ] GH_TOKEN  variable, offered, for new sandboxes",
+        "Your GH_TOKEN takes the place of the shared one.",
+        "[x] .tool.toml  file, template, offered, for new sandboxes",
+        "> [x] EXTRA_TOKEN  variable",
+        "[x] GH_TOKEN  variable, secret, for new sandboxes",
+    ];
+    assert!(shows(&screen, &listed), "{screen}");
+    pty.send(SPACE);
+    pty.until("  [x] EXTRA_TOKEN  variable, offered").await;
     pty.send(ENTER);
     pty.until("Clone a repository into the new sandbox?").await;
     pty.send(ENTER);
-    pty.until("Setup        OPENAI_BASE_URL, GH_TOKEN").await;
+    pty.until("Setup        EXTRA_TOKEN, .tool.toml, GH_TOKEN")
+        .await;
     pty.send(ENTER);
     // The fake engine starts no container, so the shell is refused once it is made.
     pty.until("corral: could not open a session in sandbox fresh")
@@ -335,7 +370,8 @@ async fn the_installer_lists_the_members_entry_in_place_of_the_shared_one() {
     assert_eq!(
         attached,
         [
-            ("variable OPENAI_BASE_URL".to_owned(), Some(Shared::Offered)),
+            ("variable EXTRA_TOKEN".to_owned(), Some(Shared::Offered)),
+            ("file .tool.toml".to_owned(), Some(Shared::Offered)),
             ("variable GH_TOKEN".to_owned(), None),
         ]
     );

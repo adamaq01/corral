@@ -70,7 +70,7 @@ pub(crate) struct Installer {
     pub(crate) image: usize,
     pub(crate) reference: String,
     pub(crate) size: usize,
-    /// For each entry, whether the sandbox gets it: always, for a required one.
+    /// For each entry, whether it is chosen: always, for a required one.
     pub(crate) chosen: Vec<bool>,
     /// The entry the cursor is on.
     pub(crate) entry: usize,
@@ -84,9 +84,8 @@ pub(crate) struct Installer {
 
 impl Installer {
     /// Starts from the owner's defaults, with the entries for new sandboxes chosen and the
-    /// required ones first, leaving out each offered entry one of the owner's takes the place of.
+    /// required ones first.
     pub(crate) fn new(mut offer: Offer) -> Self {
-        offer.entries.retain(|entry| !entry.shadowed);
         offer.entries.sort_by_key(|entry| !entry.required());
         let image = offer
             .images
@@ -151,12 +150,33 @@ impl Installer {
         }
     }
 
+    /// The entries the sandbox gets.
     pub(crate) fn chosen_entries(&self) -> impl Iterator<Item = &OfferedEntry> {
         self.offer
             .entries
             .iter()
+            .enumerate()
+            .filter_map(|(at, entry)| self.gets(at).then_some(entry))
+    }
+
+    /// Whether the sandbox gets the entry at `at`: chosen, and not set aside.
+    pub(crate) fn gets(&self, at: usize) -> bool {
+        self.chosen[at] && self.replaced_by(at).is_none()
+    }
+
+    /// The owner's chosen entry that sets aside the offered entry at `at`, which then can be
+    /// neither chosen nor attached.
+    pub(crate) fn replaced_by(&self, at: usize) -> Option<&OfferedEntry> {
+        let offered = &self.offer.entries[at];
+        if !offered.shadowed {
+            return None;
+        }
+        self.offer
+            .entries
+            .iter()
             .zip(&self.chosen)
-            .filter_map(|(entry, &chosen)| chosen.then_some(entry))
+            .find(|&(own, &chosen)| chosen && own.shared.is_none() && own.collides(offered))
+            .map(|(own, _)| own)
     }
 
     /// The entries the person may leave out, with their place among all the entries.
@@ -291,6 +311,7 @@ impl Installer {
             (Step::Setup, Key::Char(' ' | 'x')) => {
                 if let Some(entry) = self.offer.entries.get(self.entry)
                     && !entry.required()
+                    && self.replaced_by(self.entry).is_none()
                 {
                     self.chosen[self.entry] = !self.chosen[self.entry];
                 }
@@ -714,6 +735,53 @@ pub(crate) mod tests {
         assert_eq!(
             installer.handle(Event::Answer("y".to_owned())),
             Some(make("tools", "small", &[]))
+        );
+    }
+
+    #[test]
+    fn an_offered_entry_is_set_aside_only_while_the_members_own_is_chosen() {
+        let offered = |id: &str, kind, name: &str| OfferedEntry {
+            id: id.to_owned(),
+            kind,
+            name: name.to_owned(),
+            secret: false,
+            template: false,
+            apply_to_new: true,
+            shared: Some(Shared::Offered),
+            shadowed: true,
+        };
+        let mut offer = offer(Some("new"));
+        offer.entries.splice(
+            1..1,
+            [
+                offered("id-3", EntryKind::Variable, "GH_TOKEN"),
+                offered("id-4", EntryKind::File, ".gitconfig"),
+            ],
+        );
+        let attached = |installer: &Installer| -> Vec<String> {
+            installer
+                .chosen_entries()
+                .map(|entry| entry.id.clone())
+                .collect()
+        };
+        let mut installer = Installer::new(offer);
+        keys(&mut installer, &[Key::Enter, Key::Enter]);
+        assert_eq!(attached(&installer), ["id-0", "id-4", "id-1"]);
+
+        keys(&mut installer, &[Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-4", "id-1"]);
+        keys(&mut installer, &[Key::Down, Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-1"]);
+        keys(&mut installer, &[Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-4", "id-1"]);
+
+        keys(&mut installer, &[Key::Down, Key::Down, Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-1", "id-2"]);
+        keys(&mut installer, &[Key::Up, Key::Char(' ')]);
+        assert_eq!(attached(&installer), ["id-0", "id-3", "id-2"]);
+        assert_eq!(
+            keys(&mut installer, &[Key::Enter; 3]),
+            [make("tools", "small", &["id-3", "id-2"])]
         );
     }
 

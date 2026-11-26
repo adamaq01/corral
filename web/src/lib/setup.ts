@@ -63,27 +63,55 @@ export function sections(entries: SetupEntry[]): Sections {
 	};
 }
 
+/** An entry of the New sandbox dialog the member may check. */
+export type Choice = {
+	entry: SetupEntry;
+	chosen: boolean;
+	/** For an offered entry: the member's own entries on its target, by id. */
+	replacedBy: string[];
+};
+
 /** What a new sandbox comes with, as the New sandbox dialog lists it. */
 export type NewSandboxSetup = {
 	/** The required shared entries, which every sandbox gets. */
 	required: SetupEntry[];
 	/** The offered shared entries, then the member's own, chosen when new sandboxes get them. */
-	choices: { entry: SetupEntry; chosen: boolean }[];
-	/** The offered entries an entry of the member's takes the place of, left out of `choices`. */
-	replaced: SetupEntry[];
+	choices: Choice[];
 };
 
 export function newSandboxSetup(entries: SetupEntry[]): NewSandboxSetup {
-	const offered = entries.filter((entry) => entry.shared === 'offered');
 	const yours = entries.filter((entry) => entry.shared === null);
+	const choice = (entry: SetupEntry, replacedBy: SetupEntry[]) => ({
+		entry,
+		chosen: entry.applyToNew,
+		replacedBy: replacedBy.map((own) => own.id)
+	});
 	return {
 		required: entries.filter((entry) => entry.shared === 'required'),
-		choices: [...offered.filter((entry) => !entry.shadowed), ...yours].map((entry) => ({
-			entry,
-			chosen: entry.applyToNew
-		})),
-		replaced: offered.filter((entry) => entry.shadowed)
+		choices: [
+			...entries
+				.filter((entry) => entry.shared === 'offered')
+				.map((entry) =>
+					choice(
+						entry,
+						yours.filter((own) => collides(own, entry))
+					)
+				),
+			...yours.map((entry) => choice(entry, []))
+		]
 	};
+}
+
+/** The member's own checked entry that takes the place of `choice`, which is then left out. */
+export function replacement(setup: NewSandboxSetup, choice: Choice): SetupEntry | undefined {
+	return setup.choices.find((own) => own.chosen && choice.replacedBy.includes(own.entry.id))?.entry;
+}
+
+/** The entries a new sandbox gets beyond the required ones, by id. */
+export function chosenSetup(setup: NewSandboxSetup): string[] {
+	return setup.choices
+		.filter((choice) => choice.chosen && !replacement(setup, choice))
+		.map((choice) => choice.entry.id);
 }
 
 /** One line saying what the entry holds and which sandboxes get it. */

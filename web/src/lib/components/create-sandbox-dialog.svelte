@@ -13,7 +13,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
 	import { BRANCH_PATTERN, REPOSITORY_PATTERN, cloneDirectory } from '#lib/sandbox.js';
-	import { SHARING, newSandboxSetup, where } from '#lib/setup.js';
+	import { SHARING, chosenSetup, newSandboxSetup, replacement, where } from '#lib/setup.js';
 
 	let {
 		open = $bindable(),
@@ -80,13 +80,6 @@
 		repositoryUrl !== '' && branchName !== '' && !BRANCH_PATTERN.test(branchName)
 	);
 
-	const replaced = $derived.by(() => {
-		const names = new Intl.ListFormat('en').format(comesWith.replaced.map(where));
-		return comesWith.replaced.length === 1
-			? `Your ${names} takes the place of the shared one.`
-			: `Your ${names} take the place of the shared ones.`;
-	});
-
 	async function create() {
 		const choice = named ? { imageReference: reference.trim() } : { image };
 		await onCreated(
@@ -94,7 +87,7 @@
 				name,
 				...choice,
 				size,
-				setup: comesWith.choices.filter((row) => row.chosen).map((row) => row.entry.id),
+				setup: chosenSetup(comesWith),
 				repository: repositoryUrl
 					? { url: repositoryUrl, branch: branchName || undefined }
 					: undefined
@@ -196,19 +189,28 @@
 					</li>
 				{/each}
 				{#each comesWith.choices as row (row.entry.id)}
+					{@const own = replacement(comesWith, row)}
+					{@const note = `sandbox-setup-replaced-${row.entry.id}`}
 					<li>
 						<label
-							class="flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5 has-data-checked:border-primary/50 has-data-checked:bg-primary/5"
+							class="flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5 has-disabled:cursor-not-allowed has-data-checked:border-primary/50 has-data-checked:bg-primary/5"
 						>
-							<Checkbox class="mt-0.5" bind:checked={row.chosen} disabled={full} />
+							<Checkbox
+								class="mt-0.5"
+								bind:checked={() => row.chosen && !own, (checked) => (row.chosen = checked)}
+								disabled={full || own !== undefined}
+								aria-describedby={own ? note : undefined}
+							/>
 							{@render described(row.entry)}
 						</label>
+						{#if own}
+							<Field.Description id={note} class="px-3 pt-1">
+								Your {where(own)} takes the place of the shared one.
+							</Field.Description>
+						{/if}
 					</li>
 				{/each}
 			</ul>
-			{#if comesWith.replaced.length > 0}
-				<Field.Description>{replaced}</Field.Description>
-			{/if}
 		{/if}
 	</Field.Set>
 	<Field.Set class="gap-3">

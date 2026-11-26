@@ -159,28 +159,7 @@ fn body_of(installer: &Installer, frame: &mut Frame, body: Rect) {
                 .collect();
             list(frame, body, "Choose the size:", items, installer.size);
         }
-        Step::Setup => {
-            let items = installer
-                .offer
-                .entries
-                .iter()
-                .zip(&installer.chosen)
-                .map(|(entry, &chosen)| {
-                    if entry.required() {
-                        return words::fixed(entry);
-                    }
-                    let mark = if chosen { "[x]" } else { "[ ]" };
-                    format!("{mark} {}  {}", entry.name, words::kind(entry))
-                })
-                .collect();
-            list(
-                frame,
-                body,
-                "Choose the setup entries to attach (their values stay hidden):",
-                items,
-                installer.entry,
-            );
-        }
+        Step::Setup => setup(installer, frame, body),
         Step::Repository(field) => repository(installer, frame, body, *field),
         Step::Summary => paragraph(frame, body, summary(installer, "Create it?")),
         Step::Making(phase) => paragraph(
@@ -206,6 +185,34 @@ fn body_of(installer: &Installer, frame: &mut Frame, body: Rect) {
             ],
         ),
     }
+}
+
+/// The entries to choose, each offered one set aside saying whose takes its place.
+fn setup(installer: &Installer, frame: &mut Frame, area: Rect) {
+    let items = installer
+        .offer
+        .entries
+        .iter()
+        .enumerate()
+        .map(|(at, entry)| {
+            if entry.required() {
+                return words::fixed(entry);
+            }
+            let mark = if installer.gets(at) { "[x]" } else { "[ ]" };
+            let item = format!("{mark} {}  {}", entry.name, words::kind(entry));
+            match installer.replaced_by(at) {
+                Some(own) => format!("{item}\n    {}", words::replaced(own)),
+                None => item,
+            }
+        })
+        .collect();
+    list(
+        frame,
+        area,
+        "Choose the setup entries to attach (their values stay hidden):",
+        items,
+        installer.entry,
+    );
 }
 
 /// The repository's URL, or its branch under the URL given.

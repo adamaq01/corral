@@ -152,16 +152,68 @@ test('a repository URL with a login, or a bad branch, is refused before anything
 	expect(sent).toEqual([]);
 });
 
-test('an offered entry the member replaces with their own is left out, saying so', async ({
+test('an offered entry stays listed but unchecked, saying so, while the member’s own is checked', async ({
 	page
 }) => {
 	const { dialog } = await openDialog(page, [
 		entry('shared-editor', 'EDITOR', { shared: 'offered', applyToNew: true, shadowed: true }),
 		entry('own-editor', 'EDITOR', { applyToNew: true, shadows: true })
 	]);
-	const setup = dialog.getByRole('list', { name: 'What it comes with' });
-	await expect(setup.getByRole('checkbox')).toHaveCount(1);
-	await expect(setup.getByRole('checkbox', { name: 'EDITOR' })).toBeChecked();
-	await expect(setup).not.toContainText('Offered');
-	await expect(dialog.getByText('Your EDITOR takes the place of the shared one.')).toBeVisible();
+	const rows = dialog.getByRole('list', { name: 'What it comes with' }).getByRole('listitem');
+	const shared = rows.filter({ hasText: 'Offered' });
+	await expect(rows.filter({ hasNotText: 'Offered' }).getByRole('checkbox')).toBeChecked();
+	await expect(shared.getByRole('checkbox')).not.toBeChecked();
+	await expect(shared.getByRole('checkbox')).toBeDisabled();
+	await expect(shared).toContainText('Your EDITOR takes the place of the shared one.');
+});
+
+test('an offered entry stays available until the member checks their own in its place', async ({
+	page
+}) => {
+	const { dialog, sent, create } = await openDialog(page, [
+		entry('shared-token', 'TOKEN', { shared: 'offered', applyToNew: true, shadowed: true }),
+		entry('shared-npmrc', '.npmrc', {
+			kind: 'file',
+			template: true,
+			references: ['TOKEN'],
+			shared: 'offered',
+			applyToNew: true
+		}),
+		entry('own-token', 'TOKEN', {
+			secret: true,
+			shadows: true,
+			sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }]
+		})
+	]);
+	const rows = dialog.getByRole('list', { name: 'What it comes with' }).getByRole('listitem');
+	const tokens = rows.filter({ hasText: 'TOKEN' });
+	const sharedToken = tokens.filter({ hasText: 'Offered' }).getByRole('checkbox');
+	const ownToken = tokens.filter({ hasNotText: 'Offered' }).getByRole('checkbox');
+	const template = rows.filter({ hasText: '.npmrc' }).getByRole('checkbox');
+	const note = dialog.getByText('Your TOKEN takes the place of the shared one.');
+
+	await expect(rows.getByRole('checkbox')).toHaveCount(3);
+	await expect(ownToken).not.toBeChecked();
+	await expect(sharedToken).toBeChecked();
+	await expect(sharedToken).toBeEnabled();
+	await expect(template).toBeChecked();
+	await expect(note).toHaveCount(0);
+	await dialog.getByLabel('Name').fill('walk');
+	await create.click();
+	await expect.poll(() => sent).toHaveLength(1);
+	expect(sent[0].setup).toEqual(['shared-token', 'shared-npmrc']);
+
+	await ownToken.click();
+	await expect(ownToken).toBeChecked();
+	await expect(sharedToken).not.toBeChecked();
+	await expect(sharedToken).toBeDisabled();
+	await expect(note).toBeVisible();
+	await create.click();
+	await expect.poll(() => sent).toHaveLength(2);
+	expect(sent[1].setup).toEqual(['shared-npmrc', 'own-token']);
+
+	await ownToken.click();
+	await expect(sharedToken).toBeEnabled();
+	await expect(sharedToken).toBeChecked();
+	await expect(note).toHaveCount(0);
 });
