@@ -31,18 +31,19 @@ async fn app(databases: &Databases) -> Router {
         .set_catalog(&catalog_change(&catalog()))
         .await
         .unwrap();
+    let settings = Settings::new(
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        Configured::default(),
+    );
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
         Arc::new(FakeEngine::default()),
         Arc::new(FakeRegistry::default()),
         environment.clone(),
-        Settings::new(
-            store.clone(),
-            store.clone(),
-            store.clone(),
-            Configured::default(),
-        ),
+        settings.clone(),
         Timeouts {
             wake_deadline: Duration::from_secs(1),
             idle: corral_core::fakes::IDLE,
@@ -59,6 +60,8 @@ async fn app(databases: &Databases) -> Router {
         keys: Keys::new(store),
         environment,
         sandboxes,
+        settings,
+        password_present: Arc::new(|_: &str| false),
         ssh: SshEndpoint {
             host: "corral.example.com".to_owned(),
             port: 22,

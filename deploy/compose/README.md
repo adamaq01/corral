@@ -14,7 +14,7 @@ ssh -p 48291 <sandbox>.<handle>@<public_host>
 
 A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
 makes that sandbox, from the image and size set in their profile, then opens it, unless they
-already have as many as `max_sandboxes_per_user` under `[limits]` allows (5 by default). A
+already have as many as `max_sandboxes_per_member` under `[limits]` allows (5 by default). A
 connection that reaches no sandbox, such as one past that limit, to a sandbox scheduled for
 deletion, or by a disabled user, is told why at once: a command prints the reason on its standard
 error and exits 1, a terminal shows it, and the connection ends with it.

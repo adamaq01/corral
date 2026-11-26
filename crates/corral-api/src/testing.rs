@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
@@ -24,7 +25,8 @@ use crate::provider::{
 };
 use crate::state::{Api, SshEndpoint};
 
-/// An API over the world's services, with plain-HTTP cookies and no trusted proxy.
+/// An API over the world's services, with plain-HTTP cookies and no trusted proxy, where only
+/// `CORRAL_TEST_PASSWORD` holds a registry password.
 #[must_use]
 pub fn api(world: &World) -> Api {
     Api {
@@ -32,6 +34,8 @@ pub fn api(world: &World) -> Api {
         keys: world.keys.clone(),
         environment: world.environment.clone(),
         sandboxes: world.sandboxes.clone(),
+        settings: world.settings.clone(),
+        password_present: Arc::new(|variable: &str| variable == "CORRAL_TEST_PASSWORD"),
         ssh: SshEndpoint {
             host: "corral.example.com".to_owned(),
             port: 48291,

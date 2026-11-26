@@ -2,18 +2,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use axum::Router;
 use axum::routing::get;
 use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
 use corral_core::app::{
-    Accounts, Configured, Environment, Keys, Lobby, Registry, SandboxLinks, Sandboxes, Source,
-    SshAccess, Timeouts,
+    Accounts, Environment, Keys, Lobby, SandboxLinks, Sandboxes, SshAccess, Timeouts,
 };
 use corral_core::ports::{
-    ActivitySignals, IdentityProvider, RegistryAccess, RegistryLogins, RunningLimit, SandboxEngine,
-    SandboxRepo, SecretStore,
+    ActivitySignals, IdentityProvider, RegistryLogins, RunningLimit, SandboxEngine, SandboxRepo,
+    SecretStore,
 };
 use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
@@ -31,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 use crate::adapters::{Adapters, EngineChoice, Oidc, SecretsChoice};
 use crate::config::{Config, FrontDoor};
 use crate::deletions;
+use crate::registry_logins::EnvRegistryLogins;
 use crate::ui::Ui;
 
 pub struct App {
@@ -48,7 +47,6 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         secrets,
         engine,
         oidc,
-        registries,
     } = Adapters::resolve(config)?;
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
@@ -58,9 +56,11 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         store.clone(),
         store.clone(),
         store.clone(),
-        configured(config),
+        config.configured(),
     );
-    let logins: Arc<dyn RegistryLogins> = Arc::new(FixedLogins(registries));
+    let logins = Arc::new(EnvRegistryLogins::new(settings.clone(), |name: &str| {
+        std::env::var(name).ok()
+    }));
     let Started {
         engine,
         lifecycle,
@@ -78,9 +78,9 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         store.clone(),
         store.clone(),
         engine,
-        Arc::new(OciRegistry::new(logins)),
+        Arc::new(OciRegistry::new(logins.clone())),
         environment.clone(),
-        settings,
+        settings.clone(),
         Timeouts {
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
             idle: config.idle.limits(),
@@ -106,6 +106,8 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         keys: Keys::new(store.clone()),
         environment,
         sandboxes,
+        settings,
+        password_present: Arc::new(move |variable: &str| logins.password_present(variable)),
         ssh: SshEndpoint {
             host: config.ssh.public_host.clone(),
             port: config.ssh.public_port,
@@ -153,39 +155,6 @@ async fn environment(
         );
     }
     Ok(environment)
-}
-
-fn configured(config: &Config) -> Configured {
-    let catalog = &config.catalog;
-    Configured {
-        images: catalog.images().to_vec(),
-        sizes: catalog.sizes().to_vec(),
-        defaults: Some(catalog.defaults().clone()),
-        named_images: catalog.named_images().cloned(),
-        max_sandboxes_per_member: Some(config.limits.max_sandboxes_per_user),
-        max_running: Some(config.limits.max_running),
-        registries: config
-            .registries
-            .iter()
-            .map(|entry| Registry {
-                registry: entry.registry.clone(),
-                username: entry.username.clone(),
-                password_env: entry.password_env.clone(),
-                plain_http: entry.plain_http,
-                source: Source::Config,
-            })
-            .collect(),
-    }
-}
-
-/// The registry logins of the config file, with the passwords read when Corral started.
-struct FixedLogins(Vec<RegistryAccess>);
-
-#[async_trait]
-impl RegistryLogins for FixedLogins {
-    async fn registries(&self) -> corral_core::Result<Vec<RegistryAccess>> {
-        Ok(self.0.clone())
-    }
 }
 
 pub async fn database(database_url: &str) -> Result<Pool> {

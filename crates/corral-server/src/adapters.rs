@@ -1,6 +1,5 @@
 use anyhow::{Result, ensure};
 use corral_api::Key;
-use corral_core::ports::{RegistryAccess, RegistryLogin};
 use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
 use corral_frontdoor_gate::GateSecret;
@@ -25,7 +24,6 @@ pub struct Adapters {
     pub secrets: SecretsChoice,
     pub engine: EngineChoice,
     pub oidc: Option<Oidc>,
-    pub registries: Vec<RegistryAccess>,
 }
 
 pub enum SecretsChoice {
@@ -55,10 +53,6 @@ impl Adapters {
             &config.secrets,
             Secrets::Vault(vault) if matches!(vault.auth, VaultAuth::Token { .. })
         );
-        let passwords = config
-            .registries
-            .iter()
-            .filter_map(|registry| registry.password_env.as_deref());
         let missing: Vec<&str> = [
             (SESSION_KEY, true),
             (SECRETS_KEY, matches!(config.secrets, Secrets::Database {})),
@@ -67,7 +61,6 @@ impl Adapters {
             (OIDC_CLIENT_SECRET, config.identity.oidc.is_some()),
         ]
         .into_iter()
-        .chain(passwords.map(|name| (name, true)))
         .filter(|(name, needed)| *needed && var(name).is_none())
         .map(|(name, _)| name)
         .collect();
@@ -102,22 +95,6 @@ impl Adapters {
                 config,
                 client_secret: secret(OIDC_CLIENT_SECRET),
             }),
-            registries: config
-                .registries
-                .iter()
-                .map(|registry| RegistryAccess {
-                    registry: registry.registry.clone(),
-                    login: registry
-                        .username
-                        .clone()
-                        .zip(registry.password_env.as_deref())
-                        .map(|(username, password)| RegistryLogin {
-                            username,
-                            password: secret(password),
-                        }),
-                    plain_http: registry.plain_http,
-                })
-                .collect(),
         })
     }
 }
@@ -194,35 +171,17 @@ mod tests {
     }
 
     #[test]
-    fn registries_get_the_passwords_their_variables_hold() {
+    fn a_registry_password_variable_is_not_needed_to_start() {
         let config = config(
             "[[registries]]\nregistry = \"ghcr.io\"\nusername = \"corral\"\n\
-             password_env = \"CORRAL_GHCR_TOKEN\"\n\
-             [[registries]]\nregistry = \"registry.lan:5000\"\nplain_http = true",
+             password_env = \"CORRAL_GHCR_TOKEN\"",
         );
         let vars = generated();
-        let without: Vec<(&str, &str)> = vars
+        let vars: Vec<(&str, &str)> = vars
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
-        let message = read(&config, &without).err().unwrap().to_string();
-        assert!(message.contains("CORRAL_GHCR_TOKEN"), "{message}");
-
-        let mut with = without.clone();
-        with.push(("CORRAL_GHCR_TOKEN", "ghp_token"));
-        let registries = read(&config, &with).unwrap().registries;
-        assert_eq!(registries.len(), 2);
-        let ghcr = registries[0].login.as_ref().unwrap();
-        assert_eq!(
-            (
-                registries[0].registry.as_str(),
-                ghcr.username.as_str(),
-                ghcr.password.expose_secret(),
-                registries[0].plain_http
-            ),
-            ("ghcr.io", "corral", "ghp_token", false)
-        );
-        assert!(registries[1].login.is_none() && registries[1].plain_http);
+        assert!(read(&config, &vars).is_ok());
     }
 
     #[test]

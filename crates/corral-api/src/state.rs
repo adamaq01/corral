@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::http::request::Parts;
 use cookie::Key;
-use corral_core::app::{Accounts, Environment, Keys, Sandboxes};
+use corral_core::app::{Accounts, Environment, Keys, Sandboxes, Settings};
 use corral_core::ports::ActivitySignals;
 use serde::Serialize;
 use ts_rs::TS;
@@ -17,6 +17,9 @@ pub struct Api {
     pub keys: Keys,
     pub environment: Environment,
     pub sandboxes: Sandboxes,
+    pub settings: Settings,
+    /// Whether a registry's password variable is set, without the password leaving the server.
+    pub password_present: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     pub ssh: SshEndpoint,
     /// Encrypts the session cookie and providers' cookies.
     pub session_key: Key,
