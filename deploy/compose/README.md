@@ -182,10 +182,11 @@ has git's `store` helper read it. With an SSH key, it writes `~/.ssh/id_ed25519`
 **MCP servers** writes `~/.config/corral-agents/mcp.json`, an object of servers by name, each a
 command (`command`, `args`, `env`) or a URL (`"type": "http"`, `url`, `headers`). With
 **Secret** on, for a token in a header or a variable, the file is secret and the form can only
-replace it. At each start Corral puts the servers under `mcpServers` in `~/.claude.json` for
-Claude Code, `~/.pi/agent/mcp.json` for Pi and `~/.omp/agent/mcp.json` for oh-my-pi, and into
-the `[mcp_servers]` table of `~/.codex/config.toml` for Codex, and once the file is gone it
-removes the servers it put there.
+replace it. At each start Corral merges the servers by name into `mcpServers` in `~/.claude.json`
+for Claude Code, `~/.pi/agent/mcp.json` for Pi and `~/.omp/agent/mcp.json` for oh-my-pi, and into
+the `[mcp_servers]` table of `~/.codex/config.toml` for Codex. Each replaces a server of the same
+name there, and a server you added by hand in the sandbox stays. Once the file no longer lists a
+server Corral put there, the next start removes it.
 
 **Dotfiles** writes `~/.config/corral-agents/dotfiles.json`, a repository's URL and branch. A
 sandbox's first start checks the repository out into the home, then writes the setup's files

@@ -369,15 +369,16 @@ args = ["mcp-server-fetch"]'
   check "with neither servers nor addresses, no agent file is created" "" \
     "$(ssh_run 'cd ~ && ls -d .claude.json .codex .pi .omp 2>/dev/null; true')"
 
-  ssh_run 'cat >~/.claude.json' <<<'{"numStartups": 3, "mcpServers": {"old": {"command": "old"}}}'
+  ssh_run 'cat >~/.claude.json' <<<'{"numStartups": 3, "mcpServers": {"local": {"command": "local"}}}'
   ssh_run 'mkdir ~/.codex && cat >~/.codex/config.toml' <<<'model = "gpt-5"'
   stage_home_files '{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}' \
     <<<'0 0644 .config/corral-agents/mcp.json'
   write_session_env 'SetEnv "ANTHROPIC_BASE_URL=https://llm.home.example/anthropic" "OPENAI_BASE_URL=https://llm.home.example/openai"'
   docker rm --force "$server" >/dev/null
   start_server "$base"
-  check "Claude Code's mcpServers is replaced and its other keys stay" \
-    "{\"mcpServers\":$fetch,\"numStartups\":3}" "$(ssh_run 'cat ~/.claude.json' | jq -cS .)"
+  check "Claude Code's servers are merged by name and its other keys stay" \
+    '{"mcpServers":{"fetch":{"args":["mcp-server-fetch"],"command":"uvx"},"local":{"command":"local"}},"numStartups":3}' \
+    "$(ssh_run 'cat ~/.claude.json' | jq -cS .)"
   check "Pi's and oh-my-pi's mcp.json are created with the same servers" \
     "{\"mcpServers\":$fetch}
 {\"mcpServers\":$fetch}" "$(ssh_run 'cat ~/.pi/agent/mcp.json ~/.omp/agent/mcp.json' | jq -cS .)"
@@ -407,8 +408,8 @@ Applied the gateway address to Claude Code, Codex, Pi and oh-my-pi" \
   stage_home_files "" </dev/null
   docker rm --force "$server" >/dev/null
   start_server "$base"
-  check "a later start without mcp.json removes the servers Corral applied" \
-    '{"mcpServers":{},"numStartups":3}
+  check "a later start without mcp.json removes the servers Corral applied and keeps the others" \
+    '{"mcpServers":{"local":{"command":"local"}},"numStartups":3}
 {"mcpServers":{}}
 {"mcpServers":{}}
 model = "gpt-5"' \

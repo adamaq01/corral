@@ -50,14 +50,15 @@ what it could not do in `~/.config/corral/notices`, which the motd of an interac
 Every start then applies the setup's MCP servers and gateway addresses to the agents a sandbox
 may run: Claude Code, Codex, Pi and oh-my-pi. The MCP servers are those of
 `~/.config/corral-agents/mcp.json`, an object of servers by name, each a command (`command`,
-`args`, `env`) or a URL (`"type": "http"`, `url`, `headers`). They replace `mcpServers` in
-`~/.claude.json`, `~/.pi/agent/mcp.json` and `~/.omp/agent/mcp.json`, and `[mcp_servers]` in
-`~/.codex/config.toml`, where a URL's headers are `http_headers`. An `mcp.json` that is not valid
-JSON changes no agent's servers. Corral keeps the names of the servers it applied in
-`~/.config/corral/agents-applied.json`, and once `mcp.json` is gone or empty, the next start
-removes those servers from the agents' files and leaves any other server as it is. The addresses
-are the sandbox's `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` variables, which Claude Code and
-oh-my-pi read themselves. Codex gets `OPENAI_BASE_URL` as `openai_base_url` in
+`args`, `env`) or a URL (`"type": "http"`, `url`, `headers`). They are merged by name into
+`mcpServers` in `~/.claude.json`, `~/.pi/agent/mcp.json` and `~/.omp/agent/mcp.json`, and into
+`[mcp_servers]` in `~/.codex/config.toml`, where a URL's headers are `http_headers`. Each replaces
+a server of the same name, and a server added by hand, such as with `claude mcp add --scope user`,
+stays. An `mcp.json` that is not valid JSON changes no agent's servers. Corral keeps the names of
+the servers it applied in `~/.config/corral/agents-applied.json`, and the next start removes from
+the agents' files those that `mcp.json` no longer lists, all of them once `mcp.json` is gone or
+empty. The addresses are the sandbox's `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` variables, which
+Claude Code and oh-my-pi read themselves. Codex gets `OPENAI_BASE_URL` as `openai_base_url` in
 `~/.codex/config.toml`, and Pi gets each address as `providers.anthropic.baseUrl` or
 `providers.openai.baseUrl` in `~/.pi/agent/models.json`. Once a variable is gone, its key is
 removed, and so is a provider that the removal leaves empty. Everything else in these files stays

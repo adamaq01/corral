@@ -1,8 +1,9 @@
 //! `corral agents-apply`, which `corral-init` runs at each start after the home files: applies the
 //! MCP servers of `~/.config/corral-agents/mcp.json` and the session's gateway addresses to the
-//! files Claude Code, Codex, Pi and oh-my-pi read. In each file it replaces only the keys Corral
-//! owns, and it writes no file it has nothing to change in. It records the servers it applied, so
-//! that once `mcp.json` is gone it removes those and no others.
+//! files Claude Code, Codex, Pi and oh-my-pi read. In each file it sets only what Corral owns, its
+//! MCP servers by name and the gateway addresses, and it writes no file it has nothing to change
+//! in. It records the servers it applied, so that a later start removes those `mcp.json` no longer
+//! has and no others.
 
 use std::collections::BTreeSet;
 use std::fs::{OpenOptions, Permissions};
@@ -30,12 +31,13 @@ const AGENTS: [&str; 4] = ["Claude Code", "Codex", "Pi", "oh-my-pi"];
 type Object = Map<String, Value>;
 
 /// What Corral does to the agents' MCP servers at this start.
-#[derive(Clone, Copy)]
 enum Servers<'a> {
-    /// Replaces them with these.
-    Apply(&'a Object),
-    /// Removes these names, which an earlier start applied.
-    Remove(&'a BTreeSet<String>),
+    /// Sets each of `set` under its name, replacing a server of that name, and removes `stale`,
+    /// the names an earlier start applied that `set` no longer has. Other servers stay.
+    Merge {
+        set: &'a Object,
+        stale: BTreeSet<String>,
+    },
     Keep,
 }
 
@@ -56,53 +58,43 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
         })
         .ok();
     let action = match &servers {
-        Some(servers) if !servers.is_empty() => Servers::Apply(servers),
-        Some(_) if !applied.is_empty() => Servers::Remove(&applied),
-        _ => Servers::Keep,
+        Some(set) => {
+            let stale: BTreeSet<String> = applied
+                .iter()
+                .filter(|name| !set.contains_key(*name))
+                .cloned()
+                .collect();
+            if set.is_empty() && stale.is_empty() {
+                Servers::Keep
+            } else {
+                Servers::Merge { set, stale }
+            }
+        }
+        None => Servers::Keep,
     };
     let variables = session_env::parse(&std::fs::read_to_string(session_env).unwrap_or_default());
     let anthropic = variables.get("ANTHROPIC_BASE_URL").map(String::as_str);
     let openai = variables.get("OPENAI_BASE_URL").map(String::as_str);
-    let servers_named = match action {
-        Servers::Apply(servers) if servers.len() == 1 => Some("1 MCP server".to_owned()),
-        Servers::Apply(servers) => Some(format!("{} MCP servers", servers.len())),
-        Servers::Remove(_) | Servers::Keep => None,
+    let servers_named = match &action {
+        Servers::Merge { set, .. } if set.len() == 1 => Some("1 MCP server".to_owned()),
+        Servers::Merge { set, .. } if set.len() > 1 => Some(format!("{} MCP servers", set.len())),
+        Servers::Merge { .. } | Servers::Keep => None,
     };
     let mut with_servers = Report::new(servers_named.as_deref(), "the MCP servers");
     let mut with_address = Report::new(Some("the gateway address"), "the gateway address");
 
-    for (agent, file) in MCP_JSON {
-        let edited = match action {
-            Servers::Apply(servers) => edit_json(&home.join(file), |root| {
-                root.insert("mcpServers".to_owned(), Value::Object(servers.clone()));
+    if let Servers::Merge { set, stale } = &action {
+        for (agent, file) in MCP_JSON {
+            let edited = edit_json(&home.join(file), |root| {
+                merge_json(root, set, stale);
                 Ok(())
-            }),
-            Servers::Remove(names) => edit_json(&home.join(file), |root| {
-                if let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) {
-                    servers.retain(|name, _| !names.contains(name));
-                }
-                Ok(())
-            }),
-            Servers::Keep => continue,
-        };
-        with_servers.record(agent, file, &edited);
+            });
+            with_servers.record(agent, file, &edited);
+        }
     }
     let codex = edit_toml(&home.join(CODEX), |document| {
-        match action {
-            Servers::Apply(servers) => {
-                document.insert("mcp_servers", codex_servers(servers));
-            }
-            Servers::Remove(names) => {
-                if let Some(servers) = document
-                    .get_mut("mcp_servers")
-                    .and_then(Item::as_table_like_mut)
-                {
-                    for name in names {
-                        servers.remove(name);
-                    }
-                }
-            }
-            Servers::Keep => {}
+        if let Servers::Merge { set, stale } = &action {
+            merge_codex(document, set, stale);
         }
         match openai {
             Some(address) => {
@@ -262,25 +254,49 @@ fn object_at<'a>(object: &'a mut Object, key: &str) -> Option<&'a mut Object> {
         .as_object_mut()
 }
 
-fn codex_servers(servers: &Object) -> Item {
-    let mut table = Table::new();
-    table.set_implicit(true);
-    for (name, server) in servers {
-        let mut entry = Table::new();
-        for (json, toml) in [
-            ("command", "command"),
-            ("args", "args"),
-            ("env", "env"),
-            ("url", "url"),
-            ("headers", "http_headers"),
-        ] {
-            if let Some(value) = server.get(json).and_then(toml_value) {
-                entry.insert(toml, Item::Value(value));
-            }
-        }
-        table.insert(name, Item::Table(entry));
+fn merge_json(root: &mut Object, set: &Object, stale: &BTreeSet<String>) {
+    if !set.is_empty() && !root.get("mcpServers").is_some_and(Value::is_object) {
+        root.insert("mcpServers".to_owned(), Value::Object(Object::new()));
     }
-    Item::Table(table)
+    if let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) {
+        servers.retain(|name, _| !stale.contains(name));
+        servers.extend(set.clone());
+    }
+}
+
+fn merge_codex(document: &mut DocumentMut, set: &Object, stale: &BTreeSet<String>) {
+    if !set.is_empty() && !document.get("mcp_servers").is_some_and(Item::is_table_like) {
+        let mut servers = Table::new();
+        servers.set_implicit(true);
+        document.insert("mcp_servers", Item::Table(servers));
+    }
+    if let Some(servers) = document
+        .get_mut("mcp_servers")
+        .and_then(Item::as_table_like_mut)
+    {
+        for name in stale {
+            servers.remove(name);
+        }
+        for (name, server) in set {
+            servers.insert(name, codex_server(server));
+        }
+    }
+}
+
+fn codex_server(server: &Value) -> Item {
+    let mut entry = Table::new();
+    for (json, toml) in [
+        ("command", "command"),
+        ("args", "args"),
+        ("env", "env"),
+        ("url", "url"),
+        ("headers", "http_headers"),
+    ] {
+        if let Some(value) = server.get(json).and_then(toml_value) {
+            entry.insert(toml, Item::Value(value));
+        }
+    }
+    Item::Table(entry)
 }
 
 fn toml_value(json: &Value) -> Option<toml_edit::Value> {
@@ -479,13 +495,15 @@ mod tests {
             apply(&home, &env),
             ["Applied 2 MCP servers to Claude Code, Codex, Pi and oh-my-pi"]
         );
-        for (file, mut before) in [
+        for (file, mut expected) in [
             (".claude.json", claude),
             (".pi/agent/mcp.json", pi),
             (".omp/agent/mcp.json", omp),
         ] {
-            before["mcpServers"] = servers();
-            assert_eq!(json_at(&home, file), before, "{file}");
+            for (name, server) in servers().as_object().unwrap() {
+                expected["mcpServers"][name] = server.clone();
+            }
+            assert_eq!(json_at(&home, file), expected, "{file}");
         }
         clean(&home);
     }
@@ -516,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn replaces_codex_mcp_servers_and_keeps_the_rest() {
+    fn merges_codex_mcp_servers_and_keeps_the_rest() {
         let (home, env) = sandbox("codex-servers");
         put(&home, MCP, SERVERS);
         put(
@@ -526,7 +544,7 @@ mod tests {
              trust_level = \"trusted\"\n\n[mcp_servers.old]\ncommand = \"old\"\n",
         );
         let expected = "# Mine.\nmodel = \"gpt-5\"\n\n[projects.\"/home/sandbox/x\"]\n\
-             trust_level = \"trusted\"\n\n\
+             trust_level = \"trusted\"\n\n[mcp_servers.old]\ncommand = \"old\"\n\n\
              [mcp_servers.docs]\nurl = \"https://docs.example/mcp\"\n\
              http_headers = { Authorization = \"Bearer t0ken\" }\n\n\
              [mcp_servers.fetch]\ncommand = \"uvx\"\nargs = [\"mcp-server-fetch\"]\n\
@@ -762,6 +780,47 @@ mod tests {
             text_at(&home, CODEX),
             "\n[mcp_servers.mine]\ncommand = \"mine\"\n"
         );
+        clean(&home);
+    }
+
+    #[test]
+    fn servers_added_by_hand_survive_each_start() {
+        let (home, env) = sandbox("survive");
+        put(&home, MCP, SERVERS);
+        apply(&home, &env);
+        let local = json!({"command": "local"});
+        for file in MCP_JSON {
+            let mut added = json_at(&home, file);
+            added["mcpServers"]["local"] = local.clone();
+            put(&home, file, &added.to_string());
+        }
+        let codex = format!(
+            "{}\n[mcp_servers.local]\ncommand = \"local\"\n",
+            text_at(&home, CODEX)
+        );
+        put(&home, CODEX, &codex);
+
+        let fetch = json!({"command": "uvx", "args": ["mcp-server-fetch", "--ignore-robots-txt"]});
+        put(&home, MCP, &json!({ "fetch": fetch }).to_string());
+        for _ in 0..2 {
+            assert_eq!(
+                apply(&home, &env),
+                ["Applied 1 MCP server to Claude Code, Codex, Pi and oh-my-pi"]
+            );
+            for file in MCP_JSON {
+                assert_eq!(
+                    json_at(&home, file),
+                    json!({"mcpServers": {"fetch": fetch, "local": local}}),
+                    "{file}"
+                );
+            }
+            assert_eq!(
+                text_at(&home, CODEX),
+                "[mcp_servers.fetch]\ncommand = \"uvx\"\n\
+                 args = [\"mcp-server-fetch\", \"--ignore-robots-txt\"]\n\n\
+                 [mcp_servers.local]\ncommand = \"local\"\n"
+            );
+        }
         clean(&home);
     }
 
