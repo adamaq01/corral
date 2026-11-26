@@ -165,6 +165,13 @@ impl Settings {
         if configured.named_images.is_some() && change.named_images.is_some() {
             return Err(Error::Invalid("named images are set in config".to_owned()));
         }
+        if change
+            .named_images
+            .as_ref()
+            .is_some_and(|named| named.registries.is_empty())
+        {
+            return Err(Error::Invalid("named images list no registry".to_owned()));
+        }
         let before = CatalogMerge::of(configured, self.repo.catalog().await?);
         let after = CatalogMerge::of(configured, Some(change.clone()));
         self.refuse_removing_used(&before, &after).await?;
@@ -580,6 +587,7 @@ fn owned_by(row: Registry, source: Source) -> Registry {
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
+    use std::num::NonZeroU64;
     use std::sync::Arc;
 
     use uuid::Uuid;
@@ -587,7 +595,7 @@ mod tests {
     use super::{
         Allowance, CatalogChange, Configured, Limits, LimitsChange, Locked, Registry, Settings,
     };
-    use crate::app::{Catalog, CatalogDefaults, ImageOption, Source};
+    use crate::app::{Catalog, CatalogDefaults, ImageOption, NamedImages, Source};
     use crate::domain::{ImageKey, SizeKey, UserId};
     use crate::fakes::{
         MAX_SANDBOXES, MemorySettingsRepo, World, admin_proof, catalog, catalog_change,
@@ -837,6 +845,22 @@ mod tests {
             .set_catalog(&root, storing(vec![disabled(base), tools]))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_catalog_refuses_named_images_with_no_registry() {
+        let w = World::new();
+        let root = admin_proof(&w.admin("root").await);
+        let mut change = catalog_change(&catalog());
+        change.named_images = Some(NamedImages {
+            registries: Vec::new(),
+            max_bytes: NonZeroU64::new(1 << 30).unwrap(),
+        });
+        assert_eq!(
+            invalid(w.settings.set_catalog(&root, change).await),
+            "named images list no registry"
+        );
+        assert_eq!(w.settings.catalog().await.unwrap().named_images(), None);
     }
 
     #[tokio::test]
