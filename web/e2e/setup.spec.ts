@@ -1090,6 +1090,113 @@ test('with Secret on, the MCP servers preset sends a secret file, and only offer
 	await expect(secret).toBeEnabled();
 });
 
+const dotfiles = '.config/corral-agents/dotfiles.json';
+
+test('the dotfiles preset refuses a URL with a login before sending, then writes dotfiles.json and reads it back', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Dotfiles' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Dotfiles' });
+	await expect(dialog).toContainText(
+		"Checked out into the home at a sandbox's first start, or files you add one by one."
+	);
+	const repository = dialog.getByLabel('Repository', { exact: true });
+	const branch = dialog.getByLabel('Branch', { exact: true });
+	const save = dialog.getByRole('button', { name: 'Save dotfiles' });
+	const rule = 'An https://, ssh:// or git@host:path address, with no password in it.';
+	await expect(repository).toHaveAccessibleDescription(rule);
+	await expect(branch).toBeDisabled();
+	await expect(save).toBeDisabled();
+
+	for (const login of [
+		'https://ada:tok3n@github.com/ada/dotfiles.git',
+		'https://ghp_tok3n@github.com/ada/dotfiles.git'
+	]) {
+		await repository.fill(login);
+		await expect(repository).toHaveAttribute('aria-invalid', 'true');
+		await expect(dialog.getByRole('alert')).toHaveText(rule);
+		await expect(save).toBeDisabled();
+	}
+	await repository.press('Enter');
+	await expect(dialog).toBeVisible();
+	expect(sent(calls)).toEqual([]);
+
+	await repository.fill('https://github.com/ada/dotfiles.git');
+	await expect(repository).not.toHaveAttribute('aria-invalid');
+	await expect(dialog.getByRole('alert')).toHaveCount(0);
+	await branch.fill('a..b');
+	await expect(dialog.getByRole('alert')).toContainText('git branch name');
+	await expect(save).toBeDisabled();
+	await branch.fill('main');
+	await save.click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved your dotfiles')).toBeVisible();
+	expect(sent(calls)).toEqual([
+		created(
+			dotfiles,
+			false,
+			'{\n  "url": "https://github.com/ada/dotfiles.git",\n  "branch": "main"\n}\n',
+			'file'
+		)
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'github.com/ada/dotfiles, main'
+	);
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	await expect(repository).toHaveValue('https://github.com/ada/dotfiles.git');
+	await expect(branch).toHaveValue('main');
+	await expect(save).toBeDisabled();
+});
+
+test('the dotfiles preset removes the repository, or hands over to Add a file', async ({
+	page
+}) => {
+	const held = entry({
+		kind: 'file',
+		target: dotfiles,
+		secret: false,
+		value: {
+			setAt,
+			size: 64,
+			shown: 'text',
+			text: '{"url": "git@github.com:ada/dotfiles.git", "branch": null}'
+		}
+	});
+	const calls: Call[] = [];
+	await setupApi(page, [held], calls);
+	await record(page, `/api/setup/${held.id}`, () => ({ status: 204 }), calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Dotfiles' });
+	const repository = dialog.getByLabel('Repository', { exact: true });
+	await expect(repository).toHaveValue('git@github.com:ada/dotfiles.git');
+	await expect(dialog.getByLabel('Branch', { exact: true })).toHaveValue('');
+	await dialog.getByRole('button', { name: 'Remove the repository' }).click();
+	await expect(repository).toHaveValue('');
+	await expect(repository).toBeFocused();
+	await dialog.getByRole('button', { name: 'Save dotfiles' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved your dotfiles')).toBeVisible();
+	expect(sent(calls)).toEqual([['DELETE', `/api/setup/${held.id}`, null]]);
+
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	await dialog.getByRole('button', { name: 'Add a file instead' }).click();
+	await expect(dialog).toBeHidden();
+	const adding = page.getByRole('dialog', { name: 'Add a file' });
+	await expect(adding.getByRole('radio', { name: 'File' })).toBeChecked();
+	await expect
+		.poll(() => adding.evaluate((node) => node.contains(document.activeElement)))
+		.toBe(true);
+	await page.keyboard.press('Escape');
+	await expect(adding).toBeHidden();
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	await expect(dialog).toBeVisible();
+});
+
 test('an entry lives through Corral: made, renamed, made secret and deleted', async ({ page }) => {
 	const suffix = Math.random().toString(36).slice(2, 8);
 	const first = `e2e_${suffix}`;

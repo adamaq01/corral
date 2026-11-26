@@ -12,7 +12,13 @@
 	import * as Field from '#lib/components/ui/field/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
-	import { BRANCH_PATTERN, REPOSITORY_PATTERN, cloneDirectory } from '#lib/sandbox.js';
+	import {
+		BRANCH_PATTERN,
+		BRANCH_RULE,
+		REPOSITORY_PATTERN,
+		REPOSITORY_RULE,
+		cloneDirectory
+	} from '#lib/sandbox.js';
 	import { SHARING, chosenSetup, newSandboxSetup, replacement, where } from '#lib/setup.js';
 
 	let {
@@ -71,7 +77,6 @@
 		`ssh -p ${catalog.ssh.port} ${valid ? name : '<name>'}.${handle}@${catalog.ssh.host}`
 	);
 
-	const REPOSITORY_RULE = 'An https://, ssh:// or git@host:path address, with no password in it.';
 	const repositoryUrl = $derived(url.trim());
 	const urlValid = $derived(REPOSITORY_PATTERN.test(repositoryUrl));
 	const repositoryInvalid = $derived(repositoryUrl !== '' && !urlValid);
@@ -253,9 +258,7 @@
 				disabled={full || repositoryUrl === ''}
 			/>
 			{#if branchInvalid}
-				<Field.Error id="sandbox-branch-rule">
-					A git branch name, with no spaces, .., ~, ^, :, ?, *, [ or \ in it, and no - first.
-				</Field.Error>
+				<Field.Error id="sandbox-branch-rule">{BRANCH_RULE}</Field.Error>
 			{/if}
 		</Field.Field>
 	</Field.Set>

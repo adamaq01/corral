@@ -183,7 +183,11 @@
 			onretry={() => list.reload()}
 		/>
 	{:else}
-		<PresetsSection entries={list.current.value} onchanged={() => list.reload()} />
+		<PresetsSection
+			entries={list.current.value}
+			onchanged={() => list.reload()}
+			onaddfile={() => add('file')}
+		/>
 		<div class="grid gap-3">
 			{#if list.current.value.length > 0}
 				<div class="flex flex-wrap items-center gap-2">

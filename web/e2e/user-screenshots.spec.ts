@@ -413,6 +413,15 @@ inEveryView((look) => {
 
 		await page.keyboard.press('Escape');
 		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Set up Dotfiles' }).click();
+		await dialog
+			.getByLabel('Repository', { exact: true })
+			.fill('https://github.com/bob-example/dotfiles.git');
+		await dialog.getByLabel('Branch', { exact: true }).fill('main');
+		await look(page, 'setup-dotfiles', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'Add variable' }).click();
 		await dialog.getByLabel('Name').fill('github_token');
 		await dialog.getByRole('switch', { name: 'Secret' }).click();

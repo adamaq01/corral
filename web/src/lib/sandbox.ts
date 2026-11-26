@@ -2,8 +2,14 @@
 export const REPOSITORY_PATTERN =
 	/^(?=[^\p{White_Space}\p{Cc}]{1,1024}$)(?:(?:https:\/\/|ssh:\/\/(?:(?!-)[^\/:]*@)?)(?!-)[^\/@]+(?:\/.*)?|file:\/\/\/.+|(?!.*:\/\/)(?!-)[^\/:@]+@(?!-)[^\/:@]+:.+)$/u;
 
+export const REPOSITORY_RULE =
+	'An https://, ssh:// or git@host:path address, with no password in it.';
+
 /** The branch names the server takes. */
 export const BRANCH_PATTERN = /^(?!-)(?!.*\.\.)[^\p{White_Space}\p{Cc}~^:?*\[\\]{1,255}$/u;
+
+export const BRANCH_RULE =
+	'A git branch name, with no spaces, .., ~, ^, :, ?, *, [ or \\ in it, and no - first.';
 
 /** The directory in the home the server clones `url` into. */
 export function cloneDirectory(url: string): string {

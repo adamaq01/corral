@@ -4,18 +4,26 @@
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PlugIcon from '@lucide/svelte/icons/plug';
 	import type { SetupEntry } from '#lib/api/generated/index.js';
+	import DotfilesDialog from '#lib/components/presets/dotfiles-dialog.svelte';
 	import GitDialog from '#lib/components/presets/git-dialog.svelte';
 	import LlmDialog from '#lib/components/presets/llm-dialog.svelte';
 	import McpDialog from '#lib/components/presets/mcp-dialog.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Item from '#lib/components/ui/item/index.js';
 	import { dotfilesSummary, readDotfiles } from '#lib/presets/dotfiles.js';
 	import { gitSummary, readGit } from '#lib/presets/git.js';
 	import { llmSummary, readLlm } from '#lib/presets/llm.js';
 	import { mcpSummary, readMcp } from '#lib/presets/mcp.js';
 
-	let { entries, onchanged }: { entries: SetupEntry[]; onchanged: () => Promise<void> } = $props();
+	let {
+		entries,
+		onchanged,
+		onaddfile
+	}: {
+		entries: SetupEntry[];
+		onchanged: () => Promise<void>;
+		onaddfile: () => void;
+	} = $props();
 
 	type Preset = 'llm' | 'git' | 'mcp' | 'dotfiles';
 
@@ -31,10 +39,6 @@
 		title: string;
 		Icon: typeof BotIcon;
 		summary: string | null;
-	};
-
-	const descriptions: Record<Exclude<Preset, 'llm' | 'git' | 'mcp'>, string> = {
-		dotfiles: "Checked out into the home at a sandbox's first start, or files you add one by one."
 	};
 
 	const presets = $derived<Card[]>([
@@ -99,15 +103,4 @@
 <LlmDialog bind:open={open.llm} {entries} {onchanged} />
 <GitDialog bind:open={open.git} {entries} {onchanged} />
 <McpDialog bind:open={open.mcp} {entries} {onchanged} />
-{#each presets as preset (preset.key)}
-	{#if preset.key === 'dotfiles'}
-		<Dialog.Root bind:open={open[preset.key]}>
-			<Dialog.Content>
-				<Dialog.Header>
-					<Dialog.Title>{preset.title}</Dialog.Title>
-					<Dialog.Description>{descriptions[preset.key]}</Dialog.Description>
-				</Dialog.Header>
-			</Dialog.Content>
-		</Dialog.Root>
-	{/if}
-{/each}
+<DotfilesDialog bind:open={open.dotfiles} {entries} {onchanged} {onaddfile} />
