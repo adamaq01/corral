@@ -159,7 +159,7 @@ fn body_of(installer: &Installer, frame: &mut Frame, body: Rect) {
                 .collect();
             list(frame, body, "Choose the size:", items, installer.size);
         }
-        Step::Environment => {
+        Step::Setup => {
             let items = installer
                 .offer
                 .entries
@@ -173,7 +173,7 @@ fn body_of(installer: &Installer, frame: &mut Frame, body: Rect) {
             list(
                 frame,
                 body,
-                "Choose the environment entries to attach (their values stay hidden):",
+                "Choose the setup entries to attach (their values stay hidden):",
                 items,
                 installer.entry,
             );
@@ -242,9 +242,7 @@ fn hint(step: &Step) -> &'static str {
         Step::Name => "Enter: next  Esc: leave",
         Step::Reference => "Enter: check it and go on  Up: back  Esc: leave",
         Step::Image | Step::Size => "Up/Down: choose  Enter: next  Left: back  Esc or q: leave",
-        Step::Environment => {
-            "Up/Down: move  Space: check  Enter: next  Left: back  Esc or q: leave"
-        }
+        Step::Setup => "Up/Down: move  Space: check  Enter: next  Left: back  Esc or q: leave",
         Step::Summary => "Enter: create  Left: back  Esc or q: leave",
         Step::Making(_) => "",
         Step::Failed(_) => "Enter: back to the summary  Esc or q: leave",
@@ -256,10 +254,7 @@ pub(crate) fn summary(installer: &Installer, question: &'static str) -> Vec<Line
         Line::from(format!("Sandbox      {}", installer.login())),
         Line::from(format!("Image        {}", words::chosen_image(installer))),
         Line::from(format!("Size         {}", words::chosen_size(installer))),
-        Line::from(format!(
-            "Environment  {}",
-            words::chosen_environment(installer)
-        )),
+        Line::from(format!("Setup        {}", words::chosen_setup(installer))),
         Line::from(""),
         Line::from(question),
     ]
@@ -343,7 +338,7 @@ pub(crate) mod tests {
         let screen = drawn(&at(Step::Image));
         for wanted in [
             " Corral: new sandbox new.adam ",
-            "Image > Size > Environment > Summary",
+            "Image > Size > Setup > Summary",
             "Choose the image:",
             "  Base (base)",
             "> Tools (tools)  (your default)",
@@ -357,7 +352,7 @@ pub(crate) mod tests {
             screen.contains("> Small (small): 1 CPU, 2 GiB memory, 10 GiB home  (your default)"),
             "{screen}"
         );
-        let screen = drawn(&at(Step::Environment));
+        let screen = drawn(&at(Step::Setup));
         for wanted in [
             "> [x] GH_TOKEN  variable, secret, for new sandboxes",
             "  [ ] .gitconfig  file",
@@ -369,7 +364,7 @@ pub(crate) mod tests {
         for wanted in [
             "Sandbox      new.adam",
             "Image        Tools (tools)",
-            "Environment  GH_TOKEN",
+            "Setup        GH_TOKEN",
             "Enter: create",
         ] {
             assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
@@ -392,7 +387,7 @@ pub(crate) mod tests {
         let screen = drawn(&installer);
         for wanted in [
             " Corral: a new sandbox for adam ",
-            "Name > Image > Size > Environment > Summary",
+            "Name > Image > Size > Setup > Summary",
             "adam has no sandbox yet.",
             "> Bad",
             "Problem: sandbox name \"Bad\" must match [a-z0-9-]{1,32}",
@@ -431,7 +426,7 @@ pub(crate) mod tests {
             at(Step::Image),
             reference,
             at(Step::Size),
-            at(Step::Environment),
+            at(Step::Setup),
             at(Step::Summary),
             making,
             at(Step::Failed(

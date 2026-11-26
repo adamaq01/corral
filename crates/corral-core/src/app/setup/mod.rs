@@ -19,7 +19,7 @@ use crate::domain::{
     Attachment, Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxId, SandboxName,
     SandboxToken, SecretId, SecretRef, StoredValue, Target, Template, User, UserId, VariableName,
 };
-use crate::ports::{Boot, EnvironmentRepo, SandboxRepo, SecretStore};
+use crate::ports::{Boot, SandboxRepo, SecretStore, SetupRepo};
 use crate::{Error, Result};
 
 /// The directory in the home where Corral keeps the sandbox's own files.
@@ -29,8 +29,8 @@ const MASK: &str = "••••••••";
 
 /// Each user's variables and files, and the sandboxes they are attached to.
 #[derive(Clone)]
-pub struct Environment {
-    repo: Arc<dyn EnvironmentRepo>,
+pub struct Setup {
+    repo: Arc<dyn SetupRepo>,
     secrets: Arc<dyn SecretStore>,
     sandboxes: Arc<dyn SandboxRepo>,
     links: SandboxLinks,
@@ -102,10 +102,10 @@ struct Reach {
     new: bool,
 }
 
-impl Environment {
+impl Setup {
     #[must_use]
     pub fn new(
-        repo: Arc<dyn EnvironmentRepo>,
+        repo: Arc<dyn SetupRepo>,
         secrets: Arc<dyn SecretStore>,
         sandboxes: Arc<dyn SandboxRepo>,
         links: SandboxLinks,
@@ -245,7 +245,7 @@ impl Environment {
             if self.repo.update(&after, &overrides).await? {
                 Ok(())
             } else {
-                Err(Error::NotFound(format!("environment entry {}", id.0)))
+                Err(Error::NotFound(format!("setup entry {}", id.0)))
             }
         })
         .await?;
@@ -269,7 +269,7 @@ impl Environment {
         self.validate(owner.id, &registry, &proposed, &reach)
             .await?;
         if !self.repo.delete(owner.id, id).await? {
-            return Err(Error::NotFound(format!("environment entry {}", id.0)));
+            return Err(Error::NotFound(format!("setup entry {}", id.0)));
         }
         self.forget(owner.id, entry.value.secret_id()).await;
         self.forget_all(owner.id, attachments.iter().map(overriding_secret))
@@ -448,7 +448,7 @@ impl Environment {
         for &id in chosen.unwrap_or_default() {
             registry
                 .entry(id)
-                .map_err(|_| Error::Invalid(format!("there is no environment entry {}", id.0)))?;
+                .map_err(|_| Error::Invalid(format!("there is no setup entry {}", id.0)))?;
         }
         let scope = chosen.map_or(Scope::New, Scope::Chosen);
         let composed = self
@@ -533,7 +533,7 @@ impl Environment {
         self.views(owner, registry, [id])
             .await?
             .pop()
-            .ok_or_else(|| Error::NotFound(format!("environment entry {}", id.0)))
+            .ok_or_else(|| Error::NotFound(format!("setup entry {}", id.0)))
     }
 
     /// The views of `ids`, in their order. Templates read their secret values to tell what they
@@ -834,7 +834,7 @@ impl Environment {
                 .await?
                 .remove(&secret.id)
                 .map(|value| value.expose_secret().to_vec())
-                .ok_or_else(|| Error::internal("environment", "a secret value is missing")),
+                .ok_or_else(|| Error::internal("setup", "a secret value is missing")),
         }
     }
 
@@ -845,7 +845,7 @@ impl Environment {
             return Ok(());
         }
         self.sandboxes
-            .record_environment_change(&sandboxes, Utc::now())
+            .record_setup_change(&sandboxes, Utc::now())
             .await
     }
 }

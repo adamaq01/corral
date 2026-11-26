@@ -16,7 +16,7 @@ use corral_sql::{db_error, on_pool, parsed, unique_as};
 macro_rules! select {
     ($rest:literal) => {
         concat!(
-            "select id, owner, name, image, size, created_at, started_at, environment_changed_at, \
+            "select id, owner, name, image, size, created_at, started_at, setup_changed_at, \
              delete_at, idle_timeout_secs, keep_awake_until from sandboxes ",
             $rest
         )
@@ -32,7 +32,7 @@ struct SandboxRow {
     size: String,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
-    environment_changed_at: Option<DateTime<Utc>>,
+    setup_changed_at: Option<DateTime<Utc>>,
     delete_at: Option<DateTime<Utc>>,
     idle_timeout_secs: Option<i64>,
     keep_awake_until: Option<DateTime<Utc>>,
@@ -50,7 +50,7 @@ impl TryFrom<SandboxRow> for Sandbox {
             size: parsed("size key", SizeKey::parse(&row.size))?,
             created_at: row.created_at,
             started_at: row.started_at,
-            environment_changed_at: row.environment_changed_at,
+            setup_changed_at: row.setup_changed_at,
             delete_at: row.delete_at,
             idle_timeout: row
                 .idle_timeout_secs
@@ -200,10 +200,10 @@ impl SandboxRepo for Store {
         .map_err(db_error)
     }
 
-    async fn record_environment_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
+    async fn record_setup_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
         for id in ids {
             on_pool!(self.pool, |pool| {
-                sqlx::query("update sandboxes set environment_changed_at = $2 where id = $1")
+                sqlx::query("update sandboxes set setup_changed_at = $2 where id = $1")
                     .bind(&id.0)
                     .bind(at)
                     .execute(pool)

@@ -18,7 +18,7 @@ pub(crate) enum Step {
     /// An image of the person's own naming, in place of the catalog's.
     Reference,
     Size,
-    Environment,
+    Setup,
     Summary,
     Making(Phase),
     /// Making refused, for this reason: nothing was made.
@@ -144,7 +144,7 @@ impl Installer {
         }
         steps.push(Step::Size);
         if !self.offer.entries.is_empty() {
-            steps.push(Step::Environment);
+            steps.push(Step::Setup);
         }
         steps.push(Step::Summary);
         steps
@@ -224,7 +224,7 @@ impl Installer {
                 self.move_cursor(true);
                 None
             }
-            (Step::Environment, Key::Char(' ' | 'x')) => {
+            (Step::Setup, Key::Char(' ' | 'x')) => {
                 if let Some(chosen) = self.chosen.get_mut(self.entry) {
                     *chosen = !*chosen;
                 }
@@ -261,7 +261,7 @@ impl Installer {
         let (cursor, count) = match self.step {
             Step::Image => (&mut self.image, self.offer.images.len()),
             Step::Size => (&mut self.size, self.offer.sizes.len()),
-            Step::Environment => (&mut self.entry, self.offer.entries.len()),
+            Step::Setup => (&mut self.entry, self.offer.entries.len()),
             _ => return,
         };
         let count = if self.step == Step::Image {
@@ -282,8 +282,8 @@ impl Installer {
             Step::Image if self.another_image() => Step::Reference,
             Step::Image => Step::Size,
             Step::Size if self.offer.entries.is_empty() => Step::Summary,
-            Step::Size => Step::Environment,
-            Step::Environment => Step::Summary,
+            Step::Size => Step::Setup,
+            Step::Setup => Step::Summary,
             Step::Summary => return Some(self.make()),
             _ => return None,
         };
@@ -296,9 +296,9 @@ impl Installer {
             Step::Image if self.offer.name.is_none() => Step::Name,
             Step::Size if self.another_image() => Step::Reference,
             Step::Reference | Step::Size => Step::Image,
-            Step::Environment => Step::Size,
+            Step::Setup => Step::Size,
             Step::Summary if self.offer.entries.is_empty() => Step::Size,
-            Step::Summary => Step::Environment,
+            Step::Summary => Step::Setup,
             ref step => step.clone(),
         };
     }
@@ -333,7 +333,7 @@ impl Installer {
         let spec = Spec {
             image: Some(self.image_spec()),
             size: self.offer.sizes.get(self.size).map(|size| size.key.clone()),
-            environment: Some(self.chosen_entries().map(|e| e.id.clone()).collect()),
+            setup: Some(self.chosen_entries().map(|e| e.id.clone()).collect()),
         };
         Effect::Make(Create {
             username: self.login(),
@@ -366,7 +366,7 @@ impl Installer {
                 self.pick(answer, count).map(|size| self.size = size)?;
                 self.next()
             }
-            Step::Environment => {
+            Step::Setup => {
                 self.choose(answer)?;
                 self.next()
             }
@@ -500,13 +500,13 @@ pub(crate) mod tests {
         text.chars().map(Key::Char).collect()
     }
 
-    fn make(image: &str, size: &str, environment: &[&str]) -> Effect {
+    fn make(image: &str, size: &str, setup: &[&str]) -> Effect {
         Effect::Make(Create {
             username: "new.adam".to_owned(),
             spec: Spec {
                 image: Some(image.to_owned()),
                 size: Some(size.to_owned()),
-                environment: Some(environment.iter().map(|&id| id.to_owned()).collect()),
+                setup: Some(setup.iter().map(|&id| id.to_owned()).collect()),
             },
         })
     }
@@ -667,7 +667,7 @@ pub(crate) mod tests {
         );
         assert_eq!(answer(&mut installer, ""), None);
         assert_eq!(answer(&mut installer, "2"), None);
-        assert_eq!(installer.step, Step::Environment);
+        assert_eq!(installer.step, Step::Setup);
         assert_eq!(answer(&mut installer, "2 x"), None);
         assert!(installer.problem.is_some());
         assert_eq!(answer(&mut installer, "2"), None);

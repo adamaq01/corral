@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use uuid::Uuid;
 
-use super::{Environment, Sandboxes};
+use super::{Sandboxes, Setup};
 use crate::domain::{Admin, Handle, Role, User, UserId, UserStatus};
 use crate::ports::{Identity, IdentityProvider, KeyRepo, UserRepo};
 use crate::{Error, Result};
@@ -13,7 +13,7 @@ pub struct Accounts {
     users: Arc<dyn UserRepo>,
     keys: Arc<dyn KeyRepo>,
     sandboxes: Sandboxes,
-    environment: Environment,
+    setup: Setup,
     providers: Vec<Arc<dyn IdentityProvider>>,
 }
 
@@ -23,14 +23,14 @@ impl Accounts {
         users: Arc<dyn UserRepo>,
         keys: Arc<dyn KeyRepo>,
         sandboxes: Sandboxes,
-        environment: Environment,
+        setup: Setup,
         providers: Vec<Arc<dyn IdentityProvider>>,
     ) -> Self {
         Self {
             users,
             keys,
             sandboxes,
-            environment,
+            setup,
             providers,
         }
     }
@@ -140,7 +140,7 @@ impl Accounts {
         for key in self.keys.list(user.id).await? {
             self.keys.delete(user.id, key.id).await?;
         }
-        self.environment.remove_all(user.id).await?;
+        self.setup.remove_all(user.id).await?;
         if let Some((provider, subject)) = user.subject.split_once(':')
             && let Some(provider) = self.provider(provider)
         {
@@ -406,11 +406,11 @@ mod tests {
         w.sandbox(&user, "dev").await;
         w.keys.add(&user, "laptop", key).await.unwrap();
         let main = sandbox_name("main");
-        let id = w.environment.of_sandbox(&user, &main).await.unwrap()[0]
+        let id = w.setup.of_sandbox(&user, &main).await.unwrap()[0]
             .view
             .entry
             .id;
-        w.environment
+        w.setup
             .set_override(&user, &main, id, Some(bytes("main only")))
             .await
             .unwrap();
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(w.users.by_handle(&user.handle).await.unwrap(), None);
         assert_eq!(w.sandboxes.list(user).await.unwrap(), []);
         assert_eq!(w.keys.list(user).await.unwrap(), []);
-        assert_eq!(w.environment.list(user).await.unwrap(), []);
+        assert_eq!(w.setup.list(user).await.unwrap(), []);
     }
 
     #[tokio::test]
@@ -465,7 +465,7 @@ mod tests {
 
         assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 2);
         assert_eq!(w.keys.list(&adam).await.unwrap().len(), 1);
-        assert_eq!(w.environment.list(&adam).await.unwrap().len(), 2);
+        assert_eq!(w.setup.list(&adam).await.unwrap().len(), 2);
         assert_eq!(w.secrets.count(), 3, "only adam's values are left");
         assert!(w.accounts.require_active(adam.id).await.is_ok());
     }

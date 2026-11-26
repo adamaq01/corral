@@ -5,17 +5,17 @@ use async_trait::async_trait;
 
 use super::lock;
 use crate::domain::{Attachment, Entry, EntryId, SandboxId, UserId};
-use crate::ports::EnvironmentRepo;
+use crate::ports::SetupRepo;
 use crate::{Error, Result};
 
 #[derive(Default)]
-pub struct MemoryEnvironmentRepo {
+pub struct MemorySetupRepo {
     entries: Mutex<Vec<Entry>>,
     attachments: Mutex<Vec<Attachment>>,
     awaiting: Mutex<BTreeSet<UserId>>,
 }
 
-impl MemoryEnvironmentRepo {
+impl MemorySetupRepo {
     /// Marks the user as having kept credentials before entries existed.
     pub fn await_adoption(&self, user: UserId) {
         lock(&self.awaiting).insert(user);
@@ -23,7 +23,7 @@ impl MemoryEnvironmentRepo {
 }
 
 #[async_trait]
-impl EnvironmentRepo for MemoryEnvironmentRepo {
+impl SetupRepo for MemorySetupRepo {
     async fn entries(&self, owner: UserId) -> Result<Vec<Entry>> {
         Ok(lock(&self.entries)
             .iter()
@@ -96,7 +96,7 @@ impl EnvironmentRepo for MemoryEnvironmentRepo {
             .iter()
             .any(|entry| entry.id == attachment.entry)
         {
-            return Err(Error::NotFound("environment entry".to_owned()));
+            return Err(Error::NotFound("setup entry".to_owned()));
         }
         let mut attachments = lock(&self.attachments);
         attachments

@@ -577,16 +577,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn arriving_wakes_with_the_sandboxs_current_environment() {
+    async fn arriving_wakes_with_the_sandboxs_current_setup() {
         let (w, adam, eve) = adam_and_eve().await;
         let main = w.sandboxes.resolve(&adam, None).await.unwrap();
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
         for (owner, value) in [(&adam, "changed-while-asleep"), (&eve, "eves")] {
             let entry = w.entry(owner, variable("GH_TOKEN"), value, true).await;
-            w.environment
-                .attach(owner, &main.name, entry.id)
-                .await
-                .unwrap();
+            w.setup.attach(owner, &main.name, entry.id).await.unwrap();
         }
         assert!(matches!(
             w.access.arrive("main.adam").await.unwrap(),

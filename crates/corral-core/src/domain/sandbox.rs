@@ -81,10 +81,10 @@ pub struct Sandbox {
     pub image: SandboxImage,
     pub size: SizeKey,
     pub created_at: DateTime<Utc>,
-    /// When Corral last started it from stopped, so with its environment of that moment.
+    /// When Corral last started it from stopped, so with its setup of that moment.
     pub started_at: Option<DateTime<Utc>>,
-    /// When a change last reached its environment: what it is attached to, or a value it gets.
-    pub environment_changed_at: Option<DateTime<Utc>>,
+    /// When a change last reached its setup: what it is attached to, or a value it gets.
+    pub setup_changed_at: Option<DateTime<Utc>>,
     /// When it is to be deleted, if `corral delete` inside it scheduled that.
     pub delete_at: Option<DateTime<Utc>>,
     /// How long it stays awake without work, if its owner chose.

@@ -60,7 +60,7 @@ pub(crate) fn step(step: &Step) -> &'static str {
         Step::Name => "Name",
         Step::Image | Step::Reference => "Image",
         Step::Size => "Size",
-        Step::Environment => "Environment",
+        Step::Setup => "Setup",
         Step::Summary | Step::Making(_) | Step::Failed(_) => "Summary",
     }
 }
@@ -81,7 +81,7 @@ pub(crate) fn chosen_size(installer: &Installer) -> String {
         .map_or_else(String::new, size)
 }
 
-pub(crate) fn chosen_environment(installer: &Installer) -> String {
+pub(crate) fn chosen_setup(installer: &Installer) -> String {
     let names: Vec<&str> = installer
         .chosen_entries()
         .map(|entry| entry.name.as_str())

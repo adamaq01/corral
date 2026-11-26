@@ -182,7 +182,7 @@ pub struct Create {
 }
 
 /// How a new sandbox is made, as `corral-new` reads it. Each field left out takes the owner's
-/// default; without `environment`, the entries that apply to new sandboxes are attached.
+/// default; without `setup`, the entries that apply to new sandboxes are attached.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Spec {
@@ -190,7 +190,7 @@ pub struct Spec {
     pub image: Option<String>,
     pub size: Option<String>,
     /// Entries by id, or by the variable or file they set.
-    pub environment: Option<Vec<String>>,
+    pub setup: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,7 +209,7 @@ pub struct Made {
     /// A catalog image's key, or the image reference it was made from.
     pub image: String,
     pub size: String,
-    pub environment: Vec<MadeEntry>,
+    pub setup: Vec<MadeEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -258,10 +258,10 @@ impl SandboxRepo for MemorySandboxRepo {
         Ok(())
     }
 
-    async fn record_environment_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
+    async fn record_setup_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()> {
         for sandbox in lock(&self.sandboxes).iter_mut() {
             if ids.contains(&sandbox.id) {
-                sandbox.environment_changed_at = Some(at);
+                sandbox.setup_changed_at = Some(at);
             }
         }
         Ok(())

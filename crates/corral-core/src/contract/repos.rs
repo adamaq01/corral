@@ -21,7 +21,7 @@ pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dy
     scheduled_deletions(users, sandboxes).await;
     idle_settings(users, sandboxes).await;
     client_states(users, sandboxes).await;
-    environment_change_times(users, sandboxes).await;
+    setup_change_times(users, sandboxes).await;
     sandbox_limit_holds_under_concurrent_inserts(users, sandboxes).await;
     deleting_a_user_leaves_nothing_of_them(users, keys, sandboxes).await;
 }
@@ -324,7 +324,7 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
 }
 
-async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+async fn setup_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     let adam = seed_user(users, "adam").await;
     let (main, dev, other) = (
         new_sandbox(adam.id, "main", 1),
@@ -336,15 +336,15 @@ async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxR
     }
     let nothing = SandboxId(unique("sbx"));
     sandboxes
-        .record_environment_change(&[main.id.clone(), dev.id.clone(), nothing], at(5))
+        .record_setup_change(&[main.id.clone(), dev.id.clone(), nothing], at(5))
         .await
         .expect("record a change, of nothing too");
     sandboxes
-        .record_environment_change(std::slice::from_ref(&dev.id), at(6))
+        .record_setup_change(std::slice::from_ref(&dev.id), at(6))
         .await
         .expect("record a later change");
     sandboxes
-        .record_environment_change(&[], at(7))
+        .record_setup_change(&[], at(7))
         .await
         .expect("record a change of no sandbox");
     let changed: Vec<(String, Option<DateTime<Utc>>)> = sandboxes
@@ -352,7 +352,7 @@ async fn environment_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxR
         .await
         .unwrap()
         .into_iter()
-        .map(|sandbox| (sandbox.name.to_string(), sandbox.environment_changed_at))
+        .map(|sandbox| (sandbox.name.to_string(), sandbox.setup_changed_at))
         .collect();
     assert_eq!(
         changed,
@@ -738,7 +738,7 @@ pub(super) fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         size: SizeKey::parse("small").unwrap(),
         created_at: at(created),
         started_at: None,
-        environment_changed_at: None,
+        setup_changed_at: None,
         delete_at: None,
         idle_timeout: None,
         keep_awake_until: None,

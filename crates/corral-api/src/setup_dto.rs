@@ -172,7 +172,7 @@ impl From<&StoredValue> for StoredValueDto {
 
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(rename = "EnvironmentEntry")]
+#[ts(rename = "SetupEntry")]
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct EntryDto {
     id: Uuid,

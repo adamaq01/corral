@@ -8,11 +8,11 @@ use crate::dto::{
     NewKey, OwnedSandbox, RegistriesSettings, RegistryChangeDto, SandboxDetailsDto, SandboxDto,
     ScheduledDeletion, UserDto, Wake,
 };
-use crate::environment_dto::{
-    AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, PreviewDto, ValueInput,
-};
 use crate::error::ErrorBody;
 use crate::provider::ProviderListing;
+use crate::setup_dto::{
+    AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, PreviewDto, ValueInput,
+};
 use corral_core::app::{CreateSandbox, FILE_LIMIT, VARIABLE_LIMIT};
 use corral_core::domain::{SandboxDefaults, SandboxStatus};
 
@@ -66,7 +66,7 @@ impl TypeScript {
             .add::<ErrorBody>()
             .limit(
                 "FILE_LIMIT",
-                "The most bytes an environment file may hold.",
+                "The most bytes a setup file may hold.",
                 FILE_LIMIT,
             )
             .limit(

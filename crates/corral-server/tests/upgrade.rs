@@ -1,4 +1,4 @@
-//! A database the release before the environment wrote, with its users, sandboxes and sealed
+//! A database the release before entries wrote, with its users, sandboxes and sealed
 //! credentials, upgraded: every credential is a secret variable attached to each sandbox of its
 //! owner, with its value.
 
@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use corral_core::app::{Configured, Environment, Sandboxes, Settings, Timeouts};
+use corral_core::app::{Configured, Sandboxes, Settings, Setup, Timeouts};
 use corral_core::domain::{Sandbox, User, UserId};
 use corral_core::fakes::{FakeEngine, FakeRegistry, catalog, catalog_change, exposed, links};
 use corral_core::ports::{
@@ -47,7 +47,7 @@ fn hex(text: &str) -> Vec<u8> {
         .collect()
 }
 
-/// The schema of the release before the environment, with its rows.
+/// The schema of the release before entries, with its rows.
 async fn previous_release(pool: &Pool, adam: Uuid, eve: Uuid) {
     pool.migrate(Migrations::new(
         "store",
@@ -130,9 +130,9 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
             .await
             .unwrap(),
     );
-    let environment = Environment::new(store.clone(), secrets.clone(), store.clone(), links());
-    assert_eq!(environment.adopt_credentials().await.unwrap(), 2);
-    assert_eq!(environment.adopt_credentials().await.unwrap(), 0);
+    let setup = Setup::new(store.clone(), secrets.clone(), store.clone(), links());
+    assert_eq!(setup.adopt_credentials().await.unwrap(), 2);
+    assert_eq!(setup.adopt_credentials().await.unwrap(), 0);
     assert!(
         secrets
             .legacy_credentials(UserId(adam))
@@ -142,7 +142,7 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
     );
 
     let owner: User = store.get(UserId(adam)).await.unwrap().unwrap();
-    let adopted: Vec<(String, bool, bool, usize)> = environment
+    let adopted: Vec<(String, bool, bool, usize)> = setup
         .list(&owner)
         .await
         .unwrap()
@@ -190,7 +190,7 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
         store.clone(),
         engine.clone(),
         Arc::new(FakeRegistry::default()),
-        environment,
+        setup,
         Settings::new(
             store.clone(),
             store.clone(),

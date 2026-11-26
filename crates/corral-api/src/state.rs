@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::http::request::Parts;
 use cookie::Key;
-use corral_core::app::{Accounts, Environment, Keys, Sandboxes, Settings};
+use corral_core::app::{Accounts, Keys, Sandboxes, Settings, Setup};
 use corral_core::ports::ActivitySignals;
 use serde::Serialize;
 use ts_rs::TS;
@@ -15,7 +15,7 @@ pub(crate) type AppState = Arc<Api>;
 pub struct Api {
     pub accounts: Accounts,
     pub keys: Keys,
-    pub environment: Environment,
+    pub setup: Setup,
     pub sandboxes: Sandboxes,
     pub settings: Settings,
     /// Whether a registry's password variable is set, without the password leaving the server.

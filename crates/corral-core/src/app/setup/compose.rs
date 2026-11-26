@@ -50,7 +50,7 @@ pub(super) fn compose(
         match &entry.target {
             Target::Variable(name) => {
                 let text = std::str::from_utf8(bytes).map_err(|_| {
-                    Error::internal("environment", format!("variable {name} is not text"))
+                    Error::internal("setup", format!("variable {name} is not text"))
                 })?;
                 if entry.is_secret() || value.is_secret() {
                     secret_variables.insert(name.clone());
@@ -79,9 +79,7 @@ pub(super) fn compose(
         let content = if entry.template {
             let template = std::str::from_utf8(bytes)
                 .map(Template::parse)
-                .map_err(|_| {
-                    Error::internal("environment", format!("template {path} is not text"))
-                })?;
+                .map_err(|_| Error::internal("setup", format!("template {path} is not text")))?;
             secret |= template
                 .names()
                 .iter()
@@ -204,7 +202,7 @@ fn bytes_of<'a>(
             .map(ExposeSecret::expose_secret)
             .ok_or_else(|| {
                 Error::internal(
-                    "environment",
+                    "setup",
                     format!("the secret store has no value for {}", entry.target),
                 )
             }),

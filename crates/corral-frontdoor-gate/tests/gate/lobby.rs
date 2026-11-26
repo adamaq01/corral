@@ -27,7 +27,7 @@ async fn entries(f: &Fixture) {
         ..unchanged(&extra)
     };
     f.world
-        .environment
+        .setup
         .change(&f.adam, extra.id, change)
         .await
         .unwrap();
@@ -77,7 +77,7 @@ async fn the_installer_makes_what_is_chosen_and_opens_its_shell_on_the_same_conn
     pty.until("Choose the size:").await;
     pty.send(DOWN);
     pty.send(ENTER);
-    let screen = pty.until("Choose the environment entries").await;
+    let screen = pty.until("Choose the setup entries").await;
     assert!(screen.contains("> [ ] EXTRA_TOKEN  variable"), "{screen}");
     assert!(
         screen.contains("  [x] GH_TOKEN  variable, secret, for new sandboxes"),
@@ -89,7 +89,7 @@ async fn the_installer_makes_what_is_chosen_and_opens_its_shell_on_the_same_conn
     let screen = pty.until("Create it?").await;
     for wanted in [
         "Size         LARGE (large): 4 CPUs, 8 GiB memory, 10 GiB home",
-        "Environment  EXTRA_TOKEN, GH_TOKEN",
+        "Setup        EXTRA_TOKEN, GH_TOKEN",
     ] {
         assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
     }
@@ -166,7 +166,7 @@ async fn a_refused_creation_shows_why_and_the_person_goes_back_to_fix_it() {
         apply_to_new: false,
         ..entry(file(".config/tool.toml"), "token = \"{{ EXTRA_TOKEN }}\"")
     };
-    f.world.environment.create(&f.adam, template).await.unwrap();
+    f.world.setup.create(&f.adam, template).await.unwrap();
     let mut pty = terminal(&f, "fresh.adam", "xterm-256color", &[]);
     pty.until("Choose the image:").await;
     pty.send(ENTER);
@@ -189,12 +189,12 @@ async fn a_refused_creation_shows_why_and_the_person_goes_back_to_fix_it() {
     pty.send(ENTER);
     pty.until("Create it?").await;
     pty.send(LEFT);
-    pty.until("Choose the environment entries").await;
+    pty.until("Choose the setup entries").await;
     pty.send(UP);
     pty.send(UP);
     pty.send(SPACE);
     pty.send(ENTER);
-    pty.until("Environment  EXTRA_TOKEN, GH_TOKEN, .config/tool.toml")
+    pty.until("Setup        EXTRA_TOKEN, GH_TOKEN, .config/tool.toml")
         .await;
     pty.send(ENTER);
     // The fake engine starts no container, so the shell is refused once it is made.
@@ -203,7 +203,7 @@ async fn a_refused_creation_shows_why_and_the_person_goes_back_to_fix_it() {
     assert_eq!(pty.exited().await, 1);
     let attached = f
         .world
-        .environment
+        .setup
         .of_sandbox(&f.adam, &sandbox_name("fresh"))
         .await
         .unwrap();
@@ -285,11 +285,11 @@ async fn corral_new_makes_a_sandbox_from_a_spec_and_prints_it() {
     let f = Fixture::without_container(Limits::default()).await;
     f.world.offer_tools().await;
     entries(&f).await;
-    let spec = br#"{"image": "tools", "size": "large", "environment": ["EXTRA_TOKEN"]}"#;
+    let spec = br#"{"image": "tools", "size": "large", "setup": ["EXTRA_TOKEN"]}"#;
     let ran = f.ssh("full.adam", &["corral-new"], spec).await;
     assert_eq!((ran.status, ran.stderr.as_str()), (Some(0), ""), "{ran:?}");
     let printed = json(&ran.stdout);
-    let id = printed["environment"][0]["id"].clone();
+    let id = printed["setup"][0]["id"].clone();
     assert_eq!(
         printed,
         serde_json::json!({
@@ -297,7 +297,7 @@ async fn corral_new_makes_a_sandbox_from_a_spec_and_prints_it() {
             "sshUsername": "full.adam",
             "image": "tools",
             "size": "large",
-            "environment": [{"id": id, "kind": "variable", "name": "EXTRA_TOKEN"}],
+            "setup": [{"id": id, "kind": "variable", "name": "EXTRA_TOKEN"}],
         })
     );
 
@@ -308,7 +308,7 @@ async fn corral_new_makes_a_sandbox_from_a_spec_and_prints_it() {
         (
             &printed["image"],
             &printed["size"],
-            &printed["environment"][0]["name"]
+            &printed["setup"][0]["name"]
         ),
         (
             &Value::from("base"),
@@ -332,8 +332,8 @@ async fn corral_new_refuses_a_bad_spec_or_a_name_that_exists_with_a_json_error()
         ("bad.adam", r#"{"size": "huge"}"#, "unknown size \"huge\""),
         (
             "bad.adam",
-            r#"{"environment": ["NOPE"]}"#,
-            "there is no environment entry \"NOPE\"",
+            r#"{"setup": ["NOPE"]}"#,
+            "there is no setup entry \"NOPE\"",
         ),
         ("main.adam", "{}", "sandbox main exists already"),
         (
@@ -359,7 +359,7 @@ async fn a_command_or_a_shell_without_a_terminal_still_makes_the_sandbox_from_th
         f.ssh(&format!("{name}.adam"), &args, b"exit\n").await;
         let attached = f
             .world
-            .environment
+            .setup
             .of_sandbox(&f.adam, &sandbox_name(name))
             .await
             .unwrap();

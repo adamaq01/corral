@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, TimeDelta, Utc};
 use corral_core::Error;
 use corral_core::app::Allowance;
-use corral_core::contract::{environment, repos, settings};
+use corral_core::contract::{repos, settings, setup};
 use corral_core::domain::{
     Handle, ImageKey, Role, Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, User, UserId,
     UserStatus,
@@ -26,7 +26,7 @@ async fn meets_every_repo_contract(url: &str) {
             .expect("reopen a migrated database"),
     );
     repos::every_repo(&*store, &*store, &*store).await;
-    environment::environment_repo(&*store, &*store, &*store).await;
+    setup::setup_repo(&*store, &*store, &*store).await;
     settings::settings_repo(&*store, &*store).await;
 
     let gone = repos::deleting_a_user_leaves_nothing_of_them(&*store, &*store, &*store).await;
@@ -70,7 +70,7 @@ async fn a_scheduled_deletion_outlives_the_store(url: &str) {
         size: SizeKey::parse("small").unwrap(),
         created_at: Utc::now(),
         started_at: None,
-        environment_changed_at: None,
+        setup_changed_at: None,
         delete_at: None,
         idle_timeout: None,
         keep_awake_until: None,
@@ -187,7 +187,7 @@ async fn sqlite_sub_second_timestamps_round_trip_in_order() {
         size: SizeKey::parse("small").unwrap(),
         created_at: second + offset,
         started_at: None,
-        environment_changed_at: None,
+        setup_changed_at: None,
         delete_at: None,
         idle_timeout: None,
         keep_awake_until: None,

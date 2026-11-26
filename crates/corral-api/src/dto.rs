@@ -139,8 +139,8 @@ pub(crate) struct SandboxDto {
     status: SandboxStatus,
     ssh: SandboxSsh,
     created_at: DateTime<Utc>,
-    /// Runs without the latest change to its environment, which a restart applies.
-    stale_environment: bool,
+    /// Runs without the latest change to its setup, which a restart applies.
+    stale_setup: bool,
     /// When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
     delete_at: Option<DateTime<Utc>>,
     idle: Idle,
@@ -153,7 +153,7 @@ impl SandboxDto {
             owner,
             is_default,
             status,
-            stale_environment,
+            stale_setup,
             idle,
         } = view;
         let idle = Idle::of(&sandbox, &idle);
@@ -171,7 +171,7 @@ impl SandboxDto {
             is_default,
             status,
             created_at: sandbox.created_at,
-            stale_environment,
+            stale_setup,
             delete_at: sandbox.delete_at,
             idle,
         }

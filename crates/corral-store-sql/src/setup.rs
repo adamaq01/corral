@@ -4,7 +4,7 @@ use corral_core::domain::{
     Attachment, Entry, EntryId, Glimpse, HomePath, Kept, SandboxId, SecretId, SecretRef,
     StoredValue, Target, UserId, VariableName,
 };
-use corral_core::ports::EnvironmentRepo;
+use corral_core::ports::SetupRepo;
 use corral_core::{Error, Result};
 use corral_sql::{db_error, on_pool, parsed};
 use uuid::Uuid;
@@ -194,13 +194,13 @@ macro_rules! entry_columns {
 }
 
 #[async_trait]
-impl EnvironmentRepo for Store {
+impl SetupRepo for Store {
     async fn entries(&self, owner: UserId) -> Result<Vec<Entry>> {
         let rows: Vec<EntryRow> = on_pool!(self.pool, |pool| {
             sqlx::query_as(concat!(
                 "select ",
                 entry_columns!(),
-                " from environment_entries where owner = $1 order by created_at, id"
+                " from setup_entries where owner = $1 order by created_at, id"
             ))
             .bind(owner.0)
             .fetch_all(pool)
@@ -215,7 +215,7 @@ impl EnvironmentRepo for Store {
         let value = Columns::of(&entry.value);
         on_pool!(self.pool, |pool| {
             sqlx::query(concat!(
-                "insert into environment_entries (",
+                "insert into setup_entries (",
                 entry_columns!(),
                 ") values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
             ))
@@ -251,7 +251,7 @@ impl EnvironmentRepo for Store {
         on_pool!(self.pool, |pool| async {
             let mut tx = pool.begin().await?;
             let updated = sqlx::query(
-                "update environment_entries set kind = $3, target = $4, template = $5, \
+                "update setup_entries set kind = $3, target = $4, template = $5, \
                  executable = $6, apply_to_new = $7, content = $8, secret_id = $9, size = $10, \
                  glimpse_length = $11, glimpse_head = $12, glimpse_tail = $13, set_at = $14 \
                  where id = $1 and owner = $2",
@@ -279,7 +279,7 @@ impl EnvironmentRepo for Store {
             for (attachment, value) in &overrides {
                 let value = value.as_ref();
                 sqlx::query(
-                    "update environment_attachments set override_content = $3, \
+                    "update setup_attachments set override_content = $3, \
                      override_secret_id = $4, override_size = $5, override_glimpse_length = $6, \
                      override_glimpse_head = $7, override_glimpse_tail = $8, \
                      override_set_at = $9 where sandbox_id = $1 and entry_id = $2",
@@ -305,7 +305,7 @@ impl EnvironmentRepo for Store {
 
     async fn delete(&self, owner: UserId, id: EntryId) -> Result<bool> {
         let deleted = on_pool!(self.pool, |pool| {
-            sqlx::query("delete from environment_entries where id = $1 and owner = $2")
+            sqlx::query("delete from setup_entries where id = $1 and owner = $2")
                 .bind(id.0)
                 .bind(owner.0)
                 .execute(pool)
@@ -322,8 +322,8 @@ impl EnvironmentRepo for Store {
                 "select a.sandbox_id, a.entry_id, a.override_content, a.override_secret_id, \
                  a.override_size, a.override_glimpse_length, a.override_glimpse_head, \
                  a.override_glimpse_tail, a.override_set_at \
-                 from environment_attachments a \
-                 join environment_entries e on e.id = a.entry_id where e.owner = $1",
+                 from setup_attachments a \
+                 join setup_entries e on e.id = a.entry_id where e.owner = $1",
             )
             .bind(owner.0)
             .fetch_all(pool)
@@ -338,7 +338,7 @@ impl EnvironmentRepo for Store {
         let value = value.as_ref();
         on_pool!(self.pool, |pool| {
             sqlx::query(
-                "insert into environment_attachments (sandbox_id, entry_id, override_content, \
+                "insert into setup_attachments (sandbox_id, entry_id, override_content, \
                  override_secret_id, override_size, override_glimpse_length, \
                  override_glimpse_head, override_glimpse_tail, override_set_at) \
                  values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
@@ -369,14 +369,12 @@ impl EnvironmentRepo for Store {
 
     async fn detach(&self, sandbox: &SandboxId, entry: EntryId) -> Result<bool> {
         let deleted = on_pool!(self.pool, |pool| {
-            sqlx::query(
-                "delete from environment_attachments where sandbox_id = $1 and entry_id = $2",
-            )
-            .bind(&sandbox.0)
-            .bind(entry.0)
-            .execute(pool)
-            .await
-            .map(|done| done.rows_affected())
+            sqlx::query("delete from setup_attachments where sandbox_id = $1 and entry_id = $2")
+                .bind(&sandbox.0)
+                .bind(entry.0)
+                .execute(pool)
+                .await
+                .map(|done| done.rows_affected())
         })
         .map_err(db_error)?;
         Ok(deleted > 0)

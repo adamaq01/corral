@@ -2,13 +2,13 @@ mod auth;
 mod client_address;
 mod cookies;
 mod dto;
-mod environment_dto;
 mod error;
 mod extract;
 mod json_only;
 mod provider;
 mod routes;
 mod session;
+mod setup_dto;
 mod state;
 #[cfg(feature = "testing")]
 #[allow(clippy::missing_panics_doc)]

@@ -92,14 +92,14 @@ mod tests {
     #[test]
     fn a_spec_takes_every_field_or_none_and_refuses_others() {
         let full: Spec = serde_json::from_str(
-            r#"{"image": "dev", "size": "roomy", "environment": ["GH_TOKEN", ".gitconfig"]}"#,
+            r#"{"image": "dev", "size": "roomy", "setup": ["GH_TOKEN", ".gitconfig"]}"#,
         )
         .unwrap();
         assert_eq!(
             (full.image.as_deref(), full.size.as_deref()),
             (Some("dev"), Some("roomy"))
         );
-        assert_eq!(full.environment.unwrap().len(), 2);
+        assert_eq!(full.setup.unwrap().len(), 2);
         assert_eq!(serde_json::from_str::<Spec>("{}").unwrap(), Spec::default());
         let error = serde_json::from_str::<Spec>(r#"{"sizes": "roomy"}"#).unwrap_err();
         assert!(

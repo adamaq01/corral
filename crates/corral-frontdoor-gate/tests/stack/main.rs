@@ -42,7 +42,7 @@ async fn the_installer_makes_a_sandbox_of_a_whole_corral_and_opens_its_shell() {
     let summary = pty.until("Create it?").await;
     assert!(summary.contains("Size         Roomy (roomy)"), "{summary}");
     assert!(
-        summary.contains("Environment  E2E_PLAIN, E2E_TOKEN"),
+        summary.contains("Setup        E2E_PLAIN, E2E_TOKEN"),
         "{summary}"
     );
     pty.send(ENTER);

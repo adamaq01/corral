@@ -33,7 +33,7 @@ impl Registry {
         self.entries
             .iter()
             .find(|entry| entry.id == id)
-            .ok_or_else(|| Error::NotFound(format!("environment entry {}", id.0)))
+            .ok_or_else(|| Error::NotFound(format!("setup entry {}", id.0)))
     }
 
     pub fn attachment(&self, sandbox: &SandboxId, entry: EntryId) -> Option<&Attachment> {

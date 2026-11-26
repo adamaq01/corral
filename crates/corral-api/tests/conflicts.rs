@@ -8,7 +8,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use corral_api::testing::trusting_provider;
 use corral_api::{Api, Key, SshEndpoint, router};
-use corral_core::app::{Accounts, Configured, Environment, Keys, Sandboxes, Settings, Timeouts};
+use corral_core::app::{Accounts, Configured, Keys, Sandboxes, Settings, Setup, Timeouts};
 use corral_core::fakes::{
     ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, FakeRegistry, MemorySecretStore, catalog,
     catalog_change, links,
@@ -21,7 +21,7 @@ use tower::ServiceExt;
 
 async fn app(databases: &Databases) -> Router {
     let store = Arc::new(Store::open(databases.pool().await).await.unwrap());
-    let environment = Environment::new(
+    let setup = Setup::new(
         store.clone(),
         Arc::new(MemorySecretStore::default()),
         store.clone(),
@@ -42,7 +42,7 @@ async fn app(databases: &Databases) -> Router {
         store.clone(),
         Arc::new(FakeEngine::default()),
         Arc::new(FakeRegistry::default()),
-        environment.clone(),
+        setup.clone(),
         settings.clone(),
         Timeouts {
             wake_deadline: Duration::from_secs(1),
@@ -54,11 +54,11 @@ async fn app(databases: &Databases) -> Router {
             store.clone(),
             store.clone(),
             sandboxes.clone(),
-            environment.clone(),
+            setup.clone(),
             Vec::new(),
         ),
         keys: Keys::new(store),
-        environment,
+        setup,
         sandboxes,
         settings,
         password_present: Arc::new(|_: &str| false),

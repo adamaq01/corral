@@ -59,8 +59,8 @@ pub trait SandboxRepo: Send + Sync {
         at: DateTime<Utc>,
         token: &TokenHash,
     ) -> Result<()>;
-    /// Sets `environment_changed_at` of each of the sandboxes that exists.
-    async fn record_environment_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()>;
+    /// Sets `setup_changed_at` of each of the sandboxes that exists.
+    async fn record_setup_change(&self, ids: &[SandboxId], at: DateTime<Utc>) -> Result<()>;
     /// Leaves the sandbox without a token.
     async fn revoke_token(&self, id: &SandboxId) -> Result<()>;
     async fn by_token(&self, token: &TokenHash) -> Result<Option<Sandbox>>;

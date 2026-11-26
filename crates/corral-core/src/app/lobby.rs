@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::ssh_access::active_login;
-use super::{Catalog, CreateSandbox, Environment, SandboxView, Sandboxes};
+use super::{Catalog, CreateSandbox, SandboxView, Sandboxes, Setup};
 use crate::domain::{
     Entry, EntryId, Handle, HomePath, ImageKey, SandboxDefaults, SandboxName, SizeKey, Target,
 };
@@ -14,7 +14,7 @@ use crate::{Error, Result};
 pub struct Lobby {
     users: Arc<dyn UserRepo>,
     sandboxes: Sandboxes,
-    environment: Environment,
+    setup: Setup,
 }
 
 /// Where a login with a terminal lands.
@@ -29,7 +29,7 @@ pub enum Entrance {
 }
 
 /// What the lobby starts from: the owner, the name the login gives the new sandbox if any, the
-/// owner's defaults and their environment entries.
+/// owner's defaults and their setup entries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
     pub owner: Handle,
@@ -46,7 +46,7 @@ pub struct Choice {
     pub image: Option<String>,
     pub size: Option<String>,
     /// Each entry by its id, or by the variable or file it sets.
-    pub environment: Option<Vec<String>>,
+    pub setup: Option<Vec<String>>,
 }
 
 /// A sandbox the lobby made, and the entries attached to it.
@@ -58,11 +58,11 @@ pub struct Made {
 
 impl Lobby {
     #[must_use]
-    pub fn new(users: Arc<dyn UserRepo>, sandboxes: Sandboxes, environment: Environment) -> Self {
+    pub fn new(users: Arc<dyn UserRepo>, sandboxes: Sandboxes, setup: Setup) -> Self {
         Self {
             users,
             sandboxes,
-            environment,
+            setup,
         }
     }
 
@@ -89,7 +89,7 @@ impl Lobby {
         if exists {
             return Ok(Entrance::Sandbox);
         }
-        let entries = self.environment.list(&owner).await?;
+        let entries = self.setup.list(&owner).await?;
         Ok(Entrance::Lobby(Offer {
             defaults: self.sandboxes.defaults(&owner).await?.defaults,
             owner: owner.handle,
@@ -131,16 +131,16 @@ impl Lobby {
                 None => (None, Some(text)),
             },
         };
-        let environment = match choice.environment {
+        let setup = match choice.setup {
             None => None,
-            Some(wanted) => Some(chosen(&self.environment.list(&owner).await?, &wanted)?),
+            Some(wanted) => Some(chosen(&self.setup.list(&owner).await?, &wanted)?),
         };
         let request = CreateSandbox {
             name: name.clone(),
             image,
             image_reference,
             size: choice.size.as_deref().map(SizeKey::parse).transpose()?,
-            environment,
+            setup,
         };
         let view = self
             .sandboxes
@@ -153,7 +153,7 @@ impl Lobby {
                 Error::Conflict(_) => Error::Conflict(format!("sandbox {name} exists already")),
                 error => error,
             })?;
-        let attached = self.environment.of_sandbox(&owner, &name).await?;
+        let attached = self.setup.of_sandbox(&owner, &name).await?;
         Ok(Made {
             view,
             attached: attached
@@ -185,13 +185,11 @@ fn chosen(entries: &[crate::app::EntryView], wanted: &[String]) -> Result<Vec<En
         let entry = match matching.as_slice() {
             [entry] => entry,
             [] => {
-                return Err(Error::Invalid(format!(
-                    "there is no environment entry {named:?}"
-                )));
+                return Err(Error::Invalid(format!("there is no setup entry {named:?}")));
             }
             _ => {
                 return Err(Error::Invalid(format!(
-                    "{named:?} names more than one environment entry: give its id"
+                    "{named:?} names more than one setup entry: give its id"
                 )));
             }
         };
@@ -230,12 +228,7 @@ mod tests {
             apply_to_new: false,
             ..unchanged(&extra)
         };
-        let extra = w
-            .environment
-            .change(&adam, extra.id, change)
-            .await
-            .unwrap()
-            .entry;
+        let extra = w.setup.change(&adam, extra.id, change).await.unwrap().entry;
         (w, adam, extra)
     }
 
@@ -264,7 +257,7 @@ mod tests {
         Choice {
             image: image.map(str::to_owned),
             size: size.map(str::to_owned),
-            environment: entries.map(|entries| entries.iter().map(|&e| e.to_owned()).collect()),
+            setup: entries.map(|entries| entries.iter().map(|&e| e.to_owned()).collect()),
         }
     }
 
@@ -384,7 +377,7 @@ mod tests {
             apply_to_new: false,
             ..entry(file(".config/tool.toml"), "token = \"{{ EXTRA }}\"")
         };
-        w.environment.create(&adam, template).await.unwrap();
+        w.setup.create(&adam, template).await.unwrap();
         let calls = w.engine.calls().len();
         for (username, choice, why) in [
             (
@@ -400,7 +393,7 @@ mod tests {
             (
                 "new.adam",
                 choice(None, None, Some(&["NOPE"])),
-                "there is no environment entry \"NOPE\"",
+                "there is no setup entry \"NOPE\"",
             ),
             (
                 "new.adam",
@@ -446,7 +439,7 @@ mod tests {
             apply_to_new: false,
             ..entry(file("EXTRA"), "a file")
         };
-        w.environment.create(&adam, same_name).await.unwrap();
+        w.setup.create(&adam, same_name).await.unwrap();
         let error = w
             .lobby
             .create("new.adam", choice(None, None, Some(&["EXTRA"])))
@@ -454,7 +447,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             refusal(error),
-            "\"EXTRA\" names more than one environment entry: give its id"
+            "\"EXTRA\" names more than one setup entry: give its id"
         );
     }
 

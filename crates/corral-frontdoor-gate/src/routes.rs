@@ -250,7 +250,7 @@ async fn create(
     let choice = Choice {
         image: spec.image,
         size: spec.size,
-        environment: spec.environment,
+        setup: spec.setup,
     };
     // As in arrive: the sandbox is made whole even when the gate stops waiting.
     let lobby = gatekeeper.lobby.clone();
@@ -340,7 +340,7 @@ fn made_of(made: Made) -> api::Made {
         ssh_username: ssh_username.to_string(),
         image: sandbox.image.to_string(),
         size: sandbox.size.to_string(),
-        environment: made
+        setup: made
             .attached
             .iter()
             .map(|entry| {

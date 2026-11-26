@@ -15,7 +15,7 @@ use corral_api::{
     ApiError, ClientAddress, CurrentAdmin, Identities, LoginKind, PathParam, ProviderCookies,
     ProviderDescription, ProviderRoutes, router,
 };
-use corral_core::app::Environment;
+use corral_core::app::Setup;
 use corral_core::domain::{Handle, Role, SecretId, UserId};
 use corral_core::fakes::{ADAM_KEY, EngineCall, MAX_SANDBOXES, PROVIDER, World, exposed, links};
 use corral_core::ports::{EventKind, Identity, SecretStore, UserRepo, VariableMap};
@@ -125,7 +125,7 @@ impl SecretStore for BrokenVault {
 }
 
 #[derive(Default)]
-struct Setup {
+struct Options {
     secure: bool,
     trust_forwarded_for: bool,
     secrets: Option<Arc<dyn SecretStore>>,
@@ -136,15 +136,15 @@ struct Corral {
     world: World,
 }
 
-impl Setup {
+impl Options {
     fn build(self) -> Corral {
         let world = World::new();
         let mut api = api(&world);
         api.secure_cookies = self.secure;
         api.trust_forwarded_for = self.trust_forwarded_for;
         if let Some(secrets) = self.secrets {
-            api.environment = Environment::new(
-                world.environment_repo.clone(),
+            api.setup = Setup::new(
+                world.setup_repo.clone(),
                 secrets,
                 world.sandbox_repo.clone(),
                 links(),
@@ -159,7 +159,7 @@ impl Setup {
 
 impl Corral {
     fn new() -> Self {
-        Setup::default().build()
+        Options::default().build()
     }
 
     fn browser(&self) -> Browser {
@@ -401,9 +401,9 @@ async fn a_provider_cookie_and_a_session_cannot_stand_in_for_each_other() {
 #[tokio::test]
 async fn cookies_lack_secure_when_base_url_is_http() {
     for secure in [false, true] {
-        let corral = Setup {
+        let corral = Options {
             secure,
-            ..Setup::default()
+            ..Options::default()
         }
         .build();
         let mut browser = corral.browser();
@@ -441,9 +441,9 @@ async fn the_client_address_is_the_peer_unless_a_trusted_proxy_says_otherwise() 
     for forwarded_for in [None, Some("203.0.113.7"), Some("198.51.100.9, 203.0.113.7")] {
         assert_eq!(address(&untrusting, forwarded_for).await, "10.0.0.2");
     }
-    let trusting = Setup {
+    let trusting = Options {
         trust_forwarded_for: true,
-        ..Setup::default()
+        ..Options::default()
     }
     .build();
     for (forwarded_for, client) in [
@@ -513,40 +513,31 @@ const API_ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/keys"),
     ("POST", "/api/keys"),
     ("DELETE", "/api/keys/00000000-0000-0000-0000-000000000000"),
-    ("GET", "/api/environment"),
-    ("POST", "/api/environment"),
-    (
-        "GET",
-        "/api/environment/00000000-0000-0000-0000-000000000000",
-    ),
+    ("GET", "/api/setup"),
+    ("POST", "/api/setup"),
+    ("GET", "/api/setup/00000000-0000-0000-0000-000000000000"),
+    ("PUT", "/api/setup/00000000-0000-0000-0000-000000000000"),
+    ("DELETE", "/api/setup/00000000-0000-0000-0000-000000000000"),
+    ("GET", "/api/sandboxes/main/setup"),
     (
         "PUT",
-        "/api/environment/00000000-0000-0000-0000-000000000000",
+        "/api/sandboxes/main/setup/00000000-0000-0000-0000-000000000000",
     ),
     (
         "DELETE",
-        "/api/environment/00000000-0000-0000-0000-000000000000",
-    ),
-    ("GET", "/api/sandboxes/main/environment"),
-    (
-        "PUT",
-        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000",
-    ),
-    (
-        "DELETE",
-        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000",
+        "/api/sandboxes/main/setup/00000000-0000-0000-0000-000000000000",
     ),
     (
         "PUT",
-        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000/override",
+        "/api/sandboxes/main/setup/00000000-0000-0000-0000-000000000000/override",
     ),
     (
         "DELETE",
-        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000/override",
+        "/api/sandboxes/main/setup/00000000-0000-0000-0000-000000000000/override",
     ),
     (
         "GET",
-        "/api/sandboxes/main/environment/00000000-0000-0000-0000-000000000000/preview",
+        "/api/sandboxes/main/setup/00000000-0000-0000-0000-000000000000/preview",
     ),
 ];
 
@@ -664,7 +655,7 @@ async fn create_then_list_shows_the_ssh_username() {
         "state": "running",
         "ssh": { "username": "main.adam", "host": "corral.example.com", "port": 48291 },
         "createdAt": created["createdAt"],
-        "staleEnvironment": false,
+        "staleSetup": false,
         "deleteAt": null,
         "idle": {
             "timeoutSecs": 1800,
@@ -822,21 +813,21 @@ fn variable(name: &str, value: &str, secret: bool) -> Value {
 }
 
 #[tokio::test]
-async fn a_running_sandbox_is_stale_from_an_environment_change_until_it_restarts() {
+async fn a_running_sandbox_is_stale_from_a_setup_change_until_it_restarts() {
     let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let created = adam
-        .post("/api/environment", variable("GH_TOKEN", "ghp_1", false))
+        .post("/api/setup", variable("GH_TOKEN", "ghp_1", false))
         .await
         .json();
     adam.post("/api/sandboxes", json!({ "name": "main" })).await;
     let main = "/api/sandboxes/main";
-    assert_eq!(adam.get(main).await.json()["staleEnvironment"], false);
+    assert_eq!(adam.get(main).await.json()["staleSetup"], false);
 
     let changed = adam
         .call(
             "PUT",
-            &format!("/api/environment/{}", created["id"].as_str().unwrap()),
+            &format!("/api/setup/{}", created["id"].as_str().unwrap()),
             Some(json!({
                 "kind": "variable",
                 "target": "GH_TOKEN",
@@ -850,13 +841,13 @@ async fn a_running_sandbox_is_stale_from_an_environment_change_until_it_restarts
         .await;
     assert_eq!(changed.status, StatusCode::OK, "{}", changed.text());
     assert_eq!(changed.json()["value"]["text"], "ghp_2");
-    assert_eq!(adam.get(main).await.json()["staleEnvironment"], true);
+    assert_eq!(adam.get(main).await.json()["staleSetup"], true);
     assert_eq!(
-        adam.get("/api/sandboxes").await.json()[0]["staleEnvironment"],
+        adam.get("/api/sandboxes").await.json()[0]["staleSetup"],
         true
     );
     adam.call("POST", "/api/sandboxes/main/restart", None).await;
-    assert_eq!(adam.get(main).await.json()["staleEnvironment"], false);
+    assert_eq!(adam.get(main).await.json()["staleSetup"], false);
 }
 
 fn file(target: &str, secret: bool, value: &Value) -> Value {
@@ -882,7 +873,7 @@ async fn secret_values_never_come_back_and_show_only_a_glimpse() {
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let created = adam
         .post(
-            "/api/environment",
+            "/api/setup",
             variable("GH_TOKEN", "ghp_s3cr3t-value-0123456789Xz", true),
         )
         .await;
@@ -914,7 +905,7 @@ async fn secret_values_never_come_back_and_show_only_a_glimpse() {
     );
     assert!(entry["value"]["setAt"].is_string());
     let short = adam
-        .post("/api/environment", variable("PIN", "s3cr3t", true))
+        .post("/api/setup", variable("PIN", "s3cr3t", true))
         .await
         .json();
     assert_eq!(
@@ -923,7 +914,7 @@ async fn secret_values_never_come_back_and_show_only_a_glimpse() {
     );
     let key = adam
         .post(
-            "/api/environment",
+            "/api/setup",
             file(".ssh/id", true, &json!({ "text": "s3cr3t key" })),
         )
         .await
@@ -933,18 +924,15 @@ async fn secret_values_never_come_back_and_show_only_a_glimpse() {
         [json!("hidden"), json!(10)]
     );
 
-    let mut replies = vec![adam.get("/api/environment").await];
+    let mut replies = vec![adam.get("/api/setup").await];
     replies.push(
-        adam.get(&format!(
-            "/api/environment/{}",
-            entry["id"].as_str().unwrap()
-        ))
-        .await,
+        adam.get(&format!("/api/setup/{}", entry["id"].as_str().unwrap()))
+            .await,
     );
     replies.push(adam.post("/api/sandboxes", json!({ "name": "main" })).await);
-    replies.push(adam.get("/api/sandboxes/main/environment").await);
+    replies.push(adam.get("/api/sandboxes/main/setup").await);
     replies.push(
-        adam.post("/api/environment", variable("OTHER", "s3cr3t\nvalue", true))
+        adam.post("/api/setup", variable("OTHER", "s3cr3t\nvalue", true))
             .await,
     );
     for reply in &replies {
@@ -959,7 +947,7 @@ async fn plain_values_show_in_full_and_entries_list_variables_first() {
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let binary = adam
         .post(
-            "/api/environment",
+            "/api/setup",
             file("blob", false, &json!({ "base64": "AP8=" })),
         )
         .await
@@ -970,7 +958,7 @@ async fn plain_values_show_in_full_and_entries_list_variables_first() {
     );
     let text = adam
         .post(
-            "/api/environment",
+            "/api/setup",
             file("notes", false, &json!({ "base64": "aGk=" })),
         )
         .await
@@ -980,7 +968,7 @@ async fn plain_values_show_in_full_and_entries_list_variables_first() {
         [json!("text"), json!("hi")]
     );
     let plain = adam
-        .post("/api/environment", variable("EDITOR", "vim", false))
+        .post("/api/setup", variable("EDITOR", "vim", false))
         .await
         .json();
     assert_eq!(
@@ -988,7 +976,7 @@ async fn plain_values_show_in_full_and_entries_list_variables_first() {
         [json!("text"), json!("vim")]
     );
     let listed: Vec<Value> = adam
-        .get("/api/environment")
+        .get("/api/setup")
         .await
         .json()
         .as_array()
@@ -999,13 +987,9 @@ async fn plain_values_show_in_full_and_entries_list_variables_first() {
     assert_eq!(listed, ["EDITOR", "blob", "notes"]);
 
     let id = binary["id"].as_str().unwrap();
-    let removed = adam
-        .call("DELETE", &format!("/api/environment/{id}"), None)
-        .await;
+    let removed = adam.call("DELETE", &format!("/api/setup/{id}"), None).await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT);
-    let again = adam
-        .call("DELETE", &format!("/api/environment/{id}"), None)
-        .await;
+    let again = adam.call("DELETE", &format!("/api/setup/{id}"), None).await;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
 }
 
@@ -1013,7 +997,7 @@ async fn plain_values_show_in_full_and_entries_list_variables_first() {
 async fn entries_their_target_cannot_take_are_refused_with_the_reason() {
     let corral = Corral::new();
     let mut adam = corral.signed_in("adam", Role::Member).await;
-    adam.post("/api/environment", variable("GH_TOKEN", "x", false))
+    adam.post("/api/setup", variable("GH_TOKEN", "x", false))
         .await;
     for (body, status, reason) in [
         (
@@ -1052,7 +1036,7 @@ async fn entries_their_target_cannot_take_are_refused_with_the_reason() {
             "128 KiB",
         ),
     ] {
-        let reply = adam.post("/api/environment", body).await;
+        let reply = adam.post("/api/setup", body).await;
         assert_eq!(reply.status, status, "{}", reply.text());
         assert!(reply.text().contains(reason), "{}", reply.text());
     }
@@ -1076,10 +1060,10 @@ async fn three_entries(corral: &Corral) -> (Browser, [String; 3]) {
         }),
     ] {
         body["applyToNew"] = json!(false);
-        let created = adam.post("/api/environment", body).await;
+        let created = adam.post("/api/setup", body).await;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
         paths.push(format!(
-            "/api/sandboxes/main/environment/{}",
+            "/api/sandboxes/main/setup/{}",
             created.json()["id"].as_str().unwrap()
         ));
     }
@@ -1116,13 +1100,13 @@ async fn a_sandbox_attaches_entries_that_fit_it() {
     let missing = adam
         .call(
             "PUT",
-            "/api/sandboxes/missing/environment/00000000-0000-0000-0000-000000000000",
+            "/api/sandboxes/missing/setup/00000000-0000-0000-0000-000000000000",
             None,
         )
         .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
 
-    let listed = adam.get("/api/sandboxes/main/environment").await.json();
+    let listed = adam.get("/api/sandboxes/main/setup").await.json();
     let attached: Vec<(&Value, &Value)> = listed
         .as_array()
         .unwrap()
@@ -1199,7 +1183,7 @@ async fn an_entry_changes_in_place_and_a_template_previews_with_secrets_masked()
     let renamed = adam
         .call(
             "PUT",
-            &format!("/api/environment/{id}"),
+            &format!("/api/setup/{id}"),
             Some(change("GITHUB_TOKEN", true)),
         )
         .await;
@@ -1213,7 +1197,7 @@ async fn an_entry_changes_in_place_and_a_template_previews_with_secrets_masked()
     let plain = adam
         .call(
             "PUT",
-            &format!("/api/environment/{id}"),
+            &format!("/api/setup/{id}"),
             Some(change("GH_TOKEN", false)),
         )
         .await;
@@ -1247,7 +1231,7 @@ async fn an_override_gives_one_sandbox_its_own_value() {
         "{}",
         overridden.text()
     );
-    let listed = adam.get("/api/sandboxes/main/environment").await;
+    let listed = adam.get("/api/sandboxes/main/setup").await;
     assert!(
         !listed.text().contains("ghp_main_only"),
         "{}",
@@ -1285,7 +1269,7 @@ async fn an_override_gives_one_sandbox_its_own_value() {
         .await;
     assert_eq!(cleared.status, StatusCode::NO_CONTENT);
     assert_eq!(
-        adam.get("/api/sandboxes/main/environment").await.json()[0]["override"],
+        adam.get("/api/sandboxes/main/setup").await.json()[0]["override"],
         Value::Null
     );
 }
@@ -1486,7 +1470,7 @@ async fn owning_everything(corral: &Corral, handle: &str) -> Browser {
         .await;
     assert_eq!(key.status, StatusCode::CREATED, "{}", key.text());
     let entry = browser
-        .post("/api/environment", variable("GH_TOKEN", "gh-secret", true))
+        .post("/api/setup", variable("GH_TOKEN", "gh-secret", true))
         .await;
     assert_eq!(entry.status, StatusCode::CREATED, "{}", entry.text());
     let defaults = browser
@@ -1509,7 +1493,7 @@ async fn owns_nothing_after_signing_up_again(corral: &Corral, handle: &str) {
             .contains(&handle.to_owned())
     );
     let mut again = corral.signed_in(handle, Role::Member).await;
-    for listing in ["/api/sandboxes", "/api/keys", "/api/environment"] {
+    for listing in ["/api/sandboxes", "/api/keys", "/api/setup"] {
         assert_eq!(again.get(listing).await.json(), json!([]), "{listing}");
     }
     let catalog = again.get("/api/catalog").await.json();
@@ -1620,7 +1604,7 @@ async fn a_disabled_user_cannot_delete_themselves() {
     );
     root.post(&format!("/api/admin/users/{adam_id}/enable"), json!({}))
         .await;
-    for listing in ["/api/keys", "/api/environment"] {
+    for listing in ["/api/keys", "/api/setup"] {
         assert_eq!(
             adam.get(listing).await.json().as_array().unwrap().len(),
             1,
@@ -1747,7 +1731,7 @@ async fn post_and_put_accept_only_json() {
             "/auth/logout",
             Some("multipart/form-data; boundary=x"),
         ),
-        ("POST", "/api/environment", Some("text/plain")),
+        ("POST", "/api/setup", Some("text/plain")),
     ] {
         let mut request = Request::builder().method(method).uri(uri);
         if let Some(content_type) = content_type {
@@ -1780,14 +1764,14 @@ async fn post_and_put_accept_only_json() {
 
 #[tokio::test]
 async fn internal_errors_have_a_generic_body() {
-    let corral = Setup {
+    let corral = Options {
         secrets: Some(Arc::new(BrokenVault)),
-        ..Setup::default()
+        ..Options::default()
     }
     .build();
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let reply = adam
-        .post("/api/environment", variable("GH_TOKEN", "x", true))
+        .post("/api/setup", variable("GH_TOKEN", "x", true))
         .await;
     assert_eq!(reply.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(reply.json(), json!({ "error": "internal error" }));

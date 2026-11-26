@@ -5,7 +5,7 @@ use crate::domain::{Attachment, Entry, EntryId, SandboxId, UserId};
 
 /// Users' entries and the sandboxes they are attached to.
 #[async_trait]
-pub trait EnvironmentRepo: Send + Sync {
+pub trait SetupRepo: Send + Sync {
     async fn entries(&self, owner: UserId) -> Result<Vec<Entry>>;
     async fn insert(&self, entry: &Entry) -> Result<()>;
     /// Replaces the entry, all but its owner and creation, and the overrides of `overrides`,

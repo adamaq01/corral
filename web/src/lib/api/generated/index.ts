@@ -14,7 +14,7 @@ export type AllowanceChange = { maxSandboxes: number | null, };
 /**
  * An entry attached to a sandbox, with the value it has there in place of its own, if any.
  */
-export type AttachedEntry = { entry: EnvironmentEntry, override: StoredValue | null, };
+export type AttachedEntry = { entry: SetupEntry, override: StoredValue | null, };
 
 export type Catalog = { images: Array<Choice>, sizes: Array<Choice>,
 /**
@@ -100,38 +100,6 @@ overridden: boolean,
  */
 unresolved: Array<VariableName>, };
 
-export type EnvironmentEntry = { id: string, kind: EntryKind,
-/**
- * The variable's name, or the file's path relative to the home.
- */
-target: string, secret: boolean,
-/**
- * For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
- * the same sandbox.
- */
-template: boolean,
-/**
- * For a file: whether it is written executable.
- */
-executable: boolean,
-/**
- * Whether each new sandbox is attached to it.
- */
-applyToNew: boolean, value: StoredValue, createdAt: string,
-/**
- * The sandboxes it is attached to, by name.
- */
-sandboxes: Array<EntryUse>,
-/**
- * For a template: the variables its own value refers to.
- */
-references: Array<VariableName>,
-/**
- * Whether an entry made earlier has the same target, as only entries made before targets
- * were unique can.
- */
-duplicate: boolean, };
-
 /**
  * What every error answers with.
  */
@@ -140,7 +108,7 @@ export type ErrorBody = { error: string, };
 export type EventKind = "normal" | "warning";
 
 /**
- * The most bytes an environment file may hold.
+ * The most bytes a setup file may hold.
  */
 export const FILE_LIMIT = 262144;
 
@@ -270,9 +238,9 @@ export type OwnedSandbox = { owner: Owner, name: SandboxName,
  */
 image: string, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
- * Runs without the latest change to its environment, which a restart applies.
+ * Runs without the latest change to its setup, which a restart applies.
  */
-staleEnvironment: boolean,
+staleSetup: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
@@ -342,9 +310,9 @@ export type Sandbox = { name: SandboxName,
  */
 image: string, size: SizeKey, isDefault: boolean, ssh: SandboxSsh, createdAt: string,
 /**
- * Runs without the latest change to its environment, which a restart applies.
+ * Runs without the latest change to its setup, which a restart applies.
  */
-staleEnvironment: boolean,
+staleSetup: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
@@ -371,6 +339,38 @@ export type SandboxSsh = { username: SshUsername, host: string, port: number, };
 export type SandboxStatus = { "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" };
 
 export type ScheduledDeletion = { deleteAt: string, };
+
+export type SetupEntry = { id: string, kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home.
+ */
+target: string, secret: boolean,
+/**
+ * For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
+ * the same sandbox.
+ */
+template: boolean,
+/**
+ * For a file: whether it is written executable.
+ */
+executable: boolean,
+/**
+ * Whether each new sandbox is attached to it.
+ */
+applyToNew: boolean, value: StoredValue, createdAt: string,
+/**
+ * The sandboxes it is attached to, by name.
+ */
+sandboxes: Array<EntryUse>,
+/**
+ * For a template: the variables its own value refers to.
+ */
+references: Array<VariableName>,
+/**
+ * Whether an entry made earlier has the same target, as only entries made before targets
+ * were unique can.
+ */
+duplicate: boolean, };
 
 export type SizeKey = string;
 

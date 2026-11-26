@@ -168,8 +168,8 @@ fn question(installer: &Installer) -> String {
             numbered(&mut out, installer.offer.sizes.iter().map(words::size));
             let _ = write!(out, "Size [{}]: ", installer.size + 1);
         }
-        Step::Environment => {
-            out.push_str("Environment entries to attach (their values stay hidden):\r\n");
+        Step::Setup => {
+            out.push_str("Setup entries to attach (their values stay hidden):\r\n");
             numbered(
                 &mut out,
                 installer
@@ -259,7 +259,7 @@ mod tests {
             "{out:?}"
         );
         let (out, _) = typed(&mut lines, &mut installer, "none\r");
-        assert!(out.contains("Environment  none\r\n"), "{out:?}");
+        assert!(out.contains("Setup        none\r\n"), "{out:?}");
         assert!(out.ends_with("Create it? [Y/n]: "), "{out:?}");
         let (out, effects) = typed(&mut lines, &mut installer, "\r");
         assert_eq!(out, "\r\nCreating new.adam... 0 s");

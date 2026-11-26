@@ -7,7 +7,7 @@ use axum::routing::get;
 use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
 use corral_core::app::{
-    Accounts, Environment, Keys, Lobby, SandboxLinks, Sandboxes, SshAccess, Timeouts,
+    Accounts, Keys, Lobby, SandboxLinks, Sandboxes, Setup, SshAccess, Timeouts,
 };
 use corral_core::ports::{
     ActivitySignals, IdentityProvider, RegistryLogins, RunningLimit, SandboxEngine, SandboxRepo,
@@ -50,7 +50,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     } = Adapters::resolve(config)?;
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
-    let environment = environment(config, &store, secret_store(secrets, &pool).await?).await?;
+    let setup = setup(config, &store, secret_store(secrets, &pool).await?).await?;
     let (providers, provider_routes) = providers(config, oidc, &pool).await?;
     let settings = corral_core::app::Settings::new(
         store.clone(),
@@ -79,7 +79,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         store.clone(),
         engine,
         Arc::new(OciRegistry::new(logins.clone())),
-        environment.clone(),
+        setup.clone(),
         settings.clone(),
         Timeouts {
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
@@ -93,18 +93,18 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         sandboxes.clone(),
         providers.clone(),
     );
-    let lobby = Lobby::new(store.clone(), sandboxes.clone(), environment.clone());
+    let lobby = Lobby::new(store.clone(), sandboxes.clone(), setup.clone());
     let internal = front_door(config, access, lobby, signals.clone(), gate_secret);
     let api = Api {
         accounts: Accounts::new(
             store.clone(),
             store.clone(),
             sandboxes.clone(),
-            environment.clone(),
+            setup.clone(),
             providers,
         ),
         keys: Keys::new(store.clone()),
-        environment,
+        setup,
         sandboxes,
         settings,
         password_present: Arc::new(move |variable: &str| logins.password_present(variable)),
@@ -129,13 +129,13 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     })
 }
 
-/// The environment, once the credentials kept before it are its secret variables.
-async fn environment(
+/// The setup, once the credentials kept before it are its secret variables.
+async fn setup(
     config: &Config,
     store: &Arc<Store>,
     secrets: Arc<dyn SecretStore>,
-) -> Result<Environment> {
-    let environment = Environment::new(
+) -> Result<Setup> {
+    let setup = Setup::new(
         store.clone(),
         secrets,
         store.clone(),
@@ -144,17 +144,14 @@ async fn environment(
             web: config.http.base_url.as_str().to_owned(),
         },
     );
-    let adopted = environment
+    let adopted = setup
         .adopt_credentials()
         .await
-        .context("making the credentials kept before the environment entries")?;
+        .context("making the credentials kept before the setup entries")?;
     if adopted > 0 {
-        tracing::info!(
-            adopted,
-            "made credentials secret variables of the environment"
-        );
+        tracing::info!(adopted, "made credentials secret variables of the setup");
     }
-    Ok(environment)
+    Ok(setup)
 }
 
 pub async fn database(database_url: &str) -> Result<Pool> {
@@ -323,14 +320,14 @@ mod tests {
                 "_store_migrations",
                 "credentials",
                 "credentials_to_adopt",
-                "environment_attachments",
-                "environment_entries",
                 "local_accounts",
                 "member_allowances",
                 "sandbox_client_states",
                 "sandboxes",
                 "secrets",
                 "settings",
+                "setup_attachments",
+                "setup_entries",
                 "ssh_keys",
                 "users",
             ]

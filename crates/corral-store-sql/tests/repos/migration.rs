@@ -1,8 +1,11 @@
 use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
-use corral_core::domain::{SandboxName, UserId};
-use corral_core::ports::{EnvironmentRepo, SandboxRepo};
+use corral_core::domain::{
+    Attachment, Entry, EntryId, Kept, SandboxId, SandboxName, StoredValue, Target, UserId,
+    VariableName,
+};
+use corral_core::ports::{SandboxRepo, SetupRepo};
 use corral_sql::testing::Databases;
 use corral_sql::{Migrations, Pool, on_pool};
 use corral_store_sql::Store;
@@ -11,12 +14,25 @@ use uuid::Uuid;
 
 type Moment = Option<DateTime<Utc>>;
 
-/// The migrations before the environment existed.
-const BEFORE_ENVIRONMENT: usize = 5;
+/// The migrations before entries existed.
+const BEFORE_ENTRIES: usize = 5;
 
-fn before(mut migrator: Migrator) -> Migrator {
-    migrator.migrations = Cow::Owned(migrator.migrations[..BEFORE_ENVIRONMENT].to_vec());
+/// The migrations before the entries' tables took the setup's names.
+const BEFORE_SETUP: usize = 9;
+
+fn before(mut migrator: Migrator, count: usize) -> Migrator {
+    migrator.migrations = Cow::Owned(migrator.migrations[..count].to_vec());
     migrator
+}
+
+async fn migrate_before(pool: &Pool, count: usize) {
+    pool.migrate(Migrations::new(
+        "store",
+        before(sqlx::migrate!("migrations/sqlite"), count),
+        before(sqlx::migrate!("migrations/postgres"), count),
+    ))
+    .await
+    .unwrap();
 }
 
 fn at(seconds: i64) -> DateTime<Utc> {
@@ -36,17 +52,11 @@ async fn exec(pool: &Pool, sql: &'static str, binds: (Uuid, &str, Option<DateTim
     .unwrap();
 }
 
-/// A database at the schema before the environment, with users who changed credentials and
-/// users who never did, keeps every row and hands each user over for adoption.
+/// A database at the schema before entries, with users who changed credentials and users who
+/// never did, keeps every row and hands each user over for adoption.
 async fn upgrades_a_database_with_real_rows(databases: Databases) {
     let pool = databases.pool().await;
-    pool.migrate(Migrations::new(
-        "store",
-        before(sqlx::migrate!("migrations/sqlite")),
-        before(sqlx::migrate!("migrations/postgres")),
-    ))
-    .await
-    .unwrap();
+    migrate_before(&pool, BEFORE_ENTRIES).await;
     let (adam, eve) = (Uuid::new_v4(), Uuid::new_v4());
     for (id, handle, changed) in [(adam, "adam", Some(at(5))), (eve, "eve", None)] {
         exec(
@@ -88,7 +98,7 @@ async fn upgrades_a_database_with_real_rows(databases: Databases) {
                         if owner == adam { "adam" } else { "eve" }
                     ),
                     sandbox.started_at,
-                    sandbox.environment_changed_at,
+                    sandbox.setup_changed_at,
                 ));
             }
         }
@@ -129,4 +139,102 @@ async fn sqlite_upgrades_a_database_with_real_rows() {
 #[tokio::test]
 async fn postgres_upgrades_a_database_with_real_rows() {
     upgrades_a_database_with_real_rows(Databases::postgres().await).await;
+}
+
+/// A database with an entry attached to a sandbox with an override reads back the entry, the
+/// attachment and when the sandbox's setup last changed once its tables take the setup's names.
+async fn keeps_entries_and_attachments_under_the_setups_names(databases: Databases) {
+    let pool = databases.pool().await;
+    migrate_before(&pool, BEFORE_SETUP).await;
+    let (adam, entry) = (Uuid::new_v4(), Uuid::new_v4());
+    let sandbox = format!("sbx-{}", Uuid::new_v4().simple());
+    exec(
+        &pool,
+        "insert into users (id, subject, handle, role, status, created_at) \
+         values ($1, 'local:' || $2, $2, 'member', 'active', $3)",
+        (adam, "adam", Some(at(0))),
+    )
+    .await;
+    on_pool!(pool, |pool| async {
+        sqlx::query(
+            "insert into sandboxes (id, owner, name, image, size, created_at, \
+             environment_changed_at) values ($1, $2, 'main', 'base', 'small', $3, $4)",
+        )
+        .bind(&sandbox)
+        .bind(adam)
+        .bind(at(1))
+        .bind(at(4))
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "insert into environment_entries (id, owner, kind, target, template, executable, \
+             apply_to_new, content, size, set_at, created_at) \
+             values ($1, $2, 'variable', 'EDITOR', false, false, true, $3, 3, $4, $4)",
+        )
+        .bind(entry)
+        .bind(adam)
+        .bind(b"vim".to_vec())
+        .bind(at(2))
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "insert into environment_attachments (sandbox_id, entry_id, override_content, \
+             override_size, override_set_at) values ($1, $2, $3, 4, $4)",
+        )
+        .bind(&sandbox)
+        .bind(entry)
+        .bind(b"nano".to_vec())
+        .bind(at(3))
+        .execute(pool)
+        .await
+        .map(drop)
+    }
+    .await)
+    .unwrap();
+
+    let store = Store::open(pool).await.unwrap();
+    let owner = UserId(adam);
+    assert_eq!(
+        store.entries(owner).await.unwrap(),
+        [Entry {
+            id: EntryId(entry),
+            owner,
+            target: Target::Variable(VariableName::parse("EDITOR").unwrap()),
+            template: false,
+            executable: false,
+            apply_to_new: true,
+            value: StoredValue {
+                kept: Kept::Plain(b"vim".to_vec()),
+                set_at: at(2),
+            },
+            created_at: at(2),
+        }]
+    );
+    assert_eq!(
+        store.attachments(owner).await.unwrap(),
+        [Attachment {
+            sandbox: SandboxId(sandbox),
+            entry: EntryId(entry),
+            overriding: Some(StoredValue {
+                kept: Kept::Plain(b"nano".to_vec()),
+                set_at: at(3),
+            }),
+        }]
+    );
+    let main = store
+        .by_name(owner, &SandboxName::parse("main").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(main.setup_changed_at, Some(at(4)));
+}
+
+#[tokio::test]
+async fn sqlite_keeps_entries_and_attachments_under_the_setups_names() {
+    keeps_entries_and_attachments_under_the_setups_names(Databases::sqlite()).await;
+}
+
+#[tokio::test]
+async fn postgres_keeps_entries_and_attachments_under_the_setups_names() {
+    keeps_entries_and_attachments_under_the_setups_names(Databases::postgres().await).await;
 }
