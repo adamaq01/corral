@@ -327,7 +327,8 @@ fn offered(catalog: &Catalog, offer: Offer) -> api::Offer {
         entries: offer
             .entries
             .iter()
-            .map(|entry| {
+            .map(|view| {
+                let entry = &view.entry;
                 let (kind, name) = kind_and_name(&entry.target);
                 OfferedEntry {
                     id: entry.id.0.to_string(),
@@ -337,6 +338,7 @@ fn offered(catalog: &Catalog, offer: Offer) -> api::Offer {
                     template: entry.template,
                     apply_to_new: entry.apply_to_new,
                     shared: entry.owner.shared(),
+                    shadowed: view.shadowed,
                 }
             })
             .collect(),

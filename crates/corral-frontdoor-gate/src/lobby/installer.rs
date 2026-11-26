@@ -84,8 +84,9 @@ pub(crate) struct Installer {
 
 impl Installer {
     /// Starts from the owner's defaults, with the entries for new sandboxes chosen and the
-    /// required ones first.
+    /// required ones first, leaving out each offered entry one of the owner's takes the place of.
     pub(crate) fn new(mut offer: Offer) -> Self {
+        offer.entries.retain(|entry| !entry.shadowed);
         offer.entries.sort_by_key(|entry| !entry.required());
         let image = offer
             .images
@@ -589,6 +590,7 @@ pub(crate) mod tests {
             template: false,
             apply_to_new,
             shared: None,
+            shadowed: false,
         };
         Offer {
             handle: "adam".to_owned(),

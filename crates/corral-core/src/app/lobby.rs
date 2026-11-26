@@ -3,7 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use super::ssh_access::active_login;
-use super::{Catalog, CreateSandbox, SandboxView, Sandboxes, Setup};
+use super::{Catalog, CreateSandbox, EntryView, SandboxView, Sandboxes, Setup};
 use crate::domain::{
     Entry, EntryId, Handle, HomePath, ImageKey, Repository, SandboxDefaults, SandboxName, SizeKey,
     Target,
@@ -30,13 +30,13 @@ pub enum Entrance {
 }
 
 /// What the lobby starts from: the owner, the name the login gives the new sandbox if any, the
-/// owner's defaults and their setup entries.
+/// owner's defaults and their setup entries, each saying whether one of theirs takes its place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Offer {
     pub owner: Handle,
     pub name: Option<SandboxName>,
     pub defaults: SandboxDefaults,
-    pub entries: Vec<Entry>,
+    pub entries: Vec<EntryView>,
 }
 
 /// How a new sandbox is made. Without an image or a size, the owner's default; without a list
@@ -91,12 +91,11 @@ impl Lobby {
         if exists {
             return Ok(Entrance::Sandbox);
         }
-        let entries = self.setup.list(&owner).await?;
         Ok(Entrance::Lobby(Offer {
+            entries: self.setup.list(&owner).await?,
             defaults: self.sandboxes.defaults(&owner).await?.defaults,
             owner: owner.handle,
             name,
-            entries: entries.into_iter().map(|view| view.entry).collect(),
         }))
     }
 
@@ -178,7 +177,7 @@ impl Lobby {
 /// The entries `wanted` names, each by its id or by its target. Where the member's own entry and a
 /// shared one have the same target, the name picks the member's, which takes the shared one's
 /// place.
-fn chosen(entries: &[crate::app::EntryView], wanted: &[String]) -> Result<Vec<EntryId>> {
+fn chosen(entries: &[EntryView], wanted: &[String]) -> Result<Vec<EntryId>> {
     let mut ids = Vec::new();
     for named in wanted {
         let id = Uuid::parse_str(named).ok();
@@ -295,10 +294,8 @@ mod tests {
             ("adam", Some("new"))
         );
         assert_eq!(offer.defaults, defaults("tools", "large"));
-        assert_eq!(
-            targets(&offer.entries),
-            ["variable EXTRA", "variable GH_TOKEN"]
-        );
+        let offered: Vec<Entry> = offer.entries.into_iter().map(|view| view.entry).collect();
+        assert_eq!(targets(&offered), ["variable EXTRA", "variable GH_TOKEN"]);
         assert_eq!(w.engine.calls().len(), calls, "the engine was not asked");
         assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), 1);
     }

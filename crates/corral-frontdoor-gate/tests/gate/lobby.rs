@@ -288,6 +288,60 @@ async fn the_installer_shows_required_entries_fixed_and_asks_for_a_repository() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_installer_lists_the_members_entry_in_place_of_the_shared_one() {
+    let f = Fixture::without_container(Limits::default()).await;
+    entries(&f).await;
+    let root = admin_proof(&f.world.admin("root").await);
+    for name in ["GH_TOKEN", "OPENAI_BASE_URL"] {
+        let offered = shared_variable(name, "https://llm", Shared::Offered);
+        f.world.setup.create_shared(&root, offered).await.unwrap();
+    }
+    let mut pty = terminal(&f, "fresh.adam", "xterm-256color", &[]);
+    pty.until("Choose the image:").await;
+    pty.send(ENTER);
+    pty.until("Choose the size:").await;
+    pty.send(ENTER);
+    let screen = pty.until("Choose the setup entries").await;
+    for wanted in [
+        "> [x] OPENAI_BASE_URL  variable, offered, for new sandboxes",
+        "  [ ] EXTRA_TOKEN  variable",
+        "  [x] GH_TOKEN  variable, secret, for new sandboxes",
+    ] {
+        assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
+    }
+    assert_eq!(screen.matches("GH_TOKEN").count(), 1, "{screen}");
+    pty.send(ENTER);
+    pty.until("Clone a repository into the new sandbox?").await;
+    pty.send(ENTER);
+    pty.until("Setup        OPENAI_BASE_URL, GH_TOKEN").await;
+    pty.send(ENTER);
+    // The fake engine starts no container, so the shell is refused once it is made.
+    pty.until("corral: could not open a session in sandbox fresh")
+        .await;
+    assert_eq!(pty.exited().await, 1);
+
+    let attached: Vec<(String, Option<Shared>)> = f
+        .world
+        .setup
+        .of_sandbox(&f.adam, &sandbox_name("fresh"))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|attached| {
+            let entry = attached.view.entry;
+            (entry.target.to_string(), entry.owner.shared())
+        })
+        .collect();
+    assert_eq!(
+        attached,
+        [
+            ("variable OPENAI_BASE_URL".to_owned(), Some(Shared::Offered)),
+            ("variable GH_TOKEN".to_owned(), None),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_login_with_no_sandbox_at_all_names_one_first() {
     let f = Fixture::without_container(Limits::default()).await;
     f.world

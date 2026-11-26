@@ -17,7 +17,7 @@ before any sandbox exists:
 4. **Setup**: what the sandbox comes with, by name and kind (variable or file, template, secret),
    values never shown. The admin's **required** entries come first, fixed: every sandbox gets
    them. The **offered** shared entries follow, then your own; those that apply to new sandboxes
-   come checked, the others unchecked.
+   come checked, the others unchecked. An offered entry that one of yours replaces is left out.
 5. **Repository**: a git repository the first start clones into the home, by its URL, then its
    branch, left empty for the repository's default. An empty URL clones nothing and skips the
    branch. A URL or branch Corral would not clone, such as a URL with a login in it, shows why

@@ -151,6 +151,7 @@ pub enum EntryKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct OfferedEntry {
     pub id: String,
     pub kind: EntryKind,
@@ -161,6 +162,8 @@ pub struct OfferedEntry {
     pub apply_to_new: bool,
     /// How the admin shares it with everyone, for an entry that is not the member's own.
     pub shared: Option<Shared>,
+    /// For an offered entry: whether an entry of the member's takes its place.
+    pub shadowed: bool,
 }
 
 impl OfferedEntry {
