@@ -120,7 +120,7 @@
 							<Icon class="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 							<div class="grid min-w-0 flex-1 gap-1.5">
 								<p class="flex flex-wrap items-center gap-2 text-sm font-medium">
-									<a class="font-mono break-all hover:underline" href="/setup/{entry.id}">
+									<a class="font-mono wrap-anywhere hover:underline" href="/setup/{entry.id}">
 										{where(entry)}
 									</a>
 									{#if entry.shared}

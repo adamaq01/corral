@@ -116,7 +116,7 @@
 									<Icon class="text-muted-foreground" />
 								</Item.Media>
 								<Item.Content class="min-w-0">
-									<Item.Title class="max-w-full flex-wrap font-mono break-all">
+									<Item.Title class="max-w-full flex-wrap font-mono wrap-anywhere">
 										{where(entry)}
 										{#if entry.shared}
 											<Badge variant="outline">{SHARING[entry.shared].badge}</Badge>
@@ -134,7 +134,7 @@
 											<Badge variant="destructive">Duplicate</Badge>
 										{/if}
 									</Item.Title>
-									<Item.Description class="break-all">
+									<Item.Description class="wrap-anywhere">
 										{described(entry)}
 									</Item.Description>
 								</Item.Content>
