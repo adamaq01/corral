@@ -248,12 +248,12 @@ async fn the_installer_shows_required_entries_fixed_and_asks_for_a_repository() 
     pty.send(ENTER);
     pty.until("Clone a repository into the new sandbox? Leave empty for none.")
         .await;
-    let password = "https://me:tok3n@github.com/me/x.git";
-    pty.send(password.as_bytes());
+    let login = "https://ghp_tok3n@github.com/me/x.git";
+    pty.send(login.as_bytes());
     pty.send(ENTER);
-    pty.until("Problem: the repository URL carries a password")
+    pty.until("Problem: the repository URL carries a login")
         .await;
-    pty.send(&vec![0x7f; password.len()]);
+    pty.send(&vec![0x7f; login.len()]);
     pty.send(b"https://github.com/adamaq01/corral.git");
     pty.send(ENTER);
     pty.until("Branch (empty for the default):").await;
@@ -429,8 +429,8 @@ async fn corral_new_refuses_a_bad_spec_or_a_name_that_exists_with_a_json_error()
         ),
         (
             "bad.adam",
-            r#"{"repository": {"url": "https://me:tok3n@github.com/me/x.git"}}"#,
-            "the repository URL carries a password",
+            r#"{"repository": {"url": "https://ghp_tok3n@github.com/me/x.git"}}"#,
+            "the repository URL carries a login",
         ),
         (
             "bad.adam",

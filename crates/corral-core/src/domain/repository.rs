@@ -5,8 +5,8 @@ use crate::{Error, Result};
 
 const URL_MAX: usize = 1024;
 const BRANCH_MAX: usize = 255;
-const PASSWORD: &str = "the repository URL carries a password; put the token in Setup, as a git \
-                        credential, and leave it out of the URL";
+const LOGIN: &str = "the repository URL carries a login; put the token in Setup, as a git token \
+                     or SSH key, and leave it out of the URL";
 const SHAPE: &str = "the repository must be an https://, ssh:// or git@host:path address";
 
 /// A git repository a sandbox clones at its first start, and the branch to check out, else the
@@ -34,7 +34,8 @@ impl TryFrom<RepositoryInput> for Repository {
 }
 
 impl Repository {
-    /// Takes an `https://`, `ssh://` or `file:///` URL, or `user@host:path`, without a password.
+    /// Takes an `https://` URL without a login, an `ssh://` URL without a password, a `file:///`
+    /// URL, or `user@host:path`.
     pub fn new(url: &str, branch: Option<&str>) -> Result<Self> {
         let url = url.trim();
         check_url(url)?;
@@ -85,14 +86,14 @@ fn check_url(url: &str) -> Result<()> {
     // Git hands a host or a user to ssh as an argument, so neither may read as an option.
     let named = |part: &str| !part.is_empty() && !part.starts_with('-');
     match url.split_once("://") {
-        Some(("https" | "ssh", rest)) => {
+        Some((scheme @ ("https" | "ssh"), rest)) => {
             let authority = rest.split('/').next().unwrap_or_default();
             let (user, host) = match authority.rsplit_once('@') {
                 Some((user, host)) => (Some(user), host),
                 None => (None, authority),
             };
-            if user.is_some_and(|user| user.contains(':')) {
-                return Err(Error::Invalid(PASSWORD.to_owned()));
+            if user.is_some_and(|user| scheme == "https" || user.contains(':')) {
+                return Err(Error::Invalid(LOGIN.to_owned()));
             }
             let user_fine = user.is_none_or(|user| !user.starts_with('-'));
             (named(host) && user_fine).then_some(()).ok_or_else(shape)
@@ -137,8 +138,8 @@ mod tests {
     use super::Repository;
     use crate::Error;
 
-    const PASSWORD: &str = "the repository URL carries a password; put the token in Setup, as a \
-                            git credential, and leave it out of the URL";
+    const LOGIN: &str = "the repository URL carries a login; put the token in Setup, as a git \
+                         token or SSH key, and leave it out of the URL";
     const SHAPE: &str = "the repository must be an https://, ssh:// or git@host:path address";
 
     fn refusal(url: &str, branch: Option<&str>) -> String {
@@ -153,7 +154,6 @@ mod tests {
         for url in [
             "https://github.com/adamaq01/corral.git",
             "https://git.example.com:8443/team/tools",
-            "https://me@github.com/me/x.git",
             "ssh://git@github.com/me/x.git",
             "ssh://git@host:2222/srv/x",
             "file:///srv/repo.git",
@@ -172,13 +172,16 @@ mod tests {
     }
 
     #[test]
-    fn a_password_in_the_url_is_refused_saying_where_the_token_goes() {
+    fn a_login_in_the_url_is_refused_saying_where_the_token_goes() {
         for url in [
             "https://me:tok3n@github.com/me/x.git",
             "https://:tok3n@github.com/me/x.git",
+            "https://ghp_tok3n@github.com/me/x.git",
+            "https://me@github.com/me/x.git",
+            "https://@github.com/me/x.git",
             "ssh://git:tok3n@host/srv/x",
         ] {
-            assert_eq!(refusal(url, None), PASSWORD, "{url}");
+            assert_eq!(refusal(url, None), LOGIN, "{url}");
         }
     }
 
@@ -274,7 +277,7 @@ mod tests {
             serde_json::from_str::<Repository>(r#"{"url": "https://me:tok3n@github.com/x"}"#)
                 .unwrap_err()
                 .to_string();
-        assert!(error.contains(PASSWORD), "{error}");
+        assert!(error.contains(LOGIN), "{error}");
         assert!(!error.contains("tok3n"), "{error}");
     }
 }

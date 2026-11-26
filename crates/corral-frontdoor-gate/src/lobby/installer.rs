@@ -787,7 +787,7 @@ pub(crate) mod tests {
         assert_eq!(installer.step, Step::Repository(Field::Url));
         let problem = installer.problem.clone().unwrap_or_default();
         assert!(
-            problem.starts_with("the repository URL carries a password"),
+            problem.starts_with("the repository URL carries a login"),
             "{problem}"
         );
         assert!(!problem.contains("tok3n"), "{problem}");

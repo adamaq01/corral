@@ -1,6 +1,6 @@
-/** The repository URLs the server takes, none with a password in it. */
+/** The repository URLs the server takes: no login in an https:// one, no password in any. */
 export const REPOSITORY_PATTERN =
-	/^(?=[^\p{White_Space}\p{Cc}]{1,1024}$)(?:(?:https|ssh):\/\/(?:(?!-)[^\/:]*@)?(?!-)[^\/@]+(?:\/.*)?|file:\/\/\/.+|(?!.*:\/\/)(?!-)[^\/:@]+@(?!-)[^\/:@]+:.+)$/u;
+	/^(?=[^\p{White_Space}\p{Cc}]{1,1024}$)(?:(?:https:\/\/|ssh:\/\/(?:(?!-)[^\/:]*@)?)(?!-)[^\/@]+(?:\/.*)?|file:\/\/\/.+|(?!.*:\/\/)(?!-)[^\/:@]+@(?!-)[^\/:@]+:.+)$/u;
 
 /** The branch names the server takes. */
 export const BRANCH_PATTERN = /^(?!-)(?!.*\.\.)[^\p{White_Space}\p{Cc}~^:?*\[\\]{1,255}$/u;

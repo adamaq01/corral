@@ -478,8 +478,8 @@ pub(crate) mod tests {
         let mut url = at(Step::Repository(Field::Url));
         url.url = "https://me:tok3n@github.com/me/x.git".to_owned();
         url.problem = Some(
-            "the repository URL carries a password; put the token in Setup, as a git \
-             credential, and leave it out of the URL"
+            "the repository URL carries a login; put the token in Setup, as a git token or \
+             SSH key, and leave it out of the URL"
                 .into(),
         );
         let mut branch = at(Step::Repository(Field::Branch));

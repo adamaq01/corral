@@ -20,7 +20,7 @@ before any sandbox exists:
    come checked, the others unchecked.
 5. **Repository**: a git repository the first start clones into the home, by its URL, then its
    branch, left empty for the repository's default. An empty URL clones nothing and skips the
-   branch. A URL or branch Corral would not clone, such as a URL with a password in it, shows why
+   branch. A URL or branch Corral would not clone, such as a URL with a login in it, shows why
    under it.
 6. **Summary**, then **Create**: the installer counts the seconds while the sandbox is created
    and started, then the sandbox's shell opens on the same connection.
@@ -62,10 +62,10 @@ Every field of the spec is optional, and empty input is the empty spec `{}`:
 
 `"setup": []` attaches none, and the admin's required entries reach the sandbox whatever `setup`
 lists. A name that both your own entry and a shared one set picks yours. A repository URL is
-`https://...`, `ssh://...`, `file:///...` or `user@host:path`, without a password: a token goes in
-Setup, as a git credential. An unknown field is refused. On a refusal, such as a bad spec, an
-unknown size, or a sandbox by that name that exists already, nothing is made: it prints
-`{"error": "..."}` on its error output and exits with status 1.
+`https://...` without a login, `ssh://...` without a password, `file:///...` or `user@host:path`:
+a token goes in Setup, as a git token or SSH key. An unknown field is refused. On a refusal, such
+as a bad spec, an unknown size, or a sandbox by that name that exists already, nothing is made: it
+prints `{"error": "..."}` on its error output and exits with status 1.
 
 ## Any other command
 

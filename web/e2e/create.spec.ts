@@ -111,7 +111,7 @@ test('the dialog lists what the sandbox comes with and sends the choice and the 
 	});
 });
 
-test('a repository URL with a password, or a bad branch, is refused before anything is sent', async ({
+test('a repository URL with a login, or a bad branch, is refused before anything is sent', async ({
 	page
 }) => {
 	const { dialog, sent, create } = await openDialog(page, []);
@@ -124,12 +124,19 @@ test('a repository URL with a password, or a bad branch, is refused before anyth
 	await expect(dialog.getByText(rule)).toBeVisible();
 	await expect(dialog.getByRole('alert')).toHaveCount(0);
 
-	await url.fill('https://me:tok3n@github.com/me/x.git');
-	await expect(dialog.getByRole('alert')).toHaveText(rule);
-	await expect(url).toHaveAttribute('aria-invalid', 'true');
-	await expect(create).toBeDisabled();
+	for (const login of [
+		'https://me:tok3n@github.com/me/x.git',
+		'https://ghp_tok3n@github.com/me/x.git'
+	]) {
+		await url.fill(login);
+		await expect(dialog.getByRole('alert')).toHaveText(rule);
+		await expect(url).toHaveAttribute('aria-invalid', 'true');
+		await expect(create).toBeDisabled();
+	}
 	await url.press('Enter');
 	await expect(dialog).toBeVisible();
+	await url.fill('ssh://git@github.com/me/x.git');
+	await expect(dialog.getByRole('alert')).toHaveCount(0);
 
 	await url.fill('https://github.com/me/x.git');
 	await expect(dialog.getByRole('alert')).toHaveCount(0);

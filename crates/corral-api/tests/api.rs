@@ -796,8 +796,8 @@ async fn a_repository_url_with_a_password_is_refused() {
     let said = refused.json()["error"].as_str().unwrap().to_owned();
     assert!(
         said.contains(
-            "the repository URL carries a password; put the token in Setup, as a git \
-             credential, and leave it out of the URL"
+            "the repository URL carries a login; put the token in Setup, as a git token or \
+             SSH key, and leave it out of the URL"
         ),
         "{said}"
     );
