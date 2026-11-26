@@ -1,11 +1,13 @@
 import type { Page } from '@playwright/test';
 import type {
+	CatalogSettings,
 	EngineEvent,
 	Fact,
 	LimitsSettings,
 	LocalAccount,
 	OwnedSandbox,
 	Provider,
+	RegistriesSettings,
 	SandboxDetails,
 	SandboxStatus,
 	User
@@ -53,6 +55,97 @@ const providers: Provider[] = [
 const limits: LimitsSettings = {
 	maxSandboxesPerMember: { value: 5, source: 'database' },
 	maxRunning: { value: 6, source: 'database' }
+};
+
+const catalog: CatalogSettings = {
+	images: [
+		{
+			key: 'ubuntu',
+			label: 'Ubuntu 24.04',
+			reference: 'ghcr.io/adamaq01/corral-sandbox:1.4',
+			description: '',
+			enabled: true,
+			source: 'config'
+		},
+		{
+			key: 'tools',
+			label: 'Ubuntu with tools',
+			reference: 'ghcr.io/acme/sandbox-tools:2026.11',
+			description: 'Node, Python and Go',
+			enabled: true,
+			source: 'database'
+		},
+		{
+			key: 'legacy',
+			label: 'Ubuntu 22.04',
+			reference: 'ghcr.io/acme/sandbox:22.04',
+			description: '',
+			enabled: false,
+			source: 'database'
+		}
+	],
+	sizes: [
+		{
+			key: 'small',
+			label: 'Small: 2 CPUs, 4 GiB',
+			cpuRequest: '500m',
+			cpuLimit: '2',
+			memoryRequest: '1Gi',
+			memoryLimit: '4Gi',
+			homeSize: '10Gi',
+			enabled: true,
+			source: 'config'
+		},
+		{
+			key: 'large',
+			label: 'Large: 8 CPUs, 16 GiB',
+			cpuRequest: '2',
+			cpuLimit: '8',
+			memoryRequest: '4Gi',
+			memoryLimit: '16Gi',
+			homeSize: '50Gi',
+			enabled: true,
+			source: 'database'
+		}
+	],
+	namedImages: { registries: ['ghcr.io/acme', 'docker.io/library'], maxSize: '4Gi' },
+	namedImagesSource: 'database',
+	defaultImage: 'tools',
+	defaultSize: 'small',
+	defaultsSource: 'database',
+	defaultsFellBack: false,
+	shadowedImages: ['ubuntu'],
+	shadowedSizes: []
+};
+
+const registries: RegistriesSettings = {
+	registries: [
+		{
+			registry: 'ghcr.io',
+			username: 'corral-bot',
+			passwordEnv: 'CORRAL_GHCR_TOKEN',
+			plainHttp: false,
+			source: 'config',
+			passwordSet: true
+		},
+		{
+			registry: 'harbor.example.com',
+			username: 'robot$corral',
+			passwordEnv: 'HARBOR_TOKEN',
+			plainHttp: false,
+			source: 'database',
+			passwordSet: false
+		},
+		{
+			registry: 'registry.lan:5000',
+			username: null,
+			passwordEnv: null,
+			plainHttp: true,
+			source: 'database',
+			passwordSet: false
+		}
+	],
+	shadowed: ['ghcr.io']
 };
 
 const sandboxes: OwnedSandbox[] = [
@@ -240,6 +333,34 @@ inEveryView((look) => {
 		await page.goto('/admin/people');
 		await page.getByText('No one yet').waitFor();
 		await look(page, 'people-empty');
+	});
+
+	test('settings, catalog', async ({ page }) => {
+		await answer(page, '/api/admin/settings/catalog', catalog);
+		await page.goto('/admin/settings/catalog');
+		await page.getByRole('table', { name: 'Sizes' }).getByText('large', { exact: true }).waitFor();
+		await look(page, 'settings-catalog');
+
+		await page.getByRole('button', { name: 'Add size' }).click();
+		await page.getByRole('dialog', { name: 'Add size' }).waitFor();
+		await look(page, 'settings-catalog-size');
+	});
+
+	test('settings, limits', async ({ page }) => {
+		await answer(page, '/api/admin/settings/limits', {
+			...limits,
+			maxRunning: { value: 4, source: 'config' }
+		} satisfies LimitsSettings);
+		await page.goto('/admin/settings/limits');
+		await expect(page.getByLabel('Running at once')).toBeDisabled();
+		await look(page, 'settings-limits');
+	});
+
+	test('settings, registries', async ({ page }) => {
+		await answer(page, '/api/admin/settings/registries', registries);
+		await page.goto('/admin/settings/registries');
+		await page.getByText('Variable not set').waitFor();
+		await look(page, 'settings-registries');
 	});
 
 	test('all sandboxes', async ({ page }) => {

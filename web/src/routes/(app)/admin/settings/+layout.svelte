@@ -1,4 +1,5 @@
 <script lang="ts">
+	import LockIcon from '@lucide/svelte/icons/lock';
 	import { page } from '$app/state';
 	import PageHeader from '#lib/components/page-header.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -32,6 +33,11 @@
 			{/each}
 		</ul>
 	</nav>
+
+	<p class="flex gap-2 text-sm text-muted-foreground">
+		<LockIcon class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+		What the config file sets is shown here and changed there; everything else is kept here.
+	</p>
 
 	{@render children()}
 </div>

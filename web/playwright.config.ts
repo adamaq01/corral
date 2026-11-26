@@ -3,7 +3,8 @@ import { defineConfig, devices } from '@playwright/test';
 // Docker adds and removes a network interface on the host as a sandbox starts and stops, and
 // Chromium then fails loads in flight with ERR_NETWORK_CHANGED. Tests that start sandboxes run
 // after the others, one at a time.
-const startsSandboxes = /(admin|connect|delete-from-inside|journey|lifecycle|sleep)\.spec\.ts$/;
+const startsSandboxes =
+	/(admin|connect|delete-from-inside|journey|lifecycle|settings|sleep)\.spec\.ts$/;
 // The screenshot specs check each page in four views (e2e/views.ts). chromium checks two, light at
 // desktop width and dark at phone width; other-views, which the nightly run adds, the other two.
 const otherViews = /light, phone|dark, desktop/;
