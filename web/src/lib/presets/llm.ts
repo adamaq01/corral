@@ -1,4 +1,4 @@
-import type { SetupEntry } from '../api/generated/index.js';
+import type { SetupEntry, SharedEntry } from '../api/generated/index.js';
 import { own, ownText, put, type Change } from './change.js';
 
 export type Provider = 'anthropic' | 'openai';
@@ -9,15 +9,16 @@ export const PROVIDERS: Provider[] = ['anthropic', 'openai'];
  * The variables of each provider: its address, its key, and for Anthropic the bearer token a
  * gateway may take instead, written with the same key when there is an address.
  */
-const NAMES: Record<Provider, { label: string; url: string; key: string; bearer?: string }> = {
-	anthropic: {
-		label: 'Anthropic',
-		url: 'ANTHROPIC_BASE_URL',
-		key: 'ANTHROPIC_API_KEY',
-		bearer: 'ANTHROPIC_AUTH_TOKEN'
-	},
-	openai: { label: 'OpenAI', url: 'OPENAI_BASE_URL', key: 'OPENAI_API_KEY' }
-};
+export const NAMES: Record<Provider, { label: string; url: string; key: string; bearer?: string }> =
+	{
+		anthropic: {
+			label: 'Anthropic',
+			url: 'ANTHROPIC_BASE_URL',
+			key: 'ANTHROPIC_API_KEY',
+			bearer: 'ANTHROPIC_AUTH_TOKEN'
+		},
+		openai: { label: 'OpenAI', url: 'OPENAI_BASE_URL', key: 'OPENAI_API_KEY' }
+	};
 
 export type LlmState = {
 	rows: Record<Provider, { url: string; urlLocked: boolean; keySet: boolean }>;
@@ -107,5 +108,48 @@ export function llmSummary(state: LlmState): string | null {
 		const { label } = NAMES[provider];
 		return state.rows[provider].url ? `${label} through a gateway` : `${label} key set`;
 	});
+	return said.length > 0 ? said.join(', ') : null;
+}
+
+/** The field of the form holding the variable `message` names, as Corral's refusals name one. */
+export function fieldNamed(message: string): { provider: Provider; field: 'url' | 'key' } | null {
+	const named = (name: string) => new RegExp(`\\b${name}\\b`).test(message);
+	for (const provider of PROVIDERS) {
+		if (named(NAMES[provider].url)) {
+			return { provider, field: 'url' };
+		}
+		if (allKeyNames(provider).some(named)) {
+			return { provider, field: 'key' };
+		}
+	}
+	return null;
+}
+
+/** The address the admin requires for each provider, `''` for none. */
+export type SharedLlm = Record<Provider, string>;
+
+/** The required shared entry holding the provider's address, which the admin's preset writes. */
+export function sharedUrl(shared: SharedEntry[], provider: Provider): SharedEntry | undefined {
+	return shared.find(
+		(entry) =>
+			entry.shared === 'required' &&
+			entry.kind === 'variable' &&
+			entry.target === NAMES[provider].url
+	);
+}
+
+export function readSharedLlm(shared: SharedEntry[]): SharedLlm {
+	const url = (provider: Provider) => {
+		const value = sharedUrl(shared, provider)?.value;
+		return value?.shown === 'text' ? value.text : '';
+	};
+	return { anthropic: url('anthropic'), openai: url('openai') };
+}
+
+/** One line naming each provider's shared address, or `null` when none has one. */
+export function sharedLlmSummary(urls: SharedLlm): string | null {
+	const said = PROVIDERS.filter((provider) => urls[provider] !== '').map(
+		(provider) => `${NAMES[provider].label} through ${urls[provider]}`
+	);
 	return said.length > 0 ? said.join(', ') : null;
 }

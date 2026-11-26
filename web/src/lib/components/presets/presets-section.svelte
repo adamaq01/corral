@@ -4,6 +4,7 @@
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PlugIcon from '@lucide/svelte/icons/plug';
 	import type { SetupEntry } from '#lib/api/generated/index.js';
+	import LlmDialog from '#lib/components/presets/llm-dialog.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Item from '#lib/components/ui/item/index.js';
@@ -12,7 +13,7 @@
 	import { llmSummary, readLlm } from '#lib/presets/llm.js';
 	import { mcpSummary, readMcp } from '#lib/presets/mcp.js';
 
-	let { entries }: { entries: SetupEntry[] } = $props();
+	let { entries, onchanged }: { entries: SetupEntry[]; onchanged: () => Promise<void> } = $props();
 
 	type Preset = 'llm' | 'git' | 'mcp' | 'dotfiles';
 
@@ -26,41 +27,38 @@
 	type Card = {
 		key: Preset;
 		title: string;
-		description: string;
 		Icon: typeof BotIcon;
 		summary: string | null;
+	};
+
+	const descriptions: Record<Exclude<Preset, 'llm'>, string> = {
+		git: 'Written as ~/.gitconfig, with the token or SSH key git uses to reach your repositories.',
+		mcp: 'Applied to Claude Code, Codex, Pi and oh-my-pi at each start, as their user-scope servers.',
+		dotfiles: "Checked out into the home at a sandbox's first start, or files you add one by one."
 	};
 
 	const presets = $derived<Card[]>([
 		{
 			key: 'llm',
 			title: 'LLM providers',
-			description:
-				"The keys and addresses your agents use: Claude Code, Codex, Pi and oh-my-pi read them from the sandbox's variables and their own files.",
 			Icon: BotIcon,
 			summary: llmSummary(readLlm(entries))
 		},
 		{
 			key: 'git',
 			title: 'Git identity',
-			description:
-				'Written as ~/.gitconfig, with the token or SSH key git uses to reach your repositories.',
 			Icon: GitBranchIcon,
 			summary: gitSummary(readGit(entries))
 		},
 		{
 			key: 'mcp',
 			title: 'MCP servers',
-			description:
-				'Applied to Claude Code, Codex, Pi and oh-my-pi at each start, as their user-scope servers.',
 			Icon: PlugIcon,
 			summary: mcpSummary(readMcp(entries))
 		},
 		{
 			key: 'dotfiles',
 			title: 'Dotfiles',
-			description:
-				"Checked out into the home at a sandbox's first start, or files you add one by one.",
 			Icon: FolderGitIcon,
 			summary: dotfilesSummary(readDotfiles(entries))
 		}
@@ -98,13 +96,16 @@
 	</ul>
 </section>
 
+<LlmDialog bind:open={open.llm} {entries} {onchanged} />
 {#each presets as preset (preset.key)}
-	<Dialog.Root bind:open={open[preset.key]}>
-		<Dialog.Content>
-			<Dialog.Header>
-				<Dialog.Title>{preset.title}</Dialog.Title>
-				<Dialog.Description>{preset.description}</Dialog.Description>
-			</Dialog.Header>
-		</Dialog.Content>
-	</Dialog.Root>
+	{#if preset.key !== 'llm'}
+		<Dialog.Root bind:open={open[preset.key]}>
+			<Dialog.Content>
+				<Dialog.Header>
+					<Dialog.Title>{preset.title}</Dialog.Title>
+					<Dialog.Description>{descriptions[preset.key]}</Dialog.Description>
+				</Dialog.Header>
+			</Dialog.Content>
+		</Dialog.Root>
+	{/if}
 {/each}

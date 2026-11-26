@@ -1,5 +1,10 @@
-import type { Page, Route } from '@playwright/test';
-import type { AttachedEntry, Sandbox, SetupEntry } from '../src/lib/api/generated/index.js';
+import type { Locator, Page, Route } from '@playwright/test';
+import type {
+	AttachedEntry,
+	NewEntry,
+	Sandbox,
+	SetupEntry
+} from '../src/lib/api/generated/index.js';
 import { expect, test, idle } from './fixtures';
 
 test.use({ role: 'member' });
@@ -632,6 +637,198 @@ test('each preset sums up the entries it reads back', async ({ page }) => {
 			`Change ${presets[index]}`
 		);
 	}
+});
+
+const masked: SetupEntry['value'] = {
+	setAt,
+	size: 12,
+	shown: 'masked',
+	length: 12,
+	head: null,
+	tail: null
+};
+
+/** Answers the Setup API with `entries`, adding what each create sends, and records the calls. */
+async function setupApi(page: Page, entries: SetupEntry[], calls: Call[]) {
+	let listed = entries;
+	await record(
+		page,
+		'/api/setup',
+		(route) => {
+			if (route.request().method() === 'GET') {
+				return { json: listed };
+			}
+			const sent: NewEntry = route.request().postDataJSON();
+			const made = entry({
+				id: crypto.randomUUID(),
+				target: sent.target,
+				secret: sent.secret,
+				value:
+					sent.secret || !('text' in sent.value)
+						? masked
+						: { setAt, size: sent.value.text.length, shown: 'text', text: sent.value.text }
+			});
+			listed = [...listed, made];
+			return { status: 201, json: made };
+		},
+		calls
+	);
+}
+
+const sent = (calls: Call[]) =>
+	calls
+		.filter((call) => call.method !== 'GET')
+		.map(({ method, path, body }) => [method, path, body]);
+
+const created = (target: string, secret: boolean, text: string) => [
+	'POST',
+	'/api/setup',
+	{ kind: 'variable', target, secret, applyToNew: true, value: { text } }
+];
+
+test('the LLM providers preset saves a key with an address as three variables, then hides it', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	await expect(anthropic.getByLabel('Base URL')).toHaveAttribute(
+		'placeholder',
+		'https://llm.home.example'
+	);
+	await expect(anthropic).toContainText('Optional. Used exactly as typed, for a gateway or proxy.');
+	await anthropic.getByLabel('Base URL').fill('https://llm.home.example');
+	await anthropic.getByLabel('Key', { exact: true }).fill('sk-ant-typed');
+	await dialog.getByRole('button', { name: 'Save providers' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved the LLM providers')).toBeVisible();
+	expect(sent(calls)).toEqual([
+		created('ANTHROPIC_BASE_URL', false, 'https://llm.home.example'),
+		created('ANTHROPIC_API_KEY', true, 'sk-ant-typed'),
+		created('ANTHROPIC_AUTH_TOKEN', true, 'sk-ant-typed')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'Anthropic through a gateway'
+	);
+	await page.getByRole('button', { name: 'Change LLM providers' }).click();
+	await expect(anthropic.getByLabel('Base URL')).toHaveValue('https://llm.home.example');
+	await expect(anthropic).toContainText('Set, hidden');
+	for (const input of await dialog.locator('input').all()) {
+		await expect(input).not.toHaveValue(/sk-ant/);
+	}
+	await anthropic.getByRole('button', { name: 'Replace the Anthropic key' }).click();
+	await expect(anthropic.getByLabel('Key', { exact: true })).toBeFocused();
+	await expect(anthropic.getByLabel('Key', { exact: true })).toHaveValue('');
+	await expect(dialog.getByRole('button', { name: 'Save providers' })).toBeDisabled();
+});
+
+test("one provider's address fills the others, which stay editable", async ({ page }) => {
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	const openai = dialog.getByRole('group', { name: 'OpenAI' });
+	const copy = (group: Locator) =>
+		group.getByRole('button', { name: 'Use this address for every provider' });
+	await expect(copy(dialog)).toHaveCount(0);
+
+	await openai.getByLabel('Base URL').fill('https://openai.home.example');
+	await expect(copy(openai)).toBeVisible();
+	await anthropic.getByLabel('Base URL').fill('https://llm.home.example');
+	await expect(copy(dialog)).toHaveCount(1);
+	await copy(anthropic).click();
+	await expect(openai.getByLabel('Base URL')).toHaveValue('https://llm.home.example');
+	await openai.getByLabel('Base URL').fill('https://llm.home.example/openai');
+	await expect(anthropic.getByLabel('Base URL')).toHaveValue('https://llm.home.example');
+});
+
+test('with the addresses set by the admin, the LLM providers preset saves the keys only', async ({
+	page
+}) => {
+	const openaiGateway = entry({
+		id: '5e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6b',
+		target: 'OPENAI_BASE_URL',
+		secret: false,
+		shared: 'required',
+		value: { setAt, size: 30, shown: 'text', text: 'https://llm.example.lan/openai' }
+	});
+	const key = entry({ target: 'ANTHROPIC_API_KEY', value: masked });
+	const calls: Call[] = [];
+	await setupApi(page, [gateway, openaiGateway, key], calls);
+	await record(page, `/api/setup/${key.id}`, () => ({ json: key }), calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Change LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	const openai = dialog.getByRole('group', { name: 'OpenAI' });
+	for (const [group, url] of [
+		[anthropic, 'https://llm.example.lan'],
+		[openai, 'https://llm.example.lan/openai']
+	] as const) {
+		await expect(group.getByLabel('Base URL')).toHaveValue(url);
+		await expect(group.getByLabel('Base URL')).toBeDisabled();
+		await expect(group).toContainText('Set by the admin');
+	}
+	await expect(
+		dialog.getByRole('button', { name: 'Use this address for every provider' })
+	).toHaveCount(0);
+
+	await expect(anthropic).toContainText('Type the key again so it is also sent as a bearer token.');
+	const save = dialog.getByRole('button', { name: 'Save providers' });
+	await expect(save).toBeDisabled();
+	await anthropic.getByLabel('Key', { exact: true }).fill('sk-ant-again');
+	await openai.getByLabel('Key', { exact: true }).fill('sk-openai');
+	await save.click();
+	await expect(dialog).toBeHidden();
+	expect(sent(calls)).toEqual([
+		[
+			'PUT',
+			`/api/setup/${key.id}`,
+			{
+				kind: 'variable',
+				target: 'ANTHROPIC_API_KEY',
+				secret: true,
+				template: false,
+				executable: false,
+				applyToNew: true,
+				value: { text: 'sk-ant-again' }
+			}
+		],
+		created('ANTHROPIC_AUTH_TOKEN', true, 'sk-ant-again'),
+		created('OPENAI_API_KEY', true, 'sk-openai')
+	]);
+});
+
+test("the LLM providers preset shows Corral's refusal next to the field it names", async ({
+	page
+}) => {
+	const refusal = 'conflict: variable ANTHROPIC_AUTH_TOKEN is set for every sandbox by the admin';
+	await page.route('**/api/setup', (route) => {
+		const request = route.request();
+		if (request.method() === 'GET') {
+			return route.fulfill({ json: [gateway, gatewayToken] });
+		}
+		return request.postDataJSON().target === 'ANTHROPIC_AUTH_TOKEN'
+			? route.fulfill({ status: 409, json: { error: refusal } })
+			: route.fulfill({ status: 201, json: entry({ target: 'ANTHROPIC_API_KEY' }) });
+	});
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	await anthropic.getByLabel('Key', { exact: true }).fill('sk-ant-typed');
+	await dialog.getByRole('button', { name: 'Save providers' }).click();
+	await expect(anthropic.getByRole('alert')).toHaveText(refusal);
+	await expect(anthropic.getByLabel('Key', { exact: true })).toHaveAttribute(
+		'aria-invalid',
+		'true'
+	);
+	await expect(dialog.getByRole('alert')).toHaveCount(1);
 });
 
 test('an entry lives through Corral: made, renamed, made secret and deleted', async ({ page }) => {

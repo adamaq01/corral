@@ -421,11 +421,20 @@ inEveryView((look) => {
 		await answer(page, '/api/admin/settings/shared-setup', sharedSetup);
 		await page.goto('/admin/settings/shared-setup');
 		await page.getByRole('table', { name: 'Shared setup' }).getByText('LITELLM_TOKEN').waitFor();
+		await page.getByText('Anthropic through https://llm.homelab.lan').waitFor();
 		await look(page, 'settings-shared-setup');
 
 		await page.getByRole('button', { name: 'Add variable' }).click();
 		await page.getByRole('dialog', { name: 'Add a shared variable' }).waitFor();
 		await look(page, 'settings-shared-setup-add', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('dialog').waitFor({ state: 'hidden' });
+		const card = page.getByRole('region', { name: 'Addresses for every sandbox' });
+		await card.getByRole('button', { name: 'Use this address for every provider' }).click();
+		await expect(card.getByLabel('OpenAI base URL')).toHaveValue('https://llm.homelab.lan');
+		await page.evaluate(() => window.scrollTo(0, 0));
+		await look(page, 'settings-shared-llm', { fullPage: false });
 	});
 
 	test('all sandboxes', async ({ page }) => {

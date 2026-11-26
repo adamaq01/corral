@@ -382,8 +382,14 @@ inEveryView((look) => {
 		);
 		await look(page, 'setup');
 
-		await page.getByRole('button', { name: 'Add variable' }).click();
+		await page.getByRole('button', { name: 'Change LLM providers' }).click();
 		const dialog = page.getByRole('dialog');
+		await dialog.getByText('Type the key again so it is also sent as a bearer token.').waitFor();
+		await look(page, 'setup-llm', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Add variable' }).click();
 		await dialog.getByLabel('Name').fill('github_token');
 		await dialog.getByRole('switch', { name: 'Secret' }).click();
 		await dialog.getByLabel('Value', { exact: true }).fill('ghp_example0123456789');
