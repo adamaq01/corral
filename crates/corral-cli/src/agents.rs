@@ -2,8 +2,8 @@
 //! MCP servers of `~/.config/corral-agents/mcp.json` and the session's gateway addresses to the
 //! files Claude Code, Codex, Pi and oh-my-pi read. In each file it sets only what Corral owns, its
 //! MCP servers by name and the gateway addresses, and it writes no file it has nothing to change
-//! in. It records the servers and addresses it applied, so that a later start removes those the
-//! setup no longer has and no others.
+//! in. It records the servers it applied and the addresses it wrote to each file, so that a later
+//! start removes those the setup no longer has and no others.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{OpenOptions, Permissions};
@@ -44,8 +44,11 @@ enum Servers<'a> {
     Keep,
 }
 
+/// The gateway addresses Corral wrote to one agent file, each by the variable it came from.
+type Addresses = BTreeMap<String, String>;
+
 /// What Corral applied at a start, recorded in `~/.config/corral/agents-applied.json`: the names
-/// of its MCP servers, and each gateway address by the variable it came from.
+/// of its MCP servers, and the addresses each agent file holds, by its path in the home.
 #[derive(Default, PartialEq, Serialize, Deserialize)]
 struct Applied {
     #[serde(
@@ -55,7 +58,30 @@ struct Applied {
     )]
     servers: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    addresses: BTreeMap<String, String>,
+    addresses: BTreeMap<String, Addresses>,
+}
+
+impl Applied {
+    /// The record for `file` after this start: the `addresses` set in it when its edit
+    /// succeeded, else the record from before, since the file still holds those.
+    fn addresses_in(
+        &self,
+        file: &str,
+        edited: &Result<(), String>,
+        addresses: &[(&str, Address)],
+    ) -> Option<(String, Addresses)> {
+        let held: Addresses = match edited {
+            Ok(()) => addresses
+                .iter()
+                .filter_map(|(variable, address)| match address {
+                    Address::Set(address) => Some(((*variable).to_owned(), (*address).to_owned())),
+                    Address::Unset(_) | Address::Keep => None,
+                })
+                .collect(),
+            Err(_) => self.addresses.get(file).cloned().unwrap_or_default(),
+        };
+        (!held.is_empty()).then(|| (file.to_owned(), held))
+    }
 }
 
 /// What Corral does to one gateway address in an agent's file at this start.
@@ -69,8 +95,15 @@ enum Address<'a> {
 }
 
 impl<'a> Address<'a> {
-    fn of(variable: &str, session: &'a BTreeMap<String, String>, applied: &'a Applied) -> Self {
-        match (session.get(variable), applied.addresses.get(variable)) {
+    fn of(
+        variable: &str,
+        session: &'a BTreeMap<String, String>,
+        applied: Option<&'a Addresses>,
+    ) -> Self {
+        match (
+            session.get(variable),
+            applied.and_then(|applied| applied.get(variable)),
+        ) {
             (Some(address), _) => Self::Set(address),
             (None, Some(address)) => Self::Unset(address),
             (None, None) => Self::Keep,
@@ -79,16 +112,6 @@ impl<'a> Address<'a> {
 
     fn is_set(self) -> bool {
         matches!(self, Self::Set(_))
-    }
-
-    /// The address to record after this start: one it set, or one it was to remove when an edit
-    /// `failed`, so that a later start removes it.
-    fn recorded(self, failed: bool) -> Option<&'a str> {
-        match self {
-            Self::Set(address) => Some(address),
-            Self::Unset(address) if failed => Some(address),
-            Self::Unset(_) | Self::Keep => None,
-        }
     }
 }
 
@@ -125,8 +148,9 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
         None => Servers::Keep,
     };
     let variables = session_env::parse(&std::fs::read_to_string(session_env).unwrap_or_default());
-    let anthropic = Address::of(ANTHROPIC, &variables, &applied);
-    let openai = Address::of(OPENAI, &variables, &applied);
+    let codex_openai = Address::of(OPENAI, &variables, applied.addresses.get(CODEX));
+    let pi_anthropic = Address::of(ANTHROPIC, &variables, applied.addresses.get(PI_MODELS));
+    let pi_openai = Address::of(OPENAI, &variables, applied.addresses.get(PI_MODELS));
     let servers_named = match &action {
         Servers::Merge { set, .. } if set.len() == 1 => Some("1 MCP server".to_owned()),
         Servers::Merge { set, .. } if set.len() > 1 => Some(format!("{} MCP servers", set.len())),
@@ -148,37 +172,41 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
         if let Servers::Merge { set, stale } = &action {
             merge_codex(document, set, stale);
         }
-        codex_address(document, openai);
+        codex_address(document, codex_openai);
     });
     if !matches!(action, Servers::Keep) {
         with_servers.record("Codex", CODEX, &codex);
     }
-    if openai.is_set() {
+    if codex_openai.is_set() {
         with_address.record("Codex", CODEX, &codex);
     }
     let pi = edit_json(&home.join(PI_MODELS), |root| {
-        pi_addresses(root, [("anthropic", anthropic), ("openai", openai)])
+        pi_addresses(root, [("anthropic", pi_anthropic), ("openai", pi_openai)])
     });
-    if anthropic.is_set() || openai.is_set() {
+    if pi_anthropic.is_set() || pi_openai.is_set() {
         with_address.record("Pi", PI_MODELS, &pi);
         with_address.agents.push("oh-my-pi");
     }
-    if anthropic.is_set() {
+    if pi_anthropic.is_set() {
         with_address.agents.push("Claude Code");
     }
 
-    let failed = codex.is_err() || pi.is_err();
     let mut now = Applied {
         servers: servers.as_ref().map_or_else(
             || applied.servers.clone(),
             |servers| servers.keys().cloned().collect(),
         ),
-        addresses: [(ANTHROPIC, anthropic), (OPENAI, openai)]
-            .into_iter()
-            .filter_map(|(variable, address)| {
-                Some((variable.to_owned(), address.recorded(failed)?.to_owned()))
-            })
-            .collect(),
+        addresses: [
+            applied.addresses_in(CODEX, &codex, &[(OPENAI, codex_openai)]),
+            applied.addresses_in(
+                PI_MODELS,
+                &pi,
+                &[(ANTHROPIC, pi_anthropic), (OPENAI, pi_openai)],
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
     };
     if !with_servers.failures.is_empty() {
         now.servers.extend(applied.servers.iter().cloned());
@@ -724,6 +752,54 @@ mod tests {
         put(&home, CODEX, mine);
         assert_eq!(apply(&home, &env), Vec::<String>::new());
         assert_eq!(text_at(&home, CODEX), mine);
+        clean(&home);
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_address_the_file_still_holds() {
+        let (home, env) = sandbox("failed-write");
+        put(&home, CODEX, "model = \"gpt-5\"\n");
+        std::fs::write(&env, BOTH_ADDRESSES).unwrap();
+        apply(&home, &env);
+
+        let corrupt =
+            "model = \"gpt-5\"\nopenai_base_url = \"https://llm.home.example/openai\"\n[x\n";
+        put(&home, CODEX, corrupt);
+        std::fs::write(
+            &env,
+            "SetEnv \"ANTHROPIC_BASE_URL=https://llm2.home.example/anthropic\" \
+             \"OPENAI_BASE_URL=https://llm2.home.example/openai\"\n",
+        )
+        .unwrap();
+        let notices = apply(&home, &env);
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert_eq!(
+            notices[0],
+            "Applied the gateway address to Claude Code, Pi and oh-my-pi"
+        );
+        assert!(
+            notices[1].starts_with("Could not apply the gateway address to ~/.codex/config.toml: "),
+            "{}",
+            notices[1]
+        );
+        assert_eq!(text_at(&home, CODEX), corrupt);
+        assert_eq!(
+            json_at(&home, PI_MODELS),
+            json!({"providers": {
+                "anthropic": {"baseUrl": "https://llm2.home.example/anthropic"},
+                "openai": {"baseUrl": "https://llm2.home.example/openai"},
+            }})
+        );
+
+        put(
+            &home,
+            CODEX,
+            "model = \"gpt-5\"\nopenai_base_url = \"https://llm.home.example/openai\"\n",
+        );
+        std::fs::write(&env, "").unwrap();
+        assert_eq!(apply(&home, &env), Vec::<String>::new());
+        assert_eq!(text_at(&home, CODEX), "model = \"gpt-5\"\n");
+        assert_eq!(json_at(&home, PI_MODELS), json!({"providers": {}}));
         clean(&home);
     }
 
