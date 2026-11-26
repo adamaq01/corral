@@ -336,6 +336,7 @@ fn offered(catalog: &Catalog, offer: Offer) -> api::Offer {
                     secret: entry.is_secret(),
                     template: entry.template,
                     apply_to_new: entry.apply_to_new,
+                    shared: entry.owner.shared(),
                 }
             })
             .collect(),

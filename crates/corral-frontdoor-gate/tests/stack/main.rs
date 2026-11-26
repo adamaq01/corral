@@ -39,6 +39,8 @@ async fn the_installer_makes_a_sandbox_of_a_whole_corral_and_opens_its_shell() {
     pty.until("[ ] E2E_PLAIN  variable").await;
     pty.send(SPACE);
     pty.send(ENTER);
+    pty.until("Clone a repository into the new sandbox?").await;
+    pty.send(ENTER);
     let summary = pty.until("Create it?").await;
     assert!(summary.contains("Size         Roomy (roomy)"), "{summary}");
     assert!(

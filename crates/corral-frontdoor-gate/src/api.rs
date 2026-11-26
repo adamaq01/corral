@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 
+use corral_core::domain::Shared;
 use serde::{Deserialize, Serialize};
 
 pub(crate) const AUTHENTICATE: &str = "/gate/authenticate";
@@ -158,6 +159,15 @@ pub struct OfferedEntry {
     pub secret: bool,
     pub template: bool,
     pub apply_to_new: bool,
+    /// How the admin shares it with everyone, for an entry that is not the member's own.
+    pub shared: Option<Shared>,
+}
+
+impl OfferedEntry {
+    /// Whether every sandbox gets it, whatever is chosen.
+    pub(crate) fn required(&self) -> bool {
+        self.shared == Some(Shared::Required)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

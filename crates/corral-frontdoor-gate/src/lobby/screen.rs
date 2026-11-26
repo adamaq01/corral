@@ -9,7 +9,7 @@ use ratatui::{Frame, Terminal};
 
 use super::View;
 use super::backend::ChannelBackend;
-use super::installer::{Event, Installer, Step};
+use super::installer::{Event, Field, Installer, Step};
 use super::keys::keys;
 use super::words;
 
@@ -166,6 +166,9 @@ fn body_of(installer: &Installer, frame: &mut Frame, body: Rect) {
                 .iter()
                 .zip(&installer.chosen)
                 .map(|(entry, &chosen)| {
+                    if entry.required() {
+                        return words::fixed(entry);
+                    }
                     let mark = if chosen { "[x]" } else { "[ ]" };
                     format!("{mark} {}  {}", entry.name, words::kind(entry))
                 })
@@ -178,6 +181,7 @@ fn body_of(installer: &Installer, frame: &mut Frame, body: Rect) {
                 installer.entry,
             );
         }
+        Step::Repository(field) => repository(installer, frame, body, *field),
         Step::Summary => paragraph(frame, body, summary(installer, "Create it?")),
         Step::Making(phase) => paragraph(
             frame,
@@ -201,6 +205,28 @@ fn body_of(installer: &Installer, frame: &mut Frame, body: Rect) {
                 Line::from("Nothing was made. Go back to change your choices."),
             ],
         ),
+    }
+}
+
+/// The repository's URL, or its branch under the URL given.
+fn repository(installer: &Installer, frame: &mut Frame, body: Rect, field: Field) {
+    let mut above = vec![Line::from(
+        "Clone a repository into the new sandbox? Leave empty for none.",
+    )];
+    match field {
+        Field::Url => {
+            above.push(Line::from(""));
+            text_field(installer, frame, body, above, &installer.url);
+        }
+        Field::Branch => {
+            above.extend([
+                Line::from(format!("  {}", installer.url.trim())),
+                Line::from(""),
+                Line::from("Branch (empty for the default):"),
+                Line::from(""),
+            ]);
+            text_field(installer, frame, body, above, &installer.branch);
+        }
     }
 }
 
@@ -241,6 +267,7 @@ fn hint(step: &Step) -> &'static str {
     match step {
         Step::Name => "Enter: next  Esc: leave",
         Step::Reference => "Enter: check it and go on  Up: back  Esc: leave",
+        Step::Repository(_) => "Enter: next  Up: back  Esc: leave",
         Step::Image | Step::Size => "Up/Down: choose  Enter: next  Left: back  Esc or q: leave",
         Step::Setup => "Up/Down: move  Space: check  Enter: next  Left: back  Esc or q: leave",
         Step::Summary => "Enter: create  Left: back  Esc or q: leave",
@@ -255,6 +282,10 @@ pub(crate) fn summary(installer: &Installer, question: &'static str) -> Vec<Line
         Line::from(format!("Image        {}", words::chosen_image(installer))),
         Line::from(format!("Size         {}", words::chosen_size(installer))),
         Line::from(format!("Setup        {}", words::chosen_setup(installer))),
+        Line::from(format!(
+            "Repository   {}",
+            words::chosen_repository(installer)
+        )),
         Line::from(""),
         Line::from(question),
     ]
@@ -307,7 +338,7 @@ pub(crate) mod tests {
 
     use super::render;
     use crate::lobby::installer::tests::offer;
-    use crate::lobby::installer::{Event, Installer, Phase, Step};
+    use crate::lobby::installer::{Event, Field, Installer, Phase, Step};
     use crate::lobby::keys::Key;
 
     /// The screen at 80x24, line by line.
@@ -338,7 +369,7 @@ pub(crate) mod tests {
         let screen = drawn(&at(Step::Image));
         for wanted in [
             " Corral: new sandbox new.adam ",
-            "Image > Size > Setup > Summary",
+            "Image > Size > Setup > Repository > Summary",
             "Choose the image:",
             "  Base (base)",
             "> Tools (tools)  (your default)",
@@ -354,21 +385,46 @@ pub(crate) mod tests {
         );
         let screen = drawn(&at(Step::Setup));
         for wanted in [
+            "  = ANTHROPIC_BASE_URL  variable, required",
             "> [x] GH_TOKEN  variable, secret, for new sandboxes",
             "  [ ] .gitconfig  file",
             "Space: check",
         ] {
             assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
         }
-        let screen = drawn(&at(Step::Summary));
+        let screen = drawn(&at(Step::Repository(Field::Url)));
+        for wanted in [
+            "Clone a repository into the new sandbox? Leave empty for none.",
+            "Enter: next  Up: back  Esc: leave",
+        ] {
+            assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
+        }
+        let mut branch = at(Step::Repository(Field::Branch));
+        branch.url = "https://github.com/adamaq01/corral.git".to_owned();
+        branch.branch = "main".to_owned();
+        let screen = drawn(&branch);
+        for wanted in [
+            "https://github.com/adamaq01/corral.git",
+            "Branch (empty for the default):",
+            "> main",
+        ] {
+            assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
+        }
+        branch.step = Step::Summary;
+        let screen = drawn(&branch);
         for wanted in [
             "Sandbox      new.adam",
             "Image        Tools (tools)",
-            "Setup        GH_TOKEN",
+            "Setup        ANTHROPIC_BASE_URL, GH_TOKEN",
+            "Repository   https://github.com/adamaq01/corral.git (main)",
             "Enter: create",
         ] {
             assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
         }
+        assert!(
+            drawn(&at(Step::Summary)).contains("Repository   none"),
+            "{screen}"
+        );
         let mut making = at(Step::Making(Phase::Starting));
         making.handle(Event::Seconds(12));
         assert!(drawn(&making).contains("Starting new.adam... 12 s"));
@@ -387,7 +443,7 @@ pub(crate) mod tests {
         let screen = drawn(&installer);
         for wanted in [
             " Corral: a new sandbox for adam ",
-            "Name > Image > Size > Setup > Summary",
+            "Name > Image > Size > Setup > Repository > Summary",
             "adam has no sandbox yet.",
             "> Bad",
             "Problem: sandbox name \"Bad\" must match [a-z0-9-]{1,32}",
@@ -419,6 +475,20 @@ pub(crate) mod tests {
         reference.reference = "debian:13".to_owned();
         reference.problem =
             Some("debian:13 is from none of the registries sandboxes may use: ghcr.io/acme".into());
+        let mut url = at(Step::Repository(Field::Url));
+        url.url = "https://me:tok3n@github.com/me/x.git".to_owned();
+        url.problem = Some(
+            "the repository URL carries a password; put the token in Setup, as a git \
+             credential, and leave it out of the URL"
+                .into(),
+        );
+        let mut branch = at(Step::Repository(Field::Branch));
+        branch.url = "https://github.com/adamaq01/corral.git".to_owned();
+        branch.branch = "-x".to_owned();
+        branch.problem = Some("branch \"-x\" is not a git branch name".into());
+        let mut summary = at(Step::Summary);
+        summary.url = "https://github.com/adamaq01/corral.git".to_owned();
+        summary.branch = "main".to_owned();
         let mut making = at(Step::Making(Phase::Creating));
         making.seconds = 3;
         for installer in [
@@ -427,7 +497,9 @@ pub(crate) mod tests {
             reference,
             at(Step::Size),
             at(Step::Setup),
-            at(Step::Summary),
+            url,
+            branch,
+            summary,
             making,
             at(Step::Failed(
                 "template ~/.config/tool.toml refers to EXTRA: choose it too, or leave the \

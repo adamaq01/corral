@@ -175,16 +175,24 @@ impl Lobby {
     }
 }
 
-/// The entries `wanted` names, each by its id or by its target.
+/// The entries `wanted` names, each by its id or by its target. Where the member's own entry and a
+/// shared one have the same target, the name picks the member's, which takes the shared one's
+/// place.
 fn chosen(entries: &[crate::app::EntryView], wanted: &[String]) -> Result<Vec<EntryId>> {
     let mut ids = Vec::new();
     for named in wanted {
         let id = Uuid::parse_str(named).ok();
-        let matching: Vec<&Entry> = entries
+        let mut matching: Vec<&Entry> = entries
             .iter()
             .map(|view| &view.entry)
             .filter(|entry| Some(entry.id.0) == id || names(&entry.target, named))
             .collect();
+        let own: Vec<Target> = matching
+            .iter()
+            .filter(|entry| entry.owner.member().is_some())
+            .map(|entry| entry.target.clone())
+            .collect();
+        matching.retain(|entry| entry.owner.member().is_some() || !own.contains(&entry.target));
         let entry = match matching.as_slice() {
             [entry] => entry,
             [] => {
@@ -215,9 +223,10 @@ mod tests {
     use super::{Choice, Entrance, Offer};
     use crate::Error;
     use crate::app::{EntryChange, NewEntry};
-    use crate::domain::{Entry, SandboxName, User};
+    use crate::domain::{Entry, Owner, SandboxName, Shared, User};
     use crate::fakes::{
-        MAX_SANDBOXES, World, admin_proof, defaults, entry, exposed, file, unchanged, variable,
+        MAX_SANDBOXES, World, admin_proof, defaults, entry, exposed, file, shared_variable,
+        unchanged, variable,
     };
 
     /// Adam, with `main`, a secret variable for new sandboxes and a plain one that is not.
@@ -452,6 +461,30 @@ mod tests {
         assert_eq!(
             refusal(error),
             "\"EXTRA\" names more than one setup entry: give its id"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_picks_the_members_entry_over_the_shared_one_it_shadows() {
+        let (w, adam, _) = adam().await;
+        let root = admin_proof(&w.admin("root").await);
+        let offered = shared_variable("ANTHROPIC_BASE_URL", "https://llm", Shared::Offered);
+        w.setup.create_shared(&root, offered).await.unwrap();
+        w.entry(&adam, variable("ANTHROPIC_BASE_URL"), "https://mine", false)
+            .await;
+        let made = w
+            .lobby
+            .create(
+                "new.adam",
+                choice(None, None, Some(&["ANTHROPIC_BASE_URL"])),
+            )
+            .await
+            .unwrap();
+        let owners: Vec<Owner> = made.attached.iter().map(|entry| entry.owner).collect();
+        assert_eq!(owners, [Owner::Member(adam.id)]);
+        assert_eq!(
+            exposed(&w.engine.env_of(&made.view.sandbox.id).unwrap()),
+            ["ANTHROPIC_BASE_URL=https://mine"]
         );
     }
 

@@ -1,5 +1,7 @@
 //! How the lobby words its choices, the same on a full screen and on lines.
 
+use corral_core::domain::Shared;
+
 use super::installer::{Installer, Phase, Step};
 use crate::api::{EntryKind, ImageChoice, OfferedEntry, SizeChoice};
 
@@ -49,10 +51,20 @@ pub(crate) fn kind(entry: &OfferedEntry) -> String {
     if entry.secret {
         words.push("secret");
     }
-    if entry.apply_to_new {
+    match entry.shared {
+        Some(Shared::Required) => words.push("required"),
+        Some(Shared::Offered) => words.push("offered"),
+        None => {}
+    }
+    if entry.apply_to_new && !entry.required() {
         words.push("for new sandboxes");
     }
     words.join(", ")
+}
+
+/// A required entry, which no choice leaves out.
+pub(crate) fn fixed(entry: &OfferedEntry) -> String {
+    format!("= {}  {}", entry.name, kind(entry))
 }
 
 pub(crate) fn step(step: &Step) -> &'static str {
@@ -61,6 +73,7 @@ pub(crate) fn step(step: &Step) -> &'static str {
         Step::Image | Step::Reference => "Image",
         Step::Size => "Size",
         Step::Setup => "Setup",
+        Step::Repository(_) => "Repository",
         Step::Summary | Step::Making(_) | Step::Failed(_) => "Summary",
     }
 }
@@ -90,6 +103,16 @@ pub(crate) fn chosen_setup(installer: &Installer) -> String {
         "none".to_owned()
     } else {
         names.join(", ")
+    }
+}
+
+pub(crate) fn chosen_repository(installer: &Installer) -> String {
+    match installer.repository() {
+        Some(repository) => match repository.branch() {
+            Some(branch) => format!("{} ({branch})", repository.url()),
+            None => repository.url().to_owned(),
+        },
+        None => "none".to_owned(),
     }
 }
 

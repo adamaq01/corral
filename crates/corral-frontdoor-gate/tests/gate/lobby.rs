@@ -4,8 +4,11 @@
 use std::time::Duration;
 
 use corral_core::app::{EntryChange, NewEntry};
-use corral_core::domain::{SandboxId, SandboxName};
-use corral_core::fakes::{EngineCall, entry, exposed, file, sandbox_name, unchanged, variable};
+use corral_core::domain::{Repository, SandboxId, SandboxName, Shared};
+use corral_core::fakes::{
+    EngineCall, admin_proof, entry, exposed, file, sandbox_name, shared_variable, unchanged,
+    variable,
+};
 use corral_frontdoor_gate::Limits;
 use serde_json::Value;
 
@@ -86,6 +89,8 @@ async fn the_installer_makes_what_is_chosen_and_opens_its_shell_on_the_same_conn
     assert!(!screen.contains("shared"), "a value shows:\n{screen}");
     pty.send(SPACE);
     pty.send(ENTER);
+    pty.until("Clone a repository into the new sandbox?").await;
+    pty.send(ENTER);
     let screen = pty.until("Create it?").await;
     for wanted in [
         "Size         LARGE (large): 4 CPUs, 8 GiB memory, 10 GiB home",
@@ -139,7 +144,7 @@ async fn the_installer_lists_what_the_catalog_offers_at_each_login() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn esc_or_q_leaves_the_installer_with_nothing_made() {
     let f = Fixture::without_container(Limits::default()).await;
-    for (leave, at) in [(ESC, 0), (b"q".as_slice(), 2)] {
+    for (leave, at) in [(ESC, 0), (b"q".as_slice(), 3)] {
         let mut pty = terminal(&f, "fresh.adam", "xterm-256color", &[]);
         pty.until("Choose the image:").await;
         for _ in 0..at {
@@ -177,6 +182,8 @@ async fn a_refused_creation_shows_why_and_the_person_goes_back_to_fix_it() {
     pty.send(DOWN);
     pty.send(SPACE);
     pty.send(ENTER);
+    pty.until("Clone a repository into the new sandbox?").await;
+    pty.send(ENTER);
     pty.until("Create it?").await;
     pty.send(ENTER);
     let screen = pty.until("Could not create fresh.adam:").await;
@@ -189,10 +196,14 @@ async fn a_refused_creation_shows_why_and_the_person_goes_back_to_fix_it() {
     pty.send(ENTER);
     pty.until("Create it?").await;
     pty.send(LEFT);
+    pty.until("Clone a repository into the new sandbox?").await;
+    pty.send(UP);
     pty.until("Choose the setup entries").await;
     pty.send(UP);
     pty.send(UP);
     pty.send(SPACE);
+    pty.send(ENTER);
+    pty.until("Clone a repository into the new sandbox?").await;
     pty.send(ENTER);
     pty.until("Setup        EXTRA_TOKEN, GH_TOKEN, .config/tool.toml")
         .await;
@@ -208,6 +219,72 @@ async fn a_refused_creation_shows_why_and_the_person_goes_back_to_fix_it() {
         .await
         .unwrap();
     assert_eq!(attached.len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_installer_shows_required_entries_fixed_and_asks_for_a_repository() {
+    let f = Fixture::without_container(Limits::default()).await;
+    entries(&f).await;
+    let root = admin_proof(&f.world.admin("root").await);
+    let required = shared_variable("ANTHROPIC_BASE_URL", "https://llm", Shared::Required);
+    f.world.setup.create_shared(&root, required).await.unwrap();
+    let mut pty = terminal(&f, "fresh.adam", "xterm-256color", &[]);
+    pty.until("Choose the image:").await;
+    pty.send(ENTER);
+    pty.until("Choose the size:").await;
+    pty.send(ENTER);
+    let screen = pty.until("Choose the setup entries").await;
+    for wanted in [
+        "  = ANTHROPIC_BASE_URL  variable, required",
+        "> [ ] EXTRA_TOKEN  variable",
+        "  [x] GH_TOKEN  variable, secret, for new sandboxes",
+    ] {
+        assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
+    }
+    assert!(!screen.contains("https://llm"), "a value shows:\n{screen}");
+    pty.send(UP);
+    pty.until("> = ANTHROPIC_BASE_URL").await;
+    pty.send(SPACE);
+    pty.send(ENTER);
+    pty.until("Clone a repository into the new sandbox? Leave empty for none.")
+        .await;
+    let password = "https://me:tok3n@github.com/me/x.git";
+    pty.send(password.as_bytes());
+    pty.send(ENTER);
+    pty.until("Problem: the repository URL carries a password")
+        .await;
+    pty.send(&vec![0x7f; password.len()]);
+    pty.send(b"https://github.com/adamaq01/corral.git");
+    pty.send(ENTER);
+    pty.until("Branch (empty for the default):").await;
+    pty.send(b"main");
+    pty.send(ENTER);
+    let screen = pty.until("Create it?").await;
+    for wanted in [
+        "Setup        ANTHROPIC_BASE_URL, GH_TOKEN",
+        "Repository   https://github.com/adamaq01/corral.git (main)",
+    ] {
+        assert!(screen.contains(wanted), "no {wanted:?} in\n{screen}");
+    }
+    pty.send(ENTER);
+    // The fake engine starts no container, so the shell is refused once it is made.
+    pty.until("corral: could not open a session in sandbox fresh")
+        .await;
+    assert_eq!(pty.exited().await, 1);
+
+    let fresh = f
+        .world
+        .sandboxes
+        .get(&f.adam, &sandbox_name("fresh"))
+        .await
+        .unwrap()
+        .sandbox;
+    assert_eq!(
+        fresh.repository,
+        Some(Repository::new("https://github.com/adamaq01/corral.git", Some("main")).unwrap())
+    );
+    let env = exposed(&f.world.engine.env_of(&fresh.id).unwrap());
+    assert_eq!(env, ["ANTHROPIC_BASE_URL=https://llm", "GH_TOKEN=shared"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -228,7 +305,7 @@ async fn a_login_with_no_sandbox_at_all_names_one_first() {
     pty.send(b"\x7f\x7f\x7f\x7f\x7ffirst");
     pty.send(ENTER);
     pty.until("Corral: new sandbox first.adam").await;
-    for _ in 0..3 {
+    for _ in 0..4 {
         pty.send(ENTER);
     }
     pty.until("corral: could not open a session in sandbox first")
@@ -258,9 +335,20 @@ async fn without_colors_or_a_full_screen_the_installer_still_reads() {
     pty.send(b"2\r");
     pty.until("Size [1]: ").await;
     pty.send(b"\r");
+    pty.until("Repository to clone, or empty for none: ").await;
+    pty.send(b"ftp://example.com/x.git\r");
+    pty.until("Problem: the repository must be an https://, ssh:// or git@host:path address")
+        .await;
+    pty.send(b"git@github.com:adamaq01/corral.git\r");
+    pty.until("Branch, or empty for the default: ").await;
+    pty.send(b"\r");
     pty.until("Create it? [Y/n]: ").await;
     let shown = pty.screen();
     assert!(shown.contains("Image        TOOLS (tools)"), "{shown}");
+    assert!(
+        shown.contains("Repository   git@github.com:adamaq01/corral.git"),
+        "{shown}"
+    );
     pty.send(ESC);
     assert_eq!(pty.exited().await, 1);
     let raw = pty.raw();
