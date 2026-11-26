@@ -144,7 +144,7 @@ block, and wakes, stops, restarts or deletes the sandbox.
   traffic) or the sandbox's own processor and network use, which it reports to Corral every
   minute: an agent answering or running tools is at work, one waiting at its prompt is not. An open
   but untouched connection does not keep a sandbox awake, and neither does Herdr: while the sandbox
-  sleeps, the gate answers Herdr for it, so Herdr shows the machine connected with no terminals,
+  sleeps, the gate answers Herdr for it, so Herdr shows the sandbox connected with no terminals,
   and the first terminal opened there wakes it. Sleep keeps the container, so its files survive
   until the sandbox is deleted, and ends its programs.
 - Each sandbox's page sets how long it stays awake with no work, up to `max_timeout_secs`, and

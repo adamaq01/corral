@@ -5,7 +5,7 @@ const SCHEME: &str = "https://";
 
 validated_string!(PictureUrl, check);
 
-/// An absolute `https://` URL with a host and no credentials, in printable ASCII, as identity
+/// An absolute `https://` URL with a host and no login, in printable ASCII, as identity
 /// providers send it.
 fn check(value: &str) -> Result<()> {
     let authority = value

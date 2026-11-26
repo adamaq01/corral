@@ -51,7 +51,7 @@ The first start, the one that finds no `~/.corral-initialized`, copies the skele
 home files, then clones the repository the sandbox was made with, if any, into `~/<name>`, the
 last segment of its URL without `.git`. The clone runs as `sandbox` with the image's own `git` and
 `PATH`, never prompts, accepts the SSH host key of a host it has not seen, and stops after 5
-minutes. A private repository needs its credential among the setup's files, such as
+minutes. A private repository needs its token or key among the setup's files, such as
 `~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the setup's
 variables reach sessions, not the clone. One line in the notices says whether it cloned, and if
 not, why: the directory exists already, the image has no `git`, or git's last `fatal:` line, else
@@ -91,7 +91,7 @@ that takes more than `max_size` to download, or one it cannot read.
 
 ## Private registries
 
-Credentials for a registry are the admin's and never shown to users. For the size check of named
+A registry's login is the admin's and never shown to users. For the size check of named
 images, and on Docker for every pull, Corral logs in with the registries set under **Settings** >
 **Registries** or in the config file under `[[registries]]`. Settings shows the config file's
 registries locked:
