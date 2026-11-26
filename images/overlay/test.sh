@@ -239,27 +239,30 @@ stage_repository() {
     \"repository\": {\"url\": \"$1\", \"branch\": null}}" <<<'0 0600 .config/corral/sandbox.json'
 }
 
-# A bare repository of one commit, mounted read-only where the sandbox file names it.
+# A bare repository of one commit at $work/$1.git, which a test mounts read-only where a file of
+# the setup names it, holding the file $2 with the line $3, the file $4 with the line $5, and so on.
 make_repository() {
+  local source=$work/$1
   local git=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=corral
     -c user.email=corral@example.com)
-  "${git[@]}" init -q -b main "$work/source"
-  echo hello >"$work/source/README"
-  "${git[@]}" -C "$work/source" add README
-  "${git[@]}" -C "$work/source" commit -q -m first
-  "${git[@]}" clone -q --bare "$work/source" "$work/repo.git"
-  chmod -R a+rX "$work/repo.git"
+  shift
+  "${git[@]}" init -q -b main "$source"
+  while (($#)); do
+    mkdir -p "$(dirname "$source/$1")"
+    echo "$2" >"$source/$1"
+    shift 2
+  done
+  "${git[@]}" -C "$source" add -A
+  "${git[@]}" -C "$source" commit -q -m first
+  "${git[@]}" clone -q --bare "$source" "$source.git"
+  chmod -R a+rX "$source.git"
 }
 
 # The first start clones the repository the sandbox file names, with the image's git.
 check_repository() {
   local repository=(--mount "type=bind,source=$work/repo.git,target=/srv/repo.git,readonly")
   base=$with_git
-  docker build --quiet --tag "$with_git" - >/dev/null <<'EOF2'
-FROM alpine:3.24
-RUN apk add --no-cache git
-EOF2
-  make_repository
+  make_repository repo README hello
 
   stage_repository file:///srv/repo.git
   start_server "$with_git" "${repository[@]}"
@@ -291,6 +294,44 @@ Cloned file:///srv/repo.git into ~/repo" \
   check "an image without git starts and says it cannot clone" \
     "Cloning file:///srv/repo.git needs git, which this image does not have" \
     "$(ssh_run 'cat ~/.config/corral/notices; test -e ~/repo && echo cloned; true')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+}
+
+# The dotfiles file of the setup, naming the repository $1, as the only staged home file.
+stage_dotfiles() {
+  stage_home_files "{\"url\": \"$1\", \"branch\": null}" <<<'0 0644 .config/corral-agents/dotfiles.json'
+}
+
+# The first start checks out the dotfiles the setup names into the home, over the skeleton.
+check_dotfiles() {
+  local dotfiles=(--mount "type=bind,source=$work/dotfiles.git,target=/srv/dotfiles.git,readonly")
+  base=$with_git
+  make_repository dotfiles .bashrc '# from the dotfiles' .config/tool/x x
+
+  stage_dotfiles file:///srv/dotfiles.git
+  start_server "$with_git" "${dotfiles[@]}"
+  check "the first start checks out the dotfiles into the home, the skeleton's .bashrc replaced" \
+    "# from the dotfiles
+x
+Dotfiles from file:///srv/dotfiles.git checked out into the home" \
+    "$(ssh_run 'cat ~/.bashrc ~/.config/tool/x ~/.config/corral/notices')"
+  ssh_run 'echo "# changed" >~/.bashrc && rm ~/.config/tool/x'
+  docker rm --force "$server" >/dev/null
+  start_server "$with_git" "${dotfiles[@]}"
+  check "a later start checks nothing out" "# changed absent absent" \
+    "$(ssh_run 'echo $(cat ~/.bashrc) $(test -e ~/.config/tool/x || echo absent) $(test -e ~/.config/corral/notices || echo absent)')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+
+  stage_dotfiles https://nowhere.invalid/dotfiles.git
+  start_server "$with_git"
+  [[ "$(ssh_run 'cat ~/.config/corral/notices')" == \
+    "Checking out dotfiles from https://nowhere.invalid/dotfiles.git failed: "?* ]] ||
+    fail "$base: the notice of failed dotfiles: $(ssh_run 'cat ~/.config/corral/notices')"
+  echo "ok - $base: dotfiles that cannot be checked out are a notice and the sandbox starts"
+  check "dotfiles that cannot be checked out leave no bare clone" absent \
+    "$(ssh_run 'test -e ~/.config/corral-agents/dotfiles.git || echo absent')"
   docker rm --force "$server" >/dev/null
   docker volume rm "$volume" >/dev/null
 }
@@ -352,7 +393,12 @@ Applied the gateway address to Claude Code, Codex, Pi and oh-my-pi" \
 for each in "${bases[@]}"; do
   check_base "$each"
 done
+docker build --quiet --tag "$with_git" - >/dev/null <<'EOF2'
+FROM alpine:3.24
+RUN apk add --no-cache git
+EOF2
 check_repository
+check_dotfiles
 check_agents
 
 # An image whose own uid 1000, and a group listing sandbox, would give the sandbox user more

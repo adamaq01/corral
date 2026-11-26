@@ -64,14 +64,22 @@ notices names the agents that got the servers, one the agents that got the addre
 why for each file they could not be applied to, and for an `mcp.json` that is not valid JSON.
 
 The first start, the one that finds no `~/.corral-initialized`, copies the skeleton, writes the
-home files, then clones the repository the sandbox was made with, if any, into `~/<name>`, the
-last segment of its URL without `.git`. The clone runs as `sandbox` with the image's own `git` and
-`PATH`, never prompts, accepts the SSH host key of a host it has not seen, and stops after 5
-minutes. A private repository needs its token or key among the setup's files, such as
+home files, checks out the setup's dotfiles, if any, then clones the repository the sandbox was
+made with, if any, into `~/<name>`, the last segment of its URL without `.git`. The dotfiles are
+the repository `~/.config/corral-agents/dotfiles.json` names, as `{"url": "...", "branch": "..."}`
+with `null` for the repository's default branch. It is cloned bare into
+`~/.config/corral-agents/dotfiles.git`, which stays, and checked out with the home as its work
+tree: each of its files replaces what the skeleton or a home file put at its path, and the next
+start writes that home file again. Git runs as `sandbox` with the image's own `git` and `PATH`,
+never prompts, accepts the SSH host key of a host it has not seen, and stops after 5 minutes. Both
+URLs take the same shapes: `https://` without a login, `ssh://` without a password, `file:///`, or
+`user@host:path`. A private repository needs its token or key among the setup's files, such as
 `~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the setup's
-variables reach sessions, not the clone. One line in the notices says whether it cloned, and if
-not, why: the directory exists already, the image has no `git`, or git's last `fatal:` line, else
-its last line of output. Later starts never clone.
+variables reach sessions, not git. One line in the notices says whether the dotfiles were checked
+out, and one whether the repository was cloned, and if not, why: a `dotfiles.json` that is not
+valid or a URL of another shape, `dotfiles.git` or the repository's directory exists already, the
+image has no `git`, or git's last `fatal:` line, else its last line of output. A failed checkout
+removes the `dotfiles.git` it cloned. Later starts never check out or clone.
 
 Sessions run through OpenSSH on both engines, so they get its environment: `USER`, `HOME`,
 `SHELL` and the rest from the sandbox user's account, and the sandbox's variables, which the
