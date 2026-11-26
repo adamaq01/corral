@@ -684,6 +684,7 @@ async fn create_then_list_shows_the_ssh_username() {
             "keepAwakeUntil": null,
             "maxKeepAwakeSecs": 24 * 3600,
         },
+        "repository": null,
     });
     assert_eq!(created, expected);
     assert_eq!(adam.get("/api/sandboxes").await.json(), json!([expected]));
@@ -724,6 +725,115 @@ async fn an_image_reference_is_refused_where_users_run_only_the_catalogs_images(
         "{}",
         refused.text()
     );
+    assert_eq!(adam.get("/api/sandboxes").await.json(), json!([]));
+}
+
+#[tokio::test]
+async fn a_sandbox_is_made_with_chosen_entries_and_a_repository() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    adam.post("/api/setup", variable("GH_TOKEN", "ghp_1", false))
+        .await;
+    let mut extra = variable("EXTRA", "x", false);
+    extra["applyToNew"] = json!(false);
+    let extra = adam.post("/api/setup", extra).await.json();
+    let repository = json!({ "url": "https://github.com/adamaq01/corral.git", "branch": "main" });
+
+    let created = adam
+        .post(
+            "/api/sandboxes",
+            json!({ "name": "main", "setup": [extra["id"]], "repository": repository }),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+    assert_eq!(created.json()["repository"], repository);
+    assert_eq!(
+        adam.get("/api/sandboxes/main").await.json()["repository"],
+        repository
+    );
+    let attached = |listed: Value| -> Vec<Value> {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|attached| attached["entry"]["target"].clone())
+            .collect()
+    };
+    assert_eq!(
+        attached(adam.get("/api/sandboxes/main/setup").await.json()),
+        [json!("EXTRA")]
+    );
+
+    let plain = adam
+        .post("/api/sandboxes", json!({ "name": "plain" }))
+        .await;
+    assert_eq!(plain.json()["repository"], Value::Null);
+    assert_eq!(
+        attached(adam.get("/api/sandboxes/plain/setup").await.json()),
+        [json!("GH_TOKEN")]
+    );
+}
+
+#[tokio::test]
+async fn a_repository_url_with_a_password_is_refused() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    let refused = adam
+        .post(
+            "/api/sandboxes",
+            json!({
+                "name": "main",
+                "repository": { "url": "https://me:tok3n@github.com/me/x.git" },
+            }),
+        )
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.text()
+    );
+    let said = refused.json()["error"].as_str().unwrap().to_owned();
+    assert!(
+        said.contains(
+            "the repository URL carries a password; put the token in Setup, as a git \
+             credential, and leave it out of the URL"
+        ),
+        "{said}"
+    );
+    assert!(!said.contains("tok3n"), "{said}");
+    assert_eq!(adam.get("/api/sandboxes").await.json(), json!([]));
+    assert!(corral.world.engine.calls().is_empty());
+}
+
+#[tokio::test]
+async fn an_unknown_setup_id_is_refused() {
+    let corral = Corral::new();
+    let mut adam = corral.signed_in("adam", Role::Member).await;
+    let mut eve = corral.signed_in("eve", Role::Member).await;
+    let eves = eve
+        .post("/api/setup", variable("GH_TOKEN", "ghp_eve", true))
+        .await
+        .json();
+    let eves = eves["id"].as_str().unwrap();
+    for id in ["00000000-0000-0000-0000-000000000000", eves] {
+        let refused = adam
+            .post("/api/sandboxes", json!({ "name": "main", "setup": [id] }))
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            refused.text()
+        );
+        assert!(
+            refused
+                .text()
+                .contains(&format!("there is no setup entry {id}")),
+            "{}",
+            refused.text()
+        );
+    }
     assert_eq!(adam.get("/api/sandboxes").await.json(), json!([]));
 }
 

@@ -119,6 +119,7 @@ pub fn request(name: &str, image: Option<&str>, size: Option<&str>) -> CreateSan
         image_reference: None,
         size: size.map(|key| SizeKey::parse(key).unwrap()),
         setup: None,
+        repository: None,
     }
 }
 

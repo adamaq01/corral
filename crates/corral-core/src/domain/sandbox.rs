@@ -5,7 +5,7 @@ use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::{Handle, ImageKey, ImageReference, SandboxName, SizeKey, UserId};
+use super::{Handle, ImageKey, ImageReference, Repository, SandboxName, SizeKey, UserId};
 use crate::Result;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -91,6 +91,8 @@ pub struct Sandbox {
     pub idle_timeout: Option<Duration>,
     /// Until when it stays awake with or without work, if its owner asked.
     pub keep_awake_until: Option<DateTime<Utc>>,
+    /// What its first start clones into its home, if its owner named a repository.
+    pub repository: Option<Repository>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, TS)]

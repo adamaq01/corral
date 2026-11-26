@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use corral_core::domain::{
-    Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, TokenHash, UserId,
+    Repository, Sandbox, SandboxId, SandboxImage, SandboxName, SizeKey, TokenHash, UserId,
 };
 use corral_core::ports::{Changed, SandboxRepo};
 use corral_core::{Error, Result};
@@ -17,7 +17,8 @@ macro_rules! select {
     ($rest:literal) => {
         concat!(
             "select id, owner, name, image, size, created_at, started_at, setup_changed_at, \
-             delete_at, idle_timeout_secs, keep_awake_until from sandboxes ",
+             delete_at, idle_timeout_secs, keep_awake_until, repository_url, repository_branch \
+             from sandboxes ",
             $rest
         )
     };
@@ -36,6 +37,8 @@ struct SandboxRow {
     delete_at: Option<DateTime<Utc>>,
     idle_timeout_secs: Option<i64>,
     keep_awake_until: Option<DateTime<Utc>>,
+    repository_url: Option<String>,
+    repository_branch: Option<String>,
 }
 
 impl TryFrom<SandboxRow> for Sandbox {
@@ -58,6 +61,15 @@ impl TryFrom<SandboxRow> for Sandbox {
                 .transpose()
                 .map_err(|err| Error::internal("stored idle timeout", err))?,
             keep_awake_until: row.keep_awake_until,
+            repository: row
+                .repository_url
+                .map(|url| {
+                    parsed(
+                        "repository",
+                        Repository::new(&url, row.repository_branch.as_deref()),
+                    )
+                })
+                .transpose()?,
         })
     }
 }
@@ -108,8 +120,8 @@ impl SandboxRepo for Store {
                 .execute(&mut *tx)
                 .await?;
             sqlx::query(
-                "insert into sandboxes (id, owner, name, image, size, created_at) \
-                 values ($1, $2, $3, $4, $5, $6)",
+                "insert into sandboxes (id, owner, name, image, size, created_at, \
+                 repository_url, repository_branch) values ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(&sandbox.id.0)
             .bind(sandbox.owner.0)
@@ -117,6 +129,8 @@ impl SandboxRepo for Store {
             .bind(sandbox.image.to_string())
             .bind(sandbox.size.as_str())
             .bind(sandbox.created_at)
+            .bind(sandbox.repository.as_ref().map(Repository::url))
+            .bind(sandbox.repository.as_ref().and_then(Repository::branch))
             .execute(&mut *tx)
             .await?;
             let count: i64 = sqlx::query_scalar("select count(*) from sandboxes where owner = $1")

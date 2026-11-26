@@ -13,14 +13,14 @@ use corral_core::Error;
 use corral_core::app::{
     Arrival, Catalog, Choice, Entrance, FailureWindow, Lobby, Made, Network, Offer, SshAccess,
 };
-use corral_core::domain::{Sandbox, SandboxId, SshUsername, Target};
+use corral_core::domain::{Repository, Sandbox, SandboxId, SshUsername, Target};
 use corral_core::ports::ActivitySignals;
 
 use crate::api::{
     self, ARRIVE, AUTHENTICATE, Arrive, Arrived, Authenticate, Authenticated, CHECK_IMAGE,
     CLIENT_STATE, CREATE, CheckImage, ClientState, Create, Created, Enter, Entered, EntryKind,
-    ImageChecked, ImageChoice, LOBBY, MadeEntry, NamedImages, OfferedEntry, SizeChoice, WORKED,
-    Worked,
+    ImageChecked, ImageChoice, LOBBY, MadeEntry, NamedImages, OfferedEntry, RepositorySpec,
+    SizeChoice, WORKED, Worked,
 };
 use crate::{GateConfig, GateSecret};
 
@@ -247,10 +247,19 @@ async fn create(
     let Ok(Json(Create { username, spec })) = request else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+    let repository = spec
+        .repository
+        .map(|repository| Repository::new(&repository.url, repository.branch.as_deref()))
+        .transpose();
+    let repository = match repository {
+        Ok(repository) => repository,
+        Err(error) => return refused(&error),
+    };
     let choice = Choice {
         image: spec.image,
         size: spec.size,
         setup: spec.setup,
+        repository,
     };
     // As in arrive: the sandbox is made whole even when the gate stops waiting.
     let lobby = gatekeeper.lobby.clone();
@@ -262,13 +271,17 @@ async fn create(
             made: made_of(made),
         })
         .into_response(),
-        Err(error) => match told(&error) {
-            Some(reason) => Json(Created::Refused {
-                reason: reason.to_owned(),
-            })
-            .into_response(),
-            None => internal_error(&error),
-        },
+        Err(error) => refused(&error),
+    }
+}
+
+fn refused(error: &Error) -> Response {
+    match told(error) {
+        Some(reason) => Json(Created::Refused {
+            reason: reason.to_owned(),
+        })
+        .into_response(),
+        None => internal_error(error),
     }
 }
 
@@ -352,6 +365,10 @@ fn made_of(made: Made) -> api::Made {
                 }
             })
             .collect(),
+        repository: sandbox.repository.map(|repository| RepositorySpec {
+            url: repository.url().to_owned(),
+            branch: repository.branch().map(str::to_owned),
+        }),
     }
 }
 

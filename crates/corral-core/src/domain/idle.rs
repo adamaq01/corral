@@ -90,6 +90,7 @@ mod tests {
             delete_at: None,
             idle_timeout,
             keep_awake_until: None,
+            repository: None,
         }
     }
 

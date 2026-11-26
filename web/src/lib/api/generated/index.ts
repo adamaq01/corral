@@ -65,7 +65,15 @@ export type ConfirmDeletion = { confirm: string, };
  * Without an image or a size, the owner's default. An image reference names an image of the
  * owner's choosing in place of a catalog image, where the catalog lets users name images.
  */
-export type CreateSandbox = { name: SandboxName, image?: ImageKey, imageReference?: string, size?: SizeKey, };
+export type CreateSandbox = { name: SandboxName, image?: ImageKey, imageReference?: string, size?: SizeKey,
+/**
+ * The setup entries to attach in place of those that apply to new sandboxes.
+ */
+setup?: Array<EntryId>,
+/**
+ * What its first start clones into its home.
+ */
+repository?: Repository, };
 
 /**
  * Whether `corral delete` inside the user's sandboxes may schedule their deletion.
@@ -83,6 +91,8 @@ object: string, reason: string, message: string, };
  * without one, the value stays.
  */
 export type EntryChange = { kind: EntryKind, target: string, secret: boolean, template: boolean, executable: boolean, applyToNew: boolean, value?: ValueInput, };
+
+export type EntryId = string;
 
 export type EntryKind = "variable" | "file";
 
@@ -253,7 +263,11 @@ staleSetup: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
-deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+deleteAt: string | null, idle: Idle,
+/**
+ * What its first start clones into its home.
+ */
+repository: Repository | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
 
@@ -311,6 +325,12 @@ registry: string, username: string | null, passwordEnv: string | null,
  */
 plainHttp: boolean, };
 
+/**
+ * A git repository a sandbox clones at its first start, and the branch to check out, else the
+ * repository's default.
+ */
+export type Repository = { url: string, branch?: string | null, };
+
 export type Role = "member" | "admin";
 
 export type Sandbox = { name: SandboxName,
@@ -325,7 +345,11 @@ staleSetup: boolean,
 /**
  * When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
  */
-deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
+deleteAt: string | null, idle: Idle,
+/**
+ * What its first start clones into its home.
+ */
+repository: Repository | null, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 /**
  * The image and size a user's new sandbox gets when its creation names none.

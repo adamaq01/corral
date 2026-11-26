@@ -5,9 +5,9 @@ use corral_core::app::{
     SizePreset, Source, UserDefaults,
 };
 use corral_core::domain::{
-    Allocation, Handle, IdleLimits, ImageKey, MIN_IDLE_TIMEOUT, PictureUrl, Resources, Role,
-    Sandbox, SandboxName, SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus, bytes,
-    cpu_millis, format_bytes, format_cpu,
+    Allocation, Handle, IdleLimits, ImageKey, MIN_IDLE_TIMEOUT, PictureUrl, Repository, Resources,
+    Role, Sandbox, SandboxName, SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus,
+    bytes, cpu_millis, format_bytes, format_cpu,
 };
 use corral_core::ports::{EngineEvent, EventKind, Fact};
 use corral_core::{Error, Result};
@@ -144,6 +144,8 @@ pub(crate) struct SandboxDto {
     /// When `corral delete` inside it scheduled its deletion for, unless its owner cancels.
     delete_at: Option<DateTime<Utc>>,
     idle: Idle,
+    /// What its first start clones into its home.
+    repository: Option<Repository>,
 }
 
 impl SandboxDto {
@@ -174,6 +176,7 @@ impl SandboxDto {
             stale_setup,
             delete_at: sandbox.delete_at,
             idle,
+            repository: sandbox.repository,
         }
     }
 }

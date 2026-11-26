@@ -285,7 +285,8 @@ async fn corral_new_makes_a_sandbox_from_a_spec_and_prints_it() {
     let f = Fixture::without_container(Limits::default()).await;
     f.world.offer_tools().await;
     entries(&f).await;
-    let spec = br#"{"image": "tools", "size": "large", "setup": ["EXTRA_TOKEN"]}"#;
+    let spec = br#"{"image": "tools", "size": "large", "setup": ["EXTRA_TOKEN"],
+        "repository": {"url": "git@github.com:adamaq01/corral.git", "branch": "main"}}"#;
     let ran = f.ssh("full.adam", &["corral-new"], spec).await;
     assert_eq!((ran.status, ran.stderr.as_str()), (Some(0), ""), "{ran:?}");
     let printed = json(&ran.stdout);
@@ -298,6 +299,7 @@ async fn corral_new_makes_a_sandbox_from_a_spec_and_prints_it() {
             "image": "tools",
             "size": "large",
             "setup": [{"id": id, "kind": "variable", "name": "EXTRA_TOKEN"}],
+            "repository": {"url": "git@github.com:adamaq01/corral.git", "branch": "main"},
         })
     );
 
@@ -308,12 +310,14 @@ async fn corral_new_makes_a_sandbox_from_a_spec_and_prints_it() {
         (
             &printed["image"],
             &printed["size"],
-            &printed["setup"][0]["name"]
+            &printed["setup"][0]["name"],
+            &printed["repository"]
         ),
         (
             &Value::from("base"),
             &Value::from("small"),
-            &Value::from("GH_TOKEN")
+            &Value::from("GH_TOKEN"),
+            &Value::Null
         )
     );
     assert_eq!(names(&f).await, ["main", "full", "empty"]);
@@ -335,6 +339,16 @@ async fn corral_new_refuses_a_bad_spec_or_a_name_that_exists_with_a_json_error()
             r#"{"setup": ["NOPE"]}"#,
             "there is no setup entry \"NOPE\"",
         ),
+        (
+            "bad.adam",
+            r#"{"repository": {"url": "https://me:tok3n@github.com/me/x.git"}}"#,
+            "the repository URL carries a password",
+        ),
+        (
+            "bad.adam",
+            r#"{"repository": {"url": "https://github.com/me/x.git", "branch": "-x"}}"#,
+            "branch \"-x\" is not a git branch name",
+        ),
         ("main.adam", "{}", "sandbox main exists already"),
         (
             "adam",
@@ -347,6 +361,7 @@ async fn corral_new_refuses_a_bad_spec_or_a_name_that_exists_with_a_json_error()
         let told = json(&ran.stderr);
         let told = told["error"].as_str().unwrap_or_default();
         assert!(told.starts_with(error), "{spec}: {told}");
+        assert!(!told.contains("tok3n"), "{told}");
     }
     assert_eq!(names(&f).await, ["main"]);
 }

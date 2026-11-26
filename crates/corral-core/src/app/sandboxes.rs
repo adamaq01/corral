@@ -9,8 +9,9 @@ use ts_rs::TS;
 
 use super::{Catalog, ImageOption, Settings, Setup, SizePreset};
 use crate::domain::{
-    Admin, EntryId, Handle, IdleLimits, ImageKey, ImageReference, Sandbox, SandboxDefaults,
-    SandboxId, SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
+    Admin, EntryId, Handle, IdleLimits, ImageKey, ImageReference, Repository, Sandbox,
+    SandboxDefaults, SandboxId, SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey,
+    User, UserId,
 };
 use crate::ports::{
     ImageRegistry, Inspection, Readiness, SandboxEngine, SandboxRepo, SandboxSpec, UserRepo,
@@ -35,11 +36,12 @@ pub struct CreateSandbox {
     pub image_reference: Option<String>,
     #[ts(optional)]
     pub size: Option<SizeKey>,
-    /// The setup entries to attach in place of those that apply to new sandboxes. Only the
-    /// lobby chooses them, so the web API never reads them.
-    #[serde(skip)]
-    #[ts(skip)]
+    /// The setup entries to attach in place of those that apply to new sandboxes.
+    #[ts(optional)]
     pub setup: Option<Vec<EntryId>>,
+    /// What its first start clones into its home.
+    #[ts(optional)]
+    pub repository: Option<Repository>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +164,7 @@ impl Sandboxes {
             image_reference: None,
             size: None,
             setup: None,
+            repository: None,
         };
         match self.provision(owner, request).await {
             // Another login made it first.
@@ -201,6 +204,7 @@ impl Sandboxes {
             delete_at: None,
             idle_timeout: None,
             keep_awake_until: None,
+            repository: request.repository,
         };
         self.repo
             .insert(&sandbox, self.max_sandboxes_for(owner).await?)

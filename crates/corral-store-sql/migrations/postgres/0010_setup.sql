@@ -19,3 +19,7 @@ alter table setup_entries add column shared text null check (shared in ('require
 alter table setup_entries add check ((owner is null) <> (shared is null));
 
 create index setup_entries_shared on setup_entries (shared) where shared is not null;
+
+alter table sandboxes add column repository_url text null;
+
+alter table sandboxes add column repository_branch text null;

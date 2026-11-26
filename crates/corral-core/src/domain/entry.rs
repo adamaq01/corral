@@ -5,7 +5,9 @@ use uuid::Uuid;
 
 use super::{HomePath, SandboxId, StoredValue, UserId, VariableName};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, TS)]
+#[serde(transparent)]
+#[ts(type = "string")]
 pub struct EntryId(pub Uuid);
 
 impl EntryId {

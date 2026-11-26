@@ -21,6 +21,7 @@ const sandbox: Sandbox = {
 	staleSetup: false,
 	idle,
 	deleteAt: null,
+	repository: null,
 	state: 'running'
 };
 

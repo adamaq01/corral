@@ -2,20 +2,21 @@ use std::collections::BTreeSet;
 
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretSlice};
+use serde_json::{Value, json};
 
 use super::{
     EntryChange, FILE_LIMIT, NewEntry, NewSharedEntry, Preview, SharedEntryChange, Use,
     VARIABLE_LIMIT,
 };
 use crate::Error;
-use crate::app::SANDBOX_FILE;
+use crate::app::{CreateSandbox, SANDBOX_FILE};
 use crate::domain::{
-    Entry, EntryId, Glimpse, HomePath, Kept, Sandbox, SandboxName, SecretId, Shared, Target, User,
-    UserId,
+    Entry, EntryId, Glimpse, HomePath, Kept, Repository, Sandbox, SandboxName, SandboxToken,
+    SecretId, Shared, Target, User, UserId,
 };
 use crate::fakes::{
-    World, admin_proof, bytes, entry, exposed, file, sandbox_name, shared_file, shared_variable,
-    unchanged, variable, variable_name,
+    World, admin_proof, bytes, entry, exposed, file, request, sandbox_name, shared_file,
+    shared_variable, unchanged, variable, variable_name,
 };
 use crate::ports::{SecretStore, SetupRepo};
 
@@ -1622,4 +1623,28 @@ async fn shared_secret_values_live_under_the_shared_owner() {
         exposed(&w.engine.env_of(&main.id).unwrap()),
         ["GATEWAY_TOKEN=sk-shared-0123456789"]
     );
+}
+
+#[tokio::test]
+async fn the_sandbox_file_carries_the_repository() {
+    let w = World::new();
+    let adam = w.member("adam").await;
+    let url = "https://github.com/adamaq01/corral.git";
+    let request = CreateSandbox {
+        repository: Some(Repository::new(url, Some("main")).unwrap()),
+        ..request("cloning", None, None)
+    };
+    let cloning = w.sandboxes.create(&adam, request).await.unwrap().sandbox;
+    let plain = w.sandbox(&adam, "plain").await;
+    for (sandbox, repository) in [
+        (&cloning, json!({ "url": url, "branch": "main" })),
+        (&plain, Value::Null),
+    ] {
+        let token = SandboxToken::generate().unwrap();
+        let boot = w.setup.boot(sandbox, &token).await.unwrap();
+        let own = &boot.files[&HomePath::parse(SANDBOX_FILE).unwrap()];
+        let read: Value = serde_json::from_slice(own.content.expose_secret()).unwrap();
+        assert_eq!(read["sandbox"], json!(sandbox.name.as_str()));
+        assert_eq!(read["repository"], repository, "{}", sandbox.name);
+    }
 }

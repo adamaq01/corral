@@ -4,8 +4,8 @@ use serde_json::json;
 use super::Sandboxes;
 use crate::Result;
 use crate::domain::{
-    FileMode, HomeFile, HomePath, Sandbox, SandboxId, SandboxName, SandboxStatus, SandboxToken,
-    TokenHash, User, UserStatus,
+    FileMode, HomeFile, HomePath, Repository, Sandbox, SandboxId, SandboxName, SandboxStatus,
+    SandboxToken, TokenHash, User, UserStatus,
 };
 
 /// Where the `corral` command in a sandbox finds what it needs, relative to the home.
@@ -21,11 +21,12 @@ pub struct SandboxLinks {
 }
 
 impl SandboxLinks {
-    /// The file a start writes into the sandbox's home: the links, its name and the token of
-    /// that start, readable only by the sandbox user.
+    /// The file a start writes into the sandbox's home: the links, its name, the token of that
+    /// start and the repository its first start clones, readable only by the sandbox user.
     pub(super) fn sandbox_file(
         &self,
         sandbox: &SandboxName,
+        repository: Option<&Repository>,
         token: &SandboxToken,
     ) -> (HomePath, HomeFile) {
         let contents = json!({
@@ -33,6 +34,7 @@ impl SandboxLinks {
             "web": self.web,
             "sandbox": sandbox,
             "token": token.expose(),
+            "repository": repository,
         });
         let path = HomePath::parse(SANDBOX_FILE).expect("a valid home path");
         let file = HomeFile {
@@ -132,6 +134,7 @@ mod tests {
                 "web": "https://corral.example.com",
                 "sandbox": "main",
                 "token": null,
+                "repository": null,
             })
         );
         assert_eq!(holder(&w, &token).await.as_deref(), Some("main.adam"));

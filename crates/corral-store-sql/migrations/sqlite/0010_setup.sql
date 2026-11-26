@@ -66,3 +66,7 @@ create index setup_entries_owner on setup_entries (owner);
 create index setup_entries_shared on setup_entries (shared) where shared is not null;
 
 create index setup_attachments_entry on setup_attachments (entry_id);
+
+alter table sandboxes add column repository_url text;
+
+alter table sandboxes add column repository_branch text;

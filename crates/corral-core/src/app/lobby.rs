@@ -5,7 +5,8 @@ use uuid::Uuid;
 use super::ssh_access::active_login;
 use super::{Catalog, CreateSandbox, SandboxView, Sandboxes, Setup};
 use crate::domain::{
-    Entry, EntryId, Handle, HomePath, ImageKey, SandboxDefaults, SandboxName, SizeKey, Target,
+    Entry, EntryId, Handle, HomePath, ImageKey, Repository, SandboxDefaults, SandboxName, SizeKey,
+    Target,
 };
 use crate::ports::UserRepo;
 use crate::{Error, Result};
@@ -47,6 +48,7 @@ pub struct Choice {
     pub size: Option<String>,
     /// Each entry by its id, or by the variable or file it sets.
     pub setup: Option<Vec<String>>,
+    pub repository: Option<Repository>,
 }
 
 /// A sandbox the lobby made, and the entries attached to it.
@@ -141,6 +143,7 @@ impl Lobby {
             image_reference,
             size: choice.size.as_deref().map(SizeKey::parse).transpose()?,
             setup,
+            repository: choice.repository,
         };
         let view = self
             .sandboxes
@@ -258,6 +261,7 @@ mod tests {
             image: image.map(str::to_owned),
             size: size.map(str::to_owned),
             setup: entries.map(|entries| entries.iter().map(|&e| e.to_owned()).collect()),
+            repository: None,
         }
     }
 

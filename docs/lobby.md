@@ -42,7 +42,7 @@ echo '{"image": "dev", "size": "large", "setup": ["GH_TOKEN", ".gitconfig"]}' \
 ```
 
 ```json
-{"name":"new","sshUsername":"new.adam","image":"dev","size":"large","setup":[{"id":"…","kind":"variable","name":"GH_TOKEN"},{"id":"…","kind":"file","name":".gitconfig"}]}
+{"name":"new","sshUsername":"new.adam","image":"dev","size":"large","setup":[{"id":"…","kind":"variable","name":"GH_TOKEN"},{"id":"…","kind":"file","name":".gitconfig"}],"repository":null}
 ```
 
 Every field of the spec is optional, and empty input is the empty spec `{}`:
@@ -52,10 +52,13 @@ Every field of the spec is optional, and empty input is the empty spec `{}`:
 | `image` | a catalog image's key, or else an image reference, where users may name images | your default image |
 | `size` | a catalog size's key | your default size |
 | `setup` | entries to attach, each by its id or by the variable or file it sets (`GH_TOKEN`, `.gitconfig`) | the entries that apply to new sandboxes |
+| `repository` | a git repository the first start clones into the home, `{"url": "...", "branch": "..."}`, the branch optional | no repository |
 
-`"setup": []` attaches none. An unknown field is refused. On a refusal, such as a bad spec,
-an unknown size, or a sandbox by that name that exists already, nothing is made: it prints
-`{"error": "..."}` on its error output and exits with status 1.
+`"setup": []` attaches none. A repository URL is `https://...`, `ssh://...`, `file:///...` or
+`user@host:path`, without a password: a token goes in Setup, as a git credential. An unknown
+field is refused. On a refusal, such as a bad spec, an unknown size, or a sandbox by that name
+that exists already, nothing is made: it prints `{"error": "..."}` on its error output and exits
+with status 1.
 
 ## Any other command
 

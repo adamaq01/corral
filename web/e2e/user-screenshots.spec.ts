@@ -42,6 +42,7 @@ function sandbox(
 		staleSetup: false,
 		idle,
 		deleteAt: null,
+		repository: null,
 		...status,
 		...extra
 	};

@@ -84,6 +84,7 @@ test('a refused key fails at once, with no password prompt, under either config 
 		staleSetup: false,
 		idle,
 		deleteAt: null,
+		repository: null,
 		state: 'running'
 	};
 	const catalog: Catalog = {

@@ -27,6 +27,15 @@ pub struct SandboxFile {
     pub web: String,
     pub sandbox: String,
     pub token: String,
+    /// What the sandbox's first start clones into the home, if its owner named a repository.
+    pub repository: Option<Repository>,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub struct Repository {
+    pub url: String,
+    /// The branch to check out, else the repository's default.
+    pub branch: Option<String>,
 }
 
 impl SandboxFile {
@@ -48,7 +57,7 @@ impl SandboxFile {
 mod tests {
     use std::path::Path;
 
-    use super::{SandboxFile, notices};
+    use super::{Repository, SandboxFile, notices};
 
     fn home(test: &str) -> std::path::PathBuf {
         let home = std::env::temp_dir().join(format!("corral-cli-{test}-{}", std::process::id()));
@@ -62,7 +71,8 @@ mod tests {
         std::fs::write(
             home.join(".config/corral/sandbox.json"),
             r#"{"api": "http://corral:8080", "web": "https://corral.example.com",
-                "sandbox": "main", "token": "corral_sbx_1"}"#,
+                "sandbox": "main", "token": "corral_sbx_1",
+                "repository": {"url": "git@github.com:me/x.git", "branch": null}}"#,
         )
         .unwrap();
         assert_eq!(
@@ -72,8 +82,19 @@ mod tests {
                 web: "https://corral.example.com".to_owned(),
                 sandbox: "main".to_owned(),
                 token: "corral_sbx_1".to_owned(),
+                repository: Some(Repository {
+                    url: "git@github.com:me/x.git".to_owned(),
+                    branch: None,
+                }),
             })
         );
+        std::fs::write(
+            home.join(".config/corral/sandbox.json"),
+            r#"{"api": "http://corral:8080", "web": "https://corral.example.com",
+                "sandbox": "main", "token": "corral_sbx_1", "repository": null}"#,
+        )
+        .unwrap();
+        assert_eq!(SandboxFile::read(&home).unwrap().repository, None);
         std::fs::write(home.join(".config/corral/sandbox.json"), "{}").unwrap();
         let invalid = SandboxFile::read(&home).unwrap_err();
         assert!(invalid.contains("is not valid"), "{invalid}");

@@ -79,7 +79,7 @@ async fn spec(from_client: &mut FromClient) -> Result<Spec, String> {
 #[cfg(test)]
 mod tests {
     use super::is_script;
-    use crate::api::Spec;
+    use crate::api::{RepositorySpec, Spec};
 
     #[test]
     fn only_corral_new_itself_is_the_script() {
@@ -92,7 +92,8 @@ mod tests {
     #[test]
     fn a_spec_takes_every_field_or_none_and_refuses_others() {
         let full: Spec = serde_json::from_str(
-            r#"{"image": "dev", "size": "roomy", "setup": ["GH_TOKEN", ".gitconfig"]}"#,
+            r#"{"image": "dev", "size": "roomy", "setup": ["GH_TOKEN", ".gitconfig"],
+                "repository": {"url": "git@github.com:me/x.git", "branch": "main"}}"#,
         )
         .unwrap();
         assert_eq!(
@@ -100,11 +101,25 @@ mod tests {
             (Some("dev"), Some("roomy"))
         );
         assert_eq!(full.setup.unwrap().len(), 2);
-        assert_eq!(serde_json::from_str::<Spec>("{}").unwrap(), Spec::default());
-        let error = serde_json::from_str::<Spec>(r#"{"sizes": "roomy"}"#).unwrap_err();
-        assert!(
-            error.to_string().contains("unknown field `sizes`"),
-            "{error}"
+        assert_eq!(
+            full.repository,
+            Some(RepositorySpec {
+                url: "git@github.com:me/x.git".to_owned(),
+                branch: Some("main".to_owned()),
+            })
         );
+        assert_eq!(serde_json::from_str::<Spec>("{}").unwrap(), Spec::default());
+        for (spec, unknown) in [
+            (r#"{"sizes": "roomy"}"#, "sizes"),
+            (r#"{"repository": {"url": "x", "ref": "main"}}"#, "ref"),
+        ] {
+            let error = serde_json::from_str::<Spec>(spec).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("unknown field `{unknown}`")),
+                "{error}"
+            );
+        }
     }
 }

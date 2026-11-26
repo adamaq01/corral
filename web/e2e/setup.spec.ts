@@ -37,6 +37,7 @@ const main: Sandbox = {
 	staleSetup: false,
 	idle,
 	deleteAt: null,
+	repository: null,
 	state: 'running'
 };
 

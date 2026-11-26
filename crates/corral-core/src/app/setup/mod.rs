@@ -16,9 +16,9 @@ use registry::{Registry, Scope, by_target};
 
 use super::inside::SandboxLinks;
 use crate::domain::{
-    Admin, Attachment, Entry, EntryId, Glimpse, Handle, HomePath, Kept, Owner, Sandbox, SandboxId,
-    SandboxName, SandboxToken, SecretId, SecretRef, Shared, StoredValue, Target, Template, User,
-    UserId, VariableName,
+    Admin, Attachment, Entry, EntryId, Glimpse, Handle, HomePath, Kept, Owner, Repository, Sandbox,
+    SandboxId, SandboxName, SandboxToken, SecretId, SecretRef, Shared, StoredValue, Target,
+    Template, User, UserId, VariableName,
 };
 use crate::ports::{Boot, Changed, SandboxRepo, SecretStore, SetupRepo, UserRepo};
 use crate::{Error, Result};
@@ -550,7 +550,7 @@ impl Setup {
     pub(super) async fn boot(&self, sandbox: &Sandbox, token: &SandboxToken) -> Result<Boot> {
         let registry = self.registry(sandbox.owner).await?;
         let composed = self
-            .compose(&registry, Scope::Sandbox(&sandbox.id), &sandbox.name, token)
+            .compose(&registry, Scope::Sandbox(&sandbox.id), sandbox, token)
             .await?;
         if let Some((path, names)) = composed.unknown.first_key_value() {
             return Err(Error::Invalid(format!(
@@ -577,7 +577,7 @@ impl Setup {
         }
         let scope = chosen.map_or(Scope::New, Scope::Chosen);
         let composed = self
-            .compose(&registry, scope, &sandbox.name, &SandboxToken::generate()?)
+            .compose(&registry, scope, sandbox, &SandboxToken::generate()?)
             .await?;
         if let Some((path, names)) = composed.unknown.first_key_value() {
             let one = names.len() == 1;
@@ -916,7 +916,7 @@ impl Setup {
         &self,
         registry: &Registry,
         scope: Scope<'_>,
-        name: &SandboxName,
+        sandbox: &Sandbox,
         token: &SandboxToken,
     ) -> Result<Composed> {
         let effective = registry.effective(scope);
@@ -924,10 +924,11 @@ impl Setup {
             .secrets_of(secret_ids(effective.iter().copied()))
             .await?;
         compose(
-            &whose(scope, name, None),
+            &whose(scope, &sandbox.name, None),
             &effective,
             &secrets,
-            self.links.sandbox_file(name, token),
+            self.links
+                .sandbox_file(&sandbox.name, sandbox.repository.as_ref(), token),
         )
     }
 
@@ -947,30 +948,43 @@ impl Setup {
         }
         // The token a start would issue is as long as any other, so the files it sizes are too.
         let token = SandboxToken::generate()?;
-        let names = self.sandbox_names(owner).await?;
+        let theirs: BTreeMap<SandboxId, Sandbox> = self
+            .sandboxes
+            .list(owner)
+            .await?
+            .into_iter()
+            .map(|sandbox| (sandbox.id.clone(), sandbox))
+            .collect();
         let longest = SandboxName::parse(&"x".repeat(32)).expect("a valid sandbox name");
-        let mut scopes: Vec<(Scope<'_>, &SandboxName)> = reach
+        let mut scopes: Vec<(Scope<'_>, &SandboxName, Option<&Repository>)> = reach
             .sandboxes
             .iter()
-            .filter_map(|id| Some((Scope::Sandbox(id), names.get(id)?)))
+            .filter_map(|id| {
+                let sandbox = theirs.get(id)?;
+                Some((
+                    Scope::Sandbox(id),
+                    &sandbox.name,
+                    sandbox.repository.as_ref(),
+                ))
+            })
             .collect();
         if reach.new {
-            scopes.push((Scope::New, &longest));
+            scopes.push((Scope::New, &longest, None));
         }
-        let wanted = secret_ids(scopes.iter().flat_map(|(scope, _)| {
+        let wanted = secret_ids(scopes.iter().flat_map(|(scope, _, _)| {
             current
                 .effective(*scope)
                 .into_iter()
                 .chain(proposed.effective(*scope))
         }));
         let secrets = self.secrets_of(wanted).await?;
-        for (scope, name) in scopes {
+        for (scope, name, repository) in scopes {
             let whose = whose(scope, name, of);
             let composed = compose(
                 &whose,
                 &proposed.effective(scope),
                 &secrets,
-                self.links.sandbox_file(name, &token),
+                self.links.sandbox_file(name, repository, &token),
             )?;
             let before = unresolved(&current.effective(scope), &secrets);
             for (path, names) in composed.unknown {

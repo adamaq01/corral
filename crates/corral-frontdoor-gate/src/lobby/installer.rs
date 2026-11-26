@@ -334,6 +334,7 @@ impl Installer {
             image: Some(self.image_spec()),
             size: self.offer.sizes.get(self.size).map(|size| size.key.clone()),
             setup: Some(self.chosen_entries().map(|e| e.id.clone()).collect()),
+            repository: None,
         };
         Effect::Make(Create {
             username: self.login(),
@@ -507,6 +508,7 @@ pub(crate) mod tests {
                 image: Some(image.to_owned()),
                 size: Some(size.to_owned()),
                 setup: Some(setup.iter().map(|&id| id.to_owned()).collect()),
+                repository: None,
             },
         })
     }

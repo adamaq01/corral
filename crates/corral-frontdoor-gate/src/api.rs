@@ -181,8 +181,9 @@ pub struct Create {
     pub spec: Spec,
 }
 
-/// How a new sandbox is made, as `corral-new` reads it. Each field left out takes the owner's
-/// default; without `setup`, the entries that apply to new sandboxes are attached.
+/// How a new sandbox is made, as `corral-new` reads it. Without an image or a size, the owner's
+/// default; without `setup`, the entries that apply to new sandboxes; without `repository`,
+/// nothing is cloned.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Spec {
@@ -191,6 +192,16 @@ pub struct Spec {
     pub size: Option<String>,
     /// Entries by id, or by the variable or file they set.
     pub setup: Option<Vec<String>>,
+    pub repository: Option<RepositorySpec>,
+}
+
+/// A git repository the sandbox's first start clones, and the branch to check out, else its
+/// default.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositorySpec {
+    pub url: String,
+    pub branch: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +221,7 @@ pub struct Made {
     pub image: String,
     pub size: String,
     pub setup: Vec<MadeEntry>,
+    pub repository: Option<RepositorySpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

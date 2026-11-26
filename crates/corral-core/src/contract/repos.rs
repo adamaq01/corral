@@ -7,8 +7,8 @@ use uuid::Uuid;
 use super::{at, new_user, seed_user, unique};
 use crate::Error;
 use crate::domain::{
-    Handle, ImageKey, ImageReference, Role, Sandbox, SandboxDefaults, SandboxId, SandboxImage,
-    SandboxName, SizeKey, SshKey, SshPublicKey, TokenHash, User, UserId, UserStatus,
+    Handle, ImageKey, ImageReference, Repository, Role, Sandbox, SandboxDefaults, SandboxId,
+    SandboxImage, SandboxName, SizeKey, SshKey, SshPublicKey, TokenHash, User, UserId, UserStatus,
 };
 use crate::ports::{Changed, KeyRepo, SandboxRepo, UserRepo};
 
@@ -17,6 +17,7 @@ pub async fn every_repo(users: &dyn UserRepo, keys: &dyn KeyRepo, sandboxes: &dy
     sandbox_defaults(users).await;
     key_repo(users, keys).await;
     sandbox_repo(users, sandboxes).await;
+    a_repository_round_trips(users, sandboxes).await;
     sandbox_tokens(users, sandboxes).await;
     scheduled_deletions(users, sandboxes).await;
     idle_settings(users, sandboxes).await;
@@ -322,6 +323,33 @@ async fn sandbox_repo(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
     assert_eq!(sandboxes.default_id(adam.id).await.unwrap(), None);
     assert_eq!(sandboxes.list(adam.id).await.unwrap(), vec![main]);
     assert_eq!(sandboxes.list(eve.id).await.unwrap(), vec![eves_main]);
+}
+
+async fn a_repository_round_trips(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
+    let adam = seed_user(users, "adam").await;
+    let repository = |url: &str, branch: Option<&str>| Some(Repository::new(url, branch).unwrap());
+    let branched = Sandbox {
+        repository: repository("https://github.com/adamaq01/corral.git", Some("feat/setup")),
+        ..new_sandbox(adam.id, "branched", 1)
+    };
+    let unbranched = Sandbox {
+        repository: repository("git@github.com:me/y", None),
+        ..new_sandbox(adam.id, "unbranched", 2)
+    };
+    let plain = new_sandbox(adam.id, "plain", 3);
+    for sandbox in [&branched, &unbranched, &plain] {
+        sandboxes.insert(sandbox, 3).await.expect("insert sandbox");
+    }
+    assert_eq!(
+        sandboxes.list(adam.id).await.unwrap(),
+        vec![branched.clone(), unbranched.clone(), plain.clone()]
+    );
+    for sandbox in [branched, unbranched, plain] {
+        assert_eq!(
+            sandboxes.by_name(adam.id, &sandbox.name).await.unwrap(),
+            Some(sandbox)
+        );
+    }
 }
 
 async fn setup_change_times(users: &dyn UserRepo, sandboxes: &dyn SandboxRepo) {
@@ -757,5 +785,6 @@ pub(super) fn new_sandbox(owner: UserId, name: &str, created: i64) -> Sandbox {
         delete_at: None,
         idle_timeout: None,
         keep_awake_until: None,
+        repository: None,
     }
 }
