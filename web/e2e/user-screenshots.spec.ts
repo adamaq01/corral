@@ -173,6 +173,7 @@ const me = (extra: Partial<Me> = {}): Me => ({
 	email: 'bob@example.lan',
 	picture: null,
 	role: 'member',
+	provider: 'local',
 	...extra
 });
 
@@ -420,6 +421,12 @@ inEveryView((look) => {
 		);
 		await look(page, 'account');
 
+		await page.getByRole('button', { name: 'Change password' }).click();
+		await page.getByRole('dialog', { name: 'Change your password' }).waitFor();
+		await look(page, 'account-password', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('dialog').waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'Delete account' }).click();
 		await page.getByRole('alertdialog').getByLabel('Type bob to confirm').fill('bo');
 		await look(page, 'account-delete', { fullPage: false });
@@ -449,10 +456,15 @@ inEveryView((look) => {
 	});
 
 	test('account, with initials and no SSH keys', async ({ page }) => {
-		await serve(page, { '/api/me': me({ email: null }), '/api/catalog': catalog, '/api/keys': [] });
+		await serve(page, {
+			'/api/me': me({ email: null, provider: 'sso' }),
+			'/api/catalog': catalog,
+			'/api/keys': []
+		});
 		await page.goto('/account');
 		await page.getByRole('heading', { name: 'bob' }).waitFor();
 		await page.getByText('No SSH keys yet').waitFor();
+		await expect(page.getByRole('button', { name: 'Change password' })).toHaveCount(0);
 		await look(page, 'account-initials');
 	});
 });

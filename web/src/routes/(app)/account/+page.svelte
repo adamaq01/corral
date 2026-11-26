@@ -12,6 +12,7 @@
 		setSandboxDefaults
 	} from '#lib/api/me.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
+	import ChangePasswordDialog from '#lib/components/change-password-dialog.svelte';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
@@ -36,6 +37,8 @@
 	const roles = { member: 'Member', admin: 'Admin' } as const;
 
 	const opkssh = new Remote(opksshLogin);
+
+	let changingPassword = $state(false);
 
 	/** The defaults as Corral has them, and as the form shows them. */
 	let saved = $state<SandboxDefaults | null>(null);
@@ -137,6 +140,20 @@
 			</div>
 		</Card.Content>
 	</Card.Root>
+
+	{#if user.provider === 'local'}
+		<Card.Root>
+			<Card.Header>
+				<Card.Title><h2>Password</h2></Card.Title>
+				<Card.Description>The password you sign in to Corral with.</Card.Description>
+				<Card.Action>
+					<Button variant="outline" onclick={() => (changingPassword = true)}>
+						Change password
+					</Button>
+				</Card.Action>
+			</Card.Header>
+		</Card.Root>
+	{/if}
 
 	<SshKeysCard opkssh={opkssh.value ?? null} />
 
@@ -277,6 +294,11 @@
 		</Card.Footer>
 	</Card.Root>
 </div>
+
+<ChangePasswordDialog
+	bind:open={changingPassword}
+	onchanged={() => toast.success('Password changed.')}
+/>
 
 <ConfirmDialog
 	bind:open={deleting}

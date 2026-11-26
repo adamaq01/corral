@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use axum::Router;
 use axum::http::StatusCode;
 use corral_api::router;
-use corral_api::testing::{Browser, Reply, api};
+use corral_api::testing::{Browser, Reply, api, trusting_provider};
 use corral_core::domain::{Handle, Role};
-use corral_core::fakes::World;
+use corral_core::fakes::{PROVIDER, World};
 use corral_identity_local::LocalProvider;
 use corral_sql::Pool;
 use corral_sql::testing::Databases;
@@ -14,6 +14,7 @@ use secrecy::SecretString;
 use serde_json::{Value, json};
 
 const PASSWORD: &str = "correct horse battery";
+const TWELVE_CHARS: &str = "twelve chars";
 
 struct Corral {
     app: Router,
@@ -65,6 +66,13 @@ async fn log_in(browser: &mut Browser, username: &str, password: &str) -> Reply 
     browser.post("/auth/local/login", form).await
 }
 
+async fn change_password(browser: &mut Browser, current: &str, password: &str) -> Reply {
+    let change = json!({ "current": current, "password": password });
+    browser
+        .call("PUT", "/auth/local/password", Some(change))
+        .await
+}
+
 fn usernames(accounts: &Value) -> Vec<&str> {
     accounts
         .as_array()
@@ -80,7 +88,13 @@ async fn the_account_decides_the_role(pool: Pool) {
     let reply = log_in(&mut adam, "adam", PASSWORD).await;
     assert_eq!(
         reply.json(),
-        json!({ "handle": "adam", "email": null, "picture": null, "role": "member" })
+        json!({
+            "handle": "adam",
+            "email": null,
+            "picture": null,
+            "role": "member",
+            "provider": "local",
+        })
     );
     assert_eq!(adam.get("/api/me").await.json()["role"], "member");
     let mut root = corral.signed_in("root").await;
@@ -423,6 +437,83 @@ async fn only_admins_manage_accounts(pool: Pool) {
     corral.signed_in("adam").await;
 }
 
+async fn a_user_changes_their_own_password(pool: Pool) {
+    let corral = Corral::open(pool, &[("bob", Role::Member)]).await;
+    let mut bob = corral.signed_in("bob").await;
+    let changed = change_password(&mut bob, PASSWORD, TWELVE_CHARS).await;
+    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{}", changed.text());
+    let mut again = corral.browser();
+    assert_eq!(
+        log_in(&mut again, "bob", TWELVE_CHARS).await.status,
+        StatusCode::OK
+    );
+    let mut old = corral.browser();
+    assert_eq!(
+        log_in(&mut old, "bob", PASSWORD).await.status,
+        StatusCode::FORBIDDEN
+    );
+}
+
+async fn the_current_password_must_match(pool: Pool) {
+    let corral = Corral::open(pool, &[("bob", Role::Member)]).await;
+    let mut bob = corral.signed_in("bob").await;
+    let refused = change_password(&mut bob, "wrong horse battery", TWELVE_CHARS).await;
+    assert_eq!(
+        (refused.status, refused.json()),
+        (StatusCode::FORBIDDEN, json!({ "error": "wrong password" }))
+    );
+    corral.signed_in("bob").await;
+
+    for _ in 0..4 {
+        change_password(&mut bob, "wrong horse battery", TWELVE_CHARS).await;
+    }
+    let limited = json!({ "error": "too many failed logins, try again later" });
+    let change = change_password(&mut bob, PASSWORD, TWELVE_CHARS).await;
+    assert_eq!(
+        (change.status, change.json()),
+        (StatusCode::TOO_MANY_REQUESTS, limited.clone())
+    );
+    let mut elsewhere = corral.browser();
+    let login = log_in(&mut elsewhere, "bob", PASSWORD).await;
+    assert_eq!(
+        (login.status, login.json()),
+        (StatusCode::TOO_MANY_REQUESTS, limited)
+    );
+}
+
+async fn a_short_new_password_is_refused(pool: Pool) {
+    let corral = Corral::open(pool, &[("bob", Role::Member)]).await;
+    let mut bob = corral.signed_in("bob").await;
+    let refused = change_password(&mut bob, PASSWORD, "elevenchars").await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    let error = refused.json()["error"].as_str().unwrap().to_owned();
+    assert!(error.contains("at least 12 characters"), "{error}");
+    corral.signed_in("bob").await;
+}
+
+async fn a_user_of_another_provider_has_no_password_to_change(pool: Pool) {
+    let local = Arc::new(LocalProvider::open(pool).await.unwrap());
+    let world = World::with_providers(vec![local.clone()]);
+    let app = router(
+        api(&world),
+        vec![local.routes(), trusting_provider(PROVIDER)],
+    );
+    let mut eve = Browser::new(&app, "192.0.2.1:5000");
+    let login = json!({ "subject": "eve", "username": "eve", "role": "member" });
+    assert_eq!(
+        eve.post("/auth/test/login", login).await.status,
+        StatusCode::OK
+    );
+    let refused = change_password(&mut eve, PASSWORD, TWELVE_CHARS).await;
+    assert_eq!(
+        (refused.status, refused.json()),
+        (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "your account does not sign in with a password" })
+        )
+    );
+}
+
 async fn reopening_keeps_the_accounts(pool: Pool) {
     Corral::open(pool.clone(), &[("adam", Role::Member)]).await;
     let reopened = Corral::open(pool, &[]).await;
@@ -441,6 +532,10 @@ async fn every_scenario(databases: &Databases) {
     a_disabled_user_is_told_so_with_the_right_password_only(databases.pool().await).await;
     a_user_deleting_themselves_loses_their_account(databases.pool().await).await;
     only_admins_manage_accounts(databases.pool().await).await;
+    a_user_changes_their_own_password(databases.pool().await).await;
+    the_current_password_must_match(databases.pool().await).await;
+    a_short_new_password_is_refused(databases.pool().await).await;
+    a_user_of_another_provider_has_no_password_to_change(databases.pool().await).await;
     reopening_keeps_the_accounts(databases.pool().await).await;
 }
 

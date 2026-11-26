@@ -30,6 +30,8 @@ pub(crate) struct Me {
     email: Option<String>,
     picture: Option<PictureUrl>,
     role: Role,
+    /// The identity provider they log in with.
+    provider: String,
 }
 
 impl From<&User> for Me {
@@ -39,6 +41,7 @@ impl From<&User> for Me {
             email: user.email.clone(),
             picture: user.picture.clone(),
             role: user.role,
+            provider: user.provider().to_owned(),
         }
     }
 }

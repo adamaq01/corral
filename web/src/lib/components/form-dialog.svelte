@@ -24,8 +24,11 @@
 		pendingLabel?: string;
 		/** Whether the form can be sent yet. */
 		ready?: boolean;
-		/** Sends the form; the dialog closes when it succeeds and shows the error when it fails. */
-		onsubmit: () => Promise<void>;
+		/**
+		 * Sends the form; the dialog closes when it succeeds and shows the error when it fails. It
+		 * stays open on `false`, for a refusal the form shows next to the field it concerns.
+		 */
+		onsubmit: () => Promise<void | false>;
 		/** The form's fields. */
 		children: Snippet;
 	} = $props();
@@ -38,8 +41,9 @@
 		pending = true;
 		error = null;
 		try {
-			await onsubmit();
-			open = false;
+			if ((await onsubmit()) !== false) {
+				open = false;
+			}
 		} catch (failure) {
 			error = failureMessage(failure);
 		} finally {

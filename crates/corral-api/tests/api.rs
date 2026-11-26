@@ -196,7 +196,13 @@ async fn a_provider_sign_in_starts_a_session_and_me_returns_the_handle() {
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(
         reply.json(),
-        json!({ "handle": "adam", "email": null, "picture": null, "role": "member" })
+        json!({
+            "handle": "adam",
+            "email": null,
+            "picture": null,
+            "role": "member",
+            "provider": "test",
+        })
     );
     let me = browser.get("/api/me").await;
     assert_eq!(me.status, StatusCode::OK);
@@ -360,7 +366,13 @@ async fn provider_cookies_carry_a_login_between_steps_unreadable() {
     assert!(!browser.cookies.contains_key("corral_test_step"));
     assert_eq!(
         browser.get("/api/me").await.json(),
-        json!({ "handle": "adam", "email": "adam@example.com", "picture": null, "role": "member" })
+        json!({
+            "handle": "adam",
+            "email": "adam@example.com",
+            "picture": null,
+            "role": "member",
+            "provider": "test",
+        })
     );
 
     let replay = browser.get("/auth/test/finish").await;

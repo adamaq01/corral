@@ -208,7 +208,11 @@ export type LoginKind = "redirect" | "password";
  */
 export const MIN_PASSWORD_CHARS = 12;
 
-export type Me = { handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, };
+export type Me = { handle: Handle, email: string | null, picture: PictureUrl | null, role: Role,
+/**
+ * The identity provider they log in with.
+ */
+provider: string, };
 
 /**
  * Images users may name themselves, beside the catalog's.
@@ -275,6 +279,8 @@ staleEnvironment: boolean,
 deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "running" } | { "state": "sleeping" } | { "state": "failed", "detail": string } | { "state": "deleting" });
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
+
+export type PasswordChange = { current: string, password: string, };
 
 export type PasswordLogin = { username: string, password: string, };
 
