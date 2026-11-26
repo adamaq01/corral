@@ -63,6 +63,29 @@ export function sections(entries: SetupEntry[]): Sections {
 	};
 }
 
+/** What a new sandbox comes with, as the New sandbox dialog lists it. */
+export type NewSandboxSetup = {
+	/** The required shared entries, which every sandbox gets. */
+	required: SetupEntry[];
+	/** The offered shared entries, then the member's own, chosen when new sandboxes get them. */
+	choices: { entry: SetupEntry; chosen: boolean }[];
+	/** The offered entries an entry of the member's takes the place of, left out of `choices`. */
+	replaced: SetupEntry[];
+};
+
+export function newSandboxSetup(entries: SetupEntry[]): NewSandboxSetup {
+	const offered = entries.filter((entry) => entry.shared === 'offered');
+	const yours = entries.filter((entry) => entry.shared === null);
+	return {
+		required: entries.filter((entry) => entry.shared === 'required'),
+		choices: [...offered.filter((entry) => !entry.shadowed), ...yours].map((entry) => ({
+			entry,
+			chosen: entry.applyToNew
+		})),
+		replaced: offered.filter((entry) => entry.shadowed)
+	};
+}
+
 /** One line saying what the entry holds and which sandboxes get it. */
 export function described(entry: SetupEntry): string {
 	const lines = entry.value.shown === 'text' ? lineCount(entry.value.text) : 0;

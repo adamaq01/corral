@@ -242,18 +242,24 @@ inEveryView((look) => {
 	test.use({ role: 'member' });
 
 	test('sandboxes', async ({ page }) => {
-		await serve(page, { '/api/sandboxes': sandboxes, '/api/catalog': catalog });
+		await serve(page, {
+			'/api/sandboxes': sandboxes,
+			'/api/catalog': catalog,
+			'/api/setup': entries
+		});
 		await page.goto('/sandboxes');
 		await page.getByText('the container exited with code 137').waitFor();
 		await look(page, 'sandboxes');
 
 		await page.getByRole('button', { name: 'New sandbox' }).click();
-		await page.getByRole('dialog').waitFor();
+		const dialog = page.getByRole('dialog');
+		await dialog.getByRole('list', { name: 'What it comes with' }).waitFor();
+		await expect(dialog.getByRole('group', { name: 'Repository' })).toBeVisible();
 		await look(page, 'sandboxes-new', { fullPage: false });
 	});
 
 	test('sandboxes, empty, loading and failed', async ({ page }) => {
-		await serve(page, { '/api/sandboxes': [], '/api/catalog': catalog });
+		await serve(page, { '/api/sandboxes': [], '/api/catalog': catalog, '/api/setup': [] });
 		await page.goto('/sandboxes');
 		await page.getByText('No sandboxes yet').waitFor();
 		await look(page, 'sandboxes-empty');

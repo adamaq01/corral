@@ -9,6 +9,7 @@
 	import { failureMessage } from '#lib/api/client.js';
 	import type { Sandbox } from '#lib/api/generated/index.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
+	import { setup } from '#lib/api/setup.js';
 	import CopyButton from '#lib/components/copy-button.svelte';
 	import CreateSandboxDialog from '#lib/components/create-sandbox-dialog.svelte';
 	import ListSkeleton from '#lib/components/list-skeleton.svelte';
@@ -32,6 +33,7 @@
 
 	const list = new Remote(sandboxes.list);
 	const catalog = new Remote(sandboxes.catalog);
+	const entries = new Remote(setup.list);
 	keepFresh(list, () => list.value?.some(unsettled) ?? false);
 
 	let creating = $state(false);
@@ -53,7 +55,10 @@
 </script>
 
 {#snippet newSandbox()}
-	<Button onclick={() => (creating = true)} disabled={!catalog.value || !list.value}>
+	<Button
+		onclick={() => (creating = true)}
+		disabled={!catalog.value || !list.value || !entries.value}
+	>
 		<PlusIcon />
 		New sandbox
 	</Button>
@@ -73,6 +78,13 @@
 			title="Loading the catalog failed, so you cannot create a sandbox yet"
 			error={catalog.current.error}
 			onretry={() => catalog.reload()}
+		/>
+	{/if}
+	{#if entries.current.state === 'failed'}
+		<LoadFailed
+			title="Loading your setup failed, so you cannot create a sandbox yet"
+			error={entries.current.error}
+			onretry={() => entries.reload()}
 		/>
 	{/if}
 
@@ -183,12 +195,13 @@
 	{/if}
 </div>
 
-{#if catalog.value && list.value}
+{#if catalog.value && list.value && entries.value}
 	<CreateSandboxDialog
 		bind:open={creating}
 		catalog={catalog.value}
 		handle={data.user.handle}
 		count={list.value.length}
+		setup={entries.value}
 		onCreated={created}
 	/>
 {/if}

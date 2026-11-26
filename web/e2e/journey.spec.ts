@@ -110,27 +110,6 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(row).toContainText(fingerprint);
 	});
 
-	let sshCommand = '';
-	await test.step('create a sandbox and see it reach running', async () => {
-		await page.getByRole('link', { name: 'Sandboxes' }).first().click();
-		await page.getByRole('button', { name: 'New sandbox' }).click();
-		const dialog = page.getByRole('dialog', { name: 'New sandbox' });
-		await expect(dialog.getByLabel('Name')).toHaveValue('main');
-		await dialog.getByRole('button', { name: 'Create sandbox' }).click();
-		await expect(page).toHaveURL('/sandboxes/main');
-		await expect(page.getByRole('heading', { name: 'main' })).toBeVisible();
-		await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 90_000 });
-
-		await page.getByRole('button', { name: 'Copy SSH', exact: true }).click();
-		await expect(page.getByText('Copied')).toBeVisible();
-		sshCommand = await page.evaluate(() => navigator.clipboard.readText());
-		expect(sshCommand).toMatch(/^ssh -p \d+ main\.dora@127\.0\.0\.1$/);
-	});
-
-	await test.step('SSH in with the copied command and the added key', async () => {
-		expect(await overSsh(sshCommand, key, 'id -un')).toBe('sandbox');
-	});
-
 	const token = `journey-${randomBytes(12).toString('hex')}`;
 	await test.step('add a secret variable and a file', async () => {
 		await page
@@ -160,6 +139,35 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await file.getByRole('button', { name: 'Save file' }).click();
 		await expect(file).toBeHidden();
 		await expect(page.getByRole('heading', { name: '~/.journey/notes' })).toBeVisible();
+	});
+
+	let sshCommand = '';
+	await test.step('create a sandbox and see it reach running', async () => {
+		await page.getByRole('link', { name: 'Sandboxes' }).first().click();
+		await page.getByRole('button', { name: 'New sandbox' }).click();
+		const dialog = page.getByRole('dialog', { name: 'New sandbox' });
+		await expect(dialog.getByLabel('Name')).toHaveValue('main');
+		const variable = dialog.getByRole('checkbox', { name: 'JOURNEY_TOKEN' });
+		await expect(variable).toBeChecked();
+		await expect(dialog.getByRole('checkbox', { name: '~/.journey/notes' })).not.toBeChecked();
+		await variable.click();
+		await dialog.getByRole('button', { name: 'Create sandbox' }).click();
+		await expect(page).toHaveURL('/sandboxes/main');
+		await expect(page.getByRole('heading', { name: 'main' })).toBeVisible();
+		await expect(
+			page.getByText('Nothing is attached to this sandbox. You have 2 to choose from.')
+		).toBeVisible();
+		await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 90_000 });
+
+		await page.getByRole('button', { name: 'Copy SSH', exact: true }).click();
+		await expect(page.getByText('Copied')).toBeVisible();
+		sshCommand = await page.evaluate(() => navigator.clipboard.readText());
+		expect(sshCommand).toMatch(/^ssh -p \d+ main\.dora@127\.0\.0\.1$/);
+	});
+
+	await test.step('SSH in with the copied command and the added key', async () => {
+		expect(await overSsh(sshCommand, key, 'id -un')).toBe('sandbox');
+		expect(await overSsh(sshCommand, key, 'printenv JOURNEY_TOKEN || echo absent')).toBe('absent');
 	});
 
 	await test.step('attach both to main, and give main a value of its own', async () => {
