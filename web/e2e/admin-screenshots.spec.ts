@@ -156,7 +156,7 @@ const sandboxes: OwnedSandbox[] = [
 	},
 	{
 		...sandbox('bob', 'main', 'dev', 'small', true, { state: 'starting' }, 1),
-		staleEnvironment: true
+		staleSetup: true
 	},
 	sandbox(
 		'grace-hopper',
@@ -492,7 +492,7 @@ function sandbox(
 		isDefault,
 		ssh: { username: `${name}.${owner}`, host: 'corral.example.com', port: 2222 },
 		createdAt: days(age),
-		staleEnvironment: false,
+		staleSetup: false,
 		idle,
 		deleteAt: null,
 		...status

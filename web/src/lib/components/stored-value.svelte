@@ -5,7 +5,7 @@
 	import CopyButton from '#lib/components/copy-button.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { characterCount, download, lineCount, size, valueBytes } from '#lib/environment.js';
+	import { characterCount, download, lineCount, size, valueBytes } from '#lib/setup.js';
 
 	let {
 		value,

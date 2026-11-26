@@ -1,14 +1,14 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { environment } from '#lib/api/environment.js';
-	import type { EntryKind, EnvironmentEntry, ValueInput } from '#lib/api/generated/index.js';
+	import { setup } from '#lib/api/setup.js';
+	import type { EntryKind, SetupEntry, ValueInput } from '#lib/api/generated/index.js';
 	import FormDialog from '#lib/components/form-dialog.svelte';
 	import ValueField from '#lib/components/value-field.svelte';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as RadioGroup from '#lib/components/ui/radio-group/index.js';
 	import { Switch } from '#lib/components/ui/switch/index.js';
-	import { homePath, nameProblem, noun, pathProblem, where } from '#lib/environment.js';
+	import { homePath, nameProblem, noun, pathProblem, where } from '#lib/setup.js';
 
 	type Settings = {
 		kind: EntryKind;
@@ -28,12 +28,12 @@
 	}: {
 		open: boolean;
 		/** The entry to change; without one, the dialog makes a new entry. */
-		entry?: EnvironmentEntry | null;
+		entry?: SetupEntry | null;
 		/** What a new entry starts as. */
 		start?: Partial<Settings>;
 		/** The dialog's title in place of the one it gives itself. */
 		title?: string;
-		onsaved: (entry: EnvironmentEntry) => Promise<void>;
+		onsaved: (entry: SetupEntry) => Promise<void>;
 	} = $props();
 
 	const blank: Settings = {
@@ -85,8 +85,8 @@
 			applyToNew: form.applyToNew
 		};
 		const saved = entry
-			? await environment.change(entry.id, settings)
-			: await environment.create({ ...settings, value: value! });
+			? await setup.change(entry.id, settings)
+			: await setup.create({ ...settings, value: value! });
 		await onsaved(saved);
 	}
 </script>
@@ -111,7 +111,7 @@
 	description={entry
 		? 'Its sandboxes and their overrides stay. Corral refuses a change that would keep one of them from starting, and says why.'
 		: variable
-			? 'Each SSH session of the sandboxes it is attached to gets it as an environment variable.'
+			? 'Each SSH session of the sandboxes it is attached to gets it as a variable.'
 			: 'Written into the home of the sandboxes it is attached to at each start, replacing what is at its path.'}
 	submit={entry ? 'Save changes' : `Save ${noun(form.kind)}`}
 	{ready}

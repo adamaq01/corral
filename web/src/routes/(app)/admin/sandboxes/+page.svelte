@@ -240,12 +240,12 @@
 												<Badge variant="secondary">Default</Badge>
 											{/if}
 										</span>
-										{#if sandbox.deleteAt || sandbox.staleEnvironment}
+										{#if sandbox.deleteAt || sandbox.staleSetup}
 											<span class="flex flex-wrap gap-1">
 												{#if sandbox.deleteAt}
 													<Badge variant="destructive">Deletion scheduled</Badge>
 												{/if}
-												{#if sandbox.staleEnvironment}
+												{#if sandbox.staleSetup}
 													<Badge variant="outline">Restart pending</Badge>
 												{/if}
 											</span>

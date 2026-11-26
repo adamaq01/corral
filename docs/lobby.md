@@ -12,7 +12,7 @@ before any sandbox exists:
    image**, then its reference. The reference is checked at once against the registries allowed
    and the most an image may take to download, and a problem shows under it.
 2. **Size**: one of the catalog's sizes, with its processors, memory and home.
-3. **Environment**: your variables and files, by name and kind (variable or file, template,
+3. **Setup**: your variables and files, by name and kind (variable or file, template,
    secret). Those marked **Apply to new sandboxes** come checked; the others are listed
    unchecked. Values never show.
 4. **Summary**, then **Create**: the installer counts the seconds while the sandbox is created
@@ -37,12 +37,12 @@ numbers, or Enter to keep what is shown.
 it takes sessions, and prints what it made as JSON:
 
 ```sh
-echo '{"image": "dev", "size": "large", "environment": ["GH_TOKEN", ".gitconfig"]}' \
+echo '{"image": "dev", "size": "large", "setup": ["GH_TOKEN", ".gitconfig"]}' \
   | ssh -p 48291 new.<handle>@<host> corral-new
 ```
 
 ```json
-{"name":"new","sshUsername":"new.adam","image":"dev","size":"large","environment":[{"id":"…","kind":"variable","name":"GH_TOKEN"},{"id":"…","kind":"file","name":".gitconfig"}]}
+{"name":"new","sshUsername":"new.adam","image":"dev","size":"large","setup":[{"id":"…","kind":"variable","name":"GH_TOKEN"},{"id":"…","kind":"file","name":".gitconfig"}]}
 ```
 
 Every field of the spec is optional, and empty input is the empty spec `{}`:
@@ -51,9 +51,9 @@ Every field of the spec is optional, and empty input is the empty spec `{}`:
 | --- | --- | --- |
 | `image` | a catalog image's key, or else an image reference, where users may name images | your default image |
 | `size` | a catalog size's key | your default size |
-| `environment` | entries to attach, each by its id or by the variable or file it sets (`GH_TOKEN`, `.gitconfig`) | the entries that apply to new sandboxes |
+| `setup` | entries to attach, each by its id or by the variable or file it sets (`GH_TOKEN`, `.gitconfig`) | the entries that apply to new sandboxes |
 
-`"environment": []` attaches none. An unknown field is refused. On a refusal, such as a bad spec,
+`"setup": []` attaches none. An unknown field is refused. On a refusal, such as a bad spec,
 an unknown size, or a sandbox by that name that exists already, nothing is made: it prints
 `{"error": "..."}` on its error output and exits with status 1.
 

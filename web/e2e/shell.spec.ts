@@ -42,7 +42,7 @@ test.describe('a member', () => {
 
 		await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link')).toHaveText([
 			'Sandboxes',
-			'Environment',
+			'Setup',
 			'Account'
 		]);
 		await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);

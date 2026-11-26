@@ -9,8 +9,8 @@
 	import VariableIcon from '@lucide/svelte/icons/variable';
 	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
-	import { environment } from '#lib/api/environment.js';
-	import type { EntryKind, EnvironmentEntry } from '#lib/api/generated/index.js';
+	import { setup } from '#lib/api/setup.js';
+	import type { EntryKind, SetupEntry } from '#lib/api/generated/index.js';
 	import EntryDialog from '#lib/components/entry-dialog.svelte';
 	import ImportVariablesDialog from '#lib/components/import-variables-dialog.svelte';
 	import ListSkeleton from '#lib/components/list-skeleton.svelte';
@@ -24,10 +24,10 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as Item from '#lib/components/ui/item/index.js';
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
-	import { download, lineCount, summary, toDotenv, where } from '#lib/environment.js';
+	import { download, lineCount, summary, toDotenv, where } from '#lib/setup.js';
 	import { Remote, keepFresh } from '#lib/remote.svelte.js';
 
-	const list = new Remote(environment.list);
+	const list = new Remote(setup.list);
 	keepFresh(list);
 
 	let adding = $state(false);
@@ -51,9 +51,9 @@
 		adding = true;
 	}
 
-	async function created(entry: EnvironmentEntry) {
+	async function created(entry: SetupEntry) {
 		toast.success(`Added ${where(entry)}`);
-		await goto(`/environment/${entry.id}`);
+		await goto(`/setup/${entry.id}`);
 	}
 
 	async function imported(count: number) {
@@ -63,11 +63,11 @@
 		await list.reload();
 	}
 
-	function exportVariables(entries: EnvironmentEntry[]) {
+	function exportVariables(entries: SetupEntry[]) {
 		download('corral.env', toDotenv(entries));
 	}
 
-	function described(entry: EnvironmentEntry): string {
+	function described(entry: SetupEntry): string {
 		const lines = entry.value.shown === 'text' ? lineCount(entry.value.text) : 0;
 		const value =
 			entry.kind === 'variable' || entry.value.shown !== 'text'
@@ -103,8 +103,8 @@
 
 <div class="grid grid-cols-1 gap-6">
 	<PageHeader
-		title="Environment"
-		description="Variables and files your sandboxes receive, such as API keys and tool settings."
+		title="Setup"
+		description="Variables and files your sandboxes come with, such as API keys and tool settings."
 	>
 		{#snippet actions()}
 			{#if list.value?.length}
@@ -125,10 +125,10 @@
 	</Alert.Root>
 
 	{#if list.current.state === 'loading'}
-		<ListSkeleton what="your environment" />
+		<ListSkeleton what="your setup" />
 	{:else if list.current.state === 'failed'}
 		<LoadFailed
-			title="Loading your environment failed"
+			title="Loading your setup failed"
 			error={list.current.error}
 			onretry={() => list.reload()}
 		/>
@@ -179,13 +179,13 @@
 			{#if shown.length === 0}
 				<p class="text-sm text-muted-foreground">Nothing matches.</p>
 			{:else}
-				<ul class="grid gap-2" aria-label="Environment">
+				<ul class="grid gap-2" aria-label="Setup">
 					{#each shown as entry (entry.id)}
 						{@const Icon = entry.kind === 'variable' ? VariableIcon : FileTextIcon}
 						<li>
 							<Item.Root variant="outline">
 								{#snippet child({ props })}
-									<a href="/environment/{entry.id}" {...props}>
+									<a href="/setup/{entry.id}" {...props}>
 										<Item.Media variant="icon">
 											<Icon class="text-muted-foreground" />
 										</Item.Media>

@@ -7,8 +7,8 @@
 	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
 	import { failureMessage } from '#lib/api/client.js';
-	import { environment } from '#lib/api/environment.js';
-	import type { EnvironmentEntry, TemplatePreview, ValueInput } from '#lib/api/generated/index.js';
+	import { setup } from '#lib/api/setup.js';
+	import type { SetupEntry, TemplatePreview, ValueInput } from '#lib/api/generated/index.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import EntryDialog from '#lib/components/entry-dialog.svelte';
@@ -23,12 +23,12 @@
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
-	import { baseName, noun, settings, where } from '#lib/environment.js';
+	import { baseName, noun, settings, where } from '#lib/setup.js';
 	import { Remote } from '#lib/remote.svelte.js';
 
 	let { id }: { id: string } = $props();
 
-	const entry = new Remote(() => environment.get(id));
+	const entry = new Remote(() => setup.get(id));
 	const owned = new Remote(sandboxes.list);
 
 	let editing = $state(false);
@@ -41,21 +41,21 @@
 	let previewIn = $state('');
 	let preview = $state<{ sandbox: string; result: TemplatePreview | string } | null>(null);
 
-	async function replace(current: EnvironmentEntry, value: ValueInput) {
-		const changed = await environment.change(id, { ...settings(current), value });
+	async function replace(current: SetupEntry, value: ValueInput) {
+		const changed = await setup.change(id, { ...settings(current), value });
 		entry.update(() => changed);
 		toast.success(`Saved the value of ${where(changed)}`);
 	}
 
-	async function edited(changed: EnvironmentEntry) {
+	async function edited(changed: SetupEntry) {
 		entry.update(() => changed);
 		preview = null;
 		toast.success(`Saved ${where(changed)}`);
 	}
 
-	async function duplicated(created: EnvironmentEntry) {
+	async function duplicated(created: SetupEntry) {
 		toast.success(`Added ${where(created)}`);
-		await goto(`/environment/${created.id}`);
+		await goto(`/setup/${created.id}`);
 	}
 
 	async function act(sandbox: string, run: () => Promise<unknown>, done: string) {
@@ -72,9 +72,9 @@
 		await entry.reload();
 	}
 
-	async function attachAll(current: EnvironmentEntry, names: string[]) {
+	async function attachAll(current: SetupEntry, names: string[]) {
 		for (const name of names) {
-			await act(name, () => environment.attach(name, current.id), `Attached to ${name}`);
+			await act(name, () => setup.attach(name, current.id), `Attached to ${name}`);
 			if (failure) {
 				return;
 			}
@@ -82,37 +82,37 @@
 	}
 
 	async function detach(sandbox: string) {
-		await environment.detach(sandbox, id);
+		await setup.detach(sandbox, id);
 		toast.success(`Detached from ${sandbox}`);
 		await entry.reload();
 	}
 
 	async function showPreview(sandbox: string) {
 		try {
-			preview = { sandbox, result: await environment.preview(sandbox, id) };
+			preview = { sandbox, result: await setup.preview(sandbox, id) };
 		} catch (error) {
 			preview = { sandbox, result: failureMessage(error) };
 		}
 	}
 
-	async function remove(current: EnvironmentEntry) {
-		await environment.remove(id);
+	async function remove(current: SetupEntry) {
+		await setup.remove(id);
 		toast.success(`Deleted ${where(current)}`);
-		await goto('/environment', { replace: true });
+		await goto('/setup', { replace: true });
 	}
 </script>
 
 <svelte:head>
-	<title>{entry.value ? where(entry.value) : 'Environment'} · Corral</title>
+	<title>{entry.value ? where(entry.value) : 'Setup'} · Corral</title>
 </svelte:head>
 
 <div class="grid grid-cols-1 gap-6">
 	<a
-		href="/environment"
+		href="/setup"
 		class="-ml-1 inline-flex w-fit items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
 	>
 		<ChevronLeftIcon class="size-4" />
-		Environment
+		Setup
 	</a>
 
 	{#if entry.current.state === 'loading'}
@@ -129,11 +129,11 @@
 				<Empty.Description>It may have been deleted.</Empty.Description>
 			</Empty.Header>
 			<Empty.Content>
-				<Button href="/environment" variant="outline">See your environment</Button>
+				<Button href="/setup" variant="outline">See your setup</Button>
 			</Empty.Content>
 		</Empty.Root>
 	{:else if entry.current.state === 'failed'}
-		<h1 class="sr-only">Environment</h1>
+		<h1 class="sr-only">Setup</h1>
 		<LoadFailed
 			title="Loading the entry failed"
 			error={entry.current.error}
@@ -165,7 +165,7 @@
 				</div>
 				<p class="text-sm text-muted-foreground">
 					{variable
-						? 'An environment variable of each SSH session of the sandboxes it is attached to.'
+						? 'A variable of each SSH session, NAME=value'
 						: 'A file Corral writes into the home at each start of the sandboxes it is attached to, replacing what is at its path. Edits made to it inside a sandbox are lost at the next start; change it here instead.'}
 				</p>
 			</div>
@@ -370,7 +370,7 @@
 										onclick={() =>
 											act(
 												sandbox.name,
-												() => environment.attach(sandbox.name, current.id),
+												() => setup.attach(sandbox.name, current.id),
 												`Attached to ${sandbox.name}`
 											)}
 									>

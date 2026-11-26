@@ -35,12 +35,12 @@ test("a failed redirect login's error is shown", async ({ page }) => {
 });
 
 test('a signed-out deep link returns there after signing in', async ({ page }) => {
-	await page.goto('/environment?tab=all');
-	await expect(page).toHaveURL('/sign-in?next=%2Fenvironment%3Ftab%3Dall');
+	await page.goto('/setup?tab=all');
+	await expect(page).toHaveURL('/sign-in?next=%2Fsetup%3Ftab%3Dall');
 
 	await signIn(page, account('member'));
-	await expect(page).toHaveURL('/environment?tab=all');
-	await expect(page.getByRole('heading', { name: 'Environment' })).toBeVisible();
+	await expect(page).toHaveURL('/setup?tab=all');
+	await expect(page.getByRole('heading', { name: 'Setup' })).toBeVisible();
 });
 
 test.describe('signed in', () => {

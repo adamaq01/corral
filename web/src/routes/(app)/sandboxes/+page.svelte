@@ -104,7 +104,7 @@
 	{:else}
 		<ul class="grid gap-2" aria-label="Sandboxes">
 			{#each list.current.value as sandbox (sandbox.name)}
-				{@const stale = sandbox.staleEnvironment}
+				{@const stale = sandbox.staleSetup}
 				<li class="grid">
 					<div class="relative">
 						<Item.Root variant="outline" class={stale ? 'rounded-b-none' : undefined}>
@@ -158,7 +158,7 @@
 										Restart failed: {failure}
 									</span>
 								{:else}
-									Restart to apply your environment changes.
+									Restart to apply your setup changes.
 								{/if}
 							</p>
 							<Button

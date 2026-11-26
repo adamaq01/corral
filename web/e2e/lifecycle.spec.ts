@@ -75,8 +75,8 @@ test('the sandbox page and the list keep up with a power action while it runs an
 		await expect(badge(row, 'Running')).toBeVisible({ timeout: 90_000 });
 	});
 
-	await test.step('an environment change marks the running sandbox until a restart', async () => {
-		const created = await page.request.post('/api/environment', {
+	await test.step('a setup change marks the running sandbox until a restart', async () => {
+		const created = await page.request.post('/api/setup', {
 			data: {
 				kind: 'variable',
 				target: 'LIFECYCLE_TOKEN',
@@ -88,26 +88,26 @@ test('the sandbox page and the list keep up with a power action while it runs an
 		});
 		expect(created.ok(), await created.text()).toBe(true);
 		const { id } = await created.json();
-		const attached = await page.request.put(`/api/sandboxes/main/environment/${id}`, {
+		const attached = await page.request.put(`/api/sandboxes/main/setup/${id}`, {
 			headers: { 'Content-Type': 'application/json' }
 		});
 		expect(attached.ok(), await attached.text()).toBe(true);
 		await page.goto('/sandboxes/main');
-		await expect(page.getByText('Restart to apply your environment changes')).toBeVisible();
+		await expect(page.getByText('Restart to apply your setup changes')).toBeVisible();
 
 		await page
 			.getByRole('navigation', { name: 'Main' })
 			.getByRole('link', { name: 'Sandboxes' })
 			.click();
 		const row = page.getByRole('list', { name: 'Sandboxes' }).getByRole('listitem');
-		await expect(row).toContainText('Restart to apply your environment changes.');
+		await expect(row).toContainText('Restart to apply your setup changes.');
 		await row.getByRole('button', { name: 'Restart main' }).click();
 		await expect(row).not.toContainText('Restart to apply', { timeout: 90_000 });
 		await expect(badge(row, 'Running')).toBeVisible({ timeout: 90_000 });
 
 		await page.goto('/sandboxes/main');
 		await expect(badge(page, 'Running')).toBeVisible();
-		await expect(page.getByText('Restart to apply your environment changes')).toBeHidden();
+		await expect(page.getByText('Restart to apply your setup changes')).toBeHidden();
 	});
 
 	const deleted = await page.request.delete('/api/me');

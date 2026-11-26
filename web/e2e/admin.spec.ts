@@ -40,7 +40,7 @@ test.describe('an admin', () => {
 		await expect(row).toContainText('Local account');
 		await rowAction(people, 'carol', 'Disable user');
 		const disable = page.getByRole('alertdialog', { name: 'Disable carol?' });
-		await expect(disable).toContainText('Their sandboxes, SSH keys and environment stay');
+		await expect(disable).toContainText('Their sandboxes, SSH keys and setup stay');
 		await disable.getByRole('button', { name: 'Disable user' }).click();
 		await expect(disable).toBeHidden();
 		await expect(row).toContainText('Disabled');
@@ -75,7 +75,7 @@ test.describe('an admin', () => {
 
 		await rowAction(people, 'carol', 'Delete user');
 		const confirm = page.getByRole('alertdialog', { name: 'Delete carol?' });
-		await expect(confirm).toContainText('sandboxes, SSH keys and environment');
+		await expect(confirm).toContainText('sandboxes, SSH keys and setup');
 		const remove = confirm.getByRole('button', { name: 'Delete user' });
 		await expect(remove).toBeDisabled();
 		await confirm.getByLabel('Type carol to confirm').fill('carol');

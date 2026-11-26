@@ -135,7 +135,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 	await test.step('add a secret variable and a file', async () => {
 		await page
 			.getByRole('navigation', { name: 'Main' })
-			.getByRole('link', { name: 'Environment' })
+			.getByRole('link', { name: 'Setup' })
 			.click();
 		await page.getByRole('button', { name: 'Add variable' }).first().click();
 		const dialog = page.getByRole('dialog', { name: 'Add a variable' });
@@ -150,7 +150,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		);
 		await expect(page.locator('body')).not.toContainText(token);
 
-		await page.getByRole('link', { name: 'Environment' }).first().click();
+		await page.getByRole('link', { name: 'Setup' }).first().click();
 		await page.getByRole('button', { name: 'Add file' }).first().click();
 		const file = page.getByRole('dialog', { name: 'Add a file' });
 		await file.getByLabel('Path in the home').fill('.journey/notes');
@@ -176,7 +176,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await attach.getByRole('button', { name: 'Attach 2' }).click();
 		await expect(attach).toBeHidden();
 		await expect(section.getByRole('listitem')).toHaveCount(2);
-		await expect(page.getByText('Restart to apply your environment changes')).toBeVisible();
+		await expect(page.getByText('Restart to apply your setup changes')).toBeVisible();
 
 		await page.getByRole('button', { name: 'Override for this sandbox: JOURNEY_TOKEN' }).click();
 		const own = page.getByRole('dialog', { name: 'Override JOURNEY_TOKEN for main' });
@@ -216,7 +216,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await page.getByRole('button', { name: 'Detach ~/.journey/notes' }).click();
 		await confirm.getByRole('button', { name: 'Detach' }).click();
 		await expect(section.getByRole('listitem')).toHaveCount(1);
-		await expect(page.getByText('Restart to apply your environment changes')).toBeVisible();
+		await expect(page.getByText('Restart to apply your setup changes')).toBeVisible();
 
 		await page.getByRole('button', { name: 'Restart' }).click();
 		const restarting = page.getByRole('button', { name: 'Restarting…' });

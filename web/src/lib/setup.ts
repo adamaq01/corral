@@ -1,7 +1,7 @@
 import type {
 	EntryChange,
 	EntryKind,
-	EnvironmentEntry,
+	SetupEntry,
 	StoredValue,
 	ValueInput
 } from '#lib/api/generated/index.js';
@@ -47,7 +47,7 @@ export function summary(value: StoredValue): string {
 }
 
 /** How the entry lands in a sandbox: `NAME` or `~/path`. */
-export function where(entry: Pick<EnvironmentEntry, 'kind' | 'target'>): string {
+export function where(entry: Pick<SetupEntry, 'kind' | 'target'>): string {
 	return entry.kind === 'variable' ? entry.target : `~/${entry.target}`;
 }
 
@@ -57,7 +57,7 @@ export function noun(kind: EntryKind): string {
 }
 
 /** A change that leaves the entry as it is, to spread a change over. */
-export function settings(entry: EnvironmentEntry): EntryChange {
+export function settings(entry: SetupEntry): EntryChange {
 	const { kind, target, secret, template, executable, applyToNew } = entry;
 	return { kind, target, secret, template, executable, applyToNew };
 }
@@ -228,7 +228,7 @@ export function parseDotenv(text: string): {
 }
 
 /** A `.env` text of the plain variables, with a comment naming each secret one left out. */
-export function toDotenv(entries: EnvironmentEntry[]): string {
+export function toDotenv(entries: SetupEntry[]): string {
 	const lines = entries
 		.filter((entry) => entry.kind === 'variable')
 		.map((entry) =>

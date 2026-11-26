@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { failureMessage } from '#lib/api/client.js';
-	import { environment } from '#lib/api/environment.js';
-	import type { EnvironmentEntry } from '#lib/api/generated/index.js';
+	import { setup } from '#lib/api/setup.js';
+	import type { SetupEntry } from '#lib/api/generated/index.js';
 	import FormDialog from '#lib/components/form-dialog.svelte';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import { Textarea } from '#lib/components/ui/textarea/index.js';
-	import { nameProblem, parseDotenv, variableTooLarge } from '#lib/environment.js';
+	import { nameProblem, parseDotenv, variableTooLarge } from '#lib/setup.js';
 
 	let {
 		open = $bindable(),
@@ -16,7 +16,7 @@
 	}: {
 		open: boolean;
 		/** The entries the user has, whose names an import skips. */
-		existing: EnvironmentEntry[];
+		existing: SetupEntry[];
 		onimported: (created: number) => Promise<void>;
 	} = $props();
 
@@ -60,7 +60,7 @@
 		let created = 0;
 		for (const row of ready) {
 			try {
-				await environment.create({
+				await setup.create({
 					kind: 'variable',
 					target: row.name,
 					secret,

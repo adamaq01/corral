@@ -215,8 +215,8 @@
 			end.
 		</p>
 		<p>
-			Their sandboxes, SSH keys and environment stay. Sandboxes running now keep running until they
-			go to sleep. You can enable {user.handle} again at any time.
+			Their sandboxes, SSH keys and setup stay. Sandboxes running now keep running until they go to
+			sleep. You can enable {user.handle} again at any time.
 		</p>
 	</ConfirmDialog>
 {:else if shown?.dialog === 'delete-user'}
@@ -228,6 +228,6 @@
 		confirmName={user.handle}
 		onconfirm={() => deleteUser(user)}
 	>
-		This deletes {user.handle} with their sandboxes, SSH keys and environment. It cannot be undone.
+		This deletes {user.handle} with their sandboxes, SSH keys and setup. It cannot be undone.
 	</ConfirmDialog>
 {/if}

@@ -40,8 +40,8 @@ reset by the image's `/etc/profile` in login shells where it sets its own. An im
 does not reach sessions, so install tools into one of those directories, or add them to `PATH` in
 a file under `/etc/profile.d/`.
 
-Only `/home/sandbox` survives sleep. The home files and variables of a sandbox's environment are
-written at every start. `corral-init` records what it wrote in `~/.config/corral/home-files`,
+Only `/home/sandbox` survives sleep. The home files and variables of a sandbox's setup are written
+at every start. `corral-init` records what it wrote in `~/.config/corral/home-files`,
 removes a file it wrote earlier that is no longer attached unless it was changed since, and lists
 what it could not do in `~/.config/corral/notices`, which the motd of an interactive login and
 `corral status` show.

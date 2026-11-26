@@ -16,7 +16,7 @@ export function setAllowance(user: User, maxSandboxes: number | null): Promise<U
 	} satisfies AllowanceChange);
 }
 
-/** Deletes the user with their sandboxes, keys and environment, or finishes a failed deletion. */
+/** Deletes the user with their sandboxes, keys and setup, or finishes a failed deletion. */
 export function deleteUser(user: User): Promise<void> {
 	return api.delete(`/api/admin/users/${user.id}`);
 }

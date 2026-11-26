@@ -22,7 +22,7 @@ The T2 recipes, one per CI job:
   light at desktop width and dark at phone width.
 - `just images`: the sandbox image's tools, and the overlay on each base image.
 - `just e2e-compose`: the smoke part of the Docker Compose install, `tests/e2e/compose.sh`: the
-  stack comes up, sign-in, SSH, refusals, the environment, `corral-new`, persistence across
+  stack comes up, sign-in, SSH, refusals, the setup, `corral-new`, persistence across
   restarts, deletion.
 - `just e2e-kind`: on one kind cluster, the agent-sandbox engine's cluster tests, then the chart
   e2e, `deploy/helm/e2e.sh`; the second runs when the first fails, and both are reported.

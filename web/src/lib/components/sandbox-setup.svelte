@@ -3,7 +3,7 @@
 	import PlusIcon from '@lucide/svelte/icons/plus';
 	import VariableIcon from '@lucide/svelte/icons/variable';
 	import { toast } from 'svelte-sonner';
-	import { environment } from '#lib/api/environment.js';
+	import { setup } from '#lib/api/setup.js';
 	import type { AttachedEntry, ValueInput } from '#lib/api/generated/index.js';
 	import AttachEntryDialog from '#lib/components/attach-entry-dialog.svelte';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
@@ -14,13 +14,13 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
-	import { baseName, where } from '#lib/environment.js';
+	import { baseName, where } from '#lib/setup.js';
 	import { Remote } from '#lib/remote.svelte.js';
 
 	let { sandbox, onchanged }: { sandbox: string; onchanged: () => Promise<void> } = $props();
 
-	const attached = new Remote(() => environment.ofSandbox(sandbox));
-	const registry = new Remote(environment.list);
+	const attached = new Remote(() => setup.ofSandbox(sandbox));
+	const registry = new Remote(setup.list);
 	const unattached = $derived(
 		(registry.value ?? []).filter(
 			(entry) => !attached.value?.some((held) => held.entry.id === entry.id)
@@ -44,20 +44,20 @@
 
 	async function saveOverride(value: ValueInput) {
 		if (overriding) {
-			await environment.override(sandbox, overriding.entry.id, value);
+			await setup.override(sandbox, overriding.entry.id, value);
 			toast.success(`Saved the override of ${where(overriding.entry)} for ${sandbox}`);
 			await changed();
 		}
 	}
 
 	async function clearOverride(held: AttachedEntry) {
-		await environment.clearOverride(sandbox, held.entry.id);
+		await setup.clearOverride(sandbox, held.entry.id);
 		toast.success(`${sandbox} takes ${where(held.entry)}'s own value again`);
 		await changed();
 	}
 
 	async function detach(held: AttachedEntry) {
-		await environment.detach(sandbox, held.entry.id);
+		await setup.detach(sandbox, held.entry.id);
 		toast.success(`Detached ${where(held.entry)} from ${sandbox}`);
 		await changed();
 	}
@@ -65,11 +65,11 @@
 
 <Card.Root>
 	<Card.Header>
-		<Card.Title>Environment</Card.Title>
+		<Card.Title>Setup</Card.Title>
 		<Card.Description>
 			The variables and files this sandbox gets at each start, from
-			<a class="underline underline-offset-4" href="/environment">Environment</a>. An override gives
-			one of them another value here alone.
+			<a class="underline underline-offset-4" href="/setup">Setup</a>. An override gives one of them
+			another value here alone.
 		</Card.Description>
 		{#if attached.value?.length}
 			<Card.Action>
@@ -87,12 +87,12 @@
 	</Card.Header>
 	<Card.Content>
 		{#if attached.current.state === 'loading'}
-			<div class="grid gap-2" role="status" aria-label="Loading the sandbox's environment">
+			<div class="grid gap-2" role="status" aria-label="Loading the sandbox's setup">
 				<Skeleton class="h-14 rounded-lg" />
 			</div>
 		{:else if attached.current.state === 'failed'}
 			<LoadFailed
-				title="Loading the sandbox's environment failed"
+				title="Loading the sandbox's setup failed"
 				error={attached.current.error}
 				onretry={() => attached.reload()}
 			/>
@@ -103,7 +103,7 @@
 				<p class="text-sm text-muted-foreground">
 					Nothing is attached to this sandbox. {(registry.value?.length ?? 0) > 0
 						? `You have ${registry.value?.length} to choose from.`
-						: 'Add an API key, a token or a config file on Environment first.'}
+						: 'Add an API key, a token or a config file on Setup first.'}
 				</p>
 				{#if (registry.value?.length ?? 0) > 0}
 					<Button variant="outline" size="sm" onclick={() => (attaching = true)}>
@@ -111,7 +111,7 @@
 						Attach variables and files
 					</Button>
 				{:else}
-					<Button variant="outline" size="sm" href="/environment">Go to Environment</Button>
+					<Button variant="outline" size="sm" href="/setup">Go to Setup</Button>
 				{/if}
 			</div>
 		{:else}
@@ -126,7 +126,7 @@
 							<Icon class="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
 							<div class="grid min-w-0 flex-1 gap-1.5">
 								<p class="flex flex-wrap items-center gap-2 text-sm font-medium">
-									<a class="font-mono break-all hover:underline" href="/environment/{entry.id}">
+									<a class="font-mono break-all hover:underline" href="/setup/{entry.id}">
 										{where(entry)}
 									</a>
 									{#if entry.secret}

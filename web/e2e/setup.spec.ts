@@ -1,12 +1,12 @@
 import type { Page, Route } from '@playwright/test';
-import type { AttachedEntry, EnvironmentEntry, Sandbox } from '../src/lib/api/generated/index.js';
+import type { AttachedEntry, Sandbox, SetupEntry } from '../src/lib/api/generated/index.js';
 import { expect, test, idle } from './fixtures';
 
 test.use({ role: 'member' });
 
 const setAt = '2026-11-20T17:45:00Z';
 
-function entry(extra: Partial<EnvironmentEntry>): EnvironmentEntry {
+function entry(extra: Partial<SetupEntry>): SetupEntry {
 	return {
 		id: '3f1c2a4e-5b6d-4e7f-8a9b-0c1d2e3f4a5b',
 		kind: 'variable',
@@ -41,18 +41,16 @@ async function record(page: Page, path: string, reply: (route: Route) => unknown
 
 test('a secret variable shows while typed, and is sent as typed', async ({ page }) => {
 	const calls: Call[] = [];
-	await page.route('**/api/environment', async (route) => {
+	await page.route('**/api/setup', async (route) => {
 		if (route.request().method() === 'GET') {
 			return route.fulfill({ json: [] });
 		}
 		calls.push({ method: 'POST', path: '', body: route.request().postDataJSON() });
 		return route.fulfill({ status: 201, json: entry({}) });
 	});
-	await page.route(`**/api/environment/${entry({}).id}`, (route) =>
-		route.fulfill({ json: entry({}) })
-	);
+	await page.route(`**/api/setup/${entry({}).id}`, (route) => route.fulfill({ json: entry({}) }));
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Add a variable' });
 	const name = dialog.getByLabel('Name');
@@ -77,7 +75,7 @@ test('a secret variable shows while typed, and is sent as typed', async ({ page 
 	await dialog.getByRole('switch', { name: 'Apply to new sandboxes' }).click();
 	await dialog.getByRole('button', { name: 'Save variable' }).click();
 
-	await expect(page).toHaveURL(`/environment/${entry({}).id}`);
+	await expect(page).toHaveURL(`/setup/${entry({}).id}`);
 	await expect(page.getByRole('img', { name: 'Secret value, 40 characters' })).toContainText(
 		'ghp_••••••••••••Xz'
 	);
@@ -95,8 +93,8 @@ test('a secret variable shows while typed, and is sent as typed', async ({ page 
 });
 
 test('a variable refuses pasted lines and a value past its limit', async ({ page }) => {
-	await page.route('**/api/environment', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Add a variable' });
 	await dialog.getByLabel('Name').fill('http_proxy');
@@ -119,14 +117,14 @@ test('a variable refuses pasted lines and a value past its limit', async ({ page
 
 test('a file is sent as typed or as the bytes uploaded, up to the limit', async ({ page }) => {
 	const sent: unknown[] = [];
-	await page.route('**/api/environment', async (route) => {
+	await page.route('**/api/setup', async (route) => {
 		if (route.request().method() === 'GET') {
 			return route.fulfill({ json: [] });
 		}
 		sent.push(route.request().postDataJSON());
 		return route.fulfill({ status: 400, json: { error: 'refused to stay on the page' } });
 	});
-	await page.goto('/environment');
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add file' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Add a file' });
 	await dialog.getByLabel('Path in the home').fill('~/.config/corral/x');
@@ -192,7 +190,7 @@ test('an entry changes name, kind and secrecy, and an untouched value saves noth
 	const calls: Call[] = [];
 	await record(
 		page,
-		`/api/environment/${file.id}`,
+		`/api/setup/${file.id}`,
 		(route) => {
 			if (route.request().method() === 'GET') {
 				return { json: file };
@@ -203,7 +201,7 @@ test('an entry changes name, kind and secrecy, and an untouched value saves noth
 		calls
 	);
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
-	await page.goto(`/environment/${file.id}`);
+	await page.goto(`/setup/${file.id}`);
 	await expect(page.getByRole('img', { name: 'Secret value, 411 bytes' })).toBeVisible();
 
 	await page.getByRole('button', { name: 'Replace value' }).click();
@@ -271,20 +269,18 @@ test('a sandbox attaches several entries, overrides and detaches them', async ({
 		isDefault: true,
 		ssh: { username: 'main.bob', host: 'corral.example.lan', port: 48291 },
 		createdAt: setAt,
-		staleEnvironment: false,
+		staleSetup: false,
 		idle,
 		deleteAt: null,
 		state: 'running'
 	};
 	await page.route('**/api/sandboxes/main', (route) => route.fulfill({ json: sandbox }));
-	await page.route('**/api/environment', (route) => route.fulfill({ json: [token, notes, name] }));
-	await page.route('**/api/sandboxes/main/environment', (route) =>
-		route.fulfill({ json: attached })
-	);
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [token, notes, name] }));
+	await page.route('**/api/sandboxes/main/setup', (route) => route.fulfill({ json: attached }));
 	const calls: Call[] = [];
 	await record(
 		page,
-		'/api/sandboxes/main/environment/*',
+		'/api/sandboxes/main/setup/*',
 		(route) => {
 			const request = route.request();
 			const id = new URL(request.url()).pathname.split('/').at(-1);
@@ -300,7 +296,7 @@ test('a sandbox attaches several entries, overrides and detaches them', async ({
 	);
 	await record(
 		page,
-		'/api/sandboxes/main/environment/*/override',
+		'/api/sandboxes/main/setup/*/override',
 		(route) => {
 			const overriding = route.request().method() === 'PUT';
 			attached = attached.map((held) =>
@@ -380,12 +376,10 @@ test('files count their lines, keep their case, and are named by their path', as
 		secret: false,
 		value: { setAt, size: 0, shown: 'text', text: '' }
 	});
-	await page.route('**/api/environment', (route) =>
-		route.fulfill({ json: [short, long, lower, empty] })
-	);
-	await page.route(`**/api/environment/${long.id}`, (route) => route.fulfill({ json: long }));
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [short, long, lower, empty] }));
+	await page.route(`**/api/setup/${long.id}`, (route) => route.fulfill({ json: long }));
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.goto('/setup');
 	const listed = (target: string) => page.getByRole('link', { name: new RegExp(target) });
 	await expect(listed('hushlogin')).toContainText('1 line · attached to no sandbox');
 	await expect(listed('notes')).toContainText('20 lines · attached to no sandbox');
@@ -399,7 +393,7 @@ test('files count their lines, keep their case, and are named by their path', as
 		'Attached to no sandbox · new sandboxes get it'
 	);
 
-	await page.goto(`/environment/${long.id}`);
+	await page.goto(`/setup/${long.id}`);
 	await expect(page.getByRole('button', { name: 'Show all 20 lines' })).toBeVisible();
 	await page.getByRole('button', { name: 'Duplicate' }).click();
 	const duplicate = page.getByRole('dialog', { name: 'Duplicate ~/notes/t.txt' });
@@ -415,8 +409,8 @@ test('files count their lines, keep their case, and are named by their path', as
 });
 
 test('an import names how many variables it would import', async ({ page }) => {
-	await page.route('**/api/environment', (route) => route.fulfill({ json: [] }));
-	await page.goto('/environment');
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Import .env' }).first().click();
 	const dialog = page.getByRole('dialog', { name: 'Import variables' });
 	const button = (name: string) => dialog.getByRole('button', { name, exact: true });
@@ -431,7 +425,7 @@ test('an entry lives through Corral: made, renamed, made secret and deleted', as
 	const suffix = Math.random().toString(36).slice(2, 8);
 	const first = `e2e_${suffix}`;
 	const renamed = `E2E_${suffix.toUpperCase()}`;
-	await page.goto('/environment');
+	await page.goto('/setup');
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const add = page.getByRole('dialog', { name: 'Add a variable' });
 	await add.getByLabel('Name').fill(first);
@@ -451,7 +445,7 @@ test('an entry lives through Corral: made, renamed, made secret and deleted', as
 		'sk-l••••••••••••ef'
 	);
 
-	await page.getByRole('link', { name: 'Environment' }).first().click();
+	await page.getByRole('link', { name: 'Setup' }).first().click();
 	await page.getByRole('button', { name: 'Add variable' }).first().click();
 	const again = page.getByRole('dialog', { name: 'Add a variable' });
 	await again.getByLabel('Name').fill(renamed);
@@ -465,6 +459,6 @@ test('an entry lives through Corral: made, renamed, made secret and deleted', as
 	const confirm = page.getByRole('alertdialog');
 	await confirm.getByLabel(`Type ${renamed} to confirm`).fill(renamed);
 	await confirm.getByRole('button', { name: 'Delete variable' }).click();
-	await expect(page).toHaveURL('/environment');
+	await expect(page).toHaveURL('/setup');
 	await expect(page.getByRole('link', { name: new RegExp(renamed) })).toHaveCount(0);
 });
