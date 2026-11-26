@@ -24,6 +24,7 @@
 		catalogView,
 		put,
 		refusal,
+		stillSelected,
 		without,
 		type ImageEntry,
 		type SizeEntry
@@ -193,14 +194,24 @@
 			bind:open
 			image={shown.image}
 			refuse={(key) => refusal(view.images, key, 'an image')}
-			onsave={(image) => (view.images = put(view.images, image.key, image))}
+			onsave={(image) => {
+				view.images = put(view.images, image.key, image);
+				view.defaults.value.image = stillSelected(
+					view.images,
+					view.defaults.value.image,
+					image.key
+				);
+			}}
 		/>
 	{:else if shown?.dialog === 'size'}
 		<SizeDialog
 			bind:open
 			size={shown.size}
 			refuse={(key) => refusal(view.sizes, key, 'a size')}
-			onsave={(size) => (view.sizes = put(view.sizes, size.key, size))}
+			onsave={(size) => {
+				view.sizes = put(view.sizes, size.key, size);
+				view.defaults.value.size = stillSelected(view.sizes, view.defaults.value.size, size.key);
+			}}
 		/>
 	{:else if shown?.dialog === 'remove'}
 		{@const { kind, key } = shown}

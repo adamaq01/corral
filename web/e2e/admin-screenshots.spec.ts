@@ -348,6 +348,20 @@ inEveryView((look) => {
 		await look(page, 'settings-catalog-size', { fullPage: false });
 	});
 
+	test('settings, catalog, built in', async ({ page }) => {
+		await answer(page, '/api/admin/settings/catalog', {
+			...catalog,
+			images: [{ ...catalog.images[0], source: 'builtin' }],
+			sizes: [{ ...catalog.sizes[0], source: 'builtin' }],
+			namedImages: null,
+			defaultImage: 'ubuntu',
+			shadowedImages: []
+		} satisfies CatalogSettings);
+		await page.goto('/admin/settings/catalog');
+		await page.getByText('Corral offers this until you add your own.').first().waitFor();
+		await look(page, 'settings-catalog-builtin');
+	});
+
 	test('settings, limits', async ({ page }) => {
 		await answer(page, '/api/admin/settings/limits', {
 			...limits,

@@ -601,6 +601,7 @@ mod tests {
         MAX_SANDBOXES, MemorySettingsRepo, World, admin_proof, catalog, catalog_change,
         image_option,
     };
+    use crate::ports::SettingsRepo;
     use crate::{Error, Result};
 
     fn image(key: &str) -> ImageKey {
@@ -660,6 +661,57 @@ mod tests {
                 max_sandboxes_per_member: 5,
                 max_running: 6,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn the_builtin_catalog_is_marked_builtin_and_replaceable() {
+        let w = World::new();
+        w.settings_repo
+            .set_catalog(&CatalogChange::default())
+            .await
+            .unwrap();
+        let root = admin_proof(&w.admin("root").await);
+        let builtin = w.settings.catalog().await.unwrap();
+        assert!(
+            builtin
+                .images()
+                .iter()
+                .map(|image| image.source)
+                .chain(builtin.sizes().iter().map(|size| size.source))
+                .all(|source| source == Source::Builtin)
+        );
+
+        let ubuntu = CatalogChange {
+            images: vec![image_option("ubuntu", "docker.io/library/ubuntu:24.04")],
+            ..CatalogChange::default()
+        };
+        w.settings.set_catalog(&root, ubuntu).await.unwrap();
+        assert_eq!(
+            w.settings
+                .catalog()
+                .await
+                .unwrap()
+                .images()
+                .iter()
+                .map(|image| (image.key.as_str(), image.source))
+                .collect::<Vec<_>>(),
+            [("ubuntu", Source::Database)]
+        );
+
+        w.settings_repo
+            .set_catalog(&CatalogChange::default())
+            .await
+            .unwrap();
+        let adam = w.member("adam").await;
+        w.sandbox(&adam, "main").await;
+        let debian = CatalogChange {
+            images: vec![image_option("debian", "docker.io/library/debian:13")],
+            ..CatalogChange::default()
+        };
+        assert_eq!(
+            invalid(w.settings.set_catalog(&root, debian).await),
+            "image \"ubuntu\" is used by main.adam; disable it instead of removing it"
         );
     }
 

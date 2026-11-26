@@ -2,9 +2,10 @@ use axum::Router;
 use axum::http::StatusCode;
 use corral_api::router;
 use corral_api::testing::{Browser, Reply, api, trusting_provider};
-use corral_core::app::{Configured, Registry, Source};
+use corral_core::app::{CatalogChange, Configured, Registry, Source};
 use corral_core::domain::Role;
 use corral_core::fakes::{EngineCall, MAX_SANDBOXES, PROVIDER, World, image_option};
+use corral_core::ports::SettingsRepo;
 use serde_json::{Value, json};
 
 struct Corral {
@@ -248,6 +249,32 @@ async fn what_config_sets_is_locked_in_the_api() {
     }]);
     let taken = put(&mut root, "/api/admin/settings/registries", registry).await;
     refused(&taken, StatusCode::BAD_REQUEST, &["set in config"]);
+}
+
+#[tokio::test]
+async fn the_builtin_catalog_answers_its_own_source() {
+    let world = World::with_configured(Configured::default());
+    world
+        .settings_repo
+        .set_catalog(&CatalogChange::default())
+        .await
+        .unwrap();
+    let corral = Corral::over(world);
+    let mut root = corral.signed_in("root", Role::Admin).await;
+
+    let catalog = root.get("/api/admin/settings/catalog").await.json();
+    let sources: Vec<(&Value, &Value)> = ["images", "sizes"]
+        .iter()
+        .flat_map(|kind| catalog[kind].as_array().unwrap())
+        .map(|entry| (&entry["key"], &entry["source"]))
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            (&json!("ubuntu"), &json!("builtin")),
+            (&json!("small"), &json!("builtin")),
+        ]
+    );
 }
 
 #[tokio::test]

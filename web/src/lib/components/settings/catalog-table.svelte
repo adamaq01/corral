@@ -80,6 +80,11 @@
 									{@render detail(row.entry)}
 								</span>
 								<ConfigBadge state={row.state} />
+								{#if row.state === 'builtin'}
+									<span class="text-xs text-muted-foreground">
+										Corral offers this until you add your own.
+									</span>
+								{/if}
 							</div>
 						</Table.Cell>
 						<Table.Cell class="{wide} whitespace-normal">{@render detail(row.entry)}</Table.Cell>

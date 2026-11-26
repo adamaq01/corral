@@ -377,9 +377,10 @@ export type SizeKey = string;
 export type SizeSetting = { source: Source, key: SizeKey, label: string, cpuRequest: string, cpuLimit: string, memoryRequest: string, memoryLimit: string, homeSize: string, enabled: boolean, };
 
 /**
- * Who owns a setting: the config file, or the admin through the web UI.
+ * Who owns a setting: the config file, the admin through the web UI, or Corral itself for the
+ * built-in image or size offered while neither the config nor the database has one.
  */
-export type Source = "config" | "database";
+export type Source = "config" | "database" | "builtin";
 
 /**
  * Where people point their SSH client.

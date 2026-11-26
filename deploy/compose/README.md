@@ -100,7 +100,8 @@ block, and wakes, stops, restarts or deletes the sandbox.
   and registry logins. What `config.toml` sets under `[catalog]`, `[limits]` and `[[registries]]`
   shows there locked, and Settings takes more images, sizes and registries beside it. With no
   image in either, the catalog offers the sandbox image, and with no size, one of 2 CPUs and
-  4 GiB.
+  4 GiB. Settings marks those **Built in**, and the first image or size added there replaces
+  them.
 - Your **Account** sets the image and size a new sandbox gets unless you pick others, and the
   installer starts from them. Until you set them, they are the catalog's defaults.
 - Users can also name an image of their own once the admin allows it under **Settings** >

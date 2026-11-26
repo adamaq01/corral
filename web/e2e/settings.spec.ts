@@ -1,6 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { request, type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import type { Catalog, OwnedSandbox, SizeSetting } from '../src/lib/api/generated/index.js';
+import type {
+	Catalog,
+	CatalogChange,
+	CatalogSettings,
+	OwnedSandbox,
+	SizeSetting
+} from '../src/lib/api/generated/index.js';
 import { expect, session, test } from './fixtures';
 
 type Size = Omit<SizeSetting, 'source' | 'enabled'>;
@@ -73,6 +79,60 @@ test.describe('an admin', () => {
 		await expect(dialog).toBeHidden();
 		expect(sent).toEqual([]);
 		await member.dispose();
+	});
+
+	test('shows the built-in catalog as built in, and the first entries added replace it', async ({
+		page
+	}) => {
+		const saved: CatalogChange[] = [];
+		await page.route('**/api/admin/settings/catalog', async (route) => {
+			if (route.request().method() === 'GET') {
+				await route.fulfill({ json: builtin });
+			} else {
+				saved.push(route.request().postDataJSON());
+				await route.fulfill({ status: 204 });
+			}
+		});
+		await page.goto('/admin/settings/catalog');
+		const images = page.getByRole('table', { name: 'Images' });
+		const sizes = page.getByRole('table', { name: 'Sizes' });
+		for (const offered of [entry(images, 'ubuntu'), entry(sizes, 'small')]) {
+			await expect(offered).toContainText('Built in');
+			await expect(offered).toContainText('Corral offers this until you add your own.');
+			await expect(offered.getByRole('button')).toHaveCount(0);
+			await expect(offered.getByRole('switch')).toHaveCount(0);
+		}
+
+		await page.getByRole('button', { name: 'Add image' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Add image' });
+		await dialog.getByLabel('Key').fill('ubuntu');
+		await dialog.getByLabel('Label').fill('Ubuntu');
+		await dialog.getByLabel('Reference').fill('docker.io/library/ubuntu:24.04');
+		await dialog.getByRole('button', { name: 'Add image' }).click();
+		await expect(dialog).toBeHidden();
+		const ubuntu = entry(images, 'ubuntu');
+		await expect(ubuntu).toHaveCount(1);
+		await expect(ubuntu).not.toContainText('Built in');
+		await expect(ubuntu.getByRole('button', { name: 'Actions for ubuntu' })).toBeVisible();
+
+		await addSize(page, {
+			key: 'tiny',
+			label: 'Tiny',
+			cpuRequest: '250m',
+			cpuLimit: '1',
+			memoryRequest: '512Mi',
+			memoryLimit: '1Gi',
+			homeSize: '1Gi'
+		});
+		await expect(entry(sizes, 'small')).toHaveCount(0);
+		await expect(sizes.getByRole('radio', { name: 'Default size: tiny' })).toBeChecked();
+		await save(page);
+		await expect.poll(() => saved.length).toBe(1);
+		expect(saved[0]).toMatchObject({
+			images: [{ key: 'ubuntu', reference: 'docker.io/library/ubuntu:24.04' }],
+			sizes: [{ key: 'tiny' }],
+			defaults: { image: 'ubuntu', size: 'tiny' }
+		});
 	});
 
 	test('refuses removing a size a sandbox uses, naming it', async ({ page, baseURL }) => {
@@ -177,6 +237,40 @@ test.describe('an admin', () => {
 		await member.dispose();
 	});
 });
+
+const builtin: CatalogSettings = {
+	images: [
+		{
+			key: 'ubuntu',
+			label: 'Ubuntu 24.04',
+			reference: 'ghcr.io/adamaq01/corral-sandbox',
+			description: '',
+			enabled: true,
+			source: 'builtin'
+		}
+	],
+	sizes: [
+		{
+			key: 'small',
+			label: 'Small: 2 CPUs, 4 GiB',
+			cpuRequest: '500m',
+			cpuLimit: '2',
+			memoryRequest: '1Gi',
+			memoryLimit: '4Gi',
+			homeSize: '10Gi',
+			enabled: true,
+			source: 'builtin'
+		}
+	],
+	namedImages: null,
+	namedImagesSource: 'database',
+	defaultImage: 'ubuntu',
+	defaultSize: 'small',
+	defaultsSource: 'database',
+	defaultsFellBack: false,
+	shadowedImages: [],
+	shadowedSizes: []
+};
 
 /** The row of `table` whose key, or registry, is exactly `key`. */
 function entry(table: Locator, key: string): Locator {

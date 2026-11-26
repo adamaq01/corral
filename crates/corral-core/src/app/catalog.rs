@@ -7,12 +7,14 @@ use ts_rs::TS;
 use crate::domain::{Allocation, ImageKey, ImageReference, Resources, SizeKey};
 use crate::{Error, Result};
 
-/// Who owns a setting: the config file, or the admin through the web UI.
+/// Who owns a setting: the config file, the admin through the web UI, or Corral itself for the
+/// built-in image or size offered while neither the config nor the database has one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     Config,
     Database,
+    Builtin,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,14 +117,14 @@ impl Catalog {
                 reference: "ghcr.io/adamaq01/corral-sandbox".to_owned(),
                 description: String::new(),
                 enabled: true,
-                source: Source::Config,
+                source: Source::Builtin,
             }],
             vec![SizePreset {
                 key: size.clone(),
                 label: "Small: 2 CPUs, 4 GiB".to_owned(),
                 resources,
                 enabled: true,
-                source: Source::Config,
+                source: Source::Builtin,
             }],
             CatalogDefaults { image, size },
         )

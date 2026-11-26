@@ -19,11 +19,13 @@ export type RegistryEntry = RegistryChange & {
 
 /**
  * A row of a settings list, keyed by its image or size key or its registry: one the config file
- * sets, locked; one kept here, which the admin changes; or one kept here whose key the config file
- * now sets too, so it is not used and can only be removed.
+ * sets, locked; one kept here, which the admin changes; one Corral offers while neither has an
+ * entry of its kind, which the first entry kept here replaces; or one kept here whose key the
+ * config file now sets too, so it is not used and can only be removed.
  */
 export type Row<T> =
-	{ state: 'locked' | 'editable'; key: string; entry: T } | { state: 'shadowed'; key: string };
+	| { state: 'locked' | 'editable' | 'builtin'; key: string; entry: T }
+	| { state: 'shadowed'; key: string };
 
 /** A value, and whether the config file sets it. */
 export type Locked<T> = { value: T; locked: boolean };
@@ -133,18 +135,29 @@ export function registriesChange(view: RegistriesView): RegistryChange[] {
 
 /** Why `key` cannot name a new row of `rows`, if it cannot, with `taken` such as "a size". */
 export function refusal(rows: Row<unknown>[], key: string, taken: string): string | null {
-	const row = rows.find((each) => each.key.toLowerCase() === key.trim().toLowerCase());
+	const row = rows.find(
+		(each) => each.state !== 'builtin' && each.key.toLowerCase() === key.trim().toLowerCase()
+	);
 	if (!row) {
 		return null;
 	}
 	return row.state === 'editable' ? `${key} is already ${taken}` : `${key} is set in config`;
 }
 
-/** `rows` with `entry` kept here under `key`, in place of the row it had or after the others. */
+/**
+ * `rows` with `entry` kept here under `key`, in place of the row it had or after the others, and
+ * without the built-in rows it replaces.
+ */
 export function put<T>(rows: Row<T>[], key: string, entry: T): Row<T>[] {
 	const kept: Row<T> = { state: 'editable', key, entry };
-	const at = rows.findIndex((row) => row.state === 'editable' && row.key === key);
-	return at === -1 ? [...rows, kept] : rows.with(at, kept);
+	const others = rows.filter((row) => row.state !== 'builtin');
+	const at = others.findIndex((row) => row.state === 'editable' && row.key === key);
+	return at === -1 ? [...others, kept] : others.with(at, kept);
+}
+
+/** The default `selected`, or `added` once no row has `selected`, as when `added` replaced it. */
+export function stillSelected(rows: Row<unknown>[], selected: string, added: string): string {
+	return rows.some((row) => row.key === selected) ? selected : added;
 }
 
 /** `rows` without the row kept here under `key`. */
@@ -152,9 +165,14 @@ export function without<T>(rows: Row<T>[], key: string): Row<T>[] {
 	return rows.filter((row) => row.state === 'locked' || row.key !== key);
 }
 
+const states = {
+	config: 'locked',
+	database: 'editable',
+	builtin: 'builtin'
+} as const satisfies Record<Source, Row<unknown>['state']>;
+
 function row<T extends { source: Source }>(key: string, { source, ...entry }: T) {
-	const state = source === 'config' ? ('locked' as const) : ('editable' as const);
-	return { state, key, entry };
+	return { state: states[source], key, entry };
 }
 
 function shadowed(key: string) {
