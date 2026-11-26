@@ -394,7 +394,9 @@ test.describe('an admin', () => {
 		await expect(choice.getByRole('alert')).toHaveCount(0);
 		await dialog.getByRole('button', { name: 'Save entry' }).click();
 		await expect(dialog).toBeHidden();
-		const offered = entry(page.getByRole('table', { name: 'Shared setup' }), 'ANTHROPIC_BASE_URL');
+		const table = page.getByRole('table', { name: 'Shared setup' });
+		await expect(table.getByRole('columnheader').nth(1)).toHaveText('Shared as');
+		const offered = entry(table, 'ANTHROPIC_BASE_URL');
 		await expect(offered.getByRole('cell').nth(4)).toHaveText('jules');
 
 		await offered.getByRole('button', { name: 'Actions for ANTHROPIC_BASE_URL' }).click();

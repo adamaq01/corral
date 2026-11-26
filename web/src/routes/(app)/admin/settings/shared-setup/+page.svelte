@@ -161,7 +161,7 @@
 						<Table.Header>
 							<Table.Row>
 								<Table.Head>Entry</Table.Head>
-								<Table.Head>Kind</Table.Head>
+								<Table.Head>Shared as</Table.Head>
 								<Table.Head class={wide}>New sandboxes</Table.Head>
 								<Table.Head class={wide}>Attached</Table.Head>
 								<Table.Head class={wide}>Shadowed by</Table.Head>
