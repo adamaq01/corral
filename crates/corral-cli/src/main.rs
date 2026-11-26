@@ -4,6 +4,8 @@
 mod activity;
 mod client;
 mod command;
+mod first_start;
+mod notices;
 mod sandbox_file;
 
 use std::path::PathBuf;
@@ -29,13 +31,19 @@ fn main() -> ExitCode {
         }
     };
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-    if command == Command::ReportActivity {
-        activity::run(&home);
+    match command {
+        Command::ReportActivity => activity::run(&home),
+        Command::FirstStart => {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            first_start::run(&home, &path, first_start::TIMEOUT);
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
     }
     let outcome = SandboxFile::read(&home)
         .and_then(|file| run(&command, &file, &Client::new(&file)))
         .map(|text| match command {
-            Command::Status => with_notices(text, &sandbox_file::notices(&home)),
+            Command::Status => with_notices(text, &notices::read(&home)),
             _ => text,
         });
     match outcome {
@@ -104,7 +112,7 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
                 file.web.trim_end_matches('/')
             ))
         }
-        Command::Help | Command::ReportActivity => Ok(USAGE.to_owned()),
+        Command::Help | Command::ReportActivity | Command::FirstStart => Ok(USAGE.to_owned()),
     }
 }
 
@@ -140,28 +148,35 @@ fn expect(reply: client::Reply, status: u16) -> Result<Value, String> {
 
 fn status(sandbox: &Value, repository: Option<&Repository>) -> String {
     let field = |value: &Value| value.as_str().unwrap_or("?").to_owned();
+    let line = |label: &str, value: String| format!("{label:<10}  {value}");
     let mut lines = vec![
-        format!("Sandbox  {}", field(&sandbox["ssh"]["username"])),
-        format!("State    {}", field(&sandbox["state"])),
+        line("Sandbox", field(&sandbox["ssh"]["username"])),
+        line("State", field(&sandbox["state"])),
     ];
     if let Some(repository) = repository {
         let branch = match &repository.branch {
             Some(branch) => format!(", branch {branch}"),
             None => String::new(),
         };
-        lines.push(format!("Repository: {}{branch}", repository.url));
+        lines.push(line("Repository", format!("{}{branch}", repository.url)));
     }
-    lines.push(format!("Image    {}", field(&sandbox["image"])));
-    lines.push(format!("Size     {}", field(&sandbox["size"])));
-    lines.push(format!(
-        "Sleeps   after {} with no work",
-        idle_timeout(sandbox)
+    lines.push(line("Image", field(&sandbox["image"])));
+    lines.push(line("Size", field(&sandbox["size"])));
+    lines.push(line(
+        "Sleeps",
+        format!("after {} with no work", idle_timeout(sandbox)),
     ));
     if let Some(until) = sandbox["idle"]["keepAwakeUntil"].as_str() {
-        lines.push(format!("Awake    until {until}, with or without work"));
+        lines.push(line(
+            "Awake",
+            format!("until {until}, with or without work"),
+        ));
     }
     if let Some(at) = sandbox["deleteAt"].as_str() {
-        lines.push(format!("Deletes  at {at}, unless cancelled in the web UI"));
+        lines.push(line(
+            "Deletes",
+            format!("at {at}, unless cancelled in the web UI"),
+        ));
     }
     lines.join("\n")
 }
@@ -261,9 +276,9 @@ mod tests {
         let (outcome, calls) = ran(&Command::Status, &Fake::answering(200, sandbox));
         assert_eq!(
             outcome.unwrap(),
-            "Sandbox  main.adam\nState    running\nImage    ubuntu\nSize     small\n\
-             Sleeps   after 1 h 30 min with no work\n\
-             Awake    until 2026-11-25T18:00:00Z, with or without work"
+            "Sandbox     main.adam\nState       running\nImage       ubuntu\nSize        small\n\
+             Sleeps      after 1 h 30 min with no work\n\
+             Awake       until 2026-11-25T18:00:00Z, with or without work"
         );
         assert_eq!(calls, ["GET /api/sandbox"]);
     }
@@ -280,9 +295,9 @@ mod tests {
         for (branch, line) in [
             (
                 Some("main"),
-                "Repository: https://github.com/adamaq01/corral.git, branch main",
+                "Repository  https://github.com/adamaq01/corral.git, branch main",
             ),
-            (None, "Repository: https://github.com/adamaq01/corral.git"),
+            (None, "Repository  https://github.com/adamaq01/corral.git"),
         ] {
             let cloning = SandboxFile {
                 repository: Some(Repository {
@@ -296,8 +311,8 @@ mod tests {
             assert_eq!(
                 outcome.unwrap(),
                 format!(
-                    "Sandbox  main.adam\nState    running\n{line}\nImage    ubuntu\n\
-                     Size     small\nSleeps   after 30 min with no work"
+                    "Sandbox     main.adam\nState       running\n{line}\nImage       ubuntu\n\
+                     Size        small\nSleeps      after 30 min with no work"
                 )
             );
         }

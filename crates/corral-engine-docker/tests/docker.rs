@@ -499,6 +499,86 @@ async fn home_files_are_written_at_each_start_from_stopped() {
     );
 }
 
+/// A container on the lab's network that serves one bare repository of one commit with
+/// `git daemon`, removed when it drops. Declared after the lab, it drops before the network.
+struct GitDaemon(String);
+
+impl GitDaemon {
+    fn serve(lab: &Lab) -> Self {
+        let daemon = Self(format!("{}-git", lab.network));
+        docker_ok(&[
+            "run",
+            "--detach",
+            "--name",
+            &daemon.0,
+            "--network",
+            &lab.network,
+            "--user",
+            "0",
+            "--entrypoint",
+            "sh",
+            &image(),
+            "-c",
+            "set -e
+             git init -q -b main /tmp/source
+             echo hello > /tmp/source/README
+             git -C /tmp/source add README
+             git -C /tmp/source -c user.name=corral -c user.email=corral@example.com \\
+               commit -q -m first
+             git clone -q --bare /tmp/source /srv/repo.git
+             exec git daemon --reuseaddr --export-all --base-path=/srv /srv",
+        ]);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !docker_answers(&["exec", &daemon.0, "git", "ls-remote", &daemon.url()]) {
+            assert!(
+                Instant::now() < deadline,
+                "git daemon never served: {}",
+                String::from_utf8_lossy(&docker(&["logs", &daemon.0]).stderr)
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        daemon
+    }
+
+    fn url(&self) -> String {
+        format!("git://{}/repo.git", self.0)
+    }
+}
+
+impl Drop for GitDaemon {
+    fn drop(&mut self) {
+        docker(&["rm", "--force", &self.0]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repository_is_cloned_at_the_first_start() {
+    let Some(lab) = Lab::open("repository") else {
+        return;
+    };
+    let daemon = GitDaemon::serve(&lab);
+    let engine = lab.engine(10).await;
+    let id = lab.create(&engine, "main").await;
+    let url = daemon.url();
+    let sandbox_file = format!(
+        r#"{{"api": "http://corral.invalid", "web": "http://corral.invalid", "sandbox": "main",
+            "token": "corral_sbx_test", "repository": {{"url": "{url}", "branch": "main"}}}}"#
+    );
+    let boot = Boot {
+        env: VariableMap::new(),
+        files: home_files(&[(".config/corral/sandbox.json", 0o600, &sandbox_file)]),
+    };
+    assert!(wake_with(&engine, &id, boot).await);
+    assert_eq!(
+        lab.ssh(
+            &id,
+            "git -C ~/repo branch --show-current; cat ~/repo/README ~/.config/corral/notices"
+        )
+        .await,
+        format!("main\nhello\nCloned {url} into ~/repo")
+    );
+}
+
 /// Image tags a test makes, removed when it drops. Declared before the lab, it drops after the
 /// containers that use them.
 #[derive(Default)]

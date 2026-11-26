@@ -218,7 +218,8 @@ fn secret(
 }
 
 /// The image's own entrypoint never runs. A root init container, running only the overlay's
-/// static code, writes the sandbox user's account files and prepares the home as that user; the
+/// static code as root, writes the sandbox user's account files and prepares the home as that
+/// user, which at the first start clones the sandbox's repository with the image's own git; the
 /// sandbox container runs as that user, with the account files mounted over the image's.
 fn pod_spec(id: &SandboxId, workload: &Workload, cfg: &AgentSandboxConfig) -> PodSpec {
     PodSpec {

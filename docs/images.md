@@ -32,7 +32,8 @@ Every binary in the overlay is static, so it runs whatever libc the image has, o
   non-empty `/etc/skel`, which is copied instead.
 
 The image's own entrypoint and command never run. The sandbox starts as root only for
-`corral-init`, which runs the overlay's static code alone, and every session runs as `sandbox`.
+`corral-init`, which runs nothing but the overlay's static code as root, and every session runs as
+`sandbox`.
 
 Sessions get the same `PATH` on both engines:
 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/corral/bin:/opt/corral/fallback`,
@@ -45,6 +46,16 @@ at every start. `corral-init` records what it wrote in `~/.config/corral/home-fi
 removes a file it wrote earlier that is no longer attached unless it was changed since, and lists
 what it could not do in `~/.config/corral/notices`, which the motd of an interactive login and
 `corral status` show.
+
+The first start, the one that finds no `~/.corral-initialized`, copies the skeleton, writes the
+home files, then clones the repository the sandbox was made with, if any, into `~/<name>`, the
+last segment of its URL without `.git`. The clone runs as `sandbox` with the image's own `git` and
+`PATH`, never prompts, accepts the SSH host key of a host it has not seen, and stops after 5
+minutes. A private repository needs its credential among the setup's files, such as
+`~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the setup's
+variables reach sessions, not the clone. One line in the notices says whether it cloned, and if
+not, why: the directory exists already, the image has no `git`, or git's last line of output.
+Later starts never clone.
 
 Sessions run through OpenSSH on both engines, so they get its environment: `USER`, `HOME`,
 `SHELL` and the rest from the sandbox user's account, and the sandbox's variables, which the
