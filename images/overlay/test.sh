@@ -416,6 +416,14 @@ model = "gpt-5"' \
     "$(ssh_run 'cat ~/.claude.json ~/.pi/agent/mcp.json ~/.omp/agent/mcp.json' | jq -cS .
       ssh_run 'cat ~/.codex/config.toml')"
 
+  local mine='model = "gpt-5"
+openai_base_url = "https://mine.example/openai"'
+  ssh_run 'cat >~/.codex/config.toml' <<<"$mine"
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a start without the address keeps an openai_base_url set by hand" "$mine" \
+    "$(ssh_run 'cat ~/.codex/config.toml')"
+
   docker rm --force "$server" >/dev/null
   docker volume rm "$volume" >/dev/null
 }

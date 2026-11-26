@@ -2,15 +2,16 @@
 //! MCP servers of `~/.config/corral-agents/mcp.json` and the session's gateway addresses to the
 //! files Claude Code, Codex, Pi and oh-my-pi read. In each file it sets only what Corral owns, its
 //! MCP servers by name and the gateway addresses, and it writes no file it has nothing to change
-//! in. It records the servers it applied, so that a later start removes those `mcp.json` no longer
-//! has and no others.
+//! in. It records the servers and addresses it applied, so that a later start removes those the
+//! setup no longer has and no others.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{OpenOptions, Permissions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TomlError};
 
@@ -20,6 +21,8 @@ const SERVERS: &str = ".config/corral-agents/mcp.json";
 const APPLIED: &str = ".config/corral/agents-applied.json";
 const CODEX: &str = ".codex/config.toml";
 const PI_MODELS: &str = ".pi/agent/models.json";
+const ANTHROPIC: &str = "ANTHROPIC_BASE_URL";
+const OPENAI: &str = "OPENAI_BASE_URL";
 const MCP_JSON: [(&str, &str); 3] = [
     ("Claude Code", ".claude.json"),
     ("Pi", ".pi/agent/mcp.json"),
@@ -41,6 +44,54 @@ enum Servers<'a> {
     Keep,
 }
 
+/// What Corral applied at a start, recorded in `~/.config/corral/agents-applied.json`: the names
+/// of its MCP servers, and each gateway address by the variable it came from.
+#[derive(Default, PartialEq, Serialize, Deserialize)]
+struct Applied {
+    #[serde(
+        rename = "mcpServers",
+        default,
+        skip_serializing_if = "BTreeSet::is_empty"
+    )]
+    servers: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    addresses: BTreeMap<String, String>,
+}
+
+/// What Corral does to one gateway address in an agent's file at this start.
+#[derive(Clone, Copy)]
+enum Address<'a> {
+    Set(&'a str),
+    /// Removes the address if it is still the one an earlier start set.
+    Unset(&'a str),
+    /// Leaves whatever is there: Corral never set it.
+    Keep,
+}
+
+impl<'a> Address<'a> {
+    fn of(variable: &str, session: &'a BTreeMap<String, String>, applied: &'a Applied) -> Self {
+        match (session.get(variable), applied.addresses.get(variable)) {
+            (Some(address), _) => Self::Set(address),
+            (None, Some(address)) => Self::Unset(address),
+            (None, None) => Self::Keep,
+        }
+    }
+
+    fn is_set(self) -> bool {
+        matches!(self, Self::Set(_))
+    }
+
+    /// The address to record after this start: one it set, or one it was to remove when an edit
+    /// `failed`, so that a later start removes it.
+    fn recorded(self, failed: bool) -> Option<&'a str> {
+        match self {
+            Self::Set(address) => Some(address),
+            Self::Unset(address) if failed => Some(address),
+            Self::Unset(_) | Self::Keep => None,
+        }
+    }
+}
+
 /// Applies Corral's MCP servers and gateway addresses to the agents' files in `home`, with the
 /// variables of the session env file at `session_env`, and says how it went.
 pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
@@ -60,6 +111,7 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
     let action = match &servers {
         Some(set) => {
             let stale: BTreeSet<String> = applied
+                .servers
                 .iter()
                 .filter(|name| !set.contains_key(*name))
                 .cloned()
@@ -73,8 +125,8 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
         None => Servers::Keep,
     };
     let variables = session_env::parse(&std::fs::read_to_string(session_env).unwrap_or_default());
-    let anthropic = variables.get("ANTHROPIC_BASE_URL").map(String::as_str);
-    let openai = variables.get("OPENAI_BASE_URL").map(String::as_str);
+    let anthropic = Address::of(ANTHROPIC, &variables, &applied);
+    let openai = Address::of(OPENAI, &variables, &applied);
     let servers_named = match &action {
         Servers::Merge { set, .. } if set.len() == 1 => Some("1 MCP server".to_owned()),
         Servers::Merge { set, .. } if set.len() > 1 => Some(format!("{} MCP servers", set.len())),
@@ -96,73 +148,64 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
         if let Servers::Merge { set, stale } = &action {
             merge_codex(document, set, stale);
         }
-        match openai {
-            Some(address) => {
-                document.insert("openai_base_url", toml_edit::value(address));
-            }
-            None => {
-                document.remove("openai_base_url");
-            }
-        }
+        codex_address(document, openai);
     });
     if !matches!(action, Servers::Keep) {
         with_servers.record("Codex", CODEX, &codex);
     }
-    if openai.is_some() {
+    if openai.is_set() {
         with_address.record("Codex", CODEX, &codex);
     }
     let pi = edit_json(&home.join(PI_MODELS), |root| {
         pi_addresses(root, [("anthropic", anthropic), ("openai", openai)])
     });
-    if anthropic.is_some() || openai.is_some() {
+    if anthropic.is_set() || openai.is_set() {
         with_address.record("Pi", PI_MODELS, &pi);
         with_address.agents.push("oh-my-pi");
     }
-    if anthropic.is_some() {
+    if anthropic.is_set() {
         with_address.agents.push("Claude Code");
     }
 
-    if let Some(servers) = &servers {
-        let mut now: BTreeSet<String> = servers.keys().cloned().collect();
-        if !with_servers.failures.is_empty() {
-            now.extend(applied.iter().cloned());
-        }
-        if let Err(why) = record_applied(home, &applied, &now) {
-            notices.push(format!(
-                "Could not record the MCP servers applied in ~/{APPLIED}: {why}"
-            ));
-        }
+    let failed = codex.is_err() || pi.is_err();
+    let mut now = Applied {
+        servers: servers.as_ref().map_or_else(
+            || applied.servers.clone(),
+            |servers| servers.keys().cloned().collect(),
+        ),
+        addresses: [(ANTHROPIC, anthropic), (OPENAI, openai)]
+            .into_iter()
+            .filter_map(|(variable, address)| {
+                Some((variable.to_owned(), address.recorded(failed)?.to_owned()))
+            })
+            .collect(),
+    };
+    if !with_servers.failures.is_empty() {
+        now.servers.extend(applied.servers.iter().cloned());
+    }
+    if let Err(why) = record_applied(home, &applied, &now) {
+        notices.push(format!(
+            "Could not record the MCP servers and addresses applied in ~/{APPLIED}: {why}"
+        ));
     }
     notices.extend(with_servers.notices());
     notices.extend(with_address.notices());
     notices
 }
 
-/// The names of the MCP servers an earlier start applied, none when it applied none or the record
-/// cannot be read.
-fn applied_before(home: &Path) -> BTreeSet<String> {
-    let names = read(&home.join(APPLIED))
+/// What an earlier start applied, nothing when it applied nothing or the record cannot be read.
+fn applied_before(home: &Path) -> Applied {
+    read(&home.join(APPLIED))
         .ok()
         .flatten()
-        .and_then(|text| json_object(&text).ok())
-        .and_then(|mut record| record.remove("mcpServers"));
-    match names {
-        Some(Value::Array(names)) => names
-            .into_iter()
-            .filter_map(|name| name.as_str().map(str::to_owned))
-            .collect(),
-        _ => BTreeSet::new(),
-    }
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
 }
 
-/// Replaces the record of the servers applied, `before`, with `now`, removing it when it is empty.
-fn record_applied(
-    home: &Path,
-    before: &BTreeSet<String>,
-    now: &BTreeSet<String>,
-) -> Result<(), String> {
+/// Replaces the record of what was applied, `before`, with `now`, removing it when it is empty.
+fn record_applied(home: &Path, before: &Applied, now: &Applied) -> Result<(), String> {
     let path = home.join(APPLIED);
-    if now.is_empty() {
+    if *now == Applied::default() {
         return match std::fs::remove_file(&path) {
             Err(error) if error.kind() != ErrorKind::NotFound => Err(error.to_string()),
             _ => Ok(()),
@@ -171,8 +214,7 @@ fn record_applied(
     if now == before {
         return Ok(());
     }
-    let record = serde_json::json!({ "mcpServers": now });
-    let text = serde_json::to_string_pretty(&record).map_err(|error| error.to_string())?;
+    let text = serde_json::to_string_pretty(now).map_err(|error| error.to_string())?;
     write(&path, &format!("{text}\n"))
 }
 
@@ -222,26 +264,50 @@ impl<'a> Report<'a> {
     }
 }
 
-/// Sets each provider's `baseUrl` in Pi's `models.json` to its address, or removes it, and the
-/// provider with it once nothing else is left in it, when the address is absent.
-fn pi_addresses(root: &mut Object, addresses: [(&str, Option<&str>); 2]) -> Result<(), String> {
-    for (provider, address) in addresses {
-        if let Some(address) = address {
-            let providers = object_at(root, "providers").ok_or("providers is not an object")?;
-            object_at(providers, provider)
-                .ok_or_else(|| format!("providers.{provider} is not an object"))?
-                .insert("baseUrl".to_owned(), address.into());
-            continue;
+/// Sets or removes `openai_base_url` in Codex's `config.toml` as the address says.
+fn codex_address(document: &mut DocumentMut, address: Address) {
+    match address {
+        Address::Set(address) => {
+            document.insert("openai_base_url", toml_edit::value(address));
         }
-        let Some(providers) = root.get_mut("providers").and_then(Value::as_object_mut) else {
-            continue;
-        };
-        let emptied = providers
-            .get_mut(provider)
-            .and_then(Value::as_object_mut)
-            .is_some_and(|entry| entry.remove("baseUrl").is_some() && entry.is_empty());
-        if emptied {
-            providers.remove(provider);
+        Address::Unset(address) => {
+            if document.get("openai_base_url").and_then(Item::as_str) == Some(address) {
+                document.remove("openai_base_url");
+            }
+        }
+        Address::Keep => {}
+    }
+}
+
+/// Sets or removes each provider's `baseUrl` in Pi's `models.json` as its address says, removing
+/// the provider too once nothing else is left in it.
+fn pi_addresses(root: &mut Object, addresses: [(&str, Address); 2]) -> Result<(), String> {
+    for (provider, address) in addresses {
+        match address {
+            Address::Set(address) => {
+                let providers = object_at(root, "providers").ok_or("providers is not an object")?;
+                object_at(providers, provider)
+                    .ok_or_else(|| format!("providers.{provider} is not an object"))?
+                    .insert("baseUrl".to_owned(), address.into());
+            }
+            Address::Unset(address) => {
+                let Some(providers) = root.get_mut("providers").and_then(Value::as_object_mut)
+                else {
+                    continue;
+                };
+                let emptied = providers
+                    .get_mut(provider)
+                    .and_then(Value::as_object_mut)
+                    .filter(|entry| entry.get("baseUrl").and_then(Value::as_str) == Some(address))
+                    .is_some_and(|entry| {
+                        entry.remove("baseUrl");
+                        entry.is_empty()
+                    });
+                if emptied {
+                    providers.remove(provider);
+                }
+            }
+            Address::Keep => {}
         }
     }
     Ok(())
@@ -612,6 +678,52 @@ mod tests {
         std::fs::write(&env, "").unwrap();
         assert_eq!(apply(&home, &env), Vec::<String>::new());
         assert_eq!(json_at(&home, PI_MODELS), mine);
+        clean(&home);
+    }
+
+    #[test]
+    fn an_address_corral_never_set_stays_when_the_variable_is_absent() {
+        let (home, env) = sandbox("never-set");
+        let codex = "model = \"gpt-5\"\nopenai_base_url = \"https://mine.example/openai\"\n";
+        let pi = json!({"providers": {
+            "anthropic": {"baseUrl": "https://mine.example/anthropic"},
+            "openai": {"baseUrl": "https://mine.example/openai"},
+        }});
+        put(&home, CODEX, codex);
+        put(&home, PI_MODELS, &pi.to_string());
+        std::fs::write(&env, "SetEnv \"OPENAI_API_KEY=sk-1\"\n").unwrap();
+
+        assert_eq!(apply(&home, &env), Vec::<String>::new());
+        assert_eq!(text_at(&home, CODEX), codex);
+        assert_eq!(json_at(&home, PI_MODELS), pi);
+
+        std::fs::write(&env, BOTH_ADDRESSES).unwrap();
+        apply(&home, &env);
+        put(&home, CODEX, codex);
+        put(&home, PI_MODELS, &pi.to_string());
+        std::fs::write(&env, "").unwrap();
+        assert_eq!(apply(&home, &env), Vec::<String>::new());
+        assert_eq!(text_at(&home, CODEX), codex);
+        assert_eq!(json_at(&home, PI_MODELS), pi);
+        clean(&home);
+    }
+
+    #[test]
+    fn an_address_corral_set_goes_when_the_variable_goes() {
+        let (home, env) = sandbox("set-goes");
+        put(&home, CODEX, "model = \"gpt-5\"\n");
+        std::fs::write(&env, BOTH_ADDRESSES).unwrap();
+        apply(&home, &env);
+
+        std::fs::write(&env, "").unwrap();
+        assert_eq!(apply(&home, &env), Vec::<String>::new());
+        assert_eq!(text_at(&home, CODEX), "model = \"gpt-5\"\n");
+        assert_eq!(json_at(&home, PI_MODELS), json!({"providers": {}}));
+
+        let mine = "model = \"gpt-5\"\nopenai_base_url = \"https://llm.home.example/openai\"\n";
+        put(&home, CODEX, mine);
+        assert_eq!(apply(&home, &env), Vec::<String>::new());
+        assert_eq!(text_at(&home, CODEX), mine);
         clean(&home);
     }
 

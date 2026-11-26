@@ -60,12 +60,14 @@ the agents' files those that `mcp.json` no longer lists, all of them once `mcp.j
 empty. The addresses are the sandbox's `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` variables, which
 Claude Code and oh-my-pi read themselves. Codex gets `OPENAI_BASE_URL` as `openai_base_url` in
 `~/.codex/config.toml`, and Pi gets each address as `providers.anthropic.baseUrl` or
-`providers.openai.baseUrl` in `~/.pi/agent/models.json`. Once a variable is gone, its key is
-removed, and so is a provider that the removal leaves empty. Everything else in these files stays
-as the agents wrote it, a file is written only when one of these keys changes in it, and a file
-that is not valid JSON or TOML is left alone. One line in the notices names the agents that got
-the servers, one the agents that got the address, and one says why for each file they could not be
-applied to, and for an `mcp.json` that is not valid JSON.
+`providers.openai.baseUrl` in `~/.pi/agent/models.json`. Corral records the addresses it applied in
+`agents-applied.json` too. Once a variable is gone, the next start removes its key where it still
+holds the address Corral applied, and a provider that the removal leaves empty, so a key set by
+hand or by the dotfiles is kept. Everything else in these files stays as the agents wrote it, a
+file is written only when one of these keys changes in it, and a file that is not valid JSON or
+TOML is left alone. One line in the notices names the agents that got the servers, one the agents
+that got the address, and one says why for each file they could not be applied to, and for an
+`mcp.json` that is not valid JSON.
 
 The first start, the one that finds no `~/.corral-initialized`, copies the skeleton, writes the
 home files, checks out the setup's dotfiles, if any, writes the home files again, applies the MCP
