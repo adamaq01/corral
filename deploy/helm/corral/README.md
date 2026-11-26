@@ -143,6 +143,7 @@ with the path of the offending value. The required combinations:
   `read`, `update`, `delete` and `list` on `<mount>/data/<pathPrefix>/*` and
   `<mount>/metadata/<pathPrefix>/*`.
 - With `database.kind: postgres`: `database.postgres.url`.
+- With `catalog.defaults`: both `image` and `size`.
 - Either `ingress` or `httpRoute`, not both.
 
 A secret value (`identity.oidc.clientSecret`, `secretStore.vault.auth.token`,

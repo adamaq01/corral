@@ -176,6 +176,11 @@ ssh:
   publicHost: ssh.example.com
   lockoutExemptNetworks: 10.42.0.0/16
 ---
+# expect: at '/catalog/defaults': missing property 'size'
+catalog:
+  defaults:
+    image: ubuntu
+---
 # expect: at '/catalog/namedImages/registries': minItems: got 0, want 1
 catalog:
   namedImages:

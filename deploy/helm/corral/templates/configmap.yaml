@@ -46,18 +46,23 @@
 {{- end }}
 {{- $images := list }}
 {{- range .Values.catalog.images }}
-{{- $images = append $images (dict "key" .key "label" .label "reference" .reference) }}
+{{- $image := dict "key" .key "label" .label "reference" .reference }}
+{{- with .description }}{{ $_ := set $image "description" . }}{{ end }}
+{{- if hasKey . "enabled" }}{{ $_ := set $image "enabled" .enabled }}{{ end }}
+{{- $images = append $images $image }}
 {{- end }}
 {{- $sizes := list }}
 {{- range .Values.catalog.sizes }}
-{{- $sizes = append $sizes (dict
+{{- $size := dict
   "key" .key
   "label" .label
   "cpu_request" .cpuRequest
   "cpu_limit" .cpuLimit
   "memory_request" .memoryRequest
   "memory_limit" .memoryLimit
-  "home_size" .homeSize) }}
+  "home_size" .homeSize }}
+{{- if hasKey . "enabled" }}{{ $_ := set $size "enabled" .enabled }}{{ end }}
+{{- $sizes = append $sizes $size }}
 {{- end }}
 {{- $frontdoor := dict
   "kind" "gate"
@@ -70,6 +75,10 @@
 {{- $catalog := dict }}
 {{- with $images }}{{ $_ := set $catalog "images" . }}{{ end }}
 {{- with $sizes }}{{ $_ := set $catalog "sizes" . }}{{ end }}
+{{- with .Values.catalog.defaults }}
+{{- $_ := set $catalog "default_image" .image }}
+{{- $_ := set $catalog "default_size" .size }}
+{{- end }}
 {{- with .Values.catalog.namedImages }}{{ if .enabled }}
 {{- $_ := set $catalog "named_images" (dict "registries" .registries "max_size" .maxSize) }}
 {{- end }}{{ end }}

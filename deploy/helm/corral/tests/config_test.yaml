@@ -205,6 +205,59 @@ tests:
           path: data["config.toml"]
           pattern: 'listen_addr = "0\.0\.0\.0:2222"\s+lockout_exempt_networks = \["10\.42\.0\.0/16", "fd00:42::/48"\]\n'
 
+  - it: writes an image's description, an entry's enabled flag and the defaults when they are set
+    set:
+      catalog:
+        images:
+          - key: tools
+            label: Tools
+            reference: ghcr.io/acme/tools:1
+            description: Node and Python
+          - key: legacy
+            label: Legacy
+            reference: ghcr.io/acme/legacy:1
+            enabled: false
+        sizes:
+          - key: small
+            label: Small
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 1Gi
+            memoryLimit: 4Gi
+            homeSize: 10Gi
+            enabled: false
+        defaults: { image: tools, size: small }
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[catalog\]\s+default_image = "tools"\s+default_size = "small"\s+\[\[catalog\.images\]\]\s+description = "Node and Python"\s+key = "tools"\s+label = "Tools"\s+reference = "ghcr\.io/acme/tools:1"\s+\[\[catalog\.images\]\]\s+enabled = false\s+key = "legacy"'
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[catalog\.sizes\]\]\s+cpu_limit = "2"\s+cpu_request = "500m"\s+enabled = false\s+home_size'
+
+  - it: leaves an entry's description and enabled flag and the defaults out when they are not set
+    set:
+      catalog:
+        images:
+          - key: tools
+            label: Tools
+            reference: ghcr.io/acme/tools:1
+        sizes:
+          - key: small
+            label: Small
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 1Gi
+            memoryLimit: 4Gi
+            homeSize: 10Gi
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[\[catalog\.images\]\]\s+key = "tools"'
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: 'description|enabled|default_image|default_size'
+
   - it: lets users name images from the registries it lists, up to the size it caps them at
     set:
       catalog.namedImages:
