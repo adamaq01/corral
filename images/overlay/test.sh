@@ -386,6 +386,17 @@ Applied the gateway address to Claude Code, Codex, Pi and oh-my-pi" \
   check "a later start without the addresses removes them from Pi's models.json" '{"providers":{}}' \
     "$(ssh_run 'cat ~/.pi/agent/models.json' | jq -cS .)"
 
+  stage_home_files "" </dev/null
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a later start without mcp.json removes the servers Corral applied" \
+    '{"mcpServers":{},"numStartups":3}
+{"mcpServers":{}}
+{"mcpServers":{}}
+model = "gpt-5"' \
+    "$(ssh_run 'cat ~/.claude.json ~/.pi/agent/mcp.json ~/.omp/agent/mcp.json' | jq -cS .
+      ssh_run 'cat ~/.codex/config.toml')"
+
   docker rm --force "$server" >/dev/null
   docker volume rm "$volume" >/dev/null
 }

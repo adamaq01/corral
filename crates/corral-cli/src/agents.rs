@@ -1,8 +1,10 @@
 //! `corral agents-apply`, which `corral-init` runs at each start after the home files: applies the
 //! MCP servers of `~/.config/corral-agents/mcp.json` and the session's gateway addresses to the
 //! files Claude Code, Codex, Pi and oh-my-pi read. In each file it replaces only the keys Corral
-//! owns, and it writes no file it has nothing to change in.
+//! owns, and it writes no file it has nothing to change in. It records the servers it applied, so
+//! that once `mcp.json` is gone it removes those and no others.
 
+use std::collections::BTreeSet;
 use std::fs::{OpenOptions, Permissions};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -14,6 +16,7 @@ use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TomlError};
 use crate::session_env;
 
 const SERVERS: &str = ".config/corral-agents/mcp.json";
+const APPLIED: &str = ".config/corral/agents-applied.json";
 const CODEX: &str = ".codex/config.toml";
 const PI_MODELS: &str = ".pi/agent/models.json";
 const MCP_JSON: [(&str, &str); 3] = [
@@ -26,43 +29,80 @@ const AGENTS: [&str; 4] = ["Claude Code", "Codex", "Pi", "oh-my-pi"];
 
 type Object = Map<String, Value>;
 
+/// What Corral does to the agents' MCP servers at this start.
+#[derive(Clone, Copy)]
+enum Servers<'a> {
+    /// Replaces them with these.
+    Apply(&'a Object),
+    /// Removes these names, which an earlier start applied.
+    Remove(&'a BTreeSet<String>),
+    Keep,
+}
+
 /// Applies Corral's MCP servers and gateway addresses to the agents' files in `home`, with the
 /// variables of the session env file at `session_env`, and says how it went.
 pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
     let mut notices = Vec::new();
+    let applied = applied_before(home);
     let servers = read(&home.join(SERVERS))
         .and_then(|text| {
             text.as_deref()
                 .map_or_else(|| Ok(Object::new()), json_object)
         })
-        .unwrap_or_else(|why| {
+        .inspect_err(|why| {
             notices.push(format!(
                 "Could not read the MCP servers from ~/{SERVERS}: {why}"
             ));
-            Object::new()
-        });
+        })
+        .ok();
+    let action = match &servers {
+        Some(servers) if !servers.is_empty() => Servers::Apply(servers),
+        Some(_) if !applied.is_empty() => Servers::Remove(&applied),
+        _ => Servers::Keep,
+    };
     let variables = session_env::parse(&std::fs::read_to_string(session_env).unwrap_or_default());
     let anthropic = variables.get("ANTHROPIC_BASE_URL").map(String::as_str);
     let openai = variables.get("OPENAI_BASE_URL").map(String::as_str);
-    let servers_named = match servers.len() {
-        1 => "1 MCP server".to_owned(),
-        count => format!("{count} MCP servers"),
+    let servers_named = match action {
+        Servers::Apply(servers) if servers.len() == 1 => Some("1 MCP server".to_owned()),
+        Servers::Apply(servers) => Some(format!("{} MCP servers", servers.len())),
+        Servers::Remove(_) | Servers::Keep => None,
     };
-    let mut with_servers = Report::new(&servers_named, "the MCP servers");
-    let mut with_address = Report::new("the gateway address", "the gateway address");
+    let mut with_servers = Report::new(servers_named.as_deref(), "the MCP servers");
+    let mut with_address = Report::new(Some("the gateway address"), "the gateway address");
 
-    if !servers.is_empty() {
-        for (agent, file) in MCP_JSON {
-            let applied = edit_json(&home.join(file), |root| {
+    for (agent, file) in MCP_JSON {
+        let edited = match action {
+            Servers::Apply(servers) => edit_json(&home.join(file), |root| {
                 root.insert("mcpServers".to_owned(), Value::Object(servers.clone()));
                 Ok(())
-            });
-            with_servers.record(agent, file, &applied);
-        }
+            }),
+            Servers::Remove(names) => edit_json(&home.join(file), |root| {
+                if let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) {
+                    servers.retain(|name, _| !names.contains(name));
+                }
+                Ok(())
+            }),
+            Servers::Keep => continue,
+        };
+        with_servers.record(agent, file, &edited);
     }
     let codex = edit_toml(&home.join(CODEX), |document| {
-        if !servers.is_empty() {
-            document.insert("mcp_servers", codex_servers(&servers));
+        match action {
+            Servers::Apply(servers) => {
+                document.insert("mcp_servers", codex_servers(servers));
+            }
+            Servers::Remove(names) => {
+                if let Some(servers) = document
+                    .get_mut("mcp_servers")
+                    .and_then(Item::as_table_like_mut)
+                {
+                    for name in names {
+                        servers.remove(name);
+                    }
+                }
+            }
+            Servers::Keep => {}
         }
         match openai {
             Some(address) => {
@@ -73,7 +113,7 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
             }
         }
     });
-    if !servers.is_empty() {
+    if !matches!(action, Servers::Keep) {
         with_servers.record("Codex", CODEX, &codex);
     }
     if openai.is_some() {
@@ -90,21 +130,71 @@ pub fn apply(home: &Path, session_env: &Path) -> Vec<String> {
         with_address.agents.push("Claude Code");
     }
 
+    if let Some(servers) = &servers {
+        let mut now: BTreeSet<String> = servers.keys().cloned().collect();
+        if !with_servers.failures.is_empty() {
+            now.extend(applied.iter().cloned());
+        }
+        if let Err(why) = record_applied(home, &applied, &now) {
+            notices.push(format!(
+                "Could not record the MCP servers applied in ~/{APPLIED}: {why}"
+            ));
+        }
+    }
     notices.extend(with_servers.notices());
     notices.extend(with_address.notices());
     notices
 }
 
+/// The names of the MCP servers an earlier start applied, none when it applied none or the record
+/// cannot be read.
+fn applied_before(home: &Path) -> BTreeSet<String> {
+    let names = read(&home.join(APPLIED))
+        .ok()
+        .flatten()
+        .and_then(|text| json_object(&text).ok())
+        .and_then(|mut record| record.remove("mcpServers"));
+    match names {
+        Some(Value::Array(names)) => names
+            .into_iter()
+            .filter_map(|name| name.as_str().map(str::to_owned))
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Replaces the record of the servers applied, `before`, with `now`, removing it when it is empty.
+fn record_applied(
+    home: &Path,
+    before: &BTreeSet<String>,
+    now: &BTreeSet<String>,
+) -> Result<(), String> {
+    let path = home.join(APPLIED);
+    if now.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(error) if error.kind() != ErrorKind::NotFound => Err(error.to_string()),
+            _ => Ok(()),
+        };
+    }
+    if now == before {
+        return Ok(());
+    }
+    let record = serde_json::json!({ "mcpServers": now });
+    let text = serde_json::to_string_pretty(&record).map_err(|error| error.to_string())?;
+    write(&path, &format!("{text}\n"))
+}
+
 /// What one thing Corral applies reached: the agents that have it, and why the others do not.
+/// Without `applied`, as for a removal, only the failures are told.
 struct Report<'a> {
-    applied: &'a str,
+    applied: Option<&'a str>,
     failed: &'a str,
     agents: Vec<&'static str>,
     failures: Vec<String>,
 }
 
 impl<'a> Report<'a> {
-    fn new(applied: &'a str, failed: &'a str) -> Self {
+    fn new(applied: Option<&'a str>, failed: &'a str) -> Self {
         Self {
             applied,
             failed,
@@ -128,15 +218,14 @@ impl<'a> Report<'a> {
             .into_iter()
             .filter(|agent| self.agents.contains(agent))
             .collect();
-        let applied = match agents.split_last() {
+        let applied = self.applied.and_then(|applied| match agents.split_last() {
             None => None,
-            Some((last, [])) => Some(format!("Applied {} to {last}", self.applied)),
+            Some((last, [])) => Some(format!("Applied {applied} to {last}")),
             Some((last, rest)) => Some(format!(
-                "Applied {} to {} and {last}",
-                self.applied,
+                "Applied {applied} to {} and {last}",
                 rest.join(", ")
             )),
-        };
+        });
         applied.into_iter().chain(self.failures)
     }
 }
@@ -594,6 +683,85 @@ mod tests {
         }
         assert_eq!(text_at(&home, ".claude.json"), claude);
         assert_eq!(text_at(&home, CODEX), codex);
+        clean(&home);
+    }
+
+    #[test]
+    fn removed_servers_leave_the_agent_files() {
+        let (home, env) = sandbox("removed");
+        let claude = json!({"numStartups": 3});
+        put(&home, ".claude.json", &claude.to_string());
+        put(&home, CODEX, "model = \"gpt-5\"\n");
+        put(&home, MCP, SERVERS);
+        apply(&home, &env);
+
+        put(
+            &home,
+            MCP,
+            r#"{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}"#,
+        );
+        assert_eq!(
+            apply(&home, &env),
+            ["Applied 1 MCP server to Claude Code, Codex, Pi and oh-my-pi"]
+        );
+        let fetch = json!({"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}});
+        for file in MCP_JSON {
+            assert_eq!(json_at(&home, file)["mcpServers"], fetch, "{file}");
+        }
+
+        std::fs::remove_file(home.join(MCP)).unwrap();
+        assert_eq!(apply(&home, &env), Vec::<String>::new());
+        let mut emptied = claude.clone();
+        emptied["mcpServers"] = json!({});
+        assert_eq!(json_at(&home, ".claude.json"), emptied);
+        for file in [".pi/agent/mcp.json", ".omp/agent/mcp.json"] {
+            assert_eq!(json_at(&home, file), json!({"mcpServers": {}}), "{file}");
+        }
+        assert_eq!(text_at(&home, CODEX), "model = \"gpt-5\"\n");
+
+        let modified = std::fs::metadata(home.join(CODEX))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(apply(&home, &env), Vec::<String>::new());
+        let unchanged = std::fs::metadata(home.join(CODEX))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(unchanged, modified);
+        clean(&home);
+    }
+
+    #[test]
+    fn servers_the_member_added_by_hand_stay() {
+        let (home, env) = sandbox("by-hand");
+        put(&home, MCP, r#"{"fetch": {"command": "uvx"}}"#);
+        apply(&home, &env);
+        let mine = json!({"command": "mine"});
+        for file in MCP_JSON {
+            let mut added = json_at(&home, file);
+            added["mcpServers"]["mine"] = mine.clone();
+            put(&home, file, &added.to_string());
+        }
+        let codex = format!(
+            "{}\n[mcp_servers.mine]\ncommand = \"mine\"\n",
+            text_at(&home, CODEX)
+        );
+        put(&home, CODEX, &codex);
+
+        std::fs::remove_file(home.join(MCP)).unwrap();
+        apply(&home, &env);
+        for file in MCP_JSON {
+            assert_eq!(
+                json_at(&home, file),
+                json!({"mcpServers": {"mine": mine}}),
+                "{file}"
+            );
+        }
+        assert_eq!(
+            text_at(&home, CODEX),
+            "\n[mcp_servers.mine]\ncommand = \"mine\"\n"
+        );
         clean(&home);
     }
 

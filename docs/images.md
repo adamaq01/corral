@@ -52,8 +52,10 @@ may run: Claude Code, Codex, Pi and oh-my-pi. The MCP servers are those of
 `~/.config/corral-agents/mcp.json`, an object of servers by name, each a command (`command`,
 `args`, `env`) or a URL (`"type": "http"`, `url`, `headers`). They replace `mcpServers` in
 `~/.claude.json`, `~/.pi/agent/mcp.json` and `~/.omp/agent/mcp.json`, and `[mcp_servers]` in
-`~/.codex/config.toml`, where a URL's headers are `http_headers`. Without that file, the agents'
-MCP servers stay as they are. The addresses are the sandbox's `ANTHROPIC_BASE_URL` and
+`~/.codex/config.toml`, where a URL's headers are `http_headers`. Corral keeps the names of the
+servers it applied in `~/.config/corral/agents-applied.json`: once `mcp.json` is gone or empty, the
+next start removes those servers from the agents' files and leaves any other server as it is, and
+an `mcp.json` that is not valid JSON changes no agent's servers. The addresses are the sandbox's `ANTHROPIC_BASE_URL` and
 `OPENAI_BASE_URL` variables, which Claude Code and oh-my-pi read themselves. Codex gets
 `OPENAI_BASE_URL` as `openai_base_url` in `~/.codex/config.toml`, and Pi gets each address as
 `providers.anthropic.baseUrl` or `providers.openai.baseUrl` in `~/.pi/agent/models.json`. Once a
