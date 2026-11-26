@@ -10,6 +10,7 @@
 	const tabs = [
 		{ href: '/admin/settings/catalog', label: 'Catalog' },
 		{ href: '/admin/settings/limits', label: 'Limits' },
+		{ href: '/admin/settings/shared-setup', label: 'Shared setup' },
 		{ href: '/admin/settings/registries', label: 'Registries' }
 	];
 </script>

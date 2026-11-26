@@ -92,13 +92,28 @@ export function where(entry: Pick<SetupEntry, 'kind' | 'target'>): string {
 	return entry.kind === 'variable' ? entry.target : `~/${entry.target}`;
 }
 
+/** Whether two entries land on the same name, or on paths one inside the other. */
+export function collides(
+	a: Pick<SetupEntry, 'kind' | 'target'>,
+	b: Pick<SetupEntry, 'kind' | 'target'>
+): boolean {
+	if (a.kind !== b.kind) {
+		return false;
+	}
+	if (a.kind === 'variable') {
+		return a.target === b.target;
+	}
+	const inside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+	return inside(a.target, b.target) || inside(b.target, a.target);
+}
+
 /** `variable` or `file`. */
 export function noun(kind: EntryKind): string {
 	return kind === 'variable' ? 'variable' : 'file';
 }
 
 /** A change that leaves the entry as it is, to spread a change over. */
-export function settings(entry: SetupEntry): EntryChange {
+export function settings(entry: Omit<EntryChange, 'value'>): EntryChange {
 	const { kind, target, secret, template, executable, applyToNew } = entry;
 	return { kind, target, secret, template, executable, applyToNew };
 }

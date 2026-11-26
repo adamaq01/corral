@@ -4,8 +4,11 @@ import type {
 	CatalogSettings,
 	LimitsChange,
 	LimitsSettings,
+	NewSharedEntry,
 	RegistriesSettings,
-	RegistryChange
+	RegistryChange,
+	SharedEntry,
+	SharedEntryChange
 } from './generated/index.js';
 
 export function catalog(): Promise<CatalogSettings> {
@@ -32,4 +35,23 @@ export function registries(): Promise<RegistriesSettings> {
 /** Replaces the registries the database keeps. */
 export function setRegistries(registries: RegistryChange[]): Promise<void> {
 	return api.put('/api/admin/settings/registries', registries);
+}
+
+const sharedEntry = (id: string) => `/api/admin/settings/shared-setup/${encodeURIComponent(id)}`;
+
+export function sharedSetup(): Promise<SharedEntry[]> {
+	return api.get<SharedEntry[]>('/api/admin/settings/shared-setup');
+}
+
+export function createSharedEntry(entry: NewSharedEntry): Promise<SharedEntry> {
+	return api.post<SharedEntry>('/api/admin/settings/shared-setup', entry);
+}
+
+export function changeSharedEntry(id: string, change: SharedEntryChange): Promise<SharedEntry> {
+	return api.put<SharedEntry>(sharedEntry(id), change);
+}
+
+/** Deletes the entry with its value and every override; sandboxes lose it at their next start. */
+export function removeSharedEntry(id: string): Promise<void> {
+	return api.delete(sharedEntry(id));
 }

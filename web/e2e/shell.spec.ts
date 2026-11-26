@@ -16,7 +16,12 @@ test.describe('an admin', () => {
 		await expect(page).toHaveURL('/admin/settings/catalog');
 		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
 		const tabs = page.getByRole('navigation', { name: 'Settings' });
-		await expect(tabs.getByRole('link')).toHaveText(['Catalog', 'Limits', 'Registries']);
+		await expect(tabs.getByRole('link')).toHaveText([
+			'Catalog',
+			'Limits',
+			'Shared setup',
+			'Registries'
+		]);
 		await expect(tabs.getByRole('link', { name: 'Catalog' })).toHaveAttribute(
 			'aria-current',
 			'page'
