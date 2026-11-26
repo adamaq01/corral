@@ -1348,6 +1348,36 @@ async fn admins_list_users_and_all_sandboxes() {
 }
 
 #[tokio::test]
+async fn admins_see_the_subject_behind_a_suffixed_handle() {
+    let corral = Corral::new();
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let login = json!({ "subject": "s2", "username": "root", "role": "member" });
+    let reply = corral.browser().post("/auth/test/login", login).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+
+    let users = root.get("/api/admin/users").await.json();
+    let shown: Vec<_> = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|user| {
+            (
+                user["handle"].clone(),
+                user["provider"].clone(),
+                user["subject"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (json!("root"), json!(PROVIDER), json!("root")),
+            (json!("root-2"), json!(PROVIDER), json!("s2")),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn admins_see_what_runs_any_sandbox() {
     let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;

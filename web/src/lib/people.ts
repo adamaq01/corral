@@ -61,9 +61,6 @@ export function people(
 	const keeper = providers.find((provider) => provider.accounts !== null);
 	const label = (id: string) => providers.find((provider) => provider.id === id)?.label ?? id;
 	const byUsername = new Map(accounts.map((account) => [account.username, account]));
-	const claimed = new Set(
-		users.filter((user) => user.provider === keeper?.id).map((user) => user.handle)
-	);
 
 	const signedIn = users.map((user): Person => ({
 		handle: user.handle,
@@ -74,13 +71,14 @@ export function people(
 		maxSandboxes: user.allowance?.maxSandboxes ?? limit,
 		createdAt: user.createdAt,
 		user,
-		account: user.provider === keeper?.id ? (byUsername.get(user.handle) ?? null) : null,
+		account: user.provider === keeper?.id ? (byUsername.get(user.subject) ?? null) : null,
 		status: user.status,
 		self: user.handle === self
 	}));
+	const claimed = new Set(signedIn.map((person) => person.account));
 	const waiting = keeper
 		? accounts
-				.filter((account) => !claimed.has(account.username))
+				.filter((account) => !claimed.has(account))
 				.map((account): Person => ({
 					handle: account.username,
 					picture: null,

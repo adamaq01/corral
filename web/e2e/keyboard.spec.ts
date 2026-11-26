@@ -69,6 +69,7 @@ test.describe('an admin', () => {
 			status: 'active',
 			createdAt: '2026-11-02T09:30:00Z',
 			provider: 'oidc',
+			subject: 'bob',
 			allowance: null
 		};
 		await page.route('**/api/admin/users', (route) => route.fulfill({ json: [bob] }));

@@ -470,6 +470,7 @@ function user(
 		status,
 		createdAt: days(age),
 		provider,
+		subject: handle,
 		allowance: null
 	};
 }

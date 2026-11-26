@@ -413,6 +413,8 @@ pub(crate) struct UserDto {
     created_at: DateTime<Utc>,
     /// The identity provider they log in with.
     provider: String,
+    /// Who the provider says they are, in the provider's own terms.
+    subject: String,
     /// How many sandboxes they may have in place of the limit.
     allowance: Option<AllowanceDto>,
 }
@@ -422,6 +424,7 @@ impl UserDto {
         Self {
             id: user.id.0,
             provider: user.provider().to_owned(),
+            subject: user.subject_in_provider().to_owned(),
             role: user.role,
             handle: user.handle,
             email: user.email,

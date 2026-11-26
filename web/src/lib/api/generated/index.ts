@@ -416,6 +416,10 @@ export type User = { id: string, handle: Handle, email: string | null, picture: 
  */
 provider: string,
 /**
+ * Who the provider says they are, in the provider's own terms.
+ */
+subject: string,
+/**
  * How many sandboxes they may have in place of the limit.
  */
 allowance: Allowance | null, };
