@@ -493,7 +493,13 @@ inEveryView((look) => {
 			}
 			await look(page, name);
 		}
+	});
 
+	test("a setup entry's dialogs, and a missing one", async ({ page }) => {
+		const secretFile = entries[6];
+		await serve(page, { [`/api/setup/${secretFile.id}`]: secretFile, '/api/sandboxes': sandboxes });
+		await page.goto(`/setup/${secretFile.id}`);
+		await page.getByRole('list', { name: 'Your sandboxes' }).waitFor();
 		await page.getByRole('button', { name: 'Replace value' }).click();
 		await page.getByRole('dialog').waitFor();
 		await look(page, 'setup-replace', { fullPage: false });
