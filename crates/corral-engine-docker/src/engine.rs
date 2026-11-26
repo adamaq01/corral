@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -12,7 +13,7 @@ use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
 use corral_core::ports::{
-    Boot, Inspection, Readiness, RegistryAccess, SandboxEngine, SandboxSpec, Started,
+    Boot, Inspection, Readiness, RegistryLogins, RunningLimit, SandboxEngine, SandboxSpec, Started,
 };
 use corral_core::{Error, Result};
 use tracing::{info, warn};
@@ -34,16 +35,16 @@ pub struct DockerEngine {
     /// The image ID of the overlay, pinned when the engine connected.
     overlay: String,
     /// The credentials pulls use, for the registries that need them.
-    registries: Vec<RegistryAccess>,
-    max_running: usize,
+    logins: Arc<dyn RegistryLogins>,
+    running: Arc<dyn RunningLimit>,
     pub(crate) activity: ActivityLock,
 }
 
 impl DockerEngine {
     pub async fn connect(
         config: DockerConfig,
-        max_running: usize,
-        registries: Vec<RegistryAccess>,
+        running: Arc<dyn RunningLimit>,
+        logins: Arc<dyn RegistryLogins>,
     ) -> Result<Self> {
         let docker = Docker::connect_with_defaults()
             .map_err(|err| Error::internal("connect to Docker", err))?;
@@ -79,13 +80,14 @@ impl DockerEngine {
                 ),
             ));
         }
+        let registries = logins.registries().await?;
         let overlay = image::refresh(&docker, &config.overlay_image, &registries).await?;
         Ok(Self {
             docker,
             config,
             overlay,
-            registries,
-            max_running,
+            logins,
+            running,
             activity: ActivityLock::default(),
         })
     }
@@ -151,8 +153,8 @@ impl DockerEngine {
             Some(spec) => container::Definition::new(id, spec)?,
             None => recorded,
         };
-        let image_id =
-            image::ensure_present(&self.docker, &definition.image, &self.registries).await?;
+        let registries = self.logins.registries().await?;
+        let image_id = image::ensure_present(&self.docker, &definition.image, &registries).await?;
         let body = container::body(id, &definition, &self.wiring());
         if container::is_made_from(&current, &body, &image_id) {
             return Ok(current);
@@ -208,7 +210,7 @@ impl DockerEngine {
         current: ContainerInspectResponse,
         boot: &Boot,
     ) -> Result<ContainerInspectResponse> {
-        let max = self.max_running;
+        let max = self.running.max_running().await?;
         if self.running_ids().await?.len() >= max {
             return Err(Error::LimitReached(format!(
                 "{max} sandboxes are already running"
@@ -262,7 +264,8 @@ impl SandboxEngine for DockerEngine {
             return Ok(());
         }
         let definition = container::Definition::new(id, spec)?;
-        image::ensure_present(&self.docker, &spec.image, &self.registries).await?;
+        let registries = self.logins.registries().await?;
+        image::ensure_present(&self.docker, &spec.image, &registries).await?;
         self.docker
             .create_volume(container::volume(id, spec))
             .await

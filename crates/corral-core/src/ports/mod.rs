@@ -10,13 +10,15 @@ mod repos;
 mod sandbox_streams;
 mod secrets;
 pub mod session_env;
+mod settings;
 
 pub use activity::{ActivitySignals, Usage};
 pub use engine::{Boot, Readiness, SandboxEngine, SandboxSpec, Started, VariableMap};
 pub use environment::EnvironmentRepo;
 pub use identity::{Identity, IdentityProvider};
 pub use inspection::{EngineEvent, EventKind, Fact, Inspection, utc};
-pub use registry::{ImageRegistry, RegistryAccess, RegistryLogin};
+pub use registry::{ImageRegistry, RegistryAccess, RegistryLogin, RegistryLogins};
 pub use repos::{KeyRepo, SandboxRepo, UserRepo};
 pub use sandbox_streams::{SandboxIo, SandboxStream, SandboxStreams};
 pub use secrets::SecretStore;
+pub use settings::{RunningLimit, SettingsRepo};

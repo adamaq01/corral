@@ -86,6 +86,9 @@ in its own Secret or a reference to an existing Secret.
 {{- range $index, $registry := .Values.registries }}{{ if $registry.username }}
 {{- $env = append $env (dict "name" (printf "CORRAL_REGISTRY_%d_PASSWORD" $index) "ref" $registry.password) }}
 {{- end }}{{ end }}
+{{- range $name, $ref := .Values.registryPasswords }}
+{{- $env = append $env (dict "name" $name "ref" $ref) }}
+{{- end }}
 {{- toJson $env }}
 {{- end }}
 

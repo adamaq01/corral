@@ -44,9 +44,9 @@ function sandboxToken(owner: string, sandbox: string): string {
 	return JSON.parse(file).token;
 }
 
-test('the profile turns corral delete on and off', async ({ page, baseURL }) => {
+test('Account turns corral delete on and off', async ({ page, baseURL }) => {
 	await newMember(page, baseURL, 'iris');
-	await page.goto('/profile');
+	await page.goto('/account');
 	const card = page
 		.locator('[data-slot=card]')
 		.filter({ hasText: 'Deleting from inside a sandbox' });

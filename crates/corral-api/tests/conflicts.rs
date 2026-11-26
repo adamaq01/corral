@@ -8,10 +8,12 @@ use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use corral_api::testing::trusting_provider;
 use corral_api::{Api, Key, SshEndpoint, router};
-use corral_core::app::{Accounts, Environment, Keys, Limits, Sandboxes};
+use corral_core::app::{Accounts, Configured, Environment, Keys, Sandboxes, Settings, Timeouts};
 use corral_core::fakes::{
-    ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, FakeRegistry, MemorySecretStore, catalog, links,
+    ADAM_FINGERPRINT, ADAM_KEY, FakeEngine, FakeRegistry, MemorySecretStore, catalog,
+    catalog_change, links,
 };
+use corral_core::ports::SettingsRepo;
 use corral_sql::testing::Databases;
 use corral_store_sql::Store;
 use serde_json::{Value, json};
@@ -25,15 +27,24 @@ async fn app(databases: &Databases) -> Router {
         store.clone(),
         links(),
     );
+    store
+        .set_catalog(&catalog_change(&catalog()))
+        .await
+        .unwrap();
+    let settings = Settings::new(
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        Configured::default(),
+    );
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
         Arc::new(FakeEngine::default()),
         Arc::new(FakeRegistry::default()),
         environment.clone(),
-        catalog(),
-        Limits {
-            max_sandboxes_per_user: 5,
+        settings.clone(),
+        Timeouts {
             wake_deadline: Duration::from_secs(1),
             idle: corral_core::fakes::IDLE,
         },
@@ -49,6 +60,8 @@ async fn app(databases: &Databases) -> Router {
         keys: Keys::new(store),
         environment,
         sandboxes,
+        settings,
+        password_present: Arc::new(|_: &str| false),
         ssh: SshEndpoint {
             host: "corral.example.com".to_owned(),
             port: 22,

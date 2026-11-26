@@ -404,6 +404,7 @@
 		<EntryDialog bind:open={editing} entry={current} onsaved={edited} />
 		<EntryDialog
 			bind:open={duplicating}
+			title="Duplicate {where(current)}"
 			start={{
 				...settings(current),
 				target: variable ? `${current.target}_COPY` : `~/${current.target}.copy`
@@ -442,7 +443,7 @@
 			bind:open={deleting}
 			title="Delete {where(current)}?"
 			action="Delete {noun(current.kind)}"
-			confirmName={current.target}
+			confirmName={where(current)}
 			onconfirm={() => remove(current)}
 		>
 			<p>

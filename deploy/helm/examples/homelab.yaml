@@ -1,7 +1,8 @@
 # OIDC login, a CloudNativePG database, secrets in OpenBao with Kubernetes auth, the web UI
 # behind a Gateway, and the gate on a MetalLB address for the LAN and behind a rathole tunnel
 # from the pod network for the internet. The keys and host key come from existing Secrets, as
-# under Argo CD, which renders with helm template.
+# under Argo CD, which renders with helm template. The running limit and the catalog are locked
+# in Settings, and a registry the admin adds there reads its password from CORRAL_GHCR_TOKEN.
 baseUrl: https://corral.example.com
 trustForwardedFor: true
 ssh:
@@ -60,6 +61,10 @@ catalog:
       memoryRequest: 2Gi
       memoryLimit: 8Gi
       homeSize: 30Gi
+registryPasswords:
+  CORRAL_GHCR_TOKEN:
+    existingSecret: corral-registries
+    key: ghcr
 httpRoute:
   enabled: true
   parentRefs:

@@ -1,5 +1,10 @@
 import { api } from './client.js';
-import type { LocalAccount, NewAccount, NewPassword } from './generated/index.js';
+import type { LocalAccount, NewAccount, NewPassword, PasswordChange } from './generated/index.js';
+
+/** Changes the password of the signed-in local account, which `current` must match. */
+export function changePassword(current: string, password: string): Promise<void> {
+	return api.put('/auth/local/password', { current, password } satisfies PasswordChange);
+}
 
 /** The accounts a provider keeps, managed at the `accounts` URL it lists. */
 export function accounts(url: string) {

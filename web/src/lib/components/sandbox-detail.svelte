@@ -300,7 +300,10 @@
 			<Card.Header>
 				<Card.Title>Connect</Card.Title>
 				<Card.Description>
-					Any SSH client works with a key from <a class="underline underline-offset-4" href="/keys">
+					Any SSH client works with a key from <a
+						class="underline underline-offset-4"
+						href="/account#keys"
+					>
 						SSH keys
 					</a>.
 					{current.deleteAt
@@ -401,8 +404,8 @@
 >
 	<p>This deletes the sandbox and everything in its home directory. It cannot be undone.</p>
 	<p>
-		If you added it to Herdr, remove the machine from Herdr before you create a sandbox named
+		If you added it to Herdr, remove it from Herdr before you create a sandbox named
 		<span class="font-mono text-foreground">{name}</span> again: to Herdr, the new sandbox is a different
-		machine.
+		one.
 	</p>
 </ConfirmDialog>

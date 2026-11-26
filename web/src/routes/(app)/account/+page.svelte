@@ -2,6 +2,7 @@
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
+	import { opksshLogin } from '#lib/api/auth.js';
 	import { failureMessage } from '#lib/api/client.js';
 	import type { SandboxDefaults } from '#lib/api/generated/index.js';
 	import {
@@ -11,9 +12,11 @@
 		setSandboxDefaults
 	} from '#lib/api/me.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
+	import ChangePasswordDialog from '#lib/components/change-password-dialog.svelte';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
+	import SshKeysCard from '#lib/components/ssh-keys-card.svelte';
 	import UnsavedGuard from '#lib/components/unsaved-guard.svelte';
 	import UserAvatar from '#lib/components/user-avatar.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
@@ -32,6 +35,10 @@
 	const user = $derived(data.user);
 
 	const roles = { member: 'Member', admin: 'Admin' } as const;
+
+	const opkssh = new Remote(opksshLogin);
+
+	let changingPassword = $state(false);
 
 	/** The defaults as Corral has them, and as the form shows them. */
 	let saved = $state<SandboxDefaults | null>(null);
@@ -114,7 +121,10 @@
 <UnsavedGuard {dirty} what="your sandbox defaults" />
 
 <div class="grid grid-cols-1 gap-6">
-	<PageHeader title="Profile" description="Your account." />
+	<PageHeader
+		title="Account"
+		description="Your SSH keys, the defaults of new sandboxes and your account."
+	/>
 
 	<Card.Root>
 		<Card.Content class="flex flex-wrap items-center gap-4">
@@ -130,6 +140,22 @@
 			</div>
 		</Card.Content>
 	</Card.Root>
+
+	{#if user.provider === 'local'}
+		<Card.Root>
+			<Card.Header>
+				<Card.Title><h2>Password</h2></Card.Title>
+				<Card.Description>The password you sign in to Corral with.</Card.Description>
+				<Card.Action>
+					<Button variant="outline" onclick={() => (changingPassword = true)}>
+						Change password
+					</Button>
+				</Card.Action>
+			</Card.Header>
+		</Card.Root>
+	{/if}
+
+	<SshKeysCard opkssh={opkssh.value ?? null} />
 
 	<Card.Root>
 		<Card.Header>
@@ -268,6 +294,11 @@
 		</Card.Footer>
 	</Card.Root>
 </div>
+
+<ChangePasswordDialog
+	bind:open={changingPassword}
+	onchanged={() => toast.success('Password changed.')}
+/>
 
 <ConfirmDialog
 	bind:open={deleting}

@@ -122,7 +122,7 @@ check_interval_secs = 1
 report_interval_secs = 1
 
 [limits]
-max_sandboxes_per_user = 2
+max_sandboxes_per_member = 2
 
 [[catalog.images]]
 key = "dev"

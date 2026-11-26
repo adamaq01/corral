@@ -487,6 +487,23 @@
         }
       }
     },
+    "registryPasswords": {
+      "description": "The password variables of the registries the admin adds in Settings, each a secret value.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Z0-9_]*$"
+      },
+      "additionalProperties": {
+        "allOf": [
+          {
+            "$ref": "#/$defs/secretValue"
+          },
+          {
+            "$ref": "#/$defs/secretSet"
+          }
+        ]
+      }
+    },
     "keepOnUninstall": {
       "type": "boolean"
     },
@@ -528,13 +545,19 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "maxSandboxesPerUser": {
-          "type": "integer",
-          "minimum": 0
+        "maxSandboxesPerMember": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
         },
         "maxRunning": {
-          "type": "integer",
-          "minimum": 0
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
         }
       }
     },
@@ -563,6 +586,12 @@
               "reference": {
                 "type": "string",
                 "minLength": 1
+              },
+              "description": {
+                "type": "string"
+              },
+              "enabled": {
+                "type": "boolean"
               }
             }
           }
@@ -603,7 +632,29 @@
               },
               "homeSize": {
                 "$ref": "#/$defs/byteQuantity"
+              },
+              "enabled": {
+                "type": "boolean"
               }
+            }
+          }
+        },
+        "defaults": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "image",
+            "size"
+          ],
+          "properties": {
+            "image": {
+              "$ref": "#/$defs/catalogKey"
+            },
+            "size": {
+              "$ref": "#/$defs/catalogKey"
             }
           }
         },

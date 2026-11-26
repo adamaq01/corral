@@ -173,6 +173,7 @@ const me = (extra: Partial<Me> = {}): Me => ({
 	email: 'bob@example.lan',
 	picture: null,
 	role: 'member',
+	provider: 'local',
 	...extra
 });
 
@@ -316,28 +317,6 @@ inEveryView((look) => {
 		await look(page, 'sandbox-missing');
 	});
 
-	test('SSH keys', async ({ page }) => {
-		await serve(page, { '/api/keys': keys });
-		await page.goto('/keys');
-		await page.getByText('bob@laptop').waitFor();
-		await look(page, 'keys');
-
-		await page.unrouteAll();
-		await page.getByRole('button', { name: 'Add key' }).click();
-		const dialog = page.getByRole('dialog');
-		await dialog.getByLabel('Public key').fill('ssh-ed25519 not-a-key bob@phone');
-		await dialog.getByRole('button', { name: 'Add key' }).click();
-		await dialog.getByRole('alert').waitFor();
-		await look(page, 'keys-add', { fullPage: false });
-	});
-
-	test('SSH keys, empty', async ({ page }) => {
-		await serve(page, { '/api/keys': [] });
-		await page.goto('/keys');
-		await page.getByText('No SSH keys yet').waitFor();
-		await look(page, 'keys-empty');
-	});
-
 	test('environment', async ({ page }) => {
 		await serve(page, { '/api/environment': entries });
 		await page.goto('/environment');
@@ -432,36 +411,60 @@ inEveryView((look) => {
 		await look(page, 'environment-missing');
 	});
 
-	test('profile', async ({ page }) => {
-		await serve(page, { '/api/me': me({ picture }), '/api/catalog': catalog });
-		await page.goto('/profile');
+	test('account', async ({ page }) => {
+		await serve(page, { '/api/me': me({ picture }), '/api/catalog': catalog, '/api/keys': keys });
+		await page.goto('/account');
 		await page.getByRole('heading', { name: 'bob' }).waitFor();
+		await page.getByText('bob@laptop').waitFor();
 		await page.waitForFunction(() =>
 			[...document.images].every((image) => image.complete && image.naturalWidth > 0)
 		);
-		await look(page, 'profile');
+		await look(page, 'account');
 
+		await page.getByRole('button', { name: 'Change password' }).click();
+		await page.getByRole('dialog', { name: 'Change your password' }).waitFor();
+		await look(page, 'account-password', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('dialog').waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'Delete account' }).click();
 		await page.getByRole('alertdialog').getByLabel('Type bob to confirm').fill('bo');
-		await look(page, 'profile-delete', { fullPage: false });
+		await look(page, 'account-delete', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
+		await page.unrouteAll();
+		await page.getByRole('button', { name: 'Add key' }).click();
+		const dialog = page.getByRole('dialog');
+		await dialog.getByLabel('Public key').fill('ssh-ed25519 not-a-key bob@phone');
+		await dialog.getByRole('button', { name: 'Add key' }).click();
+		await dialog.getByRole('alert').waitFor();
+		await look(page, 'account-add-key', { fullPage: false });
 	});
 
-	test('profile, with unsaved defaults, one no longer offered', async ({ page }) => {
+	test('account, with unsaved defaults, one no longer offered', async ({ page }) => {
 		await serve(page, {
 			'/api/me': me(),
-			'/api/catalog': { ...catalog, defaultsWithdrawn: true }
+			'/api/catalog': { ...catalog, defaultsWithdrawn: true },
+			'/api/keys': keys
 		});
-		await page.goto('/profile');
+		await page.goto('/account');
 		await page.getByText('Your saved default is no longer offered').waitFor();
 		await page.getByLabel('Image').selectOption('python');
 		await page.getByText('Unsaved changes').waitFor();
-		await look(page, 'profile-unsaved');
+		await look(page, 'account-unsaved');
 	});
 
-	test('profile, with initials', async ({ page }) => {
-		await serve(page, { '/api/me': me({ email: null }), '/api/catalog': catalog });
-		await page.goto('/profile');
+	test('account, with initials and no SSH keys', async ({ page }) => {
+		await serve(page, {
+			'/api/me': me({ email: null, provider: 'sso' }),
+			'/api/catalog': catalog,
+			'/api/keys': []
+		});
+		await page.goto('/account');
 		await page.getByRole('heading', { name: 'bob' }).waitFor();
-		await look(page, 'profile-initials');
+		await page.getByText('No SSH keys yet').waitFor();
+		await expect(page.getByRole('button', { name: 'Change password' })).toHaveCount(0);
+		await look(page, 'account-initials');
 	});
 });

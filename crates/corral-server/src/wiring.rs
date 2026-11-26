@@ -7,10 +7,11 @@ use axum::routing::get;
 use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
 use corral_core::app::{
-    Accounts, Environment, Keys, Limits, Lobby, SandboxLinks, Sandboxes, SshAccess,
+    Accounts, Environment, Keys, Lobby, SandboxLinks, Sandboxes, SshAccess, Timeouts,
 };
 use corral_core::ports::{
-    ActivitySignals, IdentityProvider, RegistryAccess, SandboxEngine, SandboxRepo, SecretStore,
+    ActivitySignals, IdentityProvider, RegistryLogins, RunningLimit, SandboxEngine, SandboxRepo,
+    SecretStore,
 };
 use corral_engine_agent_sandbox::AgentSandboxEngine;
 use corral_engine_docker::DockerEngine;
@@ -28,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 use crate::adapters::{Adapters, EngineChoice, Oidc, SecretsChoice};
 use crate::config::{Config, FrontDoor};
 use crate::deletions;
+use crate::registry_logins::EnvRegistryLogins;
 use crate::ui::Ui;
 
 pub struct App {
@@ -45,30 +47,20 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         secrets,
         engine,
         oidc,
-        registries,
     } = Adapters::resolve(config)?;
     let pool = database(&database_url).await?;
     let store = Arc::new(Store::open(pool.clone()).await?);
-    let environment = Environment::new(
-        store.clone(),
-        secret_store(secrets, &pool).await?,
-        store.clone(),
-        SandboxLinks {
-            api: config.http.sandbox_base_url().as_str().to_owned(),
-            web: config.http.base_url.as_str().to_owned(),
-        },
-    );
-    let adopted = environment
-        .adopt_credentials()
-        .await
-        .context("making the credentials kept before the environment entries")?;
-    if adopted > 0 {
-        tracing::info!(
-            adopted,
-            "made credentials secret variables of the environment"
-        );
-    }
+    let environment = environment(config, &store, secret_store(secrets, &pool).await?).await?;
     let (providers, provider_routes) = providers(config, oidc, &pool).await?;
+    let settings = corral_core::app::Settings::new(
+        store.clone(),
+        store.clone(),
+        store.clone(),
+        config.configured(),
+    );
+    let logins = Arc::new(EnvRegistryLogins::new(settings.clone(), |name: &str| {
+        std::env::var(name).ok()
+    }));
     let Started {
         engine,
         lifecycle,
@@ -76,7 +68,8 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
     } = start_engine(
         config,
         engine,
-        registries.clone(),
+        Arc::new(settings.clone()),
+        logins.clone(),
         store.clone(),
         shutdown.clone(),
     )
@@ -85,11 +78,10 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         store.clone(),
         store.clone(),
         engine,
-        Arc::new(OciRegistry::new(registries)),
+        Arc::new(OciRegistry::new(logins.clone())),
         environment.clone(),
-        config.catalog.clone(),
-        Limits {
-            max_sandboxes_per_user: config.limits.max_sandboxes_per_user,
+        settings.clone(),
+        Timeouts {
             wake_deadline: Duration::from_secs(config.ssh.wake_deadline_secs),
             idle: config.idle.limits(),
         },
@@ -114,6 +106,8 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         keys: Keys::new(store.clone()),
         environment,
         sandboxes,
+        settings,
+        password_present: Arc::new(move |variable: &str| logins.password_present(variable)),
         ssh: SshEndpoint {
             host: config.ssh.public_host.clone(),
             port: config.ssh.public_port,
@@ -133,6 +127,34 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         lifecycle,
         deletions,
     })
+}
+
+/// The environment, once the credentials kept before it are its secret variables.
+async fn environment(
+    config: &Config,
+    store: &Arc<Store>,
+    secrets: Arc<dyn SecretStore>,
+) -> Result<Environment> {
+    let environment = Environment::new(
+        store.clone(),
+        secrets,
+        store.clone(),
+        SandboxLinks {
+            api: config.http.sandbox_base_url().as_str().to_owned(),
+            web: config.http.base_url.as_str().to_owned(),
+        },
+    );
+    let adopted = environment
+        .adopt_credentials()
+        .await
+        .context("making the credentials kept before the environment entries")?;
+    if adopted > 0 {
+        tracing::info!(
+            adopted,
+            "made credentials secret variables of the environment"
+        );
+    }
+    Ok(environment)
 }
 
 pub async fn database(database_url: &str) -> Result<Pool> {
@@ -214,11 +236,11 @@ struct Started {
 async fn start_engine(
     config: &Config,
     choice: EngineChoice,
-    registries: Vec<RegistryAccess>,
+    running: Arc<dyn RunningLimit>,
+    logins: Arc<dyn RegistryLogins>,
     sandboxes: Arc<dyn SandboxRepo>,
     shutdown: CancellationToken,
 ) -> Result<Started> {
-    let max_running = config.limits.max_running;
     let idle = &config.idle;
     let settings = Settings {
         limits: idle.limits(),
@@ -231,14 +253,14 @@ async fn start_engine(
     };
     match choice {
         EngineChoice::Docker(config) => {
-            let docker = Arc::new(DockerEngine::connect(config, max_running, registries).await?);
+            let docker = Arc::new(DockerEngine::connect(config, running, logins).await?);
             Ok(sweep(docker, sandboxes, settings, busy, shutdown))
         }
         EngineChoice::AgentSandbox(config) => {
             let client = kube::Client::try_default()
                 .await
                 .context("connecting to Kubernetes")?;
-            let agent = Arc::new(AgentSandboxEngine::new(client, config, max_running));
+            let agent = Arc::new(AgentSandboxEngine::new(client, config, running));
             Ok(sweep(agent, sandboxes, settings, busy, shutdown))
         }
     }
@@ -304,9 +326,11 @@ mod tests {
                 "environment_attachments",
                 "environment_entries",
                 "local_accounts",
+                "member_allowances",
                 "sandbox_client_states",
                 "sandboxes",
                 "secrets",
+                "settings",
                 "ssh_keys",
                 "users",
             ]

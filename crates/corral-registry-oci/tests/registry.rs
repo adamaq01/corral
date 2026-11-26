@@ -1,6 +1,9 @@
-use corral_core::Error;
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
 use corral_core::domain::ImageReference;
-use corral_core::ports::{ImageRegistry, RegistryAccess, RegistryLogin};
+use corral_core::ports::{ImageRegistry, RegistryAccess, RegistryLogin, RegistryLogins};
+use corral_core::{Error, Result};
 use corral_registry_oci::OciRegistry;
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -40,12 +43,26 @@ fn served(body: &Value, media_type: &str) -> ResponseTemplate {
         .set_body_string(body.to_string())
 }
 
+/// Logins a test changes while the reader holds them.
+struct Logins(Mutex<Vec<RegistryAccess>>);
+
+#[async_trait]
+impl RegistryLogins for Logins {
+    async fn registries(&self) -> Result<Vec<RegistryAccess>> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
 fn access(server: &MockServer, login: Option<RegistryLogin>) -> Vec<RegistryAccess> {
     vec![RegistryAccess {
         registry: server.address().to_string(),
         login,
         plain_http: true,
     }]
+}
+
+fn logins(server: &MockServer, login: Option<RegistryLogin>) -> Arc<Logins> {
+    Arc::new(Logins(Mutex::new(access(server, login))))
 }
 
 fn image(server: &MockServer, path: &str) -> ImageReference {
@@ -90,7 +107,7 @@ async fn the_download_size_is_the_layers_and_config_of_this_platform() {
             .mount(&server)
             .await;
     }
-    let registry = OciRegistry::new(access(&server, None));
+    let registry = OciRegistry::new(logins(&server, None));
 
     assert_eq!(
         registry
@@ -137,16 +154,11 @@ async fn a_private_registry_is_read_with_the_login_configured_for_it() {
         password: SecretString::from("s3cret"),
     };
     let image = image(&server, "team/private:1");
+    let logins = logins(&server, None);
+    let registry = OciRegistry::new(logins.clone());
 
-    let anonymous = OciRegistry::new(access(&server, None))
-        .download_size(&image)
-        .await;
+    let anonymous = registry.download_size(&image).await;
     assert!(matches!(anonymous, Err(Error::Invalid(_))), "{anonymous:?}");
-    assert_eq!(
-        OciRegistry::new(access(&server, Some(login)))
-            .download_size(&image)
-            .await
-            .unwrap(),
-        57
-    );
+    *logins.0.lock().unwrap() = access(&server, Some(login));
+    assert_eq!(registry.download_size(&image).await.unwrap(), 57);
 }

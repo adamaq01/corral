@@ -352,6 +352,81 @@ test('a sandbox attaches several entries, overrides and detaches them', async ({
 	]);
 });
 
+test('files count their lines, keep their case, and are named by their path', async ({ page }) => {
+	const short = entry({
+		id: '8e6f7a8b-9c0d-4e1f-2a3b-4c5d6e7f8a9b',
+		kind: 'file',
+		target: '.hushlogin',
+		secret: false,
+		value: { setAt, size: 4, shown: 'text', text: 'one\n' }
+	});
+	const text = Array.from({ length: 20 }, (_, index) => `line ${index + 1}\n`).join('');
+	const long = entry({
+		id: '9f7a8b9c-0d1e-4f2a-3b4c-5d6e7f8a9b0c',
+		kind: 'file',
+		target: 'notes/t.txt',
+		secret: false,
+		value: { setAt, size: text.length, shown: 'text', text }
+	});
+	const lower = entry({
+		id: '0a8b9c0d-1e2f-4a3b-4c5d-6e7f8a9b0c1d',
+		target: 'GIT_EDITOR',
+		secret: false,
+		value: { setAt, size: 3, shown: 'text', text: 'vim' }
+	});
+	const empty = entry({
+		id: '1b9c0d1e-2f3a-4b4c-5d6e-7f8a9b0c1d2e',
+		target: 'EMPTY_VALUE',
+		secret: false,
+		value: { setAt, size: 0, shown: 'text', text: '' }
+	});
+	await page.route('**/api/environment', (route) =>
+		route.fulfill({ json: [short, long, lower, empty] })
+	);
+	await page.route(`**/api/environment/${long.id}`, (route) => route.fulfill({ json: long }));
+	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [] }));
+	await page.goto('/environment');
+	const listed = (target: string) => page.getByRole('link', { name: new RegExp(target) });
+	await expect(listed('hushlogin')).toContainText('1 line · attached to no sandbox');
+	await expect(listed('notes')).toContainText('20 lines · attached to no sandbox');
+	const description = listed('GIT_EDITOR').getByText('vim · attached to no sandbox');
+	expect(
+		await description.evaluate(
+			(element) => getComputedStyle(element, '::first-letter').textTransform
+		)
+	).toBe('none');
+	await expect(listed('EMPTY_VALUE')).toContainText(
+		'Attached to no sandbox · new sandboxes get it'
+	);
+
+	await page.goto(`/environment/${long.id}`);
+	await expect(page.getByRole('button', { name: 'Show all 20 lines' })).toBeVisible();
+	await page.getByRole('button', { name: 'Duplicate' }).click();
+	const duplicate = page.getByRole('dialog', { name: 'Duplicate ~/notes/t.txt' });
+	await expect(duplicate.getByLabel('Path in the home')).toHaveValue('~/notes/t.txt.copy');
+	await duplicate.getByRole('button', { name: 'Cancel' }).click();
+	await page.getByRole('button', { name: 'Delete file' }).click();
+	const confirm = page.getByRole('alertdialog', { name: 'Delete ~/notes/t.txt?' });
+	const remove = confirm.getByRole('button', { name: 'Delete file' });
+	await confirm.getByLabel('Type ~/notes/t.txt to confirm').fill('notes/t.txt');
+	await expect(remove).toBeDisabled();
+	await confirm.getByLabel('Type ~/notes/t.txt to confirm').fill('~/notes/t.txt');
+	await expect(remove).toBeEnabled();
+});
+
+test('an import names how many variables it would import', async ({ page }) => {
+	await page.route('**/api/environment', (route) => route.fulfill({ json: [] }));
+	await page.goto('/environment');
+	await page.getByRole('button', { name: 'Import .env' }).first().click();
+	const dialog = page.getByRole('dialog', { name: 'Import variables' });
+	const button = (name: string) => dialog.getByRole('button', { name, exact: true });
+	await expect(button('Import')).toBeDisabled();
+	await dialog.getByLabel('Variables').fill('EDITOR=vim');
+	await expect(button('Import 1 variable')).toBeEnabled();
+	await dialog.getByLabel('Variables').fill('EDITOR=vim\nPAGER=less');
+	await expect(button('Import 2 variables')).toBeEnabled();
+});
+
 test('an entry lives through Corral: made, renamed, made secret and deleted', async ({ page }) => {
 	const suffix = Math.random().toString(36).slice(2, 8);
 	const first = `e2e_${suffix}`;

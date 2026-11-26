@@ -12,7 +12,7 @@
 
 	const open = !document.cookie.split('; ').includes(`${SIDEBAR_COOKIE_NAME}=false`);
 
-	const items = $derived(navigation(data.user, data.providers));
+	const items = $derived(navigation(data.user));
 	const section = $derived(currentItem(items, page.url.pathname));
 </script>
 

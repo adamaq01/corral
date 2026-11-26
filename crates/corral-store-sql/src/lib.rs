@@ -1,6 +1,7 @@
 mod environment;
 mod keys;
 mod sandboxes;
+mod settings;
 mod users;
 
 use corral_core::Result;

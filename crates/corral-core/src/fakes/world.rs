@@ -6,17 +6,18 @@ use secrecy::{ExposeSecret, SecretSlice};
 
 use super::{
     FakeEngine, FakeProvider, FakeRegistry, MemoryEnvironmentRepo, MemoryKeyRepo,
-    MemorySandboxRepo, MemorySecretStore, MemoryUserRepo, RecordedSignals,
+    MemorySandboxRepo, MemorySecretStore, MemorySettingsRepo, MemoryUserRepo, RecordedSignals,
 };
 use crate::app::{
-    Accounts, Catalog, CreateSandbox, EntryChange, Environment, ImageOption, Keys, Limits, Lobby,
-    NewEntry, SandboxLinks, SandboxView, Sandboxes, SizePreset, SshAccess,
+    Accounts, Catalog, CatalogChange, CatalogDefaults, Configured, CreateSandbox, EntryChange,
+    Environment, ImageOption, Keys, LimitsChange, Lobby, NewEntry, SandboxLinks, SandboxView,
+    Sandboxes, Settings, SizePreset, Source, SshAccess, Timeouts,
 };
 use crate::domain::{
     Admin, Allocation, Entry, HomePath, IdleLimits, ImageKey, Resources, Role, Sandbox,
     SandboxDefaults, SandboxName, SizeKey, Target, User, VariableName,
 };
-use crate::ports::{Identity, IdentityProvider, VariableMap};
+use crate::ports::{Identity, IdentityProvider, SettingsRepo, VariableMap};
 
 pub const MAX_SANDBOXES: usize = 3;
 pub const PROVIDER: &str = "test";
@@ -26,8 +27,7 @@ pub const IDLE: IdleLimits = IdleLimits {
     max_timeout: Duration::from_hours(4),
     max_keep_awake: Duration::from_hours(24),
 };
-const LIMITS: Limits = Limits {
-    max_sandboxes_per_user: MAX_SANDBOXES,
+const TIMEOUTS: Timeouts = Timeouts {
     wake_deadline: WAKE_DEADLINE,
     idle: IDLE,
 };
@@ -144,13 +144,20 @@ pub fn admin_proof(user: &User) -> Admin {
 }
 
 #[must_use]
-pub fn catalog() -> Catalog {
-    let image = |key: &str, reference: &str| ImageOption {
+pub fn image_option(key: &str, reference: &str) -> ImageOption {
+    ImageOption {
         key: ImageKey::parse(key).unwrap(),
         label: key.to_uppercase(),
         reference: reference.to_owned(),
-    };
-    let size = |key: &str, cpu_millis: u64, memory_gib: u64| SizePreset {
+        description: String::new(),
+        enabled: true,
+        source: Source::Database,
+    }
+}
+
+#[must_use]
+pub fn size_preset(key: &str, cpu_millis: u64, memory_gib: u64) -> SizePreset {
+    SizePreset {
         key: SizeKey::parse(key).unwrap(),
         label: key.to_uppercase(),
         resources: Resources {
@@ -158,15 +165,39 @@ pub fn catalog() -> Catalog {
             memory_bytes: Allocation::new(memory_gib << 29, memory_gib << 30).unwrap(),
             home_bytes: NonZeroU64::new(10 << 30).unwrap(),
         },
-    };
+        enabled: true,
+        source: Source::Database,
+    }
+}
+
+#[must_use]
+pub fn catalog() -> Catalog {
     Catalog::new(
         vec![
-            image("base", "ghcr.io/adamaq01/corral-sandbox:1"),
-            image("tools", "ghcr.io/adamaq01/corral-tools:2"),
+            image_option("base", "ghcr.io/adamaq01/corral-sandbox:1"),
+            ImageOption {
+                enabled: false,
+                ..image_option("tools", "ghcr.io/adamaq01/corral-tools:2")
+            },
         ],
-        vec![size("small", 1000, 2), size("large", 4000, 8)],
+        vec![size_preset("small", 1000, 2), size_preset("large", 4000, 8)],
+        CatalogDefaults {
+            image: ImageKey::parse("base").unwrap(),
+            size: SizeKey::parse("small").unwrap(),
+        },
     )
     .unwrap()
+}
+
+/// The catalog as the admin would store it.
+#[must_use]
+pub fn catalog_change(catalog: &Catalog) -> CatalogChange {
+    CatalogChange {
+        images: catalog.images().to_vec(),
+        sizes: catalog.sizes().to_vec(),
+        defaults: Some(catalog.defaults().clone()),
+        named_images: catalog.named_images().cloned(),
+    }
 }
 
 #[must_use]
@@ -196,6 +227,8 @@ pub struct World {
     pub secrets: Arc<MemorySecretStore>,
     pub engine: Arc<FakeEngine>,
     pub registry: Arc<FakeRegistry>,
+    pub settings: Settings,
+    pub settings_repo: Arc<MemorySettingsRepo>,
     pub sandboxes: Sandboxes,
     pub access: Arc<SshAccess>,
     pub lobby: Arc<Lobby>,
@@ -212,6 +245,16 @@ impl World {
     /// With `provider` and `others`.
     #[must_use]
     pub fn with_providers(others: Vec<Arc<dyn IdentityProvider>>) -> Self {
+        Self::build(others, Configured::default())
+    }
+
+    /// With what the config file sets, beside the catalog and limits the database holds.
+    #[must_use]
+    pub fn with_configured(configured: Configured) -> Self {
+        Self::build(Vec::new(), configured)
+    }
+
+    fn build(others: Vec<Arc<dyn IdentityProvider>>, configured: Configured) -> Self {
         let provider = Arc::new(FakeProvider::default());
         let mut providers: Vec<Arc<dyn IdentityProvider>> = vec![provider.clone()];
         providers.extend(others);
@@ -219,6 +262,19 @@ impl World {
         let sandbox_repo = Arc::new(MemorySandboxRepo::default());
         let environment_repo = Arc::new(MemoryEnvironmentRepo::default());
         let secrets = Arc::new(MemorySecretStore::default());
+        let settings_repo = Arc::new(MemorySettingsRepo::holding(
+            &catalog_change(&catalog()),
+            LimitsChange {
+                max_sandboxes_per_member: Some(MAX_SANDBOXES),
+                max_running: Some(6),
+            },
+        ));
+        let settings = Settings::new(
+            settings_repo.clone(),
+            sandbox_repo.clone(),
+            users.clone(),
+            configured,
+        );
         let environment = Environment::new(
             environment_repo.clone(),
             secrets.clone(),
@@ -233,8 +289,8 @@ impl World {
             engine.clone(),
             registry.clone(),
             environment.clone(),
-            catalog(),
-            LIMITS,
+            settings.clone(),
+            TIMEOUTS,
         );
         let key_repo = Arc::new(MemoryKeyRepo::default());
         let access = Arc::new(SshAccess::new(
@@ -257,6 +313,8 @@ impl World {
                 providers,
             ),
             keys: Keys::new(key_repo),
+            settings,
+            settings_repo,
             sandboxes,
             environment,
             environment_repo,
@@ -272,18 +330,28 @@ impl World {
         }
     }
 
-    /// The same sandboxes, users, engine and registry, from another catalog.
-    #[must_use]
-    pub fn sandboxes_with(&self, catalog: Catalog) -> Sandboxes {
-        Sandboxes::new(
-            self.sandbox_repo.clone(),
-            self.users.clone(),
-            self.engine.clone(),
-            self.registry.clone(),
-            self.environment.clone(),
-            catalog,
-            LIMITS,
-        )
+    /// From now on the catalog is `catalog`, stored past the checks of `Settings::set_catalog`, so
+    /// it may drop what a sandbox was made from.
+    pub async fn sandboxes_with(&self, catalog: Catalog) {
+        self.settings_repo
+            .set_catalog(&catalog_change(&catalog))
+            .await
+            .unwrap();
+    }
+
+    /// Offers "tools" too, which the fakes' catalog has disabled.
+    pub async fn offer_tools(&self) {
+        let fakes = catalog();
+        let images = fakes
+            .images()
+            .iter()
+            .map(|image| ImageOption {
+                enabled: true,
+                ..image.clone()
+            })
+            .collect();
+        let offering = Catalog::new(images, fakes.sizes().to_vec(), fakes.defaults().clone());
+        self.sandboxes_with(offering.unwrap()).await;
     }
 
     pub async fn sandbox(&self, owner: &User, name: &str) -> Sandbox {

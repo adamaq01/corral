@@ -51,7 +51,7 @@ function overSsh(
 	});
 }
 
-test('connecting to a sandbox not made yet makes it from the profile defaults, then opens it', async ({
+test('connecting to a sandbox not made yet makes it from the account defaults, then opens it', async ({
 	page,
 	baseURL
 }) => {

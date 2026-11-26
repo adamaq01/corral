@@ -209,10 +209,13 @@ async fn enter(
     let lobby = &gatekeeper.lobby;
     match lobby.enter(&username).await {
         Ok(Entrance::Sandbox) => Json(Entered::Sandbox).into_response(),
-        Ok(Entrance::Lobby(offer)) => Json(Entered::Lobby {
-            offer: offered(lobby.catalog(), offer),
-        })
-        .into_response(),
+        Ok(Entrance::Lobby(offer)) => match lobby.catalog().await {
+            Ok(catalog) => Json(Entered::Lobby {
+                offer: offered(&catalog, offer),
+            })
+            .into_response(),
+            Err(error) => internal_error(&error),
+        },
         Ok(Entrance::Refused(reason)) => Json(Entered::Refused { reason }).into_response(),
         Err(error) => internal_error(&error),
     }
@@ -286,8 +289,7 @@ fn offered(catalog: &Catalog, offer: Offer) -> api::Offer {
         handle: offer.owner.to_string(),
         name: offer.name.map(|name| name.to_string()),
         images: catalog
-            .images()
-            .iter()
+            .offered_images()
             .map(|image| ImageChoice {
                 key: image.key.to_string(),
                 label: image.label.clone(),
@@ -298,8 +300,7 @@ fn offered(catalog: &Catalog, offer: Offer) -> api::Offer {
             max_bytes: named.max_bytes.get(),
         }),
         sizes: catalog
-            .sizes()
-            .iter()
+            .offered_sizes()
             .map(|size| SizeChoice {
                 key: size.key.to_string(),
                 label: size.label.clone(),

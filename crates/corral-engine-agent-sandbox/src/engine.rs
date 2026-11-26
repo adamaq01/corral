@@ -1,10 +1,13 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use corral_activity::ActivityLock;
 use corral_core::domain::{SandboxId, SandboxStatus};
 use corral_core::ports::labels::{MANAGED_BY, MANAGER, SANDBOX_ID};
-use corral_core::ports::{Boot, Inspection, Readiness, SandboxEngine, SandboxSpec, Started};
+use corral_core::ports::{
+    Boot, Inspection, Readiness, RunningLimit, SandboxEngine, SandboxSpec, Started,
+};
 use corral_core::{Error, Result};
 use k8s_openapi::api::core::v1::{Event, PersistentVolumeClaim, Pod, Secret};
 use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
@@ -30,13 +33,13 @@ pub struct AgentSandboxEngine {
     pub(crate) pods: Api<Pod>,
     events: Api<Event>,
     pub(crate) config: AgentSandboxConfig,
-    max_running: usize,
+    running: Arc<dyn RunningLimit>,
     pub(crate) activity: ActivityLock,
 }
 
 impl AgentSandboxEngine {
     #[must_use]
-    pub fn new(client: Client, config: AgentSandboxConfig, max_running: usize) -> Self {
+    pub fn new(client: Client, config: AgentSandboxConfig, running: Arc<dyn RunningLimit>) -> Self {
         let namespace = config.namespace.as_str();
         Self {
             sandboxes: Api::namespaced(client.clone(), namespace),
@@ -45,7 +48,7 @@ impl AgentSandboxEngine {
             pods: Api::namespaced(client.clone(), namespace),
             events: Api::namespaced(client, namespace),
             config,
-            max_running,
+            running,
             activity: ActivityLock::default(),
         }
     }
@@ -109,7 +112,7 @@ impl AgentSandboxEngine {
         if sandbox.spec.operating_mode == OperatingMode::Running {
             return Ok(false);
         }
-        let max = self.max_running;
+        let max = self.running.max_running().await?;
         if self.running_count().await? >= max {
             return Err(Error::LimitReached(format!(
                 "at most {max} sandboxes may run at once"

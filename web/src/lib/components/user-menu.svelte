@@ -67,9 +67,9 @@
 				<DropdownMenu.Separator />
 				<DropdownMenu.Item>
 					{#snippet child({ props })}
-						<a href="/profile" {...props}>
+						<a href="/account" {...props}>
 							<CircleUserRoundIcon />
-							Profile
+							Account
 						</a>
 					{/snippet}
 				</DropdownMenu.Item>

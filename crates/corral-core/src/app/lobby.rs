@@ -66,9 +66,8 @@ impl Lobby {
         }
     }
 
-    #[must_use]
-    pub fn catalog(&self) -> &Catalog {
-        self.sandboxes.catalog()
+    pub async fn catalog(&self) -> Result<Catalog> {
+        self.sandboxes.catalog().await
     }
 
     /// Where the login lands: its sandbox when it has one by that name, or by no name any sandbox
@@ -127,7 +126,7 @@ impl Lobby {
         }
         let (image, image_reference) = match choice.image {
             None => (None, None),
-            Some(text) => match self.catalog_key(&text) {
+            Some(text) => match self.catalog_key(&text).await? {
                 Some(key) => (Some(key), None),
                 None => (None, Some(text)),
             },
@@ -164,9 +163,12 @@ impl Lobby {
         })
     }
 
-    fn catalog_key(&self, text: &str) -> Option<ImageKey> {
-        let key = ImageKey::parse(text).ok()?;
-        self.catalog().image(Some(&key)).ok().map(|_| key)
+    async fn catalog_key(&self, text: &str) -> Result<Option<ImageKey>> {
+        let Ok(key) = ImageKey::parse(text) else {
+            return Ok(None);
+        };
+        let catalog = self.catalog().await?;
+        Ok(catalog.image(Some(&key)).is_ok().then_some(key))
     }
 }
 
@@ -269,6 +271,7 @@ mod tests {
     #[tokio::test]
     async fn a_login_naming_a_sandbox_that_exists_goes_on_and_one_naming_none_opens_the_lobby() {
         let (w, adam, _) = adam().await;
+        w.offer_tools().await;
         w.sandboxes
             .set_defaults(&adam, &defaults("tools", "large"))
             .await
@@ -331,6 +334,7 @@ mod tests {
     #[tokio::test]
     async fn the_lobby_makes_a_sandbox_from_the_choice_with_exactly_the_entries_chosen() {
         let (w, _, extra) = adam().await;
+        w.offer_tools().await;
         let id = extra.id.0.to_string();
         let made = w
             .lobby

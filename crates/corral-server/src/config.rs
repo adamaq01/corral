@@ -1,13 +1,15 @@
 mod catalog;
 mod quantity;
 
+pub use catalog::ConfiguredCatalog;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use corral_core::app::Catalog;
+use corral_core::app::{Configured, Registry, Source};
 use corral_core::domain::IdleLimits;
 use corral_engine_agent_sandbox::AgentSandboxConfig;
 use corral_engine_docker::DockerConfig;
@@ -33,11 +35,8 @@ pub struct Config {
     pub ssh: Ssh,
     #[serde(default)]
     pub limits: Limits,
-    #[serde(
-        default = "catalog::default",
-        deserialize_with = "catalog::deserialize"
-    )]
-    pub catalog: Catalog,
+    #[serde(default)]
+    pub catalog: ConfiguredCatalog,
     #[serde(default)]
     pub registries: Vec<RegistryEntry>,
 }
@@ -233,20 +232,12 @@ fn wake_deadline_secs() -> u64 {
     20
 }
 
-#[derive(Deserialize)]
+/// A limit the config leaves out is the admin's to set in the web UI.
+#[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
-    pub max_sandboxes_per_user: usize,
-    pub max_running: usize,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            max_sandboxes_per_user: 5,
-            max_running: 6,
-        }
-    }
+    pub max_sandboxes_per_member: Option<usize>,
+    pub max_running: Option<usize>,
 }
 
 impl Config {
@@ -269,6 +260,11 @@ impl Config {
             idle.busy_cpu_percent.is_finite() && idle.busy_cpu_percent > 0.0,
             "[idle] busy_cpu_percent must be above 0"
         );
+        let limits = &config.limits;
+        ensure!(
+            limits.max_sandboxes_per_member != Some(0) && limits.max_running != Some(0),
+            "[limits] must be at least 1"
+        );
         ensure!(
             config.identity.local.is_some() || config.identity.oidc.is_some(),
             "no login method: add [identity.local], [identity.oidc] or both"
@@ -289,10 +285,36 @@ impl Config {
         }
         Ok(config)
     }
+
+    /// What the config sets of the catalog, limits and registries, which settings show locked.
+    #[must_use]
+    pub fn configured(&self) -> Configured {
+        let catalog = &self.catalog;
+        Configured {
+            images: catalog.images.clone(),
+            sizes: catalog.sizes.clone(),
+            defaults: catalog.defaults.clone(),
+            named_images: catalog.named_images.clone(),
+            max_sandboxes_per_member: self.limits.max_sandboxes_per_member,
+            max_running: self.limits.max_running,
+            registries: self
+                .registries
+                .iter()
+                .map(|entry| Registry {
+                    registry: entry.registry.clone(),
+                    username: entry.username.clone(),
+                    password_env: entry.password_env.clone(),
+                    plain_http: entry.plain_http,
+                    source: Source::Config,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use corral_core::app::{Registry, Source};
     use corral_identity_oidc::ExpiryPolicy;
     use corral_secrets_vault::VaultAuth;
 
@@ -336,23 +358,21 @@ mod tests {
             &config.engine,
             Engine::Docker(docker) if docker.network == "corral-sandboxes"
         ));
-        assert_eq!(config.limits.max_running, 6);
+        assert!(config.limits.max_running.is_none());
         assert_eq!(config.idle.check_interval_secs.get(), 60);
         assert_eq!(config.idle.report_interval_secs.get(), 60);
         assert_eq!(config.idle.timeout_secs, 1800);
         assert_eq!(config.ssh.public_port, 48291);
-        assert_eq!(config.limits.max_sandboxes_per_user, 5);
+        assert!(config.limits.max_sandboxes_per_member.is_none());
         assert_eq!(config.ssh.wake_deadline_secs, 20);
-        assert_eq!(
-            config.catalog.image(None).unwrap().reference,
-            "ghcr.io/adamaq01/corral-sandbox"
-        );
-        assert_eq!(config.catalog.size(None).unwrap().key.as_str(), "small");
+        let configured = config.configured();
+        assert!(configured.images.is_empty() && configured.sizes.is_empty());
     }
 
     #[test]
     fn example_config_parses() {
         let config = Config::parse(EXAMPLE).unwrap();
+        let configured = config.configured();
         assert!(config.http.base_url.is_https());
         assert!(config.http.trust_forwarded_for);
         let oidc = config.identity.oidc.unwrap();
@@ -376,14 +396,20 @@ mod tests {
         assert_eq!(agent.namespace, "corral-sandboxes");
         assert_eq!(agent.storage_class.as_deref(), Some("tns-csi-nvmeof"));
         assert!(matches!(config.secrets, Secrets::Database {}));
-        let sizes: Vec<_> = config
-            .catalog
-            .sizes()
+        let sizes: Vec<_> = configured
+            .sizes
             .iter()
-            .map(|size| size.key.as_str())
+            .map(|size| (size.key.as_str(), size.source))
             .collect();
-        assert_eq!(sizes, ["small", "large"]);
-        let small = config.catalog.size(None).unwrap().resources;
+        assert_eq!(
+            sizes,
+            [("small", Source::Config), ("large", Source::Config)]
+        );
+        assert_eq!(
+            (configured.max_sandboxes_per_member, configured.max_running),
+            (Some(5), Some(6))
+        );
+        let small = configured.sizes[0].resources;
         assert_eq!(
             (small.cpu_millis.request(), small.cpu_millis.limit()),
             (500, 2000)
@@ -500,16 +526,111 @@ mod tests {
         );
         let message = rejection(&format!("{MINIMAL}\n{}", size("1", "lots")));
         assert!(message.contains("\"lots\""), "{message}");
-        let message = rejection(&format!("{MINIMAL}\n[catalog]\nimages = []"));
-        assert!(message.contains("no image"), "{message}");
+        let message = rejection(&format!(
+            "{MINIMAL}\n[[catalog.images]]\nkey = \"a\"\nlabel = \"A\"\nreference = \"a\"\n\
+             [[catalog.images]]\nkey = \"a\"\nlabel = \"A\"\nreference = \"a\""
+        ));
+        assert!(message.contains("image \"a\" is listed twice"), "{message}");
 
-        let config = Config::parse(&format!(
+        let empty = Config::parse(&format!("{MINIMAL}\n[catalog]"))
+            .unwrap()
+            .configured();
+        assert!(empty.images.is_empty() && empty.sizes.is_empty() && empty.defaults.is_none());
+
+        let configured = Config::parse(&format!(
             "{MINIMAL}\n[[catalog.images]]\nkey = \"debian\"\nlabel = \"Debian\"\n\
              reference = \"example.org/debian\""
         ))
-        .unwrap();
-        assert_eq!(config.catalog.image(None).unwrap().key.as_str(), "debian");
-        assert_eq!(config.catalog.size(None).unwrap().key.as_str(), "small");
+        .unwrap()
+        .configured();
+        let images: Vec<_> = configured
+            .images
+            .iter()
+            .map(|image| (image.key.as_str(), image.source))
+            .collect();
+        assert_eq!(images, [("debian", Source::Config)]);
+        assert!(configured.sizes.is_empty() && configured.defaults.is_none());
+    }
+
+    #[test]
+    fn the_old_limit_name_is_refused_naming_the_new_one() {
+        let message = rejection(&format!("{MINIMAL}\n[limits]\nmax_sandboxes_per_user = 3"));
+        assert!(
+            message.contains("max_sandboxes_per_user")
+                && message.contains("max_sandboxes_per_member"),
+            "{message}"
+        );
+        let limits = Config::parse(&format!("{MINIMAL}\n[limits]\nmax_running = 3"))
+            .unwrap()
+            .configured();
+        assert_eq!(
+            (limits.max_sandboxes_per_member, limits.max_running),
+            (None, Some(3))
+        );
+    }
+
+    #[test]
+    fn a_limit_of_zero_is_refused() {
+        for limit in ["max_sandboxes_per_member", "max_running"] {
+            let message = rejection(&format!("{MINIMAL}\n[limits]\n{limit} = 0"));
+            assert!(
+                message.contains("[limits] must be at least 1"),
+                "{limit}: {message}"
+            );
+        }
+        let limits = Config::parse(&format!(
+            "{MINIMAL}\n[limits]\nmax_sandboxes_per_member = 1\nmax_running = 1"
+        ))
+        .unwrap()
+        .configured();
+        assert_eq!(
+            (limits.max_sandboxes_per_member, limits.max_running),
+            (Some(1), Some(1))
+        );
+    }
+
+    #[test]
+    fn a_configured_catalog_takes_descriptions_enabled_flags_and_explicit_defaults() {
+        let images = "[[catalog.images]]\nkey = \"first\"\nlabel = \"First\"\n\
+                      reference = \"example.org/first\"\n\
+                      description = \"Kept for old sandboxes\"\nenabled = false\n\
+                      [[catalog.images]]\nkey = \"second\"\nlabel = \"Second\"\n\
+                      reference = \"example.org/second\"";
+        let picking = |defaults: &str| format!("{MINIMAL}\n[catalog]\n{defaults}\n{images}");
+        let configured = Config::parse(&picking(
+            "default_image = \"second\"\ndefault_size = \"small\"",
+        ))
+        .unwrap()
+        .configured();
+        let first = &configured.images[0];
+        assert_eq!(
+            (first.description.as_str(), first.enabled, first.source),
+            ("Kept for old sandboxes", false, Source::Config)
+        );
+        assert!(configured.images[1].enabled);
+        let defaults = configured.defaults.unwrap();
+        assert_eq!(
+            (defaults.image.as_str(), defaults.size.as_str()),
+            ("second", "small")
+        );
+
+        for (defaults, expected) in [
+            (
+                "default_image = \"second\"",
+                "default_image and default_size go together",
+            ),
+            (
+                "default_size = \"small\"",
+                "default_image and default_size go together",
+            ),
+            (
+                "default_image = \"first\"\ndefault_size = \"small\"",
+                "the default image \"first\" is not an enabled image",
+            ),
+        ] {
+            let message = rejection(&picking(defaults));
+            assert!(message.contains(expected), "{defaults}: {message}");
+        }
     }
 
     #[test]
@@ -520,17 +641,23 @@ mod tests {
              password_env = \"CORRAL_GHCR_TOKEN\""
         ))
         .unwrap();
-        let named = config.catalog.named_images().unwrap();
+        let configured = config.configured();
+        let named = configured.named_images.unwrap();
         assert_eq!(named.registries, ["ghcr.io/acme", "docker.io"]);
         assert_eq!(named.max_bytes.get(), 2 << 30);
+        assert!(configured.images.is_empty() && configured.sizes.is_empty());
         assert_eq!(
-            config.catalog.image(None).unwrap().reference,
-            "ghcr.io/adamaq01/corral-sandbox",
-            "the catalog's own images stay"
+            configured.registries,
+            [Registry {
+                registry: "ghcr.io".to_owned(),
+                username: Some("corral".to_owned()),
+                password_env: Some("CORRAL_GHCR_TOKEN".to_owned()),
+                plain_http: false,
+                source: Source::Config,
+            }]
         );
-        assert_eq!(config.registries.len(), 1);
-        let plain = Config::parse(MINIMAL).unwrap();
-        assert!(plain.catalog.named_images().is_none() && plain.registries.is_empty());
+        let plain = Config::parse(MINIMAL).unwrap().configured();
+        assert!(plain.named_images.is_none() && plain.registries.is_empty());
 
         for (extra, expected) in [
             (

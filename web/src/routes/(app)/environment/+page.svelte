@@ -24,7 +24,7 @@
 	import { Input } from '#lib/components/ui/input/index.js';
 	import * as Item from '#lib/components/ui/item/index.js';
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
-	import { download, summary, toDotenv, where } from '#lib/environment.js';
+	import { download, lineCount, summary, toDotenv, where } from '#lib/environment.js';
 	import { Remote, keepFresh } from '#lib/remote.svelte.js';
 
 	const list = new Remote(environment.list);
@@ -68,15 +68,16 @@
 	}
 
 	function described(entry: EnvironmentEntry): string {
+		const lines = entry.value.shown === 'text' ? lineCount(entry.value.text) : 0;
 		const value =
 			entry.kind === 'variable' || entry.value.shown !== 'text'
 				? summary(entry.value)
-				: `${entry.value.text.split('\n').length} lines`;
-		const count = entry.sandboxes.length;
-		const attached =
-			count === 0
-				? 'attached to no sandbox'
-				: `attached to ${entry.sandboxes.map((used) => used.sandbox).join(', ')}`;
+				: `${lines} ${lines === 1 ? 'line' : 'lines'}`;
+		const on =
+			entry.sandboxes.length === 0
+				? 'no sandbox'
+				: entry.sandboxes.map((used) => used.sandbox).join(', ');
+		const attached = `${value ? 'attached' : 'Attached'} to ${on}`;
 		return [value, attached, entry.applyToNew ? 'new sandboxes get it' : null]
 			.filter(Boolean)
 			.join(' · ');
@@ -201,7 +202,7 @@
 													<Badge variant="destructive">Duplicate</Badge>
 												{/if}
 											</Item.Title>
-											<Item.Description class="break-all first-letter:uppercase">
+											<Item.Description class="break-all">
 												{described(entry)}
 											</Item.Description>
 										</Item.Content>

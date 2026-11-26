@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,11 +8,12 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use corral_api::{
-    ApiError, ClientAddress, CurrentAdmin, Identities, JsonBody, LoginKind, PathParam,
+    ApiError, ClientAddress, CurrentAdmin, CurrentUser, Identities, JsonBody, LoginKind, PathParam,
     ProviderDescription, ProviderRoutes, SignedIn, TypeScript, provider_path,
 };
 use corral_core::Error;
 use corral_core::domain::{Handle, Role};
+use corral_core::ports::Identity;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -45,6 +47,14 @@ struct NewPassword {
     password: SecretString,
 }
 
+#[derive(Deserialize, TS)]
+struct PasswordChange {
+    #[ts(type = "string")]
+    current: SecretString,
+    #[ts(type = "string")]
+    password: SecretString,
+}
+
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename = "LocalAccount")]
@@ -63,6 +73,7 @@ impl LocalProvider {
             .add::<PasswordLogin>()
             .add::<NewAccount>()
             .add::<NewPassword>()
+            .add::<PasswordChange>()
             .add::<AccountDto>()
             .limit(
                 "MIN_PASSWORD_CHARS",
@@ -71,8 +82,8 @@ impl LocalProvider {
             );
     }
 
-    /// `POST /login` with `{"username", "password"}`, and for admins the accounts under
-    /// `/accounts`.
+    /// `POST /login` with `{"username", "password"}`, `PUT /password` with `{"current",
+    /// "password"}` for the signed-in user's own, and for admins the accounts under `/accounts`.
     #[must_use]
     pub fn routes(self: &Arc<Self>) -> ProviderRoutes {
         let path = provider_path(Self::ID);
@@ -87,6 +98,7 @@ impl LocalProvider {
             },
             routes: Router::new()
                 .route("/login", post(login_route))
+                .route("/password", put(change_password))
                 .route("/accounts", get(list).post(create))
                 .route("/accounts/{username}", delete(remove))
                 .route("/accounts/{username}/password", put(set_password))
@@ -101,24 +113,59 @@ async fn login_route(
     identities: Identities,
     JsonBody(form): JsonBody<PasswordLogin>,
 ) -> Result<SignedIn, ApiError> {
+    let identity = verify_limited(
+        &local,
+        &form.username,
+        address,
+        &form.password,
+        WRONG_PASSWORD,
+    )
+    .await?;
+    identities.sign_in(identity).await
+}
+
+async fn change_password(
+    CurrentUser(user): CurrentUser,
+    ClientAddress(address): ClientAddress,
+    State(local): Local,
+    JsonBody(change): JsonBody<PasswordChange>,
+) -> Result<StatusCode, ApiError> {
+    let username = user.subject_at(LocalProvider::ID).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "your account does not sign in with a password",
+        )
+    })?;
+    verify_limited(&local, username, address, &change.current, "wrong password").await?;
+    local.set_password(username, change.password).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Checks the password behind the failed-login limits, a wrong one answering 403 `wrong`.
+async fn verify_limited(
+    local: &LocalProvider,
+    username: &str,
+    address: IpAddr,
+    password: &SecretString,
+    wrong: &str,
+) -> Result<Identity, ApiError> {
     let attempt = local
         .limiter
-        .admit(&form.username, address, Instant::now())
+        .admit(username, address, Instant::now())
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many failed logins, try again later",
             )
         })?;
-    let verified = local.verify(&form.username, &form.password).await;
+    let verified = local.verify(username, password).await;
     if !matches!(verified, Err(Error::Forbidden)) {
         attempt.release();
     }
-    let identity = verified.map_err(|error| match error {
-        Error::Forbidden => ApiError::new(StatusCode::FORBIDDEN, WRONG_PASSWORD),
+    verified.map_err(|error| match error {
+        Error::Forbidden => ApiError::new(StatusCode::FORBIDDEN, wrong),
         other => other.into(),
-    })?;
-    identities.sign_in(identity).await
+    })
 }
 
 async fn list(

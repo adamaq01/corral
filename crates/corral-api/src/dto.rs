@@ -1,10 +1,16 @@
 use chrono::{DateTime, Utc};
-use corral_core::app::{Catalog, SandboxDetails, SandboxView, UserDefaults};
+use corral_core::app::{
+    self, Allowance, Catalog, CatalogChange, CatalogDefaults, CatalogView, ImageOption,
+    LimitsChange, LimitsView, Locked, RegistriesView, Registry, SandboxDetails, SandboxView,
+    SizePreset, Source, UserDefaults,
+};
 use corral_core::domain::{
-    Handle, IdleLimits, ImageKey, MIN_IDLE_TIMEOUT, PictureUrl, Role, Sandbox, SandboxName,
-    SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus,
+    Allocation, Handle, IdleLimits, ImageKey, MIN_IDLE_TIMEOUT, PictureUrl, Resources, Role,
+    Sandbox, SandboxName, SandboxStatus, SizeKey, SshKey, SshUsername, User, UserStatus, bytes,
+    cpu_millis, format_bytes, format_cpu,
 };
 use corral_core::ports::{EngineEvent, EventKind, Fact};
+use corral_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -24,6 +30,8 @@ pub(crate) struct Me {
     email: Option<String>,
     picture: Option<PictureUrl>,
     role: Role,
+    /// The identity provider they log in with.
+    provider: String,
 }
 
 impl From<&User> for Me {
@@ -33,6 +41,7 @@ impl From<&User> for Me {
             email: user.email.clone(),
             picture: user.picture.clone(),
             role: user.role,
+            provider: user.provider().to_owned(),
         }
     }
 }
@@ -87,13 +96,11 @@ impl CatalogDto {
             label: label.to_owned(),
         };
         let images: Vec<Choice> = catalog
-            .images()
-            .iter()
+            .offered_images()
             .map(|image| choice(image.key.as_str(), &image.label))
             .collect();
         let sizes: Vec<Choice> = catalog
-            .sizes()
-            .iter()
+            .offered_sizes()
             .map(|size| choice(size.key.as_str(), &size.label))
             .collect();
         Self {
@@ -404,18 +411,430 @@ pub(crate) struct UserDto {
     role: Role,
     status: UserStatus,
     created_at: DateTime<Utc>,
+    /// The identity provider they log in with.
+    provider: String,
+    /// Who the provider says they are, in the provider's own terms.
+    subject: String,
+    /// How many sandboxes they may have in place of the limit.
+    allowance: Option<AllowanceDto>,
 }
 
-impl From<User> for UserDto {
-    fn from(user: User) -> Self {
+impl UserDto {
+    pub(crate) fn new(user: User, allowance: Option<Allowance>) -> Self {
         Self {
             id: user.id.0,
+            provider: user.provider().to_owned(),
+            subject: user.subject_in_provider().to_owned(),
             role: user.role,
             handle: user.handle,
             email: user.email,
             picture: user.picture,
             status: user.status,
             created_at: user.created_at,
+            allowance: allowance.map(AllowanceDto::from),
+        }
+    }
+}
+
+/// How many sandboxes one member may have, in place of the limit.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "Allowance")]
+pub(crate) struct AllowanceDto {
+    max_sandboxes: usize,
+}
+
+impl From<Allowance> for AllowanceDto {
+    fn from(allowance: Allowance) -> Self {
+        Self {
+            max_sandboxes: allowance.max_sandboxes,
+        }
+    }
+}
+
+/// A member's allowance, or `null` for the limit.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AllowanceChange {
+    max_sandboxes: Option<usize>,
+}
+
+impl From<AllowanceChange> for Option<Allowance> {
+    fn from(change: AllowanceChange) -> Self {
+        change
+            .max_sandboxes
+            .map(|max_sandboxes| Allowance { max_sandboxes })
+    }
+}
+
+/// The catalog the config and the database make together, for the admin.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogSettings {
+    images: Vec<ImageSetting>,
+    sizes: Vec<SizeSetting>,
+    named_images: Option<NamedImagesSetting>,
+    named_images_source: Source,
+    default_image: ImageKey,
+    default_size: SizeKey,
+    defaults_source: Source,
+    /// The saved defaults name an image or a size the catalog does not offer, and its first
+    /// stands in.
+    defaults_fell_back: bool,
+    /// Saved entries whose keys the config also sets, so the catalog resolves the config's.
+    shadowed_images: Vec<ImageKey>,
+    shadowed_sizes: Vec<SizeKey>,
+}
+
+impl From<CatalogView> for CatalogSettings {
+    fn from(view: CatalogView) -> Self {
+        let CatalogView {
+            catalog,
+            defaults,
+            defaults_fell_back,
+            named_images,
+            shadowed_images,
+            shadowed_sizes,
+        } = view;
+        Self {
+            images: catalog.images().iter().map(ImageSetting::from).collect(),
+            sizes: catalog.sizes().iter().map(SizeSetting::from).collect(),
+            named_images: named_images.value.as_ref().map(NamedImagesSetting::from),
+            named_images_source: named_images.source,
+            default_image: defaults.value.image,
+            default_size: defaults.value.size,
+            defaults_source: defaults.source,
+            defaults_fell_back,
+            shadowed_images,
+            shadowed_sizes,
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+pub(crate) struct ImageSetting {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    image: ImageChange,
+    source: Source,
+}
+
+impl From<&ImageOption> for ImageSetting {
+    fn from(image: &ImageOption) -> Self {
+        Self {
+            image: ImageChange {
+                key: image.key.clone(),
+                label: image.label.clone(),
+                reference: image.reference.clone(),
+                description: image.description.clone(),
+                enabled: image.enabled,
+            },
+            source: image.source,
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+pub(crate) struct SizeSetting {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    size: SizeChange,
+    source: Source,
+}
+
+impl From<&SizePreset> for SizeSetting {
+    fn from(size: &SizePreset) -> Self {
+        let Resources {
+            cpu_millis,
+            memory_bytes,
+            home_bytes,
+        } = size.resources;
+        Self {
+            size: SizeChange {
+                key: size.key.clone(),
+                label: size.label.clone(),
+                cpu_request: format_cpu(cpu_millis.request()),
+                cpu_limit: format_cpu(cpu_millis.limit()),
+                memory_request: format_bytes(memory_bytes.request()),
+                memory_limit: format_bytes(memory_bytes.limit()),
+                home_size: format_bytes(home_bytes.get()),
+                enabled: size.enabled,
+            },
+            source: size.source,
+        }
+    }
+}
+
+/// Images members may name themselves, beside the catalog's.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NamedImagesSetting {
+    /// Registries, or repository paths in one, that a named image must come from.
+    registries: Vec<String>,
+    /// The most a named image may take to download, its layers compressed, such as `2Gi`.
+    max_size: String,
+}
+
+impl From<&app::NamedImages> for NamedImagesSetting {
+    fn from(named: &app::NamedImages) -> Self {
+        Self {
+            registries: named.registries.clone(),
+            max_size: format_bytes(named.max_bytes.get()),
+        }
+    }
+}
+
+impl TryFrom<NamedImagesSetting> for app::NamedImages {
+    type Error = Error;
+
+    fn try_from(setting: NamedImagesSetting) -> Result<Self> {
+        Ok(Self {
+            max_bytes: bytes(&setting.max_size)?,
+            registries: setting.registries,
+        })
+    }
+}
+
+/// The database part of the catalog, which replaces what the admin saved before.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "CatalogChange")]
+pub(crate) struct CatalogChangeDto {
+    #[ts(inline)]
+    images: Vec<ImageChange>,
+    #[ts(inline)]
+    sizes: Vec<SizeChange>,
+    #[ts(inline)]
+    defaults: Option<DefaultsChange>,
+    named_images: Option<NamedImagesSetting>,
+}
+
+impl TryFrom<CatalogChangeDto> for CatalogChange {
+    type Error = Error;
+
+    fn try_from(change: CatalogChangeDto) -> Result<Self> {
+        Ok(Self {
+            images: change.images.into_iter().map(ImageOption::from).collect(),
+            sizes: change
+                .sizes
+                .into_iter()
+                .map(SizePreset::try_from)
+                .collect::<Result<_>>()?,
+            defaults: change.defaults.map(CatalogDefaults::from),
+            named_images: change
+                .named_images
+                .map(app::NamedImages::try_from)
+                .transpose()?,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+struct ImageChange {
+    key: ImageKey,
+    label: String,
+    reference: String,
+    description: String,
+    enabled: bool,
+}
+
+impl From<ImageChange> for ImageOption {
+    fn from(image: ImageChange) -> Self {
+        Self {
+            key: image.key,
+            label: image.label,
+            reference: image.reference,
+            description: image.description,
+            enabled: image.enabled,
+            source: Source::Database,
+        }
+    }
+}
+
+/// Quantities are Kubernetes-style: CPU such as `2`, `1.5` or `500m`, bytes such as `4Gi`.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+struct SizeChange {
+    key: SizeKey,
+    label: String,
+    cpu_request: String,
+    cpu_limit: String,
+    memory_request: String,
+    memory_limit: String,
+    home_size: String,
+    enabled: bool,
+}
+
+impl SizeChange {
+    fn resources(&self) -> Result<Resources> {
+        Ok(Resources {
+            cpu_millis: Allocation::new(
+                cpu_millis(&self.cpu_request)?.get(),
+                cpu_millis(&self.cpu_limit)?.get(),
+            )?,
+            memory_bytes: Allocation::new(
+                bytes(&self.memory_request)?.get(),
+                bytes(&self.memory_limit)?.get(),
+            )?,
+            home_bytes: bytes(&self.home_size)?,
+        })
+    }
+}
+
+impl TryFrom<SizeChange> for SizePreset {
+    type Error = Error;
+
+    fn try_from(size: SizeChange) -> Result<Self> {
+        let resources = size.resources().map_err(|error| match error {
+            Error::Invalid(message) => Error::Invalid(format!("size \"{}\": {message}", size.key)),
+            other => other,
+        })?;
+        Ok(Self {
+            key: size.key,
+            label: size.label,
+            resources,
+            enabled: size.enabled,
+            source: Source::Database,
+        })
+    }
+}
+
+#[derive(Deserialize, TS)]
+struct DefaultsChange {
+    image: ImageKey,
+    size: SizeKey,
+}
+
+impl From<DefaultsChange> for CatalogDefaults {
+    fn from(defaults: DefaultsChange) -> Self {
+        Self {
+            image: defaults.image,
+            size: defaults.size,
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LimitsSettings {
+    max_sandboxes_per_member: LockedNumber,
+    max_running: LockedNumber,
+}
+
+impl From<LimitsView> for LimitsSettings {
+    fn from(view: LimitsView) -> Self {
+        Self {
+            max_sandboxes_per_member: view.max_sandboxes_per_member.into(),
+            max_running: view.max_running.into(),
+        }
+    }
+}
+
+/// A value and who owns it: the admin changes only what the database owns.
+#[derive(Serialize, TS)]
+pub(crate) struct LockedNumber {
+    value: usize,
+    source: Source,
+}
+
+impl From<Locked<usize>> for LockedNumber {
+    fn from(locked: Locked<usize>) -> Self {
+        Self {
+            value: locked.value,
+            source: locked.source,
+        }
+    }
+}
+
+/// The database part of the limits; `null` leaves the built-in default.
+#[derive(Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "LimitsChange")]
+pub(crate) struct LimitsChangeDto {
+    max_sandboxes_per_member: Option<usize>,
+    max_running: Option<usize>,
+}
+
+impl From<LimitsChangeDto> for LimitsChange {
+    fn from(change: LimitsChangeDto) -> Self {
+        Self {
+            max_sandboxes_per_member: change.max_sandboxes_per_member,
+            max_running: change.max_running,
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+pub(crate) struct RegistriesSettings {
+    registries: Vec<RegistrySetting>,
+    /// Hosts of saved registries the config also sets.
+    shadowed: Vec<String>,
+}
+
+impl RegistriesSettings {
+    pub(crate) fn new(view: RegistriesView, password_present: &dyn Fn(&str) -> bool) -> Self {
+        Self {
+            registries: view
+                .registries
+                .into_iter()
+                .map(|registry| RegistrySetting {
+                    password_set: registry
+                        .password_env
+                        .as_deref()
+                        .is_some_and(password_present),
+                    source: registry.source,
+                    registry: registry.into(),
+                })
+                .collect(),
+            shadowed: view.shadowed,
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RegistrySetting {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    registry: RegistryChangeDto,
+    source: Source,
+    /// Whether the password variable is set where Corral runs.
+    password_set: bool,
+}
+
+/// A registry as the admin saves it. The password stays in the environment variable it names.
+#[derive(Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "RegistryChange")]
+pub(crate) struct RegistryChangeDto {
+    /// The registry's host, with its port if it has one, such as `registry.example.lan:5000`.
+    registry: String,
+    username: Option<String>,
+    password_env: Option<String>,
+    /// Whether Corral reads image sizes from it over plain HTTP.
+    plain_http: bool,
+}
+
+impl From<Registry> for RegistryChangeDto {
+    fn from(registry: Registry) -> Self {
+        Self {
+            registry: registry.registry,
+            username: registry.username,
+            password_env: registry.password_env,
+            plain_http: registry.plain_http,
+        }
+    }
+}
+
+impl From<RegistryChangeDto> for Registry {
+    fn from(change: RegistryChangeDto) -> Self {
+        Self {
+            registry: change.registry,
+            username: change.username,
+            password_env: change.password_env,
+            plain_http: change.plain_http,
+            source: Source::Database,
         }
     }
 }

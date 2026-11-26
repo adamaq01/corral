@@ -12,14 +12,13 @@ ssh -p 48291 <sandbox>.<handle>@<ssh.publicHost>
 ```
 
 A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
-makes that sandbox, unless they already have as many as `limits.maxSandboxesPerUser` allows (5
-by default): on a terminal an installer asks for its image, size and environment, starting from
-their profile, then opens its shell; `corral-new` makes it from a JSON spec on stdin; any other
-command makes it from the profile's image and size ([docs/lobby.md](../../../docs/lobby.md)). A
-connection that
-reaches no sandbox, such as one past that limit, to a sandbox scheduled for deletion, or by a
-disabled user, is told why at once: a command prints the reason on its standard error and exits
-1, a terminal shows it, and the connection ends with it.
+makes that sandbox, unless they already have as many sandboxes as their limit allows: on a
+terminal an installer asks for its image, size and environment, starting from their **Account**
+defaults, then opens its shell; `corral-new` makes it from a JSON spec on stdin; any other
+command makes it from their Account defaults ([docs/lobby.md](../../../docs/lobby.md)). A
+connection that reaches no sandbox, such as one past that limit, to a sandbox scheduled for
+deletion, or by a disabled user, is told why at once: a command prints the reason on its standard
+error and exits 1, a terminal shows it, and the connection ends with it.
 
 The gate waits for the first thing a connection asks (a shell, a command, sftp or a forward)
 before it wakes or makes the sandbox, and counts the seconds on a terminal while it wakes. Each
@@ -144,18 +143,32 @@ with the path of the offending value. The required combinations:
   `read`, `update`, `delete` and `list` on `<mount>/data/<pathPrefix>/*` and
   `<mount>/metadata/<pathPrefix>/*`.
 - With `database.kind: postgres`: `database.postgres.url`.
+- With `catalog.defaults`: both `image` and `size`.
 - Either `ingress` or `httpRoute`, not both.
 
 A secret value (`identity.oidc.clientSecret`, `secretStore.vault.auth.token`,
-`database.postgres.url`) is either `existingSecret` and `key`, naming a Secret in the release
-namespace, or `value`, which the chart stores in a Secret of its own. `value` puts the secret in
-your values file and in the release history; prefer `existingSecret`.
+`database.postgres.url`, a registry's `password`) is either `existingSecret` and `key`, naming a
+Secret in the release namespace, or `value`, which the chart stores in a Secret of its own.
+`value` puts the secret in your values file and in the release history; prefer `existingSecret`.
 
 `keys.existingSecret` names a Secret with `CORRAL_SESSION_KEY`, `CORRAL_SECRETS_KEY` and
 `CORRAL_GATE_SECRET`, such as one made from `corral-server keys generate`.
 `ssh.hostKey.existingSecret` names a Secret whose `host_key` is an SSH host private key, in
 OpenSSH or PEM form, such as the `ssh_host_key` of a Compose install, so clients keep trusting the
 same host.
+
+The admin manages the catalog, the limits and registry logins in the web UI, under **Settings**.
+What `catalog`, `limits` and `registries` set is shown there locked and changes with the values
+alone. In Settings the admin adds more images, sizes and registries, and sets each limit the
+values leave empty. A registry added there names the environment variable that holds its
+password, and `registryPasswords` sets that variable in Corral's pod, from a secret value:
+
+```yaml
+registryPasswords:
+  CORRAL_QUAY_TOKEN:
+    existingSecret: corral-registries
+    key: quay
+```
 
 ## GitOps (Argo CD, Flux)
 
@@ -282,15 +295,16 @@ latter.
 - The `corral` command in a sandbox (`corral status`, `restart`, `stop`, `delete --confirm`)
   reaches Corral's API at its Service, `http://<release>.<namespace>.svc`, which the
   NetworkPolicy leaves open on the HTTP port.
-- With `catalog.namedImages.enabled`, users can also name an image of their own, from
-  `catalog.namedImages.registries` and at most `catalog.namedImages.maxSize` to download. Nodes
-  pull private images with `sandboxes.imagePullSecrets`; Corral reads their sizes with the
-  logins under `registries`. [docs/images.md](../../../docs/images.md) has both.
-- A change to a `catalog.images` entry's `reference` or to a size reaches each sandbox made
-  from it at its next start from sleep: its pod template is made again with the new image,
-  requests and limits, its home kept. A running sandbox keeps what it has until then, and a
-  sandbox whose image or size is no longer in the catalog keeps running as it was made. A
-  size's `homeSize` applies to new sandboxes only: an existing home's claim keeps its size.
+- Users can also name an image of their own once the admin allows it in Settings or
+  `catalog.namedImages.enabled` does, from the registries it lists and up to the download size it
+  sets. Nodes pull private images with `sandboxes.imagePullSecrets`; Corral reads their sizes
+  with the registry logins in Settings. [docs/images.md](../../../docs/images.md) has both.
+- A change to a catalog image's reference or to a size, in the values or in Settings, reaches
+  each sandbox made from it at its next start from sleep: its pod template is made again with
+  the new image, requests and limits, its home kept. A running sandbox keeps what it has until
+  then, and a sandbox whose image or size is no longer in the catalog keeps running as it was
+  made. A size's home size applies to new sandboxes only: an existing home's claim keeps its
+  size.
 - Behind an Ingress controller or Gateway, set `trustForwardedFor: true` so password-login limits
   count each client, not the proxy.
 - With `database.kind: cnpg`, the operator's PodDisruptionBudgets keep a node drain from evicting

@@ -26,6 +26,12 @@ export function characterCount(count: number): string {
 	return `${count} ${count === 1 ? 'character' : 'characters'}`;
 }
 
+/** The lines in `text`, a newline ending the last one rather than starting another. */
+export function lineCount(text: string): number {
+	const lines = text.split('\n');
+	return lines.at(-1) === '' ? lines.length - 1 : lines.length;
+}
+
 /** One line saying what a value is without showing a secret one. */
 export function summary(value: StoredValue): string {
 	switch (value.shown) {

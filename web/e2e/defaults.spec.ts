@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { request } from '@playwright/test';
 import { expect, session, signIn, test } from './fixtures';
 
-test('the defaults a member saves in their profile preselect the new sandbox dialog', async ({
+test('the defaults a member saves on Account preselect the new sandbox dialog', async ({
 	page,
 	baseURL
 }) => {
@@ -16,7 +16,7 @@ test('the defaults a member saves in their profile preselect the new sandbox dia
 	await signIn(page, member);
 	await expect(page).toHaveURL('/sandboxes');
 
-	await page.goto('/profile');
+	await page.goto('/account');
 	const card = page.locator('[data-slot=card]').filter({ hasText: 'New sandboxes' });
 	await expect(card).toContainText('as <name>.fern with a name');
 	await expect(card.getByLabel('Image')).toHaveValue('dev');
@@ -40,7 +40,7 @@ test('the defaults a member saves in their profile preselect the new sandbox dia
 	await sandboxesLink.click();
 	const leave = page.getByRole('alertdialog', { name: 'Leave without saving?' });
 	await leave.getByRole('button', { name: 'Stay' }).click();
-	await expect(page).toHaveURL('/profile');
+	await expect(page).toHaveURL('/account');
 	await expect(card.getByLabel('Image')).toHaveValue('dev-again');
 
 	await card.getByLabel('Size').selectOption({ label: 'Roomy' });

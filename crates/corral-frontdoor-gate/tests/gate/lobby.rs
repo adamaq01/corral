@@ -121,6 +121,22 @@ async fn the_installer_makes_what_is_chosen_and_opens_its_shell_on_the_same_conn
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_installer_lists_what_the_catalog_offers_at_each_login() {
+    let f = Fixture::without_container(Limits::default()).await;
+    let lists_tools = async || {
+        let mut pty = terminal(&f, "fresh.adam", "xterm-256color", &[]);
+        let screen = pty.until("Up/Down: choose").await;
+        pty.send(ESC);
+        assert_eq!(pty.exited().await, 1);
+        assert!(screen.contains("BASE (base)"), "{screen}");
+        screen.contains("TOOLS (tools)")
+    };
+    assert!(!lists_tools().await, "a disabled image is listed");
+    f.world.offer_tools().await;
+    assert!(lists_tools().await, "an image offered since is not listed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn esc_or_q_leaves_the_installer_with_nothing_made() {
     let f = Fixture::without_container(Limits::default()).await;
     for (leave, at) in [(ESC, 0), (b"q".as_slice(), 2)] {
@@ -224,6 +240,7 @@ async fn a_login_with_no_sandbox_at_all_names_one_first() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn without_colors_or_a_full_screen_the_installer_still_reads() {
     let f = Fixture::without_container(Limits::default()).await;
+    f.world.offer_tools().await;
     let mut pty = terminal(&f, "fresh.adam", "xterm", &["-o", "SetEnv=NO_COLOR=1"]);
     pty.until("Choose the image:").await;
     assert!(
@@ -266,6 +283,7 @@ fn json(text: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn corral_new_makes_a_sandbox_from_a_spec_and_prints_it() {
     let f = Fixture::without_container(Limits::default()).await;
+    f.world.offer_tools().await;
     entries(&f).await;
     let spec = br#"{"image": "tools", "size": "large", "environment": ["EXTRA_TOKEN"]}"#;
     let ran = f.ssh("full.adam", &["corral-new"], spec).await;

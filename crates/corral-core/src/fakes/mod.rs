@@ -5,6 +5,7 @@ mod provider;
 mod registry;
 mod repos;
 mod secrets;
+mod settings;
 mod world;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -16,6 +17,7 @@ pub use provider::FakeProvider;
 pub use registry::FakeRegistry;
 pub use repos::{MemoryKeyRepo, MemorySandboxRepo, MemoryUserRepo};
 pub use secrets::MemorySecretStore;
+pub use settings::MemorySettingsRepo;
 pub use world::*;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

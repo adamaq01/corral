@@ -5,7 +5,7 @@
 	import CopyButton from '#lib/components/copy-button.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import { characterCount, download, size, valueBytes } from '#lib/environment.js';
+	import { characterCount, download, lineCount, size, valueBytes } from '#lib/environment.js';
 
 	let {
 		value,
@@ -27,7 +27,8 @@
 
 	let expanded = $state(false);
 	const lines = $derived(value.shown === 'text' ? value.text.split('\n') : []);
-	const long = $derived(lines.length > LINES);
+	const count = $derived(value.shown === 'text' ? lineCount(value.text) : 0);
+	const long = $derived(count > LINES);
 	const shownText = $derived(
 		expanded || !long ? lines.join('\n') : lines.slice(0, LINES).join('\n')
 	);
@@ -103,7 +104,7 @@
 				aria-expanded={expanded}
 				onclick={() => (expanded = !expanded)}
 			>
-				{expanded ? `Show the first ${LINES} lines` : `Show all ${lines.length} lines`}
+				{expanded ? `Show the first ${LINES} lines` : `Show all ${count} lines`}
 			</Button>
 		{/if}
 	{/if}

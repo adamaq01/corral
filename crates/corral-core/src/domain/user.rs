@@ -51,6 +51,22 @@ impl User {
     pub fn subject_at(&self, provider: &str) -> Option<&str> {
         self.subject.strip_prefix(provider)?.strip_prefix(':')
     }
+
+    /// The provider the user logs in with: their subject before its first `:`.
+    #[must_use]
+    pub fn provider(&self) -> &str {
+        self.subject
+            .split_once(':')
+            .map_or(self.subject.as_str(), |(provider, _)| provider)
+    }
+
+    /// Who the provider says the user is: their subject after its first `:`.
+    #[must_use]
+    pub fn subject_in_provider(&self) -> &str {
+        self.subject
+            .split_once(':')
+            .map_or(self.subject.as_str(), |(_, subject)| subject)
+    }
 }
 
 /// Proof that the acting user is an admin, for ports that act on an admin's behalf.
@@ -90,8 +106,25 @@ mod tests {
             ..World::new().member("adam").await
         };
         assert_eq!(user.subject_at("local"), Some("adam"));
+        assert_eq!(user.provider(), "local");
         assert_eq!(user.subject_at("loc"), None);
         assert_eq!(user.subject_at("oidc"), None);
+    }
+
+    #[tokio::test]
+    async fn the_subject_in_the_provider_follows_the_first_colon() {
+        let member = World::new().member("adam").await;
+        for (subject, inside) in [
+            ("local:adam", "adam"),
+            ("oidc:https://id.example/u:1", "https://id.example/u:1"),
+            ("adam", "adam"),
+        ] {
+            let user = User {
+                subject: subject.to_owned(),
+                ..member.clone()
+            };
+            assert_eq!(user.subject_in_provider(), inside, "{subject}");
+        }
     }
 
     #[test]

@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use ts_rs::{Config, TS, TypeVisitor};
 
 use crate::dto::{
-    CatalogDto, ConfirmDeletion, DeleteFromInside, IdleTimeoutChange, KeepAwake, KeyDto, Me,
-    NewKey, OwnedSandbox, SandboxDetailsDto, SandboxDto, ScheduledDeletion, UserDto, Wake,
+    AllowanceChange, CatalogChangeDto, CatalogDto, CatalogSettings, ConfirmDeletion,
+    DeleteFromInside, IdleTimeoutChange, KeepAwake, KeyDto, LimitsChangeDto, LimitsSettings, Me,
+    NewKey, OwnedSandbox, RegistriesSettings, RegistryChangeDto, SandboxDetailsDto, SandboxDto,
+    ScheduledDeletion, UserDto, Wake,
 };
 use crate::environment_dto::{
     AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, PreviewDto, ValueInput,
@@ -53,6 +55,13 @@ impl TypeScript {
             .add::<AttachedDto>()
             .add::<PreviewDto>()
             .add::<UserDto>()
+            .add::<AllowanceChange>()
+            .add::<CatalogSettings>()
+            .add::<CatalogChangeDto>()
+            .add::<LimitsSettings>()
+            .add::<LimitsChangeDto>()
+            .add::<RegistriesSettings>()
+            .add::<RegistryChangeDto>()
             .add::<ProviderListing>()
             .add::<ErrorBody>()
             .limit(

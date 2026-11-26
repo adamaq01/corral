@@ -177,22 +177,35 @@ idle:
   busyCpuPercent: 2
   busyNetworkBytesPerSec: 4096
 
+# A limit set here is shown locked in the web UI's Settings. One left empty is set there, and is 5
+# sandboxes per member and 6 running at once until the admin changes it.
 limits:
-  # limits.maxSandboxesPerUser is how many sandboxes each user may have.
-  maxSandboxesPerUser: 5
-  # limits.maxRunning is how many sandboxes may be awake at once, across all users.
-  maxRunning: 6
+  # limits.maxSandboxesPerMember is how many sandboxes each member may have, unless the admin
+  # gives them an allowance in People.
+  maxSandboxesPerMember: null
+  # limits.maxRunning is how many sandboxes may be awake at once, across all members.
+  maxRunning: null
 
+# The images and sizes set here are shown locked in the web UI's Settings, where the admin adds
+# more.
 catalog:
-  # catalog.images are the images users pick from; the first is the default. Empty: the
-  # corral-sandbox image. Each has key, label and reference.
+  # catalog.images are the images users pick from. Each has key, label and reference, and may
+  # have a description and enabled, true unless set to false: a disabled image is not offered for
+  # new sandboxes, and the sandboxes made from it keep it. The first one enabled is the default
+  # until the admin picks another in Settings. Empty here and in Settings: the corral-sandbox
+  # image.
   images: []
-  # catalog.sizes are the sizes users pick from; the first is the default. Empty: one size of
-  # 2 CPUs, 4 GiB and a 10 GiB home. Each has key, label, cpuRequest, cpuLimit, memoryRequest,
-  # memoryLimit and homeSize.
+  # catalog.sizes are the sizes users pick from. Each has key, label, cpuRequest, cpuLimit,
+  # memoryRequest, memoryLimit and homeSize, and may have enabled, as an image does. The first one
+  # enabled is the default until the admin picks another in Settings. Empty here and in Settings:
+  # one size of 2 CPUs, 4 GiB and a 10 GiB home.
   sizes: []
+  # catalog.defaults, with both image and size, names the image and the size a new sandbox gets
+  # unless its member picks others, and locks them in Settings. Empty: the admin picks them there.
+  defaults: null
   namedImages:
-    # catalog.namedImages.enabled lets users name an image of their own beside the catalog's.
+    # catalog.namedImages.enabled lets users name an image of their own beside the catalog's, and
+    # locks the named images rule in Settings. Off: the admin sets that rule in Settings.
     enabled: false
     # catalog.namedImages.registries are where a named image must come from: registries, such as
     # ghcr.io, or repository paths in one, such as ghcr.io/acme.
@@ -203,9 +216,17 @@ catalog:
 
 # registries are the registries Corral reads named images' sizes from. Each has registry (its
 # host, with its port if any), and for a private one username and password, a secret value as
-# below; plainHttp reads it over plain HTTP. Users never see the credentials. Nodes pull with
-# sandboxes.imagePullSecrets.
+# for identity.oidc.clientSecret; plainHttp reads it over plain HTTP. Users never see the
+# credentials. Nodes pull with sandboxes.imagePullSecrets. The registries set here are shown
+# locked in the web UI's Settings, where the admin adds more.
 registries: []
+
+# registryPasswords are the password variables of the registries the admin adds in Settings. Each
+# key is the variable such a registry names, and each value a secret value as for
+# identity.oidc.clientSecret. Corral reads the variable each time it reaches the registry.
+#   registryPasswords:
+#     CORRAL_QUAY_TOKEN: { existingSecret: corral-registries, key: quay }
+registryPasswords: {}
 
 serviceAccount:
   # serviceAccount.annotations are added to Corral's ServiceAccount.

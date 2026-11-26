@@ -7,6 +7,7 @@ mod gate;
 mod healthcheck;
 mod keys;
 mod local_account;
+mod registry_logins;
 mod serve;
 mod ui;
 #[cfg(test)]

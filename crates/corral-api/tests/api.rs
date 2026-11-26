@@ -196,7 +196,13 @@ async fn a_provider_sign_in_starts_a_session_and_me_returns_the_handle() {
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(
         reply.json(),
-        json!({ "handle": "adam", "email": null, "picture": null, "role": "member" })
+        json!({
+            "handle": "adam",
+            "email": null,
+            "picture": null,
+            "role": "member",
+            "provider": "test",
+        })
     );
     let me = browser.get("/api/me").await;
     assert_eq!(me.status, StatusCode::OK);
@@ -360,7 +366,13 @@ async fn provider_cookies_carry_a_login_between_steps_unreadable() {
     assert!(!browser.cookies.contains_key("corral_test_step"));
     assert_eq!(
         browser.get("/api/me").await.json(),
-        json!({ "handle": "adam", "email": "adam@example.com", "picture": null, "role": "member" })
+        json!({
+            "handle": "adam",
+            "email": "adam@example.com",
+            "picture": null,
+            "role": "member",
+            "provider": "test",
+        })
     );
 
     let replay = browser.get("/auth/test/finish").await;
@@ -555,8 +567,31 @@ const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
         "/api/admin/users/00000000-0000-0000-0000-000000000000/disable",
         None,
     ),
+    (
+        "PUT",
+        "/api/admin/users/00000000-0000-0000-0000-000000000000/allowance",
+        Some(r#"{"maxSandboxes": 9}"#),
+    ),
     ("GET", "/api/admin/sandboxes", None),
     ("GET", "/api/admin/sandboxes/adam/main", None),
+    ("DELETE", "/api/admin/sandboxes/adam/main", None),
+    ("POST", "/api/admin/sandboxes/adam/main/stop", None),
+    ("POST", "/api/admin/sandboxes/adam/main/restart", None),
+    ("POST", "/api/admin/sandboxes/adam/main/wake", None),
+    ("GET", "/api/admin/settings/catalog", None),
+    (
+        "PUT",
+        "/api/admin/settings/catalog",
+        Some(r#"{"images": [], "sizes": []}"#),
+    ),
+    ("GET", "/api/admin/settings/limits", None),
+    (
+        "PUT",
+        "/api/admin/settings/limits",
+        Some(r#"{"maxRunning": 9}"#),
+    ),
+    ("GET", "/api/admin/settings/registries", None),
+    ("PUT", "/api/admin/settings/registries", Some("[]")),
 ];
 
 #[tokio::test]
@@ -648,7 +683,7 @@ async fn create_then_list_shows_the_ssh_username() {
     assert_eq!(
         adam.get("/api/catalog").await.json(),
         json!({
-            "images": [{ "key": "base", "label": "BASE" }, { "key": "tools", "label": "TOOLS" }],
+            "images": [{ "key": "base", "label": "BASE" }],
             "sizes": [{ "key": "small", "label": "SMALL" }, { "key": "large", "label": "LARGE" }],
             "defaultImage": "base",
             "defaultSize": "small",
@@ -686,6 +721,7 @@ async fn an_image_reference_is_refused_where_users_run_only_the_catalogs_images(
 #[tokio::test]
 async fn a_users_sandbox_defaults_preselect_and_fill_in_new_sandboxes() {
     let corral = Corral::new();
+    corral.world.offer_tools().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let mut eve = corral.signed_in("eve", Role::Member).await;
     let defaults_of = async |browser: &mut Browser| {
@@ -1312,6 +1348,36 @@ async fn admins_list_users_and_all_sandboxes() {
 }
 
 #[tokio::test]
+async fn admins_see_the_subject_behind_a_suffixed_handle() {
+    let corral = Corral::new();
+    let mut root = corral.signed_in("root", Role::Admin).await;
+    let login = json!({ "subject": "s2", "username": "root", "role": "member" });
+    let reply = corral.browser().post("/auth/test/login", login).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+
+    let users = root.get("/api/admin/users").await.json();
+    let shown: Vec<_> = users
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|user| {
+            (
+                user["handle"].clone(),
+                user["provider"].clone(),
+                user["subject"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            (json!("root"), json!(PROVIDER), json!("root")),
+            (json!("root-2"), json!(PROVIDER), json!("s2")),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn admins_see_what_runs_any_sandbox() {
     let corral = Corral::new();
     let mut root = corral.signed_in("root", Role::Admin).await;
@@ -1427,7 +1493,7 @@ async fn owning_everything(corral: &Corral, handle: &str) -> Browser {
         .call(
             "PUT",
             "/api/me/sandbox-defaults",
-            Some(json!({ "image": "tools", "size": "large" })),
+            Some(json!({ "image": "base", "size": "large" })),
         )
         .await;
     assert_eq!(defaults.status, StatusCode::NO_CONTENT);

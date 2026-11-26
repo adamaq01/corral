@@ -11,6 +11,12 @@ pub trait ImageRegistry: Send + Sync {
     async fn download_size(&self, image: &ImageReference) -> Result<u64>;
 }
 
+/// The registries Corral holds credentials for, read at each use.
+#[async_trait]
+pub trait RegistryLogins: Send + Sync {
+    async fn registries(&self) -> Result<Vec<RegistryAccess>>;
+}
+
 /// How Corral reaches a registry an admin configured: its credentials, which users never see, and
 /// whether it serves plain HTTP.
 #[derive(Clone, Debug)]

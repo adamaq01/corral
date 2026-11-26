@@ -83,7 +83,9 @@
 	bind:open
 	title="Import variables"
 	description="Paste the lines of a .env file, NAME=value each. Names you already have are skipped."
-	submit={ready.length > 1 ? `Import ${ready.length} variables` : 'Import variable'}
+	submit={ready.length === 0
+		? 'Import'
+		: `Import ${ready.length} ${ready.length === 1 ? 'variable' : 'variables'}`}
 	ready={ready.length > 0}
 	onsubmit={save}
 >

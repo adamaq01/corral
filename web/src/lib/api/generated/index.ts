@@ -2,6 +2,16 @@
 // CORRAL_WRITE_TYPES=1 cargo test -p corral-server web_types
 
 /**
+ * How many sandboxes one member may have, in place of the limit.
+ */
+export type Allowance = { maxSandboxes: number, };
+
+/**
+ * A member's allowance, or `null` for the limit.
+ */
+export type AllowanceChange = { maxSandboxes: number | null, };
+
+/**
  * An entry attached to a sandbox, with the value it has there in place of its own, if any.
  */
 export type AttachedEntry = { entry: EnvironmentEntry, override: StoredValue | null, };
@@ -24,6 +34,25 @@ defaultSize: SizeKey,
  * stands in for it in their defaults.
  */
 defaultsWithdrawn: boolean, maxSandboxes: number, ssh: SshEndpoint, };
+
+/**
+ * The database part of the catalog, which replaces what the admin saved before.
+ */
+export type CatalogChange = { images: Array<{ key: ImageKey, label: string, reference: string, description: string, enabled: boolean, }>, sizes: Array<{ key: SizeKey, label: string, cpuRequest: string, cpuLimit: string, memoryRequest: string, memoryLimit: string, homeSize: string, enabled: boolean, }>, defaults: { image: ImageKey, size: SizeKey, } | null, namedImages: NamedImagesSetting | null, };
+
+/**
+ * The catalog the config and the database make together, for the admin.
+ */
+export type CatalogSettings = { images: Array<ImageSetting>, sizes: Array<SizeSetting>, namedImages: NamedImagesSetting | null, namedImagesSource: Source, defaultImage: ImageKey, defaultSize: SizeKey, defaultsSource: Source,
+/**
+ * The saved defaults name an image or a size the catalog does not offer, and its first
+ * stands in.
+ */
+defaultsFellBack: boolean,
+/**
+ * Saved entries whose keys the config also sets, so the catalog resolves the config's.
+ */
+shadowedImages: Array<ImageKey>, shadowedSizes: Array<SizeKey>, };
 
 export type Choice = { key: string, label: string, };
 
@@ -147,16 +176,30 @@ export type IdleTimeoutChange = { timeoutSecs: number | null, };
 
 export type ImageKey = string;
 
+export type ImageSetting = { source: Source, key: ImageKey, label: string, reference: string, description: string, enabled: boolean, };
+
 /**
  * Keeps a sandbox awake until a time, or with `null` no longer.
  */
 export type KeepAwake = { until: string | null, };
+
+/**
+ * The database part of the limits; `null` leaves the built-in default.
+ */
+export type LimitsChange = { maxSandboxesPerMember: number | null, maxRunning: number | null, };
+
+export type LimitsSettings = { maxSandboxesPerMember: LockedNumber, maxRunning: LockedNumber, };
 
 export type LocalAccount = { username: Handle, role: Role, createdAt: string,
 /**
  * Whether the admin asking signs in with this account.
  */
 yours: boolean, };
+
+/**
+ * A value and who owns it: the admin changes only what the database owns.
+ */
+export type LockedNumber = { value: number, source: Source, };
 
 export type LoginKind = "redirect" | "password";
 
@@ -165,7 +208,11 @@ export type LoginKind = "redirect" | "password";
  */
 export const MIN_PASSWORD_CHARS = 12;
 
-export type Me = { handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, };
+export type Me = { handle: Handle, email: string | null, picture: PictureUrl | null, role: Role,
+/**
+ * The identity provider they log in with.
+ */
+provider: string, };
 
 /**
  * Images users may name themselves, beside the catalog's.
@@ -179,6 +226,19 @@ registries: Array<string>,
  * The most a named image may take to download, its layers compressed.
  */
 maxBytes: number, };
+
+/**
+ * Images members may name themselves, beside the catalog's.
+ */
+export type NamedImagesSetting = {
+/**
+ * Registries, or repository paths in one, that a named image must come from.
+ */
+registries: Array<string>,
+/**
+ * The most a named image may take to download, its layers compressed, such as `2Gi`.
+ */
+maxSize: string, };
 
 export type NewAccount = { username: Handle, password: string, role: Role, };
 
@@ -220,6 +280,8 @@ deleteAt: string | null, idle: Idle, } & ({ "state": "starting" } | { "state": "
 
 export type Owner = { handle: Handle, picture: PictureUrl | null, };
 
+export type PasswordChange = { current: string, password: string, };
+
 export type PasswordLogin = { username: string, password: string, };
 
 export type PictureUrl = string;
@@ -238,6 +300,39 @@ accounts: string | null,
  * provider that vouches for opkssh certificates.
  */
 opkssh: string | null, };
+
+export type RegistriesSettings = { registries: Array<RegistrySetting>,
+/**
+ * Hosts of saved registries the config also sets.
+ */
+shadowed: Array<string>, };
+
+/**
+ * A registry as the admin saves it. The password stays in the environment variable it names.
+ */
+export type RegistryChange = {
+/**
+ * The registry's host, with its port if it has one, such as `registry.example.lan:5000`.
+ */
+registry: string, username: string | null, passwordEnv: string | null,
+/**
+ * Whether Corral reads image sizes from it over plain HTTP.
+ */
+plainHttp: boolean, };
+
+export type RegistrySetting = { source: Source,
+/**
+ * Whether the password variable is set where Corral runs.
+ */
+passwordSet: boolean,
+/**
+ * The registry's host, with its port if it has one, such as `registry.example.lan:5000`.
+ */
+registry: string, username: string | null, passwordEnv: string | null,
+/**
+ * Whether Corral reads image sizes from it over plain HTTP.
+ */
+plainHttp: boolean, };
 
 export type Role = "member" | "admin";
 
@@ -279,6 +374,14 @@ export type ScheduledDeletion = { deleteAt: string, };
 
 export type SizeKey = string;
 
+export type SizeSetting = { source: Source, key: SizeKey, label: string, cpuRequest: string, cpuLimit: string, memoryRequest: string, memoryLimit: string, homeSize: string, enabled: boolean, };
+
+/**
+ * Who owns a setting: the config file, the admin through the web UI, or Corral itself for the
+ * built-in image or size offered while neither the config nor the database has one.
+ */
+export type Source = "config" | "database" | "builtin";
+
 /**
  * Where people point their SSH client.
  */
@@ -307,7 +410,19 @@ export type TemplatePreview = { text: string,
  */
 unresolved: Array<VariableName>, };
 
-export type User = { id: string, handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, status: UserStatus, createdAt: string, };
+export type User = { id: string, handle: Handle, email: string | null, picture: PictureUrl | null, role: Role, status: UserStatus, createdAt: string,
+/**
+ * The identity provider they log in with.
+ */
+provider: string,
+/**
+ * Who the provider says they are, in the provider's own terms.
+ */
+subject: string,
+/**
+ * How many sandboxes they may have in place of the limit.
+ */
+allowance: Allowance | null, };
 
 /**
  * Logins, sessions and SSH need `Active`. A `Deleting` user is being deleted, which only that

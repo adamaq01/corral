@@ -1,9 +1,13 @@
 import type { Page } from '@playwright/test';
 import type {
+	CatalogSettings,
 	EngineEvent,
 	Fact,
+	LimitsSettings,
 	LocalAccount,
 	OwnedSandbox,
+	Provider,
+	RegistriesSettings,
 	SandboxDetails,
 	SandboxStatus,
 	User
@@ -14,17 +18,135 @@ import { inEveryView } from './views';
 const days = (n: number) => new Date(Date.UTC(2026, 10, 22 - n, 9, 30)).toISOString();
 
 const users: User[] = [
-	user('ada', 'admin', 'active', 'ada@example.com', 40),
-	user('bob', 'member', 'active', 'bob.the.builder@example.com', 31),
-	user('grace-hopper', 'member', 'disabled', null, 12),
-	user('linus', 'member', 'deleting', 'linus@example.com', 3)
+	user('ada', 'admin', 'active', 'ada@example.com', 40, 'local'),
+	{
+		...user('bob', 'member', 'active', 'bob.the.builder@example.com', 31, 'local'),
+		allowance: { maxSandboxes: 8 }
+	},
+	user('grace-hopper', 'member', 'disabled', null, 12, 'sso'),
+	user('linus', 'member', 'deleting', 'linus@example.com', 3, 'sso')
 ];
 
 const accounts: LocalAccount[] = [
 	{ username: 'ada', role: 'admin', createdAt: days(40), yours: true },
 	{ username: 'bob', role: 'member', createdAt: days(31), yours: false },
-	{ username: 'grace-hopper', role: 'member', createdAt: days(12), yours: false }
+	{ username: 'carol', role: 'member', createdAt: days(1), yours: false }
 ];
+
+const providers: Provider[] = [
+	{
+		id: 'local',
+		label: 'Local account',
+		kind: 'password',
+		login: '/auth/local/login',
+		accounts: '/auth/local/accounts',
+		opkssh: null
+	},
+	{
+		id: 'sso',
+		label: 'Single sign-on',
+		kind: 'redirect',
+		login: '/auth/sso/start',
+		accounts: null,
+		opkssh: null
+	}
+];
+
+const limits: LimitsSettings = {
+	maxSandboxesPerMember: { value: 5, source: 'database' },
+	maxRunning: { value: 6, source: 'database' }
+};
+
+const catalog: CatalogSettings = {
+	images: [
+		{
+			key: 'ubuntu',
+			label: 'Ubuntu 24.04',
+			reference: 'ghcr.io/adamaq01/corral-sandbox:1.4',
+			description: '',
+			enabled: true,
+			source: 'config'
+		},
+		{
+			key: 'tools',
+			label: 'Ubuntu with tools',
+			reference: 'ghcr.io/acme/sandbox-tools:2026.11',
+			description: 'Node, Python and Go',
+			enabled: true,
+			source: 'database'
+		},
+		{
+			key: 'legacy',
+			label: 'Ubuntu 22.04',
+			reference: 'ghcr.io/acme/sandbox:22.04',
+			description: '',
+			enabled: false,
+			source: 'database'
+		}
+	],
+	sizes: [
+		{
+			key: 'small',
+			label: 'Small: 2 CPUs, 4 GiB',
+			cpuRequest: '500m',
+			cpuLimit: '2',
+			memoryRequest: '1Gi',
+			memoryLimit: '4Gi',
+			homeSize: '10Gi',
+			enabled: true,
+			source: 'config'
+		},
+		{
+			key: 'large',
+			label: 'Large: 8 CPUs, 16 GiB',
+			cpuRequest: '2',
+			cpuLimit: '8',
+			memoryRequest: '4Gi',
+			memoryLimit: '16Gi',
+			homeSize: '50Gi',
+			enabled: true,
+			source: 'database'
+		}
+	],
+	namedImages: { registries: ['ghcr.io/acme', 'docker.io/library'], maxSize: '4Gi' },
+	namedImagesSource: 'database',
+	defaultImage: 'tools',
+	defaultSize: 'small',
+	defaultsSource: 'database',
+	defaultsFellBack: false,
+	shadowedImages: ['ubuntu'],
+	shadowedSizes: []
+};
+
+const registries: RegistriesSettings = {
+	registries: [
+		{
+			registry: 'ghcr.io',
+			username: 'corral-bot',
+			passwordEnv: 'CORRAL_GHCR_TOKEN',
+			plainHttp: false,
+			source: 'config',
+			passwordSet: true
+		},
+		{
+			registry: 'harbor.example.com',
+			username: 'robot$corral',
+			passwordEnv: 'HARBOR_TOKEN',
+			plainHttp: false,
+			source: 'database',
+			passwordSet: false
+		},
+		{
+			registry: 'registry.lan:5000',
+			username: null,
+			passwordEnv: null,
+			plainHttp: true,
+			source: 'database',
+			passwordSet: false
+		}
+	],
+	shadowed: ['ghcr.io']
+};
 
 const sandboxes: OwnedSandbox[] = [
 	sandbox('ada', 'main', 'dev', 'small', true, { state: 'running' }, 39),
@@ -167,48 +289,94 @@ async function answer(page: Page, path: string, body: unknown, status = 200) {
 inEveryView((look) => {
 	test.use({ role: 'admin' });
 
-	test('users', async ({ page }) => {
+	test('people', async ({ page }) => {
+		await answer(page, '/auth/providers', providers);
 		await answer(page, '/api/admin/users', users);
-		await page.goto('/admin/users');
-		await page.getByRole('row', { name: /linus/ }).waitFor();
-		await look(page, 'admin-users');
+		await answer(page, '/auth/local/accounts', accounts);
+		await answer(page, '/api/admin/settings/limits', limits);
+		await page.goto('/admin/people');
+		const people = page.getByRole('table', { name: 'People' });
+		await expect(people.getByRole('row', { name: /carol/ })).toContainText('Not signed in yet');
+		await look(page, 'people');
 
-		await page.getByRole('button', { name: 'Actions for bob' }).click();
+		const actions = people.getByRole('button', { name: 'Actions for bob' });
+		await actions.click();
 		await page.getByRole('menuitem', { name: 'Delete user' }).click();
 		await page.getByRole('alertdialog').waitFor();
-		await look(page, 'admin-users-delete');
+		await look(page, 'people-delete');
 
 		await page.keyboard.press('Escape');
 		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
-		await page.getByRole('button', { name: 'Actions for bob' }).click();
+		await actions.click();
 		await page.getByRole('menuitem', { name: 'Disable user' }).click();
 		await page.getByRole('alertdialog').waitFor();
-		await look(page, 'admin-users-disable');
-	});
+		await look(page, 'people-disable');
 
-	test('users, empty', async ({ page }) => {
-		await answer(page, '/api/admin/users', []);
-		await page.goto('/admin/users');
-		await page.getByText('No users yet').waitFor();
-		await look(page, 'admin-users-empty');
-	});
-
-	test('local accounts', async ({ page }) => {
-		await answer(page, '/auth/local/accounts', accounts);
-		await page.goto('/admin/accounts');
-		await page.getByRole('row', { name: /grace-hopper/ }).waitFor();
-		await look(page, 'admin-accounts');
-
-		await page.getByRole('button', { name: 'New account' }).click();
+		await page.keyboard.press('Escape');
+		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
+		await actions.click();
+		await page.getByRole('menuitem', { name: 'Sandbox allowance…' }).click();
 		await page.getByRole('dialog').waitFor();
-		await look(page, 'admin-accounts-new');
+		await look(page, 'people-allowance');
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('dialog').waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'New local account' }).click();
+		await page.getByRole('dialog').waitFor();
+		await look(page, 'people-new-account');
 	});
 
-	test('local accounts, empty', async ({ page }) => {
+	test('people, empty', async ({ page }) => {
+		await answer(page, '/api/admin/users', []);
 		await answer(page, '/auth/local/accounts', []);
-		await page.goto('/admin/accounts');
-		await page.getByText('No local accounts').waitFor();
-		await look(page, 'admin-accounts-empty');
+		await answer(page, '/api/admin/settings/limits', limits);
+		await page.goto('/admin/people');
+		await page.getByText('No one yet').waitFor();
+		await look(page, 'people-empty');
+	});
+
+	test('settings, catalog', async ({ page }) => {
+		await answer(page, '/api/admin/settings/catalog', catalog);
+		await page.goto('/admin/settings/catalog');
+		await page.getByRole('table', { name: 'Sizes' }).getByText('large', { exact: true }).waitFor();
+		await look(page, 'settings-catalog');
+
+		await page.getByRole('button', { name: 'Add size' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Add size' });
+		await dialog.getByLabel('Key').fill('small');
+		await dialog.getByRole('alert').waitFor();
+		await look(page, 'settings-catalog-size', { fullPage: false });
+	});
+
+	test('settings, catalog, built in', async ({ page }) => {
+		await answer(page, '/api/admin/settings/catalog', {
+			...catalog,
+			images: [{ ...catalog.images[0], source: 'builtin' }],
+			sizes: [{ ...catalog.sizes[0], source: 'builtin' }],
+			namedImages: null,
+			defaultImage: 'ubuntu',
+			shadowedImages: []
+		} satisfies CatalogSettings);
+		await page.goto('/admin/settings/catalog');
+		await page.getByText('Corral offers this until you add your own.').first().waitFor();
+		await look(page, 'settings-catalog-builtin');
+	});
+
+	test('settings, limits', async ({ page }) => {
+		await answer(page, '/api/admin/settings/limits', {
+			...limits,
+			maxRunning: { value: 4, source: 'config' }
+		} satisfies LimitsSettings);
+		await page.goto('/admin/settings/limits');
+		await expect(page.getByLabel('Running at once')).toBeDisabled();
+		await look(page, 'settings-limits');
+	});
+
+	test('settings, registries', async ({ page }) => {
+		await answer(page, '/api/admin/settings/registries', registries);
+		await page.goto('/admin/settings/registries');
+		await page.getByText('Variable not set').waitFor();
+		await look(page, 'settings-registries');
 	});
 
 	test('all sandboxes', async ({ page }) => {
@@ -219,6 +387,18 @@ inEveryView((look) => {
 		await expect(detail).toBeVisible();
 		expect(await detail.evaluate((text) => text.scrollWidth <= text.clientWidth)).toBe(true);
 		await look(page, 'admin-sandboxes');
+
+		const actions = page.getByRole('button', { name: 'Actions for main.ada' });
+		await actions.click();
+		await page.getByRole('menu').waitFor();
+		await look(page, 'admin-sandboxes-actions');
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('menu').waitFor({ state: 'hidden' });
+		await actions.click();
+		await page.getByRole('menuitem', { name: 'Delete sandbox…' }).click();
+		await page.getByRole('alertdialog').waitFor();
+		await look(page, 'admin-sandboxes-delete');
 	});
 
 	test('all sandboxes, empty', async ({ page }) => {
@@ -278,7 +458,8 @@ function user(
 	role: User['role'],
 	status: User['status'],
 	email: string | null,
-	age: number
+	age: number,
+	provider: string
 ): User {
 	return {
 		id: crypto.randomUUID(),
@@ -287,7 +468,10 @@ function user(
 		picture: null,
 		role,
 		status,
-		createdAt: days(age)
+		createdAt: days(age),
+		provider,
+		subject: handle,
+		allowance: null
 	};
 }
 

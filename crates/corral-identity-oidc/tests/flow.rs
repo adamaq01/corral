@@ -250,7 +250,13 @@ async fn a_login_round_trip_starts_a_session() {
     assert!(!browser.cookies.contains_key("corral_oidc_login"));
     assert_eq!(
         me(&mut browser).await,
-        json!({ "handle": "adam", "email": "adam@example.com", "picture": null, "role": "member" })
+        json!({
+            "handle": "adam",
+            "email": "adam@example.com",
+            "picture": null,
+            "role": "member",
+            "provider": "oidc",
+        })
     );
     assert_eq!(auth.path(), "/authorize");
     assert_eq!(param(&auth, "response_type"), "code");

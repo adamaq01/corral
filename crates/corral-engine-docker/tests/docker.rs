@@ -4,17 +4,18 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use corral_activity::{Busy, Settings, Signals, Sweepable};
-use corral_core::Error;
 use corral_core::domain::{
     Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, IdleLimits, Resources, SandboxId,
     SandboxName, SandboxStatus, UserId, VariableName,
 };
-use corral_core::fakes::MemorySandboxRepo;
+use corral_core::fakes::{FakeRegistry, MemorySandboxRepo};
 use corral_core::ports::{
-    ActivitySignals, Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec,
-    SandboxStreams, Usage, VariableMap,
+    ActivitySignals, Boot, EventKind, Inspection, Readiness, RunningLimit, SandboxEngine,
+    SandboxSpec, SandboxStreams, Usage, VariableMap,
 };
+use corral_core::{Error, Result};
 use corral_engine_docker::{DockerConfig, DockerEngine, DockerStreams};
 use secrecy::{SecretSlice, SecretString};
 use tokio::net::TcpListener;
@@ -23,6 +24,15 @@ use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tokio_util::sync::CancellationToken;
 
 const WAKE: Duration = Duration::from_secs(60);
+
+struct Fixed(usize);
+
+#[async_trait]
+impl RunningLimit for Fixed {
+    async fn max_running(&self) -> Result<usize> {
+        Ok(self.0)
+    }
+}
 
 /// The image `variable` names, or this checkout's build of it, as tests/checkout.sh names both.
 fn checkout_image(variable: &str) -> String {
@@ -174,8 +184,8 @@ impl Lab {
                 network: self.network.clone(),
                 overlay_image: overlay.to_owned(),
             },
-            max_running,
-            Vec::new(),
+            Arc::new(Fixed(max_running)),
+            Arc::new(FakeRegistry::default()),
         )
         .await
         .unwrap();
@@ -902,8 +912,8 @@ async fn connect_makes_a_missing_network() {
             network: missing.clone(),
             overlay_image: overlay(),
         },
-        1,
-        Vec::new(),
+        Arc::new(Fixed(1)),
+        Arc::new(FakeRegistry::default()),
     )
     .await;
     let label = docker_ok(&[

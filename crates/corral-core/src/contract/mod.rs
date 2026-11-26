@@ -1,6 +1,7 @@
 pub mod environment;
 pub mod repos;
 pub mod secrets;
+pub mod settings;
 
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -42,7 +43,8 @@ pub async fn seed_user(users: &dyn UserRepo, label: &str) -> User {
 #[cfg(test)]
 mod tests {
     use crate::fakes::{
-        MemoryEnvironmentRepo, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore, MemoryUserRepo,
+        MemoryEnvironmentRepo, MemoryKeyRepo, MemorySandboxRepo, MemorySecretStore,
+        MemorySettingsRepo, MemoryUserRepo,
     };
 
     #[tokio::test]
@@ -54,5 +56,6 @@ mod tests {
             .await;
         let secrets = MemorySecretStore::default();
         super::secrets::secret_store(&secrets, &secrets).await;
+        super::settings::settings_repo(&users, &MemorySettingsRepo::default()).await;
     }
 }
