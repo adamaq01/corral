@@ -160,6 +160,31 @@ tests:
           path: data["config.toml"]
           pattern: 'max_running = 10\n'
 
+  - it: leaves both limits to Settings when the values set neither
+    asserts:
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: '\[limits\]'
+
+  - it: locks only the limits the values set
+    set:
+      limits.maxRunning: 3
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[limits\]\s+max_running = 3\n'
+      - notMatchRegex:
+          path: data["config.toml"]
+          pattern: max_sandboxes_per_member
+
+  - it: writes the limit per member with the server's key name
+    set:
+      limits: { maxSandboxesPerMember: 2, maxRunning: 4 }
+    asserts:
+      - matchRegex:
+          path: data["config.toml"]
+          pattern: '\[limits\]\s+max_running = 4\s+max_sandboxes_per_member = 2\n'
+
   - it: runs the gate on its port with the host key it mounts, asking Corral at the internal Service
     asserts:
       - matchRegex:

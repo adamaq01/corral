@@ -13,11 +13,11 @@ ssh -p 48291 <sandbox>.<handle>@<public_host>
 ```
 
 A bare `<handle>` reaches the user's default sandbox. A sandbox name the user has not used yet
-makes that sandbox, from the image and size set in their profile, then opens it, unless they
-already have as many as `max_sandboxes_per_member` under `[limits]` allows (5 by default). A
-connection that reaches no sandbox, such as one past that limit, to a sandbox scheduled for
-deletion, or by a disabled user, is told why at once: a command prints the reason on its standard
-error and exits 1, a terminal shows it, and the connection ends with it.
+makes that sandbox from their **Account** defaults, then opens it, unless they already have as
+many sandboxes as their limit allows. A connection that reaches no sandbox, such as one past that
+limit, to a sandbox scheduled for deletion, or by a disabled user, is told why at once: a command
+prints the reason on its standard error and exits 1, a terminal shows it, and the connection ends
+with it.
 
 The gate waits for the first thing a connection asks (a shell, a command, sftp or a forward)
 before it wakes or makes the sandbox; on a terminal it counts the seconds while the sandbox wakes.
@@ -72,7 +72,8 @@ Compose plugin, and `ssh-keygen`.
 
 Open `base_url` in a browser and sign in with the admin account from step 6. Then:
 
-1. Under **SSH keys**, add your public key, such as the contents of `~/.ssh/id_ed25519.pub`.
+1. On **Account**, under **SSH keys**, add your public key, such as the contents of
+   `~/.ssh/id_ed25519.pub`.
 2. Under **Sandboxes**, create a sandbox. The first one is called `main` unless you name it
    otherwise, and it pulls the sandbox image (`ghcr.io/adamaq01/corral-sandbox`, Ubuntu with
    Node.js, Claude Code, Codex and Python, about 2 GB unpacked), so it can take a few minutes to
@@ -94,12 +95,18 @@ block, and wakes, stops, restarts or deletes the sandbox.
   `ssh ... <sandbox>.<name>@<public_host> corral-new` makes it from a JSON spec on stdin, for
   scripts; any other command makes it from your defaults. [docs/lobby.md](../../docs/lobby.md)
   has the installer and the spec.
-- Your **Profile** sets the image and size a new sandbox gets unless you pick others, and the
-  installer starts from them. Until you set them, they are the first image and size in
-  `config.toml`'s catalog.
-- Users can also name an image of their own once `[catalog.named_images]` lists the registries
-  it may come from and the most it may take to download; credentials for a private registry go
-  under `[[registries]]`, never shown to users. [docs/images.md](../../docs/images.md) has both.
+- Admins set what Corral offers under **Settings**: the catalog of images and sizes and its
+  defaults, the limits on sandboxes per member (5 by default) and sandboxes running at once (6),
+  and registry logins. What `config.toml` sets under `[catalog]`, `[limits]` and `[[registries]]`
+  shows there locked, and Settings takes more images, sizes and registries beside it. With no
+  image in either, the catalog offers the sandbox image, and with no size, one of 2 CPUs and
+  4 GiB.
+- Your **Account** sets the image and size a new sandbox gets unless you pick others, and the
+  installer starts from them. Until you set them, they are the catalog's defaults.
+- Users can also name an image of their own once the admin allows it under **Settings** >
+  **Catalog**, with the registries it may come from and the most it may take to download.
+  Registry logins go under **Settings** > **Registries**, each password in the `.env` variable
+  the login names, and users never see them. [docs/images.md](../../docs/images.md) has both.
 - A change to a catalog entry's `reference` or size reaches each sandbox made from it at its
   next start from sleep, its home kept; a running sandbox keeps what it has until then. A
   sandbox whose image or size is no longer in the catalog keeps running as it was made. Docker
@@ -124,9 +131,10 @@ block, and wakes, stops, restarts or deletes the sandbox.
   running sandbox shows **Restart to apply** until then. A file Corral wrote that is no longer
   attached is removed at the next start, unless it was changed inside the sandbox; a file it
   could not write, or left for that reason, is reported at login and by `corral status`.
-- Admins add, reset and delete local accounts under **Local accounts**, and disable, enable or
-  delete users under **Users**. **All sandboxes** lists every user's sandboxes.
-- Deleting a user, as an admin or from your own **Profile**, deletes their sandboxes with their
+- Admins find everyone under **People**: they add local accounts and reset their passwords,
+  disable, enable or delete users, and give a user a sandbox allowance in place of the limit per
+  member. **All sandboxes** lists every user's sandboxes, and admins act on any of them there.
+- Deleting a user, as an admin or from your own **Account**, deletes their sandboxes with their
   homes, keys, environment and local account. The username is free again afterwards, and a new
   account with it starts empty. A deletion that fails part way leaves the user with status
   Deleting, unable to log in, and deleting them again finishes it.
@@ -155,7 +163,7 @@ The `corral` command acts on the sandbox it runs in:
 - `corral keep-awake 4h` keeps it awake for that long (`30m`, `4h`, `2d`), with or without work,
   and `corral keep-awake off` lets it sleep once idle again.
 - `corral delete --confirm <sandbox>` stops the sandbox at once and deletes it, with its home, 10
-  minutes later. It is refused until you turn it on in your **Profile**. Until the deletion, the
+  minutes later. It is refused until you turn it on in your **Account**. Until the deletion, the
   sandbox stays stopped and its page offers **Cancel deletion**.
 
 At every start Corral writes `~/.config/corral/sandbox.json`, readable only by the sandbox user,

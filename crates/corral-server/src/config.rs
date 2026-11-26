@@ -260,6 +260,11 @@ impl Config {
             idle.busy_cpu_percent.is_finite() && idle.busy_cpu_percent > 0.0,
             "[idle] busy_cpu_percent must be above 0"
         );
+        let limits = &config.limits;
+        ensure!(
+            limits.max_sandboxes_per_member != Some(0) && limits.max_running != Some(0),
+            "[limits] must be at least 1"
+        );
         ensure!(
             config.identity.local.is_some() || config.identity.oidc.is_some(),
             "no login method: add [identity.local], [identity.oidc] or both"
@@ -561,6 +566,26 @@ mod tests {
         assert_eq!(
             (limits.max_sandboxes_per_member, limits.max_running),
             (None, Some(3))
+        );
+    }
+
+    #[test]
+    fn a_limit_of_zero_is_refused() {
+        for limit in ["max_sandboxes_per_member", "max_running"] {
+            let message = rejection(&format!("{MINIMAL}\n[limits]\n{limit} = 0"));
+            assert!(
+                message.contains("[limits] must be at least 1"),
+                "{limit}: {message}"
+            );
+        }
+        let limits = Config::parse(&format!(
+            "{MINIMAL}\n[limits]\nmax_sandboxes_per_member = 1\nmax_running = 1"
+        ))
+        .unwrap()
+        .configured();
+        assert_eq!(
+            (limits.max_sandboxes_per_member, limits.max_running),
+            (Some(1), Some(1))
         );
     }
 

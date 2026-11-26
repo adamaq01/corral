@@ -55,12 +55,15 @@ whatever the image's `/etc/group` lists for uid 1000 or for `sandbox`.
 
 ## Who picks the image
 
-Admins list images in the catalog (`[[catalog.images]]` in `config.toml`, `catalog.images` in the
-chart's values), and users pick one when they create a sandbox. A change to an entry's reference
-reaches each sandbox made from it at its next start from sleep.
+Admins list images in the catalog, under **Settings** > **Catalog** in the web UI, and users pick
+one when they create a sandbox. The config file can list images too (`[[catalog.images]]` in
+`config.toml`, `catalog.images` in the chart's values). Settings shows those locked, and they
+change in the file alone. A change to an entry's reference reaches each sandbox made from it at
+its next start from sleep.
 
 Users may also name an image of their own, from registries the admin allows and up to a size the
-admin sets. It is off until the catalog says so:
+admin sets. It is off until the admin turns it on under **Named images** in Settings > Catalog.
+The config file can set it instead, and Settings then shows it locked:
 
 ```toml
 [catalog.named_images]
@@ -78,8 +81,9 @@ that takes more than `max_size` to download, or one it cannot read.
 ## Private registries
 
 Credentials for a registry are the admin's and never shown to users. For the size check of named
-images, and on Docker for every pull, Corral uses those under `[[registries]]`; the password
-comes from the environment variable `password_env` names:
+images, and on Docker for every pull, Corral logs in with the registries set under **Settings** >
+**Registries** or in the config file under `[[registries]]`. Settings shows the config file's
+registries locked:
 
 ```toml
 [[registries]]
@@ -90,10 +94,20 @@ password_env = "CORRAL_REGISTRY_PASSWORD"
 plain_http = true
 ```
 
+A login names the environment variable that holds its password (`password_env` in the config
+file), and the variable is set in the deployment, beside Corral's other secrets. Corral reads it
+each time it reaches the registry. While it is unset, Corral reaches the registry without a login
+and logs a warning, and Settings shows **Variable not set** beside the registry.
+
+When the config file sets an image or size key, or a registry host, that Settings already keeps,
+the entry kept in Settings is shadowed: it has no effect, Settings marks it **Shadowed by
+config**, and the next save of that page drops it.
+
 On Kubernetes, nodes pull with Secrets of type `kubernetes.io/dockerconfigjson` in the sandbox
 namespace, named under `image_pull_secrets` in `[engine]` (`sandboxes.imagePullSecrets` in the
 chart); every sandbox pod uses them, for its image and the overlay. The chart's `registries` value
-holds the `[[registries]]` entries, each password a secret value.
+holds the `[[registries]]` entries, each password a secret value, and its `registryPasswords`
+value sets the variables that the registries added in Settings name.
 
 ## How each engine starts a sandbox
 

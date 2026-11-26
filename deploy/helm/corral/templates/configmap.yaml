@@ -73,6 +73,9 @@
 {{- with .Values.catalog.namedImages }}{{ if .enabled }}
 {{- $_ := set $catalog "named_images" (dict "registries" .registries "max_size" .maxSize) }}
 {{- end }}{{ end }}
+{{- $limits := dict }}
+{{- with .Values.limits.maxSandboxesPerMember }}{{ $_ := set $limits "max_sandboxes_per_member" (int .) }}{{ end }}
+{{- with .Values.limits.maxRunning }}{{ $_ := set $limits "max_running" (int .) }}{{ end }}
 {{- $sandboxBaseUrl := printf "http://%s.%s.svc:%d" (include "corral.fullname" .) .Release.Namespace (int .Values.service.port) }}
 {{- $config := dict
   "http" (dict "base_url" .Values.baseUrl "sandbox_base_url" $sandboxBaseUrl "trust_forwarded_for" .Values.trustForwardedFor)
@@ -81,8 +84,8 @@
   "engine" $engine
   "idle" (dict "timeout_secs" (int .Values.idle.timeoutSecs) "max_timeout_secs" (int .Values.idle.maxTimeoutSecs) "max_keep_awake_secs" (int .Values.idle.maxKeepAwakeSecs) "check_interval_secs" (int .Values.idle.checkIntervalSecs) "report_interval_secs" (int .Values.idle.reportIntervalSecs) "busy_cpu_percent" (float64 .Values.idle.busyCpuPercent) "busy_network_bytes_per_sec" (int .Values.idle.busyNetworkBytesPerSec))
   "frontdoor" $frontdoor
-  "ssh" (dict "public_host" .Values.ssh.publicHost "public_port" (int .Values.ssh.publicPort) "wake_deadline_secs" (int .Values.ssh.wakeDeadlineSecs))
-  "limits" (dict "max_sandboxes_per_user" (int .Values.limits.maxSandboxesPerUser) "max_running" (int .Values.limits.maxRunning)) }}
+  "ssh" (dict "public_host" .Values.ssh.publicHost "public_port" (int .Values.ssh.publicPort) "wake_deadline_secs" (int .Values.ssh.wakeDeadlineSecs)) }}
+{{- with $limits }}{{ $_ := set $config "limits" . }}{{ end }}
 {{- with $catalog }}{{ $_ := set $config "catalog" . }}{{ end }}
 {{- with $registries }}{{ $_ := set $config "registries" . }}{{ end }}
 apiVersion: v1

@@ -194,3 +194,24 @@ registries:
 sandboxes:
   overlayImage:
     repository: ""
+---
+# expect: at '/limits': additional properties 'maxSandboxesPerUser' not allowed
+limits:
+  maxSandboxesPerUser: 5
+---
+# expect: at '/limits/maxSandboxesPerMember': minimum: got 0, want 1
+limits:
+  maxSandboxesPerMember: 0
+---
+# expect: at '/limits/maxRunning': minimum: got 0, want 1
+limits:
+  maxRunning: 0
+---
+# expect: 'ghcr-token' does not match pattern '^[A-Z][A-Z0-9_]*$'
+registryPasswords:
+  ghcr-token:
+    value: in-plain-text
+---
+# expect: at '/registryPasswords/CORRAL_GHCR_TOKEN': missing property 'existingSecret'
+registryPasswords:
+  CORRAL_GHCR_TOKEN: {}

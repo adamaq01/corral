@@ -18,7 +18,7 @@ before any sandbox exists:
 4. **Summary**, then **Create**: the installer counts the seconds while the sandbox is created
    and started, then the sandbox's shell opens on the same connection.
 
-Each step starts from your **Profile** defaults. Keys: Up and Down choose, Space checks an entry,
+Each step starts from your **Account** defaults. Keys: Up and Down choose, Space checks an entry,
 Enter goes on, Left goes back, and Esc or q leaves with nothing made. A creation Corral refuses,
 such as one past your sandbox limit, or a template whose variable is not chosen, shows why, and
 Enter goes back to the summary to change the choices.
@@ -60,5 +60,5 @@ an unknown size, or a sandbox by that name that exists already, nothing is made:
 ## Any other command
 
 Any other command to a sandbox that does not exist yet, such as `hc machine add` pointing at a
-new name, or a shell without a terminal, makes the sandbox from your Profile defaults with the
+new name, or a shell without a terminal, makes the sandbox from your Account defaults with the
 entries that apply to new sandboxes, then runs.
