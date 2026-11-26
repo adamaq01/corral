@@ -2,8 +2,10 @@ import type { Page } from '@playwright/test';
 import type {
 	EngineEvent,
 	Fact,
+	LimitsSettings,
 	LocalAccount,
 	OwnedSandbox,
+	Provider,
 	SandboxDetails,
 	SandboxStatus,
 	User
@@ -14,17 +16,44 @@ import { inEveryView } from './views';
 const days = (n: number) => new Date(Date.UTC(2026, 10, 22 - n, 9, 30)).toISOString();
 
 const users: User[] = [
-	user('ada', 'admin', 'active', 'ada@example.com', 40),
-	user('bob', 'member', 'active', 'bob.the.builder@example.com', 31),
-	user('grace-hopper', 'member', 'disabled', null, 12),
-	user('linus', 'member', 'deleting', 'linus@example.com', 3)
+	user('ada', 'admin', 'active', 'ada@example.com', 40, 'local'),
+	{
+		...user('bob', 'member', 'active', 'bob.the.builder@example.com', 31, 'local'),
+		allowance: { maxSandboxes: 8 }
+	},
+	user('grace-hopper', 'member', 'disabled', null, 12, 'sso'),
+	user('linus', 'member', 'deleting', 'linus@example.com', 3, 'sso')
 ];
 
 const accounts: LocalAccount[] = [
 	{ username: 'ada', role: 'admin', createdAt: days(40), yours: true },
 	{ username: 'bob', role: 'member', createdAt: days(31), yours: false },
-	{ username: 'grace-hopper', role: 'member', createdAt: days(12), yours: false }
+	{ username: 'carol', role: 'member', createdAt: days(1), yours: false }
 ];
+
+const providers: Provider[] = [
+	{
+		id: 'local',
+		label: 'Local account',
+		kind: 'password',
+		login: '/auth/local/login',
+		accounts: '/auth/local/accounts',
+		opkssh: null
+	},
+	{
+		id: 'sso',
+		label: 'Single sign-on',
+		kind: 'redirect',
+		login: '/auth/sso/start',
+		accounts: null,
+		opkssh: null
+	}
+];
+
+const limits: LimitsSettings = {
+	maxSandboxesPerMember: { value: 5, source: 'database' },
+	maxRunning: { value: 6, source: 'database' }
+};
 
 const sandboxes: OwnedSandbox[] = [
 	sandbox('ada', 'main', 'dev', 'small', true, { state: 'running' }, 39),
@@ -168,32 +197,38 @@ inEveryView((look) => {
 	test.use({ role: 'admin' });
 
 	test('people', async ({ page }) => {
+		await answer(page, '/auth/providers', providers);
 		await answer(page, '/api/admin/users', users);
 		await answer(page, '/auth/local/accounts', accounts);
+		await answer(page, '/api/admin/settings/limits', limits);
 		await page.goto('/admin/people');
-		const people = page.getByRole('table', { name: 'Users' });
-		await people.getByRole('row', { name: /linus/ }).waitFor();
-		await page
-			.getByRole('table', { name: 'Local accounts' })
-			.getByRole('row', { name: /grace-hopper/ })
-			.waitFor();
+		const people = page.getByRole('table', { name: 'People' });
+		await expect(people.getByRole('row', { name: /carol/ })).toContainText('Not signed in yet');
 		await look(page, 'people');
 
-		await people.getByRole('button', { name: 'Actions for bob' }).click();
+		const actions = people.getByRole('button', { name: 'Actions for bob' });
+		await actions.click();
 		await page.getByRole('menuitem', { name: 'Delete user' }).click();
 		await page.getByRole('alertdialog').waitFor();
 		await look(page, 'people-delete');
 
 		await page.keyboard.press('Escape');
 		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
-		await people.getByRole('button', { name: 'Actions for bob' }).click();
+		await actions.click();
 		await page.getByRole('menuitem', { name: 'Disable user' }).click();
 		await page.getByRole('alertdialog').waitFor();
 		await look(page, 'people-disable');
 
 		await page.keyboard.press('Escape');
 		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
-		await page.getByRole('button', { name: 'New account' }).click();
+		await actions.click();
+		await page.getByRole('menuitem', { name: 'Sandbox allowance…' }).click();
+		await page.getByRole('dialog').waitFor();
+		await look(page, 'people-allowance');
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('dialog').waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'New local account' }).click();
 		await page.getByRole('dialog').waitFor();
 		await look(page, 'people-new-account');
 	});
@@ -201,9 +236,9 @@ inEveryView((look) => {
 	test('people, empty', async ({ page }) => {
 		await answer(page, '/api/admin/users', []);
 		await answer(page, '/auth/local/accounts', []);
+		await answer(page, '/api/admin/settings/limits', limits);
 		await page.goto('/admin/people');
-		await page.getByText('No users yet').waitFor();
-		await page.getByText('No local accounts').waitFor();
+		await page.getByText('No one yet').waitFor();
 		await look(page, 'people-empty');
 	});
 
@@ -274,7 +309,8 @@ function user(
 	role: User['role'],
 	status: User['status'],
 	email: string | null,
-	age: number
+	age: number,
+	provider: string
 ): User {
 	return {
 		id: crypto.randomUUID(),
@@ -284,7 +320,7 @@ function user(
 		role,
 		status,
 		createdAt: days(age),
-		provider: 'oidc',
+		provider,
 		allowance: null
 	};
 }

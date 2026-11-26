@@ -1,5 +1,5 @@
 import { api } from './client.js';
-import type { OwnedSandbox, SandboxDetails, User } from './generated/index.js';
+import type { AllowanceChange, OwnedSandbox, SandboxDetails, User } from './generated/index.js';
 
 export function users(): Promise<User[]> {
 	return api.get<User[]>('/api/admin/users');
@@ -7,6 +7,13 @@ export function users(): Promise<User[]> {
 
 export function setEnabled(user: User, enabled: boolean): Promise<User> {
 	return api.post<User>(`/api/admin/users/${user.id}/${enabled ? 'enable' : 'disable'}`);
+}
+
+/** How many sandboxes the user may have in place of the limit, or with `null` the limit again. */
+export function setAllowance(user: User, maxSandboxes: number | null): Promise<User> {
+	return api.put<User>(`/api/admin/users/${user.id}/allowance`, {
+		maxSandboxes
+	} satisfies AllowanceChange);
 }
 
 /** Deletes the user with their sandboxes, keys and environment, or finishes a failed deletion. */

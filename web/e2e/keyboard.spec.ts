@@ -72,9 +72,10 @@ test.describe('an admin', () => {
 			allowance: null
 		};
 		await page.route('**/api/admin/users', (route) => route.fulfill({ json: [bob] }));
+		await page.route('**/auth/local/accounts', (route) => route.fulfill({ json: [] }));
 		await page.goto('/admin/people');
 		const actions = page
-			.getByRole('table', { name: 'Users' })
+			.getByRole('table', { name: 'People' })
 			.getByRole('button', { name: 'Actions for bob' });
 		await tabTo(page, actions);
 		await page.keyboard.press('Enter');

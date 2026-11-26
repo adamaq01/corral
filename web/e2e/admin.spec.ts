@@ -8,7 +8,7 @@ test.describe('an admin', () => {
 		const carol = { username: 'carol', password: 'carol, first of her name' };
 
 		await page.goto('/admin/people');
-		await page.getByRole('button', { name: 'New account' }).click();
+		await page.getByRole('button', { name: 'New local account' }).click();
 		const create = page.getByRole('dialog', { name: 'New local account' });
 		await create.getByLabel('Username').fill(carol.username);
 		await create.getByLabel('Password', { exact: true }).fill(carol.password);
@@ -16,8 +16,11 @@ test.describe('an admin', () => {
 		await create.getByRole('button', { name: 'Create account' }).click();
 		await expect(create).toBeHidden();
 		await expect(page.getByText('Created carol, who can sign in now')).toBeVisible();
-		const accounts = page.getByRole('table', { name: 'Local accounts' });
-		await expect(accounts.getByRole('row', { name: /carol/ })).toContainText('Member');
+		const people = page.getByRole('table', { name: 'People' });
+		const row = people.getByRole('row', { name: /carol/ });
+		await expect(row).toContainText('Not signed in yet');
+		await expect(row).toContainText('Local account');
+		await expect(row).toContainText('Member');
 
 		// A context made here would otherwise start with the admin's session from `test.use`.
 		const context = await browser.newContext({ storageState: { cookies: [], origins: [] } });
@@ -33,15 +36,14 @@ test.describe('an admin', () => {
 		await expect(sandboxes.getByRole('row', { name: /carol/ })).toContainText('main');
 
 		await page.goto('/admin/people');
-		const users = page.getByRole('table', { name: 'Users' });
-		const user = users.getByRole('row', { name: /carol/ });
-		await expect(user).toContainText('Active');
-		await rowAction(users, 'carol', 'Disable user');
+		await expect(row).toContainText('Active');
+		await expect(row).toContainText('Local account');
+		await rowAction(people, 'carol', 'Disable user');
 		const disable = page.getByRole('alertdialog', { name: 'Disable carol?' });
 		await expect(disable).toContainText('Their sandboxes, SSH keys and environment stay');
 		await disable.getByRole('button', { name: 'Disable user' }).click();
 		await expect(disable).toBeHidden();
-		await expect(user).toContainText('Disabled');
+		await expect(row).toContainText('Disabled');
 
 		await member.reload();
 		await expect(member).toHaveURL(/^[^?]*\/sign-in\?error=/);
@@ -50,12 +52,13 @@ test.describe('an admin', () => {
 		await signIn(member, carol);
 		await expect(form.getByRole('alert')).toHaveText('this account is disabled');
 
-		await rowAction(users, 'carol', 'Enable user');
-		await expect(user).toContainText('Active');
+		await rowAction(people, 'carol', 'Enable user');
+		await expect(row).toContainText('Active');
+		await expect(page.getByText('Enabled carol')).toBeVisible();
 		await signIn(member, carol);
 		await expect(member).toHaveURL('/sandboxes');
 
-		await rowAction(accounts, 'carol', 'Reset password');
+		await rowAction(people, 'carol', 'Reset password');
 		const reset = page.getByRole('dialog', { name: 'Reset the password of carol' });
 		const renewed = { ...carol, password: 'carol, second of her name' };
 		await reset.getByLabel('New password').fill(renewed.password);
@@ -70,7 +73,7 @@ test.describe('an admin', () => {
 		await signIn(member, renewed);
 		await expect(member).toHaveURL('/sandboxes');
 
-		await rowAction(accounts, 'carol', 'Delete user');
+		await rowAction(people, 'carol', 'Delete user');
 		const confirm = page.getByRole('alertdialog', { name: 'Delete carol?' });
 		await expect(confirm).toContainText('sandboxes, SSH keys and environment');
 		const remove = confirm.getByRole('button', { name: 'Delete user' });
@@ -78,7 +81,8 @@ test.describe('an admin', () => {
 		await confirm.getByLabel('Type carol to confirm').fill('carol');
 		await remove.click();
 		await expect(confirm).toBeHidden();
-		await expect(accounts.getByRole('row', { name: /carol/ })).toHaveCount(0);
+		await expect(page.getByText('Deleted carol')).toBeVisible();
+		await expect(row).toHaveCount(0);
 
 		for (const path of ['/admin/people', '/admin/sandboxes']) {
 			await page.goto(path);
@@ -89,6 +93,56 @@ test.describe('an admin', () => {
 		await member.reload();
 		await expect(member.getByRole('alert')).toContainText('this account was deleted');
 		await context.close();
+	});
+
+	test('deletes a local account no one has signed in with', async ({ page }) => {
+		const made = await page.request.post('/auth/local/accounts', {
+			data: { username: 'erin', password: 'erin, never signed in', role: 'member' }
+		});
+		expect(made.ok(), await made.text()).toBe(true);
+
+		await page.goto('/admin/people');
+		const people = page.getByRole('table', { name: 'People' });
+		const row = people.getByRole('row', { name: /erin/ });
+		await expect(row).toContainText('Not signed in yet');
+		await rowAction(people, 'erin', 'Delete account');
+		const confirm = page.getByRole('alertdialog', { name: 'Delete erin?' });
+		await confirm.getByLabel('Type erin to confirm').fill('erin');
+		await confirm.getByRole('button', { name: 'Delete account' }).click();
+		await expect(confirm).toBeHidden();
+		await expect(page.getByText('Deleted erin')).toBeVisible();
+		await expect(row).toHaveCount(0);
+
+		const accounts = await page.request.get('/auth/local/accounts');
+		expect(
+			(await accounts.json()).map((each: { username: string }) => each.username)
+		).not.toContain('erin');
+	});
+
+	test('gives a member a sandbox allowance and takes it back', async ({ page }) => {
+		await page.goto('/admin/people');
+		const people = page.getByRole('table', { name: 'People' });
+		const bob = people.getByRole('row', { name: /bob/ });
+		await expect(bob).toContainText('up to 5');
+
+		await rowAction(people, 'bob', 'Sandbox allowance…');
+		const dialog = page.getByRole('dialog', { name: 'Sandbox allowance for bob' });
+		await expect(dialog.getByRole('radio', { name: 'The usual limit' })).toBeChecked();
+		await dialog.getByLabel('Sandboxes', { exact: true }).fill('4');
+		await dialog.getByRole('button', { name: 'Save allowance' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(page.getByText('bob may have up to 4 sandboxes')).toBeVisible();
+		await expect(bob).toContainText('up to 4');
+
+		await page.reload();
+		await expect(bob).toContainText('up to 4');
+		await rowAction(people, 'bob', 'Sandbox allowance…');
+		await expect(dialog.getByLabel('Sandboxes', { exact: true })).toHaveValue('4');
+		await dialog.getByRole('radio', { name: 'The usual limit' }).click();
+		await dialog.getByRole('button', { name: 'Save allowance' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(page.getByText('bob has the usual limit again')).toBeVisible();
+		await expect(bob).toContainText('up to 5');
 	});
 
 	test("sees what runs a member's sandbox from All sandboxes", async ({ page, browser }) => {
@@ -132,26 +186,12 @@ test.describe('an admin', () => {
 
 	test('cannot disable or delete themselves from People', async ({ page }) => {
 		await page.goto('/admin/people');
-		const self = page.getByRole('table', { name: 'Users' }).getByRole('row', {
+		const self = page.getByRole('table', { name: 'People' }).getByRole('row', {
 			name: new RegExp(account('admin').username)
 		});
 		await expect(self).toContainText('You');
 		await expect(self.getByRole('button')).toHaveCount(0);
 		await self.getByRole('link', { name: 'Account' }).click();
-		await expect(page).toHaveURL('/account');
-	});
-
-	test('cannot delete their own local account, only from Account', async ({ page }) => {
-		const { username } = account('admin');
-		await page.goto('/admin/people');
-		const accounts = page.getByRole('table', { name: 'Local accounts' });
-		await expect(accounts.getByRole('row', { name: new RegExp(username) })).toContainText('You');
-		await expect(accounts.getByRole('row', { name: /bob/ })).not.toContainText('You');
-
-		await page.getByRole('button', { name: `Actions for ${username}` }).click();
-		await expect(page.getByRole('menuitem', { name: 'Change password' })).toBeVisible();
-		await expect(page.getByRole('menuitem', { name: 'Delete user', exact: true })).toHaveCount(0);
-		await page.getByRole('menuitem', { name: 'Delete from Account' }).click();
 		await expect(page).toHaveURL('/account');
 	});
 });
