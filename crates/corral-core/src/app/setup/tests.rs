@@ -1363,6 +1363,7 @@ async fn making_an_entry_required_is_refused_while_members_have_its_name() {
     let listed = w.setup.list_shared(&root).await.unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].entry, offered);
+    assert_eq!(listed[0].shared, Shared::Offered);
     assert_eq!(
         listed[0]
             .shadowed_by

@@ -95,6 +95,7 @@ pub struct EntryView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedEntryView {
     pub entry: Entry,
+    pub shared: Shared,
     /// For a template: the variables its own value refers to.
     pub references: BTreeSet<VariableName>,
     /// How many sandboxes are attached to it.
@@ -693,6 +694,7 @@ impl Setup {
             .ok_or_else(|| not_found(id))
     }
 
+    /// The views of the shared entries among `entries`.
     async fn shared_views(&self, entries: Vec<Entry>) -> Result<Vec<SharedEntryView>> {
         let members = self.repo.every_member_entry().await?;
         let handles = self.handles().await?;
@@ -705,12 +707,16 @@ impl Setup {
         let secrets = self.secrets_of(wanted).await?;
         let mut views = Vec::new();
         for entry in entries {
+            let Owner::Everyone(shared) = entry.owner else {
+                continue;
+            };
             let shadowing: BTreeSet<UserId> = members
                 .iter()
                 .filter(|member| member.target.collides(&entry.target))
                 .filter_map(|member| member.owner.member())
                 .collect();
             views.push(SharedEntryView {
+                shared,
                 references: references(&entry, &secrets),
                 attached: self.repo.attachments_of(entry.id).await?.len(),
                 shadowed_by: handles_of(&handles, &shadowing),

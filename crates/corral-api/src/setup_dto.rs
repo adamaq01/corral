@@ -378,15 +378,13 @@ impl From<SharedEntryView> for SharedEntryDto {
     fn from(view: SharedEntryView) -> Self {
         let SharedEntryView {
             entry,
+            shared,
             references,
             attached,
             shadowed_by,
         } = view;
         Self {
-            shared: entry
-                .owner
-                .shared()
-                .expect("the shared setup holds only shared entries"),
+            shared,
             entry: EntryFields::new(&entry, StoredValueDto::from(&entry.value), references),
             attached,
             shadowed_by,
