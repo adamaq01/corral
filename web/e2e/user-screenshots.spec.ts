@@ -377,6 +377,9 @@ inEveryView((look) => {
 		await serve(page, { '/api/setup': entries });
 		await page.goto('/setup');
 		await page.getByText('ANTHROPIC_API_KEY').waitFor();
+		await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+			'Anthropic through a gateway'
+		);
 		await look(page, 'setup');
 
 		await page.getByRole('button', { name: 'Add variable' }).click();

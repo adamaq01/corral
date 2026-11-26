@@ -5,8 +5,8 @@ import type {
 	Shared,
 	StoredValue,
 	ValueInput
-} from '#lib/api/generated/index.js';
-import { FILE_LIMIT, VARIABLE_LIMIT } from '#lib/api/generated/index.js';
+} from './api/generated/index.js';
+import { FILE_LIMIT, VARIABLE_LIMIT } from './api/generated/index.js';
 
 const bytes = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 const encoder = new TextEncoder();

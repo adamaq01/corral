@@ -1,0 +1,111 @@
+import type { SetupEntry } from '../api/generated/index.js';
+import { own, ownText, put, type Change } from './change.js';
+
+export type Provider = 'anthropic' | 'openai';
+
+export const PROVIDERS: Provider[] = ['anthropic', 'openai'];
+
+/**
+ * The variables of each provider: its address, its key, and for Anthropic the bearer token a
+ * gateway may take instead, written with the same key when there is an address.
+ */
+const NAMES: Record<Provider, { label: string; url: string; key: string; bearer?: string }> = {
+	anthropic: {
+		label: 'Anthropic',
+		url: 'ANTHROPIC_BASE_URL',
+		key: 'ANTHROPIC_API_KEY',
+		bearer: 'ANTHROPIC_AUTH_TOKEN'
+	},
+	openai: { label: 'OpenAI', url: 'OPENAI_BASE_URL', key: 'OPENAI_API_KEY' }
+};
+
+export type LlmState = {
+	rows: Record<Provider, { url: string; urlLocked: boolean; keySet: boolean }>;
+};
+
+/**
+ * What the form saves for each provider: the address, and the key, `null` to keep the one set
+ * and `''` for none.
+ */
+export type LlmForm = { rows: Record<Provider, { url: string; key: string | null }> };
+
+const variable = (target: string, secret: boolean) => ({
+	kind: 'variable' as const,
+	target,
+	secret
+});
+
+function keyNames(provider: Provider, withUrl: boolean): string[] {
+	const { key, bearer } = NAMES[provider];
+	return withUrl && bearer ? [key, bearer] : [key];
+}
+
+function allKeyNames(provider: Provider): string[] {
+	return keyNames(provider, true);
+}
+
+export function readLlm(entries: SetupEntry[]): LlmState {
+	const row = (provider: Provider) => {
+		const { url } = NAMES[provider];
+		const required = entries.find(
+			(entry) => entry.shared === 'required' && entry.kind === 'variable' && entry.target === url
+		);
+		const lockedUrl = required?.value.shown === 'text' ? required.value.text : '';
+		return {
+			url: required ? lockedUrl : (ownText(entries, variable(url, false)) ?? ''),
+			urlLocked: required !== undefined,
+			keySet: allKeyNames(provider).some((name) => own(entries, variable(name, true)))
+		};
+	};
+	return { rows: { anthropic: row('anthropic'), openai: row('openai') } };
+}
+
+/** The address the provider's entries follow: the admin's when locked, else the form's. */
+function address(state: LlmState, form: LlmForm, provider: Provider): string {
+	const read = state.rows[provider];
+	return read.urlLocked ? read.url : form.rows[provider].url.trim();
+}
+
+export function writeLlm(current: SetupEntry[], form: LlmForm): Change[] {
+	const state = readLlm(current);
+	return PROVIDERS.flatMap((provider) => {
+		const { key } = form.rows[provider];
+		const url = address(state, form, provider);
+		const needed = keyNames(provider, url !== '');
+		const keys = allKeyNames(provider).flatMap((name) => {
+			if (key === null && needed.includes(name)) {
+				return [];
+			}
+			return put(current, variable(name, true), key && needed.includes(name) ? key : null);
+		});
+		const locked = state.rows[provider].urlLocked;
+		return [
+			...(locked ? [] : put(current, variable(NAMES[provider].url, false), url || null)),
+			...keys
+		];
+	});
+}
+
+/**
+ * For each provider, whether its kept key must be typed again: the form's address calls for a
+ * variable the key is not yet in, and a key's value never shows to copy it.
+ */
+export function needsKey(current: SetupEntry[], form: LlmForm): Record<Provider, boolean> {
+	const state = readLlm(current);
+	const needs = (provider: Provider) =>
+		form.rows[provider].key === null &&
+		state.rows[provider].keySet &&
+		keyNames(provider, address(state, form, provider) !== '').some(
+			(name) => !own(current, variable(name, true))
+		);
+	return { anthropic: needs('anthropic'), openai: needs('openai') };
+}
+
+/** One line saying which providers have a key, and through what, or `null` when none does. */
+export function llmSummary(state: LlmState): string | null {
+	const said = PROVIDERS.filter((provider) => state.rows[provider].keySet).map((provider) => {
+		const { label } = NAMES[provider];
+		return state.rows[provider].url ? `${label} through a gateway` : `${label} key set`;
+	});
+	return said.length > 0 ? said.join(', ') : null;
+}

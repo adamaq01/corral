@@ -397,7 +397,7 @@ test('shared entries come first, a required one locked, and yours says what it r
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [main] }));
 	await page.goto('/setup');
 
-	await expect(page.getByRole('heading', { level: 2 })).toHaveText(['Shared', 'Yours']);
+	await expect(page.getByRole('heading', { level: 2 })).toHaveText(['Presets', 'Shared', 'Yours']);
 	const shared = page.getByRole('list', { name: 'Shared' });
 	const yours = page.getByRole('list', { name: 'Yours' });
 	const required = shared.getByRole('link', { name: /ANTHROPIC_BASE_URL/ });
@@ -553,6 +553,85 @@ test('an import names how many variables it would import', async ({ page }) => {
 	await expect(button('Import 1 variable')).toBeEnabled();
 	await dialog.getByLabel('Variables').fill('EDITOR=vim\nPAGER=less');
 	await expect(button('Import 2 variables')).toBeEnabled();
+});
+
+const presets = ['LLM providers', 'Git identity', 'MCP servers', 'Dotfiles'];
+
+test('each preset says it is not set up on an empty setup, and opens its form', async ({
+	page
+}) => {
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
+	const cards = page.getByRole('list', { name: 'Presets' }).getByRole('listitem');
+	await expect(cards).toHaveCount(4);
+	for (const [index, preset] of presets.entries()) {
+		await expect(cards.nth(index).getByRole('heading', { level: 3 })).toHaveText(preset);
+		await expect(cards.nth(index)).toContainText('Not set up');
+		await expect(cards.nth(index).getByRole('button')).toHaveAccessibleName(`Set up ${preset}`);
+	}
+
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	await expect(page.getByRole('dialog', { name: 'Git identity' })).toBeVisible();
+});
+
+test('each preset sums up the entries it reads back', async ({ page }) => {
+	const text = (value: string): SetupEntry['value'] => ({
+		setAt,
+		size: value.length,
+		shown: 'text',
+		text: value
+	});
+	const hidden: SetupEntry['value'] = { setAt, size: 40, shown: 'hidden' };
+	const own: Partial<SetupEntry>[] = [
+		{ target: 'ANTHROPIC_BASE_URL', secret: false, value: text('https://llm.home.example') },
+		{ target: 'ANTHROPIC_API_KEY' },
+		{ target: 'ANTHROPIC_AUTH_TOKEN' },
+		{ target: 'OPENAI_API_KEY' },
+		{
+			kind: 'file',
+			target: '.gitconfig',
+			secret: false,
+			value: text(
+				'[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n[credential]\n\thelper = store\n[credential "https://github.com"]\n\tusername = ada\n[init]\n\tdefaultBranch = main\n'
+			)
+		},
+		{ kind: 'file', target: '.git-credentials', value: hidden },
+		{
+			kind: 'file',
+			target: '.config/corral-agents/mcp.json',
+			secret: false,
+			value: text(
+				JSON.stringify({
+					fetch: { command: 'uvx', args: ['mcp-server-fetch'], env: {} },
+					github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/', headers: {} },
+					docs: { type: 'http', url: 'https://docs.example/mcp', headers: {} }
+				})
+			)
+		},
+		{
+			kind: 'file',
+			target: '.config/corral-agents/dotfiles.json',
+			secret: false,
+			value: text('{"url": "https://github.com/ada/dotfiles.git", "branch": "main"}')
+		}
+	];
+	const entries = own.map((extra, index) =>
+		entry({ id: `0b8c1d2e-3f4a-4b5c-8d6e-7f8a9b0c1d${String(index).padStart(2, '0')}`, ...extra })
+	);
+	await page.route('**/api/setup', (route) => route.fulfill({ json: entries }));
+	await page.goto('/setup');
+	const cards = page.getByRole('list', { name: 'Presets' }).getByRole('listitem');
+	for (const [index, summary] of [
+		'Anthropic through a gateway, OpenAI key set',
+		'Ada Lovelace <ada@example.com>, token for github.com',
+		'3 servers: fetch, github, docs',
+		'github.com/ada/dotfiles, main'
+	].entries()) {
+		await expect(cards.nth(index)).toContainText(summary);
+		await expect(cards.nth(index).getByRole('button')).toHaveAccessibleName(
+			`Change ${presets[index]}`
+		);
+	}
 });
 
 test('an entry lives through Corral: made, renamed, made secret and deleted', async ({ page }) => {
