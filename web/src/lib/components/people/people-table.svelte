@@ -116,27 +116,32 @@
 						<Table.Cell class={wide}>up to {person.maxSandboxes}</Table.Cell>
 						<Table.Cell class={wider}><Timestamp value={person.createdAt} /></Table.Cell>
 						<Table.Cell class="w-0 text-right">
-							{#if person.self}
-								<Button variant="ghost" size="sm" href="/account">Account</Button>
-							{:else}
-								<DropdownMenu.Root>
-									<DropdownMenu.Trigger>
-										{#snippet child({ props })}
-											<Button
-												variant="ghost"
-												size="icon"
-												aria-label="Actions for {person.handle}"
-												{...props}
-											>
-												<EllipsisIcon />
-											</Button>
-										{/snippet}
-									</DropdownMenu.Trigger>
-									<DropdownMenu.Content align="end">
+							<DropdownMenu.Root>
+								<DropdownMenu.Trigger>
+									{#snippet child({ props })}
+										<Button
+											variant="ghost"
+											size="icon"
+											aria-label="Actions for {person.handle}"
+											{...props}
+										>
+											<EllipsisIcon />
+										</Button>
+									{/snippet}
+								</DropdownMenu.Trigger>
+								<DropdownMenu.Content align="end">
+									{#if person.self}
+										<DropdownMenu.Item>
+											{#snippet child({ props })}
+												<a href="/account" {...props}>Account</a>
+											{/snippet}
+										</DropdownMenu.Item>
+										{@render allowance(person.user)}
+									{:else}
 										{@render menu(person)}
-									</DropdownMenu.Content>
-								</DropdownMenu.Root>
-							{/if}
+									{/if}
+								</DropdownMenu.Content>
+							</DropdownMenu.Root>
 						</Table.Cell>
 					</Table.Row>
 				{/each}
@@ -171,9 +176,7 @@
 	{/if}
 	{#if person.user}
 		{@const user = person.user}
-		<DropdownMenu.Item onSelect={() => onopen({ dialog: 'allowance', user })}>
-			Sandbox allowance…
-		</DropdownMenu.Item>
+		{@render allowance(user)}
 		<DropdownMenu.Item
 			variant="destructive"
 			onSelect={() => onopen({ dialog: 'delete-user', user })}
@@ -189,4 +192,10 @@
 			Delete account
 		</DropdownMenu.Item>
 	{/if}
+{/snippet}
+
+{#snippet allowance(user: User)}
+	<DropdownMenu.Item onSelect={() => onopen({ dialog: 'allowance', user })}>
+		Sandbox allowance…
+	</DropdownMenu.Item>
 {/snippet}
