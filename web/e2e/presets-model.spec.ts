@@ -11,7 +11,7 @@ import type {
 import type { Change } from '../src/lib/presets/change.js';
 import { readDotfiles, writeDotfiles } from '../src/lib/presets/dotfiles.js';
 import { readGit, writeGit, type GitForm } from '../src/lib/presets/git.js';
-import { needsKey, readLlm, writeLlm, type LlmForm } from '../src/lib/presets/llm.js';
+import { llmSummary, needsKey, readLlm, writeLlm, type LlmForm } from '../src/lib/presets/llm.js';
 import { readMcp, writeMcp, type McpServer } from '../src/lib/presets/mcp.js';
 
 const setAt = '2026-11-26T09:00:00Z';
@@ -106,8 +106,13 @@ test.describe('LLM providers', () => {
 		]);
 		expect(readLlm(saved([], changes))).toEqual({
 			rows: {
-				anthropic: { url: 'https://llm.home.example', urlLocked: false, keySet: true },
-				openai: { url: '', urlLocked: false, keySet: false }
+				anthropic: {
+					url: 'https://llm.home.example',
+					urlLocked: false,
+					keySet: true,
+					keyLocked: false
+				},
+				openai: { url: '', urlLocked: false, keySet: false, keyLocked: false }
 			}
 		});
 	});
@@ -166,8 +171,18 @@ test.describe('LLM providers', () => {
 		];
 
 		expect(readLlm(current).rows).toEqual({
-			anthropic: { url: 'https://gateway.example.lan', urlLocked: true, keySet: false },
-			openai: { url: 'https://gateway.example.lan/openai', urlLocked: true, keySet: false }
+			anthropic: {
+				url: 'https://gateway.example.lan',
+				urlLocked: true,
+				keySet: false,
+				keyLocked: false
+			},
+			openai: {
+				url: 'https://gateway.example.lan/openai',
+				urlLocked: true,
+				keySet: false,
+				keyLocked: false
+			}
 		});
 		expect(
 			writeLlm(
@@ -179,6 +194,48 @@ test.describe('LLM providers', () => {
 			created('variable', 'ANTHROPIC_AUTH_TOKEN', true, 'sk-ant-1'),
 			created('variable', 'OPENAI_API_KEY', true, 'sk-1')
 		]);
+	});
+});
+
+test.describe('LLM providers, with a key the admin set', () => {
+	const untouched = { url: '', key: null };
+
+	for (const [name, provider] of [
+		['ANTHROPIC_API_KEY', 'anthropic'],
+		['ANTHROPIC_AUTH_TOKEN', 'anthropic'],
+		['OPENAI_API_KEY', 'openai']
+	] as const) {
+		test(`a required ${name} locks its row's key, which is never written`, () => {
+			const current = [variable(name, null, 'required'), variable(`${name}`, null)];
+			const form: LlmForm = {
+				rows: {
+					anthropic: { url: 'https://llm.home.example', key: 'sk-typed' },
+					openai: { url: 'https://llm.home.example', key: 'sk-typed' }
+				}
+			};
+			const other = provider === 'anthropic' ? 'openai' : 'anthropic';
+
+			expect(readLlm(current).rows[provider]).toMatchObject({ keyLocked: true });
+			expect(readLlm(current).rows[other]).toMatchObject({ keyLocked: false });
+			const written = writeLlm(current, form).map((change) =>
+				'create' in change ? change.create.target : change
+			);
+			expect(written).not.toContain(name);
+			expect(written.filter((target) => typeof target !== 'string')).toEqual([]);
+			expect(
+				needsKey(current, {
+					rows: { anthropic: untouched, openai: untouched, [provider]: form.rows[provider] }
+				})
+			).toEqual({ anthropic: false, openai: false });
+		});
+	}
+
+	test('the summary says which keys the admin set', () => {
+		expect(
+			llmSummary(
+				readLlm([variable('ANTHROPIC_API_KEY', null, 'required'), variable('OPENAI_API_KEY', null)])
+			)
+		).toBe('Anthropic key set by the admin, OpenAI key set');
 	});
 });
 

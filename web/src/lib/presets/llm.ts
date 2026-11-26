@@ -20,8 +20,12 @@ export const NAMES: Record<Provider, { label: string; url: string; key: string; 
 		openai: { label: 'OpenAI', url: 'OPENAI_BASE_URL', key: 'OPENAI_API_KEY' }
 	};
 
+/**
+ * Each provider's address and whether the admin locks it, whether the member set a key, and
+ * whether the admin set one for every sandbox, which the member's form then leaves alone.
+ */
 export type LlmState = {
-	rows: Record<Provider, { url: string; urlLocked: boolean; keySet: boolean }>;
+	rows: Record<Provider, { url: string; urlLocked: boolean; keySet: boolean; keyLocked: boolean }>;
 };
 
 /**
@@ -46,16 +50,19 @@ function allKeyNames(provider: Provider): string[] {
 }
 
 export function readLlm(entries: SetupEntry[]): LlmState {
+	const required = (name: string) =>
+		entries.find(
+			(entry) => entry.shared === 'required' && entry.kind === 'variable' && entry.target === name
+		);
 	const row = (provider: Provider) => {
 		const { url } = NAMES[provider];
-		const required = entries.find(
-			(entry) => entry.shared === 'required' && entry.kind === 'variable' && entry.target === url
-		);
-		const lockedUrl = required?.value.shown === 'text' ? required.value.text : '';
+		const shared = required(url);
+		const lockedUrl = shared?.value.shown === 'text' ? shared.value.text : '';
 		return {
-			url: required ? lockedUrl : (ownText(entries, variable(url, false)) ?? ''),
-			urlLocked: required !== undefined,
-			keySet: allKeyNames(provider).some((name) => own(entries, variable(name, true)))
+			url: shared ? lockedUrl : (ownText(entries, variable(url, false)) ?? ''),
+			urlLocked: shared !== undefined,
+			keySet: allKeyNames(provider).some((name) => own(entries, variable(name, true))),
+			keyLocked: allKeyNames(provider).some((name) => required(name) !== undefined)
 		};
 	};
 	return { rows: { anthropic: row('anthropic'), openai: row('openai') } };
@@ -73,7 +80,8 @@ export function writeLlm(current: SetupEntry[], form: LlmForm): Change[] {
 		const { key } = form.rows[provider];
 		const url = address(state, form, provider);
 		const needed = keyNames(provider, url !== '');
-		const keys = allKeyNames(provider).flatMap((name) => {
+		const names = state.rows[provider].keyLocked ? [] : allKeyNames(provider);
+		const keys = names.flatMap((name) => {
 			if (key === null && needed.includes(name)) {
 				return [];
 			}
@@ -96,17 +104,26 @@ export function needsKey(current: SetupEntry[], form: LlmForm): Record<Provider,
 	const needs = (provider: Provider) =>
 		form.rows[provider].key === null &&
 		state.rows[provider].keySet &&
+		!state.rows[provider].keyLocked &&
 		keyNames(provider, address(state, form, provider) !== '').some(
 			(name) => !own(current, variable(name, true))
 		);
 	return { anthropic: needs('anthropic'), openai: needs('openai') };
 }
 
-/** One line saying which providers have a key, and through what, or `null` when none does. */
+/**
+ * One line saying which providers have a key, the admin's or the member's, and through what, or
+ * `null` when none does.
+ */
 export function llmSummary(state: LlmState): string | null {
-	const said = PROVIDERS.filter((provider) => state.rows[provider].keySet).map((provider) => {
+	const rows = state.rows;
+	const keyed = PROVIDERS.filter((provider) => rows[provider].keySet || rows[provider].keyLocked);
+	const said = keyed.map((provider) => {
 		const { label } = NAMES[provider];
-		return state.rows[provider].url ? `${label} through a gateway` : `${label} key set`;
+		if (rows[provider].keyLocked) {
+			return `${label} key set by the admin`;
+		}
+		return rows[provider].url ? `${label} through a gateway` : `${label} key set`;
 	});
 	return said.length > 0 ? said.join(', ') : null;
 }

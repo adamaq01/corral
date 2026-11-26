@@ -1,4 +1,5 @@
 <script lang="ts">
+	import LockIcon from '@lucide/svelte/icons/lock';
 	import { tick, untrack } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import { ApiError, failureMessage } from '#lib/api/client.js';
@@ -6,6 +7,7 @@
 	import FormDialog from '#lib/components/form-dialog.svelte';
 	import PasswordInput from '#lib/components/password-input.svelte';
 	import LlmUrlField from '#lib/components/presets/llm-url-field.svelte';
+	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
@@ -93,8 +95,7 @@
 	const keyOpen = (provider: Provider) =>
 		!kept(provider) || rows[provider].replacing || needs[provider];
 	const removable = (provider: Provider) =>
-		kept(provider) ||
-		typed(provider) !== '' ||
+		(!read.rows[provider].keyLocked && (kept(provider) || typed(provider) !== '')) ||
 		(!read.rows[provider].urlLocked && rows[provider].url.trim() !== '');
 	const refused = (provider: Provider, field: 'url' | 'key') =>
 		refusal?.provider === provider && refusal.field === field ? refusal.message : null;
@@ -170,7 +171,18 @@
 						oncopy={copiedFrom === provider ? () => copy(provider) : null}
 					/>
 					<Field.Field data-invalid={keyRefused ? true : undefined}>
-						{#if keyOpen(provider)}
+						{#if read.rows[provider].keyLocked}
+							<div class="flex flex-wrap items-center gap-2">
+								<Field.Title>Key</Field.Title>
+								<Badge variant="outline">
+									<LockIcon aria-hidden="true" />
+									Set by the admin
+								</Badge>
+							</div>
+							<div class="flex h-8 items-center rounded-lg border px-2.5">
+								<span class="text-sm text-muted-foreground">Set, hidden</span>
+							</div>
+						{:else if keyOpen(provider)}
 							<Field.Label for={keyId}>Key</Field.Label>
 							<PasswordInput
 								id={keyId}

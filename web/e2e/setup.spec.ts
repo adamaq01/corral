@@ -805,6 +805,35 @@ test('with the addresses set by the admin, the LLM providers preset saves the ke
 	]);
 });
 
+test('with a key set by the admin, the LLM providers preset locks it and saves the others', async ({
+	page
+}) => {
+	const adminKey = entry({
+		id: '6f5a6b7c-8d9e-4f0a-9b1c-2d3e4f5a6b7c',
+		target: 'ANTHROPIC_API_KEY',
+		shared: 'required',
+		value: { setAt, size: 40, shown: 'hidden' }
+	});
+	const calls: Call[] = [];
+	await setupApi(page, [adminKey], calls);
+	await page.goto('/setup');
+	const cards = page.getByRole('list', { name: 'Presets' });
+	await expect(cards).toContainText('Anthropic key set by the admin');
+	await page.getByRole('button', { name: 'Change LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	await expect(anthropic.getByText('Set by the admin')).toBeVisible();
+	await expect(anthropic.getByLabel('Key', { exact: true })).toHaveCount(0);
+	await expect(anthropic.getByRole('button', { name: /^(Replace|Remove)/ })).toHaveCount(0);
+
+	const openai = dialog.getByRole('group', { name: 'OpenAI' });
+	await openai.getByLabel('Key', { exact: true }).fill('sk-openai');
+	await dialog.getByRole('button', { name: 'Save providers' }).click();
+	await expect(dialog).toBeHidden();
+	expect(sent(calls)).toEqual([created('OPENAI_API_KEY', true, 'sk-openai')]);
+	await expect(cards).toContainText('Anthropic key set by the admin, OpenAI key set');
+});
+
 test("the LLM providers preset shows Corral's refusal next to the field it names", async ({
 	page
 }) => {
@@ -812,7 +841,7 @@ test("the LLM providers preset shows Corral's refusal next to the field it names
 	await page.route('**/api/setup', (route) => {
 		const request = route.request();
 		if (request.method() === 'GET') {
-			return route.fulfill({ json: [gateway, gatewayToken] });
+			return route.fulfill({ json: [gateway] });
 		}
 		return request.postDataJSON().target === 'ANTHROPIC_AUTH_TOKEN'
 			? route.fulfill({ status: 409, json: { error: refusal } })
