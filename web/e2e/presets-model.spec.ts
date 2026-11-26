@@ -326,13 +326,14 @@ test.describe('git identity', () => {
 });
 
 test.describe('git identity, with a ~/.gitconfig of more sections', () => {
-	test('the sections the preset does not write stay, and a host it leaves goes', () => {
+	test('the sections and keys the preset does not write stay, and a login it leaves goes', () => {
 		const current = [
 			file(
 				'.gitconfig',
 				'# Mine.\n[user]\n\tname = Old Name\n[alias]\n\tco = checkout\n' +
-					'[credential]\n\thelper = store\n[credential "https://github.com"]\n\tusername = old\n' +
-					'[credential "https://dev.azure.com"]\n\tuseHttpPath = true\n' +
+					'[credential]\n\thelper = store\n' +
+					'[credential "https://github.com"]\n\tusername = old\n\tuseHttpPath = true\n' +
+					'[credential "https://dev.azure.com"]\n\tusername = me\n\tuseHttpPath = true\n' +
 					'[init]\n\tdefaultBranch = trunk\n[core]\n\teditor = vim\n'
 			),
 			file('.git-credentials', null)
@@ -343,19 +344,58 @@ test.describe('git identity, with a ~/.gitconfig of more sections', () => {
 			reach: { by: 'token', token: { host: 'gitlab.com', user: 'ada', token: 'glpat-1' } }
 		};
 
-		const [gitconfig] = writeGit(current, form);
-		expect(gitconfig).toMatchObject({
+		const changes = writeGit(current, form);
+		expect(changes[0]).toMatchObject({
 			change: {
 				id: '.gitconfig-id',
 				value: {
 					text:
-						'[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n' +
-						'[credential]\n\thelper = store\n[credential "https://gitlab.com"]\n\tusername = ada\n' +
-						'[init]\n\tdefaultBranch = main\n' +
-						'# Mine.\n[alias]\n\tco = checkout\n' +
-						'[credential "https://dev.azure.com"]\n\tuseHttpPath = true\n[core]\n\teditor = vim\n'
+						'# Mine.\n[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n' +
+						'[alias]\n\tco = checkout\n[credential]\n\thelper = store\n' +
+						'[credential "https://gitlab.com"]\n\tusername = ada\n' +
+						'[credential "https://github.com"]\n\tuseHttpPath = true\n' +
+						'[credential "https://dev.azure.com"]\n\tusername = me\n\tuseHttpPath = true\n' +
+						'[init]\n\tdefaultBranch = main\n[core]\n\teditor = vim\n'
 				}
 			}
+		});
+		expect(readGit(saved(current, changes)).reach).toEqual({
+			by: 'token',
+			host: 'gitlab.com',
+			user: 'ada'
+		});
+	});
+
+	test('the other keys of its sections stay, and the identity reads back', () => {
+		const current = [
+			file(
+				'.gitconfig',
+				'[user]\n\tsigningKey = ABC\n[commit]\n\tgpgSign = true\n[init]\n\ttemplateDir = ~/t\n'
+			)
+		];
+		const form: GitForm = {
+			name: 'Ada Lovelace',
+			email: 'ada@example.com',
+			reach: { by: 'nothing' }
+		};
+
+		const changes = writeGit(current, form);
+		expect(changes).toMatchObject([
+			{
+				change: {
+					value: {
+						text:
+							'[user]\n\tsigningKey = ABC\n\tname = Ada Lovelace\n\temail = ada@example.com\n' +
+							'[commit]\n\tgpgSign = true\n' +
+							'[init]\n\ttemplateDir = ~/t\n\tdefaultBranch = main\n'
+					}
+				}
+			}
+		]);
+		expect(readGit(saved(current, changes))).toEqual({
+			name: 'Ada Lovelace',
+			email: 'ada@example.com',
+			reach: { by: 'nothing' }
 		});
 	});
 

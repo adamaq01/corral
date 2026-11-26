@@ -174,7 +174,7 @@ setup**, as required entries; a member's form shows them locked and saves the ke
 the admin sets there the same way locks that provider's key in the form too.
 
 **Git identity** writes `~/.gitconfig` with your name and email and `main` as the default
-branch, keeping any other section it already had. With a token, it also writes
+branch, keeping every other key and section it already had. With a token, it also writes
 `~/.git-credentials`, secret, as the line `https://<user>:<token>@<host>`, and `~/.gitconfig`
 has git's `store` helper read it. With an SSH key, it writes `~/.ssh/id_ed25519`, secret, and
 `~/.ssh/id_ed25519.pub` when you give the public key.
