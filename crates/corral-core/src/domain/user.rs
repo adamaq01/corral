@@ -51,6 +51,14 @@ impl User {
     pub fn subject_at(&self, provider: &str) -> Option<&str> {
         self.subject.strip_prefix(provider)?.strip_prefix(':')
     }
+
+    /// The provider the user logs in with: their subject before its first `:`.
+    #[must_use]
+    pub fn provider(&self) -> &str {
+        self.subject
+            .split_once(':')
+            .map_or(self.subject.as_str(), |(provider, _)| provider)
+    }
 }
 
 /// Proof that the acting user is an admin, for ports that act on an admin's behalf.
@@ -90,6 +98,7 @@ mod tests {
             ..World::new().member("adam").await
         };
         assert_eq!(user.subject_at("local"), Some("adam"));
+        assert_eq!(user.provider(), "local");
         assert_eq!(user.subject_at("loc"), None);
         assert_eq!(user.subject_at("oidc"), None);
     }

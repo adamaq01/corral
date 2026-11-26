@@ -7,7 +7,7 @@ use ts_rs::TS;
 use crate::domain::{Allocation, ImageKey, ImageReference, Resources, SizeKey};
 use crate::{Error, Result};
 
-/// Who owns a catalog entry: the config file, or the admin through the web UI.
+/// Who owns a setting: the config file, or the admin through the web UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {

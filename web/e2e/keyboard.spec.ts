@@ -67,7 +67,9 @@ test.describe('an admin', () => {
 			picture: null,
 			role: 'member',
 			status: 'active',
-			createdAt: '2026-11-02T09:30:00Z'
+			createdAt: '2026-11-02T09:30:00Z',
+			provider: 'oidc',
+			allowance: null
 		};
 		await page.route('**/api/admin/users', (route) => route.fulfill({ json: [bob] }));
 		await page.goto('/admin/users');

@@ -287,7 +287,9 @@ function user(
 		picture: null,
 		role,
 		status,
-		createdAt: days(age)
+		createdAt: days(age),
+		provider: 'oidc',
+		allowance: null
 	};
 }
 

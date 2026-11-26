@@ -4,7 +4,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{Catalog, CatalogDefaults, ImageOption, NamedImages, SizePreset, Source};
-use crate::domain::{Admin, ImageKey, Sandbox, SandboxImage, SizeKey, UserId};
+use crate::domain::{Admin, ImageKey, Sandbox, SandboxImage, SizeKey, User, UserId};
 use crate::ports::{RunningLimit, SandboxRepo, SettingsRepo, UserRepo};
 use crate::{Error, Result};
 
@@ -275,19 +275,23 @@ impl Settings {
         self.repo.allowance(user).await
     }
 
+    /// The user it is set for.
     pub async fn set_allowance(
         &self,
         _: &Admin,
         user: UserId,
         allowance: Option<Allowance>,
-    ) -> Result<()> {
+    ) -> Result<User> {
         if allowance.is_some_and(|allowance| allowance.max_sandboxes == 0) {
             return Err(Error::Invalid("allowances must be at least 1".to_owned()));
         }
-        if self.users.get(user).await?.is_none() {
-            return Err(Error::NotFound(format!("user {}", user.0)));
-        }
-        self.repo.set_allowance(user, allowance.as_ref()).await
+        let user = self
+            .users
+            .get(user)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("user {}", user.0)))?;
+        self.repo.set_allowance(user.id, allowance.as_ref()).await?;
+        Ok(user)
     }
 
     pub async fn max_sandboxes_for(&self, user: UserId) -> Result<usize> {
@@ -922,10 +926,8 @@ mod tests {
         let adam = w.member("adam").await;
         let eve = w.member("eve").await;
         let seven = Allowance { max_sandboxes: 7 };
-        w.settings
-            .set_allowance(&root, adam.id, Some(seven))
-            .await
-            .unwrap();
+        let set_for = w.settings.set_allowance(&root, adam.id, Some(seven)).await;
+        assert_eq!(set_for.unwrap(), adam);
         assert_eq!(w.settings.allowance(adam.id).await.unwrap(), Some(seven));
         assert_eq!(w.settings.max_sandboxes_for(adam.id).await.unwrap(), 7);
         assert_eq!(

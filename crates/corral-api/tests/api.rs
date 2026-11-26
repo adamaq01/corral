@@ -555,8 +555,30 @@ const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
         "/api/admin/users/00000000-0000-0000-0000-000000000000/disable",
         None,
     ),
+    (
+        "PUT",
+        "/api/admin/users/00000000-0000-0000-0000-000000000000/allowance",
+        Some(r#"{"maxSandboxes": 9}"#),
+    ),
     ("GET", "/api/admin/sandboxes", None),
     ("GET", "/api/admin/sandboxes/adam/main", None),
+    ("DELETE", "/api/admin/sandboxes/adam/main", None),
+    ("POST", "/api/admin/sandboxes/adam/main/stop", None),
+    ("POST", "/api/admin/sandboxes/adam/main/restart", None),
+    ("GET", "/api/admin/settings/catalog", None),
+    (
+        "PUT",
+        "/api/admin/settings/catalog",
+        Some(r#"{"images": [], "sizes": []}"#),
+    ),
+    ("GET", "/api/admin/settings/limits", None),
+    (
+        "PUT",
+        "/api/admin/settings/limits",
+        Some(r#"{"maxRunning": 9}"#),
+    ),
+    ("GET", "/api/admin/settings/registries", None),
+    ("PUT", "/api/admin/settings/registries", Some("[]")),
 ];
 
 #[tokio::test]
@@ -648,7 +670,7 @@ async fn create_then_list_shows_the_ssh_username() {
     assert_eq!(
         adam.get("/api/catalog").await.json(),
         json!({
-            "images": [{ "key": "base", "label": "BASE" }, { "key": "tools", "label": "TOOLS" }],
+            "images": [{ "key": "base", "label": "BASE" }],
             "sizes": [{ "key": "small", "label": "SMALL" }, { "key": "large", "label": "LARGE" }],
             "defaultImage": "base",
             "defaultSize": "small",
