@@ -224,6 +224,15 @@ export type NewKey = { label: string, publicKey: string, };
 export type NewPassword = { password: string, };
 
 /**
+ * An entry the admin shares with everyone, as they first give it.
+ */
+export type NewSharedEntry = { shared: Shared, kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home, which may start with `~/`.
+ */
+target: string, secret: boolean, template?: boolean, executable?: boolean, applyToNew: boolean, value: ValueInput, };
+
+/**
  * What a user's laptop needs to log in with opkssh, for the connect page.
  */
 export type OpksshLogin = { issuer: string, clientId: string,
@@ -340,7 +349,33 @@ export type SandboxStatus = { "state": "starting" } | { "state": "running" } | {
 
 export type ScheduledDeletion = { deleteAt: string, };
 
-export type SetupEntry = { id: string, kind: EntryKind,
+/**
+ * An entry as a member sees it: their own, or one the admin shares, whose secret value shows
+ * nothing but its size.
+ */
+export type SetupEntry = {
+/**
+ * How the admin shares it, for an entry that is not the member's own.
+ */
+shared: Shared | null,
+/**
+ * The sandboxes it reaches, by name: those attached to it, or every one for a required
+ * entry.
+ */
+sandboxes: Array<EntryUse>,
+/**
+ * Whether an entry made earlier has the same target, as only entries made before targets
+ * were unique can.
+ */
+duplicate: boolean,
+/**
+ * For the member's own entry: whether it takes the place of an offered one.
+ */
+shadows: boolean,
+/**
+ * For an offered entry: whether an entry of the member's takes its place.
+ */
+shadowed: boolean, id: string, kind: EntryKind,
 /**
  * The variable's name, or the file's path relative to the home.
  */
@@ -359,18 +394,53 @@ executable: boolean,
  */
 applyToNew: boolean, value: StoredValue, createdAt: string,
 /**
- * The sandboxes it is attached to, by name.
+ * For a template: the variables its own value refers to.
  */
-sandboxes: Array<EntryUse>,
+references: Array<VariableName>, };
+
+/**
+ * How a shared entry reaches members' sandboxes.
+ */
+export type Shared = "required" | "offered";
+
+/**
+ * A shared entry as the admin sees it.
+ */
+export type SharedEntry = { shared: Shared,
+/**
+ * How many sandboxes are attached to it, none for a required entry, which reaches every one.
+ */
+attached: number,
+/**
+ * The members with an entry of their own in its place, by handle.
+ */
+shadowedBy: Array<Handle>, id: string, kind: EntryKind,
+/**
+ * The variable's name, or the file's path relative to the home.
+ */
+target: string, secret: boolean,
+/**
+ * For a text file: each `{{ NAME }}` takes the value of the variable `NAME` attached to
+ * the same sandbox.
+ */
+template: boolean,
+/**
+ * For a file: whether it is written executable.
+ */
+executable: boolean,
+/**
+ * Whether each new sandbox is attached to it.
+ */
+applyToNew: boolean, value: StoredValue, createdAt: string,
 /**
  * For a template: the variables its own value refers to.
  */
-references: Array<VariableName>,
+references: Array<VariableName>, };
+
 /**
- * Whether an entry made earlier has the same target, as only entries made before targets
- * were unique can.
+ * What a shared entry becomes, how it is shared included.
  */
-duplicate: boolean, };
+export type SharedEntryChange = { shared: Shared, kind: EntryKind, target: string, secret: boolean, template: boolean, executable: boolean, applyToNew: boolean, value?: ValueInput, };
 
 export type SizeKey = string;
 

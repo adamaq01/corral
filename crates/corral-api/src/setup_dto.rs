@@ -1,8 +1,15 @@
+use std::collections::BTreeSet;
+
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use chrono::{DateTime, Utc};
-use corral_core::app::{Attached, EntryChange, EntryView, NewEntry, Preview, Use};
-use corral_core::domain::{Entry, HomePath, Kept, SandboxName, StoredValue, Target, VariableName};
+use corral_core::app::{
+    Attached, EntryChange, EntryView, NewEntry, NewSharedEntry, Preview, SharedEntryChange,
+    SharedEntryView, Use,
+};
+use corral_core::domain::{
+    Entry, Handle, HomePath, Kept, Owner, SandboxName, Shared, StoredValue, Target, VariableName,
+};
 use corral_core::{Error, Result};
 use secrecy::{ExposeSecret, SecretSlice, SecretString};
 use serde::{Deserialize, Serialize};
@@ -79,6 +86,25 @@ impl NewEntryDto {
     }
 }
 
+/// An entry the admin shares with everyone, as they first give it.
+#[derive(Deserialize, TS)]
+#[ts(rename = "NewSharedEntry")]
+pub(crate) struct NewSharedEntryDto {
+    shared: Shared,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    entry: NewEntryDto,
+}
+
+impl NewSharedEntryDto {
+    pub(crate) fn parse(self) -> Result<NewSharedEntry> {
+        Ok(NewSharedEntry {
+            shared: self.shared,
+            entry: self.entry.parse()?,
+        })
+    }
+}
+
 /// What an entry becomes, its attachments and overrides kept, and its value when given;
 /// without one, the value stays.
 #[derive(Deserialize, TS)]
@@ -109,6 +135,25 @@ impl EntryChangeDto {
     }
 }
 
+/// What a shared entry becomes, how it is shared included.
+#[derive(Deserialize, TS)]
+#[ts(rename = "SharedEntryChange")]
+pub(crate) struct SharedEntryChangeDto {
+    shared: Shared,
+    #[serde(flatten)]
+    #[ts(flatten)]
+    change: EntryChangeDto,
+}
+
+impl SharedEntryChangeDto {
+    pub(crate) fn parse(self) -> Result<SharedEntryChange> {
+        Ok(SharedEntryChange {
+            shared: self.shared,
+            change: self.change.parse()?,
+        })
+    }
+}
+
 /// What may be shown of a value: a plain one in full, a secret one only in part.
 #[derive(Serialize, TS)]
 #[serde(tag = "shown", rename_all = "lowercase")]
@@ -124,7 +169,8 @@ pub(crate) enum Shown {
         head: Option<String>,
         tail: Option<String>,
     },
-    /// A secret file, of which only the size shows.
+    /// A secret file, or for a member a secret value the admin shares, of which only the size
+    /// shows.
     Hidden,
 }
 
@@ -137,6 +183,16 @@ pub(crate) struct StoredValueDto {
     size: usize,
     #[serde(flatten)]
     shown: Shown,
+}
+
+impl StoredValueDto {
+    fn hidden(value: &StoredValue) -> Self {
+        Self {
+            set_at: value.set_at,
+            size: value.size(),
+            shown: Shown::Hidden,
+        }
+    }
 }
 
 impl From<&StoredValue> for StoredValueDto {
@@ -170,11 +226,11 @@ impl From<&StoredValue> for StoredValueDto {
     }
 }
 
+/// What a member and the admin alike see of an entry.
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(rename = "SetupEntry")]
 #[allow(clippy::struct_excessive_bools)]
-pub(crate) struct EntryDto {
+struct EntryFields {
     id: Uuid,
     kind: EntryKind,
     /// The variable's name, or the file's path relative to the home.
@@ -189,13 +245,67 @@ pub(crate) struct EntryDto {
     apply_to_new: bool,
     value: StoredValueDto,
     created_at: DateTime<Utc>,
-    /// The sandboxes it is attached to, by name.
-    sandboxes: Vec<EntryUseDto>,
     /// For a template: the variables its own value refers to.
     references: Vec<VariableName>,
+}
+
+impl EntryFields {
+    fn new(entry: &Entry, value: StoredValueDto, references: BTreeSet<VariableName>) -> Self {
+        let (kind, target) = match &entry.target {
+            Target::Variable(name) => (EntryKind::Variable, name.to_string()),
+            Target::File(path) => (EntryKind::File, path.to_string()),
+        };
+        Self {
+            id: entry.id.0,
+            kind,
+            target,
+            secret: entry.is_secret(),
+            template: entry.template,
+            executable: entry.executable,
+            apply_to_new: entry.apply_to_new,
+            value,
+            created_at: entry.created_at,
+            references: references.into_iter().collect(),
+        }
+    }
+}
+
+/// An entry as a member sees it: their own, or one the admin shares, whose secret value shows
+/// nothing but its size.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "SetupEntry")]
+pub(crate) struct EntryDto {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    entry: EntryFields,
+    /// How the admin shares it, for an entry that is not the member's own.
+    shared: Option<Shared>,
+    /// The sandboxes it reaches, by name: those attached to it, or every one for a required
+    /// entry.
+    sandboxes: Vec<EntryUseDto>,
     /// Whether an entry made earlier has the same target, as only entries made before targets
     /// were unique can.
     duplicate: bool,
+    /// For the member's own entry: whether it takes the place of an offered one.
+    shadows: bool,
+    /// For an offered entry: whether an entry of the member's takes its place.
+    shadowed: bool,
+}
+
+/// A shared entry as the admin sees it.
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename = "SharedEntry")]
+pub(crate) struct SharedEntryDto {
+    #[serde(flatten)]
+    #[ts(flatten)]
+    entry: EntryFields,
+    shared: Shared,
+    /// How many sandboxes are attached to it, none for a required entry, which reaches every one.
+    attached: usize,
+    /// The members with an entry of their own in its place, by handle.
+    shadowed_by: Vec<Handle>,
 }
 
 /// An entry's attachment to one sandbox.
@@ -246,35 +356,40 @@ impl From<EntryView> for EntryDto {
             sandboxes,
             references,
             duplicate,
-            ..
+            shadows,
+            shadowed,
         } = view;
-        let Entry {
-            id,
-            target,
-            template,
-            executable,
-            apply_to_new,
-            value,
-            created_at,
-            ..
-        } = &entry;
-        let (kind, target) = match target {
-            Target::Variable(name) => (EntryKind::Variable, name.to_string()),
-            Target::File(path) => (EntryKind::File, path.to_string()),
+        let value = match entry.owner {
+            Owner::Everyone(_) if entry.is_secret() => StoredValueDto::hidden(&entry.value),
+            _ => StoredValueDto::from(&entry.value),
         };
         Self {
-            id: id.0,
-            kind,
-            target,
-            secret: entry.is_secret(),
-            template: *template,
-            executable: *executable,
-            apply_to_new: *apply_to_new,
-            value: StoredValueDto::from(value),
-            created_at: *created_at,
+            entry: EntryFields::new(&entry, value, references),
+            shared: entry.owner.shared(),
             sandboxes: sandboxes.into_iter().map(EntryUseDto::from).collect(),
-            references: references.into_iter().collect(),
             duplicate,
+            shadows,
+            shadowed,
+        }
+    }
+}
+
+impl From<SharedEntryView> for SharedEntryDto {
+    fn from(view: SharedEntryView) -> Self {
+        let SharedEntryView {
+            entry,
+            references,
+            attached,
+            shadowed_by,
+        } = view;
+        Self {
+            shared: entry
+                .owner
+                .shared()
+                .expect("the shared setup holds only shared entries"),
+            entry: EntryFields::new(&entry, StoredValueDto::from(&entry.value), references),
+            attached,
+            shadowed_by,
         }
     }
 }

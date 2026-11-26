@@ -584,6 +584,23 @@ const ADMIN_ROUTES: &[(&str, &str, Option<&str>)] = &[
     ),
     ("GET", "/api/admin/settings/registries", None),
     ("PUT", "/api/admin/settings/registries", Some("[]")),
+    ("GET", "/api/admin/settings/shared-setup", None),
+    ("POST", "/api/admin/settings/shared-setup", Some("{}")),
+    (
+        "GET",
+        "/api/admin/settings/shared-setup/00000000-0000-0000-0000-000000000000",
+        None,
+    ),
+    (
+        "PUT",
+        "/api/admin/settings/shared-setup/00000000-0000-0000-0000-000000000000",
+        Some("{}"),
+    ),
+    (
+        "DELETE",
+        "/api/admin/settings/shared-setup/00000000-0000-0000-0000-000000000000",
+        None,
+    ),
 ];
 
 #[tokio::test]

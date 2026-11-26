@@ -11,7 +11,8 @@ use crate::dto::{
 use crate::error::ErrorBody;
 use crate::provider::ProviderListing;
 use crate::setup_dto::{
-    AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, PreviewDto, ValueInput,
+    AttachedDto, EntryChangeDto, EntryDto, NewEntryDto, NewSharedEntryDto, PreviewDto,
+    SharedEntryChangeDto, SharedEntryDto, ValueInput,
 };
 use corral_core::app::{CreateSandbox, FILE_LIMIT, VARIABLE_LIMIT};
 use corral_core::domain::{SandboxDefaults, SandboxStatus};
@@ -54,6 +55,9 @@ impl TypeScript {
             .add::<ValueInput>()
             .add::<AttachedDto>()
             .add::<PreviewDto>()
+            .add::<SharedEntryDto>()
+            .add::<NewSharedEntryDto>()
+            .add::<SharedEntryChangeDto>()
             .add::<UserDto>()
             .add::<AllowanceChange>()
             .add::<CatalogSettings>()
