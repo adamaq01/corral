@@ -16,9 +16,9 @@ async fn catalog(
     State(state): State<AppState>,
 ) -> Result<Json<CatalogDto>, ApiError> {
     Ok(Json(CatalogDto::new(
-        state.sandboxes.catalog(),
+        &state.sandboxes.catalog().await?,
         state.sandboxes.defaults(&user).await?,
-        state.sandboxes.max_per_user(),
+        state.sandboxes.max_sandboxes_for(&user).await?,
         &state.ssh,
     )))
 }

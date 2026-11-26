@@ -3,17 +3,18 @@ use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use corral_activity::{ActivityLock, Busy, Settings, Signals, Sweepable};
-use corral_core::Error;
 use corral_core::domain::{
     Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, Resources, SandboxId, SandboxName,
     SandboxStatus, UserId, VariableName,
 };
 use corral_core::ports::labels::SANDBOX_ID;
 use corral_core::ports::{
-    ActivitySignals, Boot, EventKind, Inspection, Readiness, SandboxEngine, SandboxSpec,
-    SandboxStreams, Usage, VariableMap,
+    ActivitySignals, Boot, EventKind, Inspection, Readiness, RunningLimit, SandboxEngine,
+    SandboxSpec, SandboxStreams, Usage, VariableMap,
 };
+use corral_core::{Error, Result};
 use corral_engine_agent_sandbox::{AgentSandboxConfig, AgentSandboxEngine, PodStreams};
 use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Secret};
 use kube::api::{
@@ -36,6 +37,15 @@ const GONE_WITHIN: Duration = Duration::from_secs(120);
 const IDLE_TIMEOUT: Duration = Duration::from_mins(1);
 const LIFECYCLE_INTERVAL: Duration = Duration::from_secs(10);
 const ASLEEP_WITHIN: Duration = Duration::from_secs(120);
+
+struct Fixed(usize);
+
+#[async_trait]
+impl RunningLimit for Fixed {
+    async fn max_running(&self) -> Result<usize> {
+        Ok(self.0)
+    }
+}
 
 // The tests share one namespace, and capacity checks and the idle reaper span all of it.
 static NAMESPACE: Mutex<()> = Mutex::const_new(());
@@ -76,7 +86,11 @@ impl Cluster {
             "sandboxes",
         );
         Some(Self {
-            engine: Arc::new(AgentSandboxEngine::new(client.clone(), config, max_running)),
+            engine: Arc::new(AgentSandboxEngine::new(
+                client.clone(),
+                config,
+                Arc::new(Fixed(max_running)),
+            )),
             streams: Arc::new(PodStreams::new(client.clone(), &namespace)),
             sandboxes: Api::namespaced_with(client.clone(), &namespace, &sandbox),
             pods: Api::namespaced(client.clone(), &namespace),

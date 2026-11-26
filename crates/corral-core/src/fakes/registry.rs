@@ -5,10 +5,10 @@ use async_trait::async_trait;
 
 use super::lock;
 use crate::domain::ImageReference;
-use crate::ports::ImageRegistry;
+use crate::ports::{ImageRegistry, RegistryAccess, RegistryLogins};
 use crate::{Error, Result};
 
-/// Registries holding the images given to `publish`, and nothing else.
+/// Registries holding the images given to `publish`, and nothing else, with no logins.
 #[derive(Default)]
 pub struct FakeRegistry {
     sizes: Mutex<BTreeMap<String, u64>>,
@@ -36,5 +36,12 @@ impl ImageRegistry for FakeRegistry {
             .get(image.as_str())
             .copied()
             .ok_or_else(|| Error::Invalid(format!("no image {image} in its registry")))
+    }
+}
+
+#[async_trait]
+impl RegistryLogins for FakeRegistry {
+    async fn registries(&self) -> Result<Vec<RegistryAccess>> {
+        Ok(Vec::new())
     }
 }

@@ -10,14 +10,14 @@ use super::{
 };
 use crate::app::{
     Accounts, Catalog, CatalogChange, CatalogDefaults, Configured, CreateSandbox, EntryChange,
-    Environment, ImageOption, Keys, LimitsChange, Lobby, NewEntry, SandboxLimits, SandboxLinks,
-    SandboxView, Sandboxes, Settings, SizePreset, Source, SshAccess,
+    Environment, ImageOption, Keys, LimitsChange, Lobby, NewEntry, SandboxLinks, SandboxView,
+    Sandboxes, Settings, SizePreset, Source, SshAccess, Timeouts,
 };
 use crate::domain::{
     Admin, Allocation, Entry, HomePath, IdleLimits, ImageKey, Resources, Role, Sandbox,
     SandboxDefaults, SandboxName, SizeKey, Target, User, VariableName,
 };
-use crate::ports::{Identity, IdentityProvider, VariableMap};
+use crate::ports::{Identity, IdentityProvider, SettingsRepo, VariableMap};
 
 pub const MAX_SANDBOXES: usize = 3;
 pub const PROVIDER: &str = "test";
@@ -27,8 +27,7 @@ pub const IDLE: IdleLimits = IdleLimits {
     max_timeout: Duration::from_hours(4),
     max_keep_awake: Duration::from_hours(24),
 };
-const LIMITS: SandboxLimits = SandboxLimits {
-    max_sandboxes_per_user: MAX_SANDBOXES,
+const TIMEOUTS: Timeouts = Timeouts {
     wake_deadline: WAKE_DEADLINE,
     idle: IDLE,
 };
@@ -290,8 +289,8 @@ impl World {
             engine.clone(),
             registry.clone(),
             environment.clone(),
-            catalog(),
-            LIMITS,
+            settings.clone(),
+            TIMEOUTS,
         );
         let key_repo = Arc::new(MemoryKeyRepo::default());
         let access = Arc::new(SshAccess::new(
@@ -331,18 +330,28 @@ impl World {
         }
     }
 
-    /// The same sandboxes, users, engine and registry, from another catalog.
-    #[must_use]
-    pub fn sandboxes_with(&self, catalog: Catalog) -> Sandboxes {
-        Sandboxes::new(
-            self.sandbox_repo.clone(),
-            self.users.clone(),
-            self.engine.clone(),
-            self.registry.clone(),
-            self.environment.clone(),
-            catalog,
-            LIMITS,
-        )
+    /// From now on the catalog is `catalog`, stored past the checks of `Settings::set_catalog`, so
+    /// it may drop what a sandbox was made from.
+    pub async fn sandboxes_with(&self, catalog: Catalog) {
+        self.settings_repo
+            .set_catalog(&catalog_change(&catalog))
+            .await
+            .unwrap();
+    }
+
+    /// Offers "tools" too, which the fakes' catalog has disabled.
+    pub async fn offer_tools(&self) {
+        let fakes = catalog();
+        let images = fakes
+            .images()
+            .iter()
+            .map(|image| ImageOption {
+                enabled: true,
+                ..image.clone()
+            })
+            .collect();
+        let offering = Catalog::new(images, fakes.sizes().to_vec(), fakes.defaults().clone());
+        self.sandboxes_with(offering.unwrap()).await;
     }
 
     pub async fn sandbox(&self, owner: &User, name: &str) -> Sandbox {

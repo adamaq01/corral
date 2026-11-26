@@ -686,6 +686,7 @@ async fn an_image_reference_is_refused_where_users_run_only_the_catalogs_images(
 #[tokio::test]
 async fn a_users_sandbox_defaults_preselect_and_fill_in_new_sandboxes() {
     let corral = Corral::new();
+    corral.world.offer_tools().await;
     let mut adam = corral.signed_in("adam", Role::Member).await;
     let mut eve = corral.signed_in("eve", Role::Member).await;
     let defaults_of = async |browser: &mut Browser| {
@@ -1427,7 +1428,7 @@ async fn owning_everything(corral: &Corral, handle: &str) -> Browser {
         .call(
             "PUT",
             "/api/me/sandbox-defaults",
-            Some(json!({ "image": "tools", "size": "large" })),
+            Some(json!({ "image": "base", "size": "large" })),
         )
         .await;
     assert_eq!(defaults.status, StatusCode::NO_CONTENT);

@@ -414,6 +414,7 @@ mod tests {
     #[tokio::test]
     async fn arriving_makes_the_sandbox_a_login_names_from_the_owners_defaults_then_wakes_it() {
         let (w, adam, _) = adam_and_eve().await;
+        w.offer_tools().await;
         w.sandboxes
             .set_defaults(&adam, &defaults("tools", "large"))
             .await

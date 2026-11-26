@@ -7,7 +7,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use ts_rs::TS;
 
-use super::{Catalog, Environment};
+use super::{Catalog, Environment, ImageOption, Settings, SizePreset};
 use crate::domain::{
     Admin, EntryId, Handle, IdleLimits, ImageKey, ImageReference, Sandbox, SandboxDefaults,
     SandboxId, SandboxImage, SandboxName, SandboxStatus, SandboxToken, SizeKey, User, UserId,
@@ -18,8 +18,7 @@ use crate::ports::{
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SandboxLimits {
-    pub max_sandboxes_per_user: usize,
+pub struct Timeouts {
     pub wake_deadline: Duration,
     pub idle: IdleLimits,
 }
@@ -69,8 +68,8 @@ pub struct Sandboxes {
     pub(super) engine: Arc<dyn SandboxEngine>,
     registry: Arc<dyn ImageRegistry>,
     environment: Environment,
-    catalog: Catalog,
-    limits: SandboxLimits,
+    settings: Settings,
+    timeouts: Timeouts,
 }
 
 /// The image and size a user's new sandboxes get unless they pick others.
@@ -89,8 +88,8 @@ impl Sandboxes {
         engine: Arc<dyn SandboxEngine>,
         registry: Arc<dyn ImageRegistry>,
         environment: Environment,
-        catalog: Catalog,
-        limits: SandboxLimits,
+        settings: Settings,
+        timeouts: Timeouts,
     ) -> Self {
         Self {
             repo,
@@ -98,44 +97,48 @@ impl Sandboxes {
             engine,
             registry,
             environment,
-            catalog,
-            limits,
+            settings,
+            timeouts,
         }
     }
 
-    #[must_use]
-    pub fn catalog(&self) -> &Catalog {
-        &self.catalog
+    pub async fn catalog(&self) -> Result<Catalog> {
+        self.settings.catalog().await
     }
 
-    #[must_use]
-    pub fn max_per_user(&self) -> usize {
-        self.limits.max_sandboxes_per_user
+    /// How many sandboxes the owner may have: their allowance, else the limit.
+    pub async fn max_sandboxes_for(&self, owner: &User) -> Result<usize> {
+        self.settings.max_sandboxes_for(owner.id).await
     }
 
-    /// The owner's picks, or the catalog's default in place of one it no longer has or they never
-    /// made.
+    /// The owner's picks, or the catalog's default in place of one it no longer offers or they
+    /// never made.
     pub async fn defaults(&self, owner: &User) -> Result<UserDefaults> {
+        self.defaults_in(&self.catalog().await?, owner).await
+    }
+
+    async fn defaults_in(&self, catalog: &Catalog, owner: &User) -> Result<UserDefaults> {
         let picked = self.users.sandbox_defaults(owner.id).await?;
         let image = picked
             .as_ref()
-            .and_then(|picked| self.catalog.image(Some(&picked.image)).ok());
+            .and_then(|picked| offered_image(catalog, &picked.image).ok());
         let size = picked
             .as_ref()
-            .and_then(|picked| self.catalog.size(Some(&picked.size)).ok());
+            .and_then(|picked| offered_size(catalog, &picked.size).ok());
         Ok(UserDefaults {
             withdrawn: picked.is_some() && (image.is_none() || size.is_none()),
             defaults: SandboxDefaults {
-                image: image.unwrap_or(self.catalog.image(None)?).key.clone(),
-                size: size.unwrap_or(self.catalog.size(None)?).key.clone(),
+                image: image.unwrap_or(catalog.image(None)?).key.clone(),
+                size: size.unwrap_or(catalog.size(None)?).key.clone(),
             },
         })
     }
 
     /// Refuses an image or a size the catalog does not offer.
     pub async fn set_defaults(&self, owner: &User, defaults: &SandboxDefaults) -> Result<()> {
-        self.catalog.image(Some(&defaults.image))?;
-        self.catalog.size(Some(&defaults.size))?;
+        let catalog = self.catalog().await?;
+        offered_image(&catalog, &defaults.image)?;
+        offered_size(&catalog, &defaults.size)?;
         self.users.set_sandbox_defaults(owner.id, defaults).await
     }
 
@@ -168,24 +171,24 @@ impl Sandboxes {
     }
 
     async fn provision(&self, owner: &User, request: CreateSandbox) -> Result<Sandbox> {
-        let UserDefaults { defaults, .. } = self.defaults(owner).await?;
+        let catalog = self.catalog().await?;
+        let UserDefaults { defaults, .. } = self.defaults_in(&catalog, owner).await?;
         let image = match (request.image_reference, request.image) {
             (Some(_), Some(_)) => {
                 return Err(Error::Invalid(
                     "a sandbox takes a catalog image or an image reference, not both".to_owned(),
                 ));
             }
-            (Some(reference), None) => SandboxImage::Named(self.named_image(&reference).await?),
+            (Some(reference), None) => {
+                SandboxImage::Named(self.named_image(&catalog, &reference).await?)
+            }
             (None, key) => SandboxImage::Catalog(
-                self.catalog
-                    .image(Some(key.as_ref().unwrap_or(&defaults.image)))?
+                offered_image(&catalog, key.as_ref().unwrap_or(&defaults.image))?
                     .key
                     .clone(),
             ),
         };
-        let size = self
-            .catalog
-            .size(Some(request.size.as_ref().unwrap_or(&defaults.size)))?;
+        let size = offered_size(&catalog, request.size.as_ref().unwrap_or(&defaults.size))?;
         let sandbox = Sandbox {
             id: SandboxId::generate(&owner.handle, &request.name),
             owner: owner.id,
@@ -200,7 +203,7 @@ impl Sandboxes {
             keep_awake_until: None,
         };
         self.repo
-            .insert(&sandbox, self.limits.max_sandboxes_per_user)
+            .insert(&sandbox, self.max_sandboxes_for(owner).await?)
             .await?;
         if let Err(error) = self
             .environment
@@ -210,8 +213,7 @@ impl Sandboxes {
             self.forget(&sandbox).await?;
             return Err(error);
         }
-        let spec = self
-            .spec_of(&sandbox, owner.handle.clone())
+        let spec = spec_of(&catalog, &sandbox, owner.handle.clone())
             .expect("the catalog offers what the sandbox was just made from");
         if let Err(error) = self.engine.create(&sandbox.id, &spec).await {
             let _ = self.engine.delete(&sandbox.id).await;
@@ -264,17 +266,20 @@ impl Sandboxes {
         Ok(views)
     }
 
+    pub async fn owner(&self, _: &Admin, handle: &Handle) -> Result<User> {
+        self.users
+            .by_handle(handle)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("user {handle}")))
+    }
+
     pub async fn inspect(
         &self,
-        _: &Admin,
+        admin: &Admin,
         owner: &Handle,
         name: &SandboxName,
     ) -> Result<SandboxDetails> {
-        let owner = self
-            .users
-            .by_handle(owner)
-            .await?
-            .ok_or_else(|| Error::NotFound(format!("sandbox {name}.{owner}")))?;
+        let owner = self.owner(admin, owner).await?;
         let view = self.get(&owner, name).await?;
         let inspection = self.engine.inspect(&view.sandbox.id).await?;
         Ok(SandboxDetails { view, inspection })
@@ -306,7 +311,7 @@ impl Sandboxes {
 
     pub async fn wake(&self, owner: &User, name: &SandboxName) -> Result<Readiness> {
         let mut sandbox = self.find(owner, name).await?;
-        self.start_within(&mut sandbox, self.limits.wake_deadline)
+        self.start_within(&mut sandbox, self.timeouts.wake_deadline)
             .await
     }
 
@@ -337,7 +342,7 @@ impl Sandboxes {
         timeout: Option<Duration>,
     ) -> Result<SandboxView> {
         if let Some(timeout) = timeout {
-            self.limits.idle.check_timeout(timeout)?;
+            self.timeouts.idle.check_timeout(timeout)?;
         }
         let sandbox = self.find(owner, name).await?;
         self.repo.set_idle_timeout(&sandbox.id, timeout).await?;
@@ -353,7 +358,7 @@ impl Sandboxes {
         until: Option<DateTime<Utc>>,
     ) -> Result<SandboxView> {
         if let Some(until) = until {
-            self.limits.idle.check_keep_awake(until, Utc::now())?;
+            self.timeouts.idle.check_keep_awake(until, Utc::now())?;
         }
         let sandbox = self.find(owner, name).await?;
         self.repo.set_keep_awake_until(&sandbox.id, until).await?;
@@ -396,7 +401,7 @@ impl Sandboxes {
 
     /// Starts the sandbox with its current environment, waiting up to the wake deadline.
     pub async fn start(&self, sandbox: &Sandbox) -> Result<Readiness> {
-        self.start_within(&mut sandbox.clone(), self.limits.wake_deadline)
+        self.start_within(&mut sandbox.clone(), self.timeouts.wake_deadline)
             .await
     }
 
@@ -425,11 +430,12 @@ impl Sandboxes {
     /// Refuses an image the catalog does not let users name, or one that takes more to
     /// download than it allows.
     pub async fn check_named_image(&self, reference: &str) -> Result<()> {
-        self.named_image(reference).await.map(drop)
+        let catalog = self.catalog().await?;
+        self.named_image(&catalog, reference).await.map(drop)
     }
 
-    async fn named_image(&self, reference: &str) -> Result<ImageReference> {
-        let allowed = self.catalog.named_images().ok_or_else(|| {
+    async fn named_image(&self, catalog: &Catalog, reference: &str) -> Result<ImageReference> {
+        let allowed = catalog.named_images().ok_or_else(|| {
             Error::Invalid("sandboxes run only the catalog's images here".to_owned())
         })?;
         let image = ImageReference::parse(reference)?;
@@ -446,27 +452,11 @@ impl Sandboxes {
         Ok(image)
     }
 
-    /// What the sandbox is made from now, from the catalog entries it was made from. None once
-    /// the catalog no longer offers its image or its size.
     async fn spec(&self, sandbox: &Sandbox) -> Result<Option<SandboxSpec>> {
         let owner = self.users.get(sandbox.owner).await?.ok_or_else(|| {
             Error::internal("store", format!("sandbox {} has no owner", sandbox.id.0))
         })?;
-        Ok(self.spec_of(sandbox, owner.handle))
-    }
-
-    fn spec_of(&self, sandbox: &Sandbox, owner: Handle) -> Option<SandboxSpec> {
-        let image = match &sandbox.image {
-            SandboxImage::Catalog(key) => self.catalog.image(Some(key)).ok()?.reference.clone(),
-            SandboxImage::Named(reference) => reference.to_string(),
-        };
-        Some(SandboxSpec {
-            owner,
-            user: sandbox.owner,
-            name: sandbox.name.clone(),
-            image,
-            resources: self.catalog.size(Some(&sandbox.size)).ok()?.resources,
-        })
+        Ok(spec_of(&self.catalog().await?, sandbox, owner.handle))
     }
 
     pub(super) async fn find(&self, owner: &User, name: &SandboxName) -> Result<Sandbox> {
@@ -509,9 +499,41 @@ impl Sandboxes {
             is_default,
             status,
             stale_environment,
-            idle: self.limits.idle,
+            idle: self.timeouts.idle,
         }
     }
+}
+
+/// What the sandbox is made from now, from the catalog entries it was made from, disabled or not.
+/// None once the catalog no longer has its image or its size.
+fn spec_of(catalog: &Catalog, sandbox: &Sandbox, owner: Handle) -> Option<SandboxSpec> {
+    let image = match &sandbox.image {
+        SandboxImage::Catalog(key) => catalog.image(Some(key)).ok()?.reference.clone(),
+        SandboxImage::Named(reference) => reference.to_string(),
+    };
+    Some(SandboxSpec {
+        owner,
+        user: sandbox.owner,
+        name: sandbox.name.clone(),
+        image,
+        resources: catalog.size(Some(&sandbox.size)).ok()?.resources,
+    })
+}
+
+fn offered_image<'a>(catalog: &'a Catalog, key: &ImageKey) -> Result<&'a ImageOption> {
+    let image = catalog.image(Some(key))?;
+    if !image.enabled {
+        return Err(Error::Invalid(format!("image \"{key}\" is not offered")));
+    }
+    Ok(image)
+}
+
+fn offered_size<'a>(catalog: &'a Catalog, key: &SizeKey) -> Result<&'a SizePreset> {
+    let size = catalog.size(Some(key))?;
+    if !size.enabled {
+        return Err(Error::Invalid(format!("size \"{key}\" is not offered")));
+    }
+    Ok(size)
 }
 
 fn mebibytes(bytes: u64) -> String {
@@ -537,16 +559,17 @@ mod tests {
     use std::num::NonZeroU64;
 
     use super::{CreateSandbox, SandboxView, UserDefaults};
-    use crate::Error;
     use crate::app::EntryChange;
-    use crate::app::{Catalog, NamedImages};
+    use crate::app::{Allowance, Catalog, CatalogChange, LimitsChange, NamedImages};
     use crate::domain::Handle;
     use crate::domain::{Entry, Sandbox, SandboxStatus, SizeKey, User};
     use crate::fakes::EngineCall;
     use crate::fakes::{
-        MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, bytes, catalog, default_names, defaults,
-        exposed, file, request, sandbox_name, unchanged, variable,
+        MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, bytes, catalog, catalog_change,
+        default_names, defaults, exposed, file, request, sandbox_name, size_preset, unchanged,
+        variable,
     };
+    use crate::{Error, Result};
 
     fn change(entry: &Entry, value: Option<&str>) -> EntryChange {
         EntryChange {
@@ -559,6 +582,7 @@ mod tests {
     #[tokio::test]
     async fn create_provisions_from_the_catalog_then_starts_without_waiting() {
         let w = World::new();
+        w.offer_tools().await;
         let adam = w.member("adam").await;
         let eve = w.member("eve").await;
         for (owner, value) in [(&adam, "adams"), (&eve, "eves")] {
@@ -797,6 +821,7 @@ mod tests {
     async fn a_start_makes_the_sandbox_from_its_catalog_entries_as_they_are_now() {
         let w = World::new();
         let adam = w.member("adam").await;
+        w.offer_tools().await;
         let main = w
             .sandboxes
             .create(&adam, request("main", Some("tools"), Some("large")))
@@ -807,17 +832,18 @@ mod tests {
             Some(EngineCall::Start { spec, .. }) => spec.clone(),
             other => panic!("{other:?}"),
         };
-        let with_catalog = |catalog: Catalog| w.sandboxes_with(catalog);
-        let mut images = catalog().images().to_vec();
-        let mut sizes = catalog().sizes().to_vec();
+        let now = w.sandboxes.catalog().await.unwrap();
+        let save = async |images, sizes| {
+            let catalog = Catalog::new(images, sizes, now.defaults().clone()).unwrap();
+            w.sandboxes_with(catalog).await;
+        };
+        let (mut images, mut sizes) = (now.images().to_vec(), now.sizes().to_vec());
         images[1].reference = "ghcr.io/adamaq01/corral-tools:3".to_owned();
         sizes[1].resources = sizes[0].resources;
-        let edited = with_catalog(
-            Catalog::new(images.clone(), sizes.clone(), catalog().defaults().clone()).unwrap(),
-        );
+        save(images.clone(), sizes.clone()).await;
         w.sandboxes.stop(&adam, &main.name).await.unwrap();
 
-        edited.wake(&adam, &main.name).await.unwrap();
+        w.sandboxes.wake(&adam, &main.name).await.unwrap();
         let spec = started_from().unwrap();
         assert_eq!(
             (spec.image.as_str(), spec.resources),
@@ -830,10 +856,9 @@ mod tests {
             (images.clone(), sizes[..1].to_vec()),
         ] {
             w.sandboxes.stop(&adam, &main.name).await.unwrap();
-            let without =
-                with_catalog(Catalog::new(images, sizes, catalog().defaults().clone()).unwrap());
+            save(images, sizes).await;
             assert!(matches!(
-                without.wake(&adam, &main.name).await.unwrap(),
+                w.sandboxes.wake(&adam, &main.name).await.unwrap(),
                 Readiness::Ready
             ));
             assert_eq!(started_from(), None, "it runs as it was last made");
@@ -851,24 +876,20 @@ mod tests {
         w.registry.publish("ghcr.io/acme/tools:1", 100 << 20);
         w.registry.publish("ghcr.io/acme/huge:1", 600 << 20);
         w.registry.publish("debian:13", 50 << 20);
-        let allowing = w.sandboxes_with(catalog().with_named_images(NamedImages {
-            registries: vec!["ghcr.io/acme".to_owned()],
-            max_bytes: NonZeroU64::new(500 << 20).unwrap(),
-        }));
-        let refusal = async |sandboxes: &super::Sandboxes, request| match sandboxes
-            .create(&adam, request)
-            .await
-        {
-            Err(Error::Invalid(message)) => message,
-            other => panic!("{other:?}"),
-        };
+        let refused = async |request| refusal(w.sandboxes.create(&adam, request).await);
 
         assert!(
-            refusal(&w.sandboxes, named("tools", "ghcr.io/acme/tools:1"))
+            refused(named("tools", "ghcr.io/acme/tools:1"))
                 .await
                 .contains("only the catalog's images")
         );
-        let created = allowing
+        w.sandboxes_with(catalog().with_named_images(NamedImages {
+            registries: vec!["ghcr.io/acme".to_owned()],
+            max_bytes: NonZeroU64::new(500 << 20).unwrap(),
+        }))
+        .await;
+        let created = w
+            .sandboxes
             .create(&adam, named("tools", "ghcr.io/acme/tools:1"))
             .await
             .unwrap();
@@ -906,7 +927,7 @@ mod tests {
                 "not both",
             ),
         ] {
-            let message = refusal(&allowing, request).await;
+            let message = refused(request).await;
             assert!(message.contains(expected), "{message}");
         }
         assert_eq!(
@@ -919,7 +940,7 @@ mod tests {
             "only images from an allowed registry are read"
         );
         assert_eq!(
-            allowing.list(&adam).await.unwrap().len(),
+            w.sandboxes.list(&adam).await.unwrap().len(),
             1,
             "nothing is made of a refused image"
         );
@@ -1123,6 +1144,7 @@ mod tests {
     #[tokio::test]
     async fn create_takes_the_owners_defaults_for_what_it_leaves_out() {
         let w = World::new();
+        w.offer_tools().await;
         let adam = w.member("adam").await;
         let eve = w.member("eve").await;
         w.sandboxes
@@ -1146,6 +1168,7 @@ mod tests {
     #[tokio::test]
     async fn defaults_are_the_catalogs_first_until_picked_and_once_no_longer_offered() {
         let w = World::new();
+        w.offer_tools().await;
         let adam = w.member("adam").await;
         let effective = async || w.sandboxes.defaults(&adam).await.unwrap();
         assert_eq!(
@@ -1325,5 +1348,193 @@ mod tests {
             (None, None)
         );
         assert_eq!(view.idle.timeout_of(&view.sandbox), Duration::from_mins(30));
+    }
+
+    fn large() -> crate::domain::Resources {
+        catalog()
+            .size(Some(&SizeKey::parse("large").unwrap()))
+            .unwrap()
+            .resources
+    }
+
+    fn disabling(size: &str) -> CatalogChange {
+        let mut change = catalog_change(&catalog());
+        for preset in &mut change.sizes {
+            preset.enabled &= preset.key.as_str() != size;
+        }
+        change
+    }
+
+    fn refusal<T: std::fmt::Debug>(result: Result<T>) -> String {
+        match result {
+            Err(Error::Invalid(message)) => message,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_catalog_change_applies_to_the_next_creation_without_a_restart() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let root = admin_proof(&w.admin("root").await);
+        let big = || request("big", None, Some("huge"));
+        assert_eq!(
+            refusal(w.sandboxes.create(&adam, big()).await),
+            "unknown size \"huge\""
+        );
+        let huge = size_preset("huge", 16000, 64);
+        let mut change = catalog_change(&catalog());
+        change.sizes.push(huge.clone());
+        w.settings.set_catalog(&root, change).await.unwrap();
+
+        let made = w.sandboxes.create(&adam, big()).await.unwrap();
+        assert_eq!(made.sandbox.size.as_str(), "huge");
+        let calls = w.engine.calls();
+        let Some(EngineCall::Create { spec, .. }) = calls
+            .iter()
+            .find(|call| matches!(call, EngineCall::Create { .. }))
+        else {
+            panic!("{calls:?}");
+        };
+        assert_eq!(spec.resources, huge.resources);
+    }
+
+    #[tokio::test]
+    async fn the_limit_applies_to_new_sandboxes_only_and_an_allowance_overrides_it() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let eve = w.member("eve").await;
+        let root = admin_proof(&w.admin("root").await);
+        for n in 0..MAX_SANDBOXES {
+            w.sandbox(&adam, &format!("box-{n}")).await;
+        }
+        let lowered = LimitsChange {
+            max_sandboxes_per_member: Some(2),
+            max_running: None,
+        };
+        w.settings.set_limits(&root, lowered).await.unwrap();
+
+        let refused = w
+            .sandboxes
+            .create(&adam, request("extra", None, None))
+            .await;
+        assert!(
+            matches!(&refused, Err(Error::LimitReached(message)) if message.contains('2')),
+            "{refused:?}"
+        );
+        assert_eq!(w.sandboxes.list(&adam).await.unwrap().len(), MAX_SANDBOXES);
+
+        let allowance = Allowance {
+            max_sandboxes: MAX_SANDBOXES + 1,
+        };
+        w.settings
+            .set_allowance(&root, adam.id, Some(allowance))
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                w.sandboxes.max_sandboxes_for(&adam).await.unwrap(),
+                w.sandboxes.max_sandboxes_for(&eve).await.unwrap()
+            ),
+            (MAX_SANDBOXES + 1, 2)
+        );
+        w.sandboxes
+            .create(&adam, request("extra", None, None))
+            .await
+            .unwrap();
+        assert!(matches!(
+            w.sandboxes.create(&adam, request("more", None, None)).await,
+            Err(Error::LimitReached(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_made_from_a_disabled_size_still_starts() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let root = admin_proof(&w.admin("root").await);
+        let main = w
+            .sandboxes
+            .create(&adam, request("main", None, Some("large")))
+            .await
+            .unwrap()
+            .sandbox;
+        w.sandboxes.stop(&adam, &main.name).await.unwrap();
+        w.settings
+            .set_catalog(&root, disabling("large"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            w.sandboxes.wake(&adam, &main.name).await.unwrap(),
+            Readiness::Ready
+        );
+        let calls = w.engine.calls();
+        let Some(EngineCall::Start { spec, .. }) = calls.last() else {
+            panic!("{calls:?}");
+        };
+        assert_eq!(spec.as_ref().map(|spec| spec.resources), Some(large()));
+    }
+
+    #[tokio::test]
+    async fn a_disabled_entry_cannot_be_picked_or_saved_as_a_default() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let root = admin_proof(&w.admin("root").await);
+        assert_eq!(
+            refusal(
+                w.sandboxes
+                    .create(&adam, request("x", Some("tools"), None))
+                    .await
+            ),
+            "image \"tools\" is not offered"
+        );
+        assert_eq!(
+            refusal(
+                w.sandboxes
+                    .set_defaults(&adam, &defaults("tools", "small"))
+                    .await
+            ),
+            "image \"tools\" is not offered"
+        );
+
+        w.sandboxes
+            .set_defaults(&adam, &defaults("base", "large"))
+            .await
+            .unwrap();
+        w.settings
+            .set_catalog(&root, disabling("large"))
+            .await
+            .unwrap();
+        assert_eq!(
+            w.sandboxes.defaults(&adam).await.unwrap(),
+            UserDefaults {
+                defaults: defaults("base", "small"),
+                withdrawn: true
+            }
+        );
+        assert_eq!(
+            refusal(
+                w.sandboxes
+                    .create(&adam, request("y", None, Some("large")))
+                    .await
+            ),
+            "size \"large\" is not offered"
+        );
+        assert_eq!(w.sandboxes.list(&adam).await.unwrap(), []);
+    }
+
+    #[tokio::test]
+    async fn an_admin_finds_an_owner_by_handle_and_a_missing_handle_is_not_found() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        let root = admin_proof(&w.admin("root").await);
+        assert_eq!(w.sandboxes.owner(&root, &adam.handle).await.unwrap(), adam);
+        assert!(matches!(
+            w.sandboxes
+                .owner(&root, &Handle::parse("nobody").unwrap())
+                .await,
+            Err(Error::NotFound(_))
+        ));
     }
 }

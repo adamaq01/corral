@@ -8,10 +8,12 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use corral_core::app::{Environment, SandboxLimits, Sandboxes};
+use corral_core::app::{Configured, Environment, Sandboxes, Settings, Timeouts};
 use corral_core::domain::{Sandbox, User, UserId};
-use corral_core::fakes::{FakeEngine, FakeRegistry, catalog, exposed, links};
-use corral_core::ports::{SandboxEngine, SandboxRepo, SandboxSpec, SecretStore, UserRepo};
+use corral_core::fakes::{FakeEngine, FakeRegistry, catalog, catalog_change, exposed, links};
+use corral_core::ports::{
+    SandboxEngine, SandboxRepo, SandboxSpec, SecretStore, SettingsRepo, UserRepo,
+};
 use corral_secrets_database::{DatabaseSecretStore, Keyring};
 use corral_sql::testing::Databases;
 use corral_sql::{Migrations, Pool, on_pool};
@@ -179,15 +181,23 @@ async fn upgrades_keeping_every_credential(databases: Databases) {
             .await
             .unwrap();
     }
+    store
+        .set_catalog(&catalog_change(&catalog()))
+        .await
+        .unwrap();
     let sandboxes = Sandboxes::new(
         store.clone(),
         store.clone(),
         engine.clone(),
         Arc::new(FakeRegistry::default()),
         environment,
-        catalog(),
-        SandboxLimits {
-            max_sandboxes_per_user: 5,
+        Settings::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            Configured::default(),
+        ),
+        Timeouts {
             wake_deadline: Duration::from_secs(1),
             idle: corral_core::fakes::IDLE,
         },

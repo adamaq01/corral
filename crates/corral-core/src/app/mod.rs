@@ -22,7 +22,7 @@ pub use inside::{CallingSandbox, SANDBOX_FILE, SandboxLinks};
 pub use keys::Keys;
 pub use lobby::{Choice, Entrance, Lobby, Made, Offer};
 pub use sandboxes::{
-    CreateSandbox, SandboxDetails, SandboxLimits, SandboxView, Sandboxes, UserDefaults,
+    CreateSandbox, SandboxDetails, SandboxView, Sandboxes, Timeouts, UserDefaults,
 };
 pub use settings::{
     Allowance, CatalogChange, CatalogView, Configured, Limits, LimitsChange, LimitsView, Locked,
