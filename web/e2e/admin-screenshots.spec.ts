@@ -342,8 +342,10 @@ inEveryView((look) => {
 		await look(page, 'settings-catalog');
 
 		await page.getByRole('button', { name: 'Add size' }).click();
-		await page.getByRole('dialog', { name: 'Add size' }).waitFor();
-		await look(page, 'settings-catalog-size');
+		const dialog = page.getByRole('dialog', { name: 'Add size' });
+		await dialog.getByLabel('Key').fill('small');
+		await dialog.getByRole('alert').waitFor();
+		await look(page, 'settings-catalog-size', { fullPage: false });
 	});
 
 	test('settings, limits', async ({ page }) => {

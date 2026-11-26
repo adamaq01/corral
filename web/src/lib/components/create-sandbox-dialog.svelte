@@ -47,9 +47,12 @@
 
 	const named = $derived(catalog.namedImages && image === NAMED ? catalog.namedImages : undefined);
 
-	const NAME_PATTERN = /^[a-z0-9-]{1,32}$/;
+	// A `pattern` attribute compiles with the `v` flag, where a class needs its `-` escaped.
+	const NAME_PATTERN = /^[a-z0-9\-]{1,32}$/;
+	const valid = $derived(NAME_PATTERN.test(name));
+	const invalid = $derived(name !== '' && !valid);
 	const preview = $derived(
-		`ssh -p ${catalog.ssh.port} ${NAME_PATTERN.test(name) ? name : '<name>'}.${handle}@${catalog.ssh.host}`
+		`ssh -p ${catalog.ssh.port} ${valid ? name : '<name>'}.${handle}@${catalog.ssh.host}`
 	);
 
 	async function create() {
@@ -66,14 +69,15 @@
 		: `A persistent machine with its own home directory. You have ${count} of ${catalog.maxSandboxes} sandboxes.`}
 	submit="Create sandbox"
 	pendingLabel={named ? 'Checking the image…' : 'Creating…'}
-	ready={!full}
+	ready={!full && valid}
 	onsubmit={create}
 >
-	<Field.Field>
+	<Field.Field data-invalid={invalid ? true : undefined}>
 		<Field.Label for="sandbox-name">Name</Field.Label>
 		<Input
 			id="sandbox-name"
 			aria-describedby="sandbox-name-hint"
+			aria-invalid={invalid ? true : undefined}
 			bind:value={name}
 			required
 			maxlength={32}
@@ -83,10 +87,16 @@
 			spellcheck={false}
 			disabled={full}
 		/>
-		<Field.Description id="sandbox-name-hint">
-			Up to 32 lowercase letters, digits and dashes. You then connect with
-			<code class="font-mono text-xs wrap-anywhere">{preview}</code>.
-		</Field.Description>
+		{#if invalid}
+			<Field.Error id="sandbox-name-hint">
+				Up to 32 lowercase letters, digits and dashes.
+			</Field.Error>
+		{:else}
+			<Field.Description id="sandbox-name-hint">
+				Up to 32 lowercase letters, digits and dashes. You then connect with
+				<code class="font-mono text-xs wrap-anywhere">{preview}</code>.
+			</Field.Description>
+		{/if}
 	</Field.Field>
 	<Field.Field>
 		<Field.Label for="sandbox-image">Image</Field.Label>

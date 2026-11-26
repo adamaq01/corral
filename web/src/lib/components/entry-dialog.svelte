@@ -23,6 +23,7 @@
 		open = $bindable(),
 		entry = null,
 		start,
+		title,
 		onsaved
 	}: {
 		open: boolean;
@@ -30,6 +31,8 @@
 		entry?: EnvironmentEntry | null;
 		/** What a new entry starts as. */
 		start?: Partial<Settings>;
+		/** The dialog's title in place of the one it gives itself. */
+		title?: string;
 		onsaved: (entry: EnvironmentEntry) => Promise<void>;
 	} = $props();
 
@@ -104,7 +107,7 @@
 
 <FormDialog
 	bind:open
-	title={entry ? `Edit ${where(entry)}` : variable ? 'Add a variable' : 'Add a file'}
+	title={title ?? (entry ? `Edit ${where(entry)}` : variable ? 'Add a variable' : 'Add a file')}
 	description={entry
 		? 'Its sandboxes and their overrides stay. Corral refuses a change that would keep one of them from starting, and says why.'
 		: variable
