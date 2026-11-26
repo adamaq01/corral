@@ -25,7 +25,8 @@
 		name = '',
 		current = null,
 		value = $bindable(null),
-		label = 'Value'
+		label = 'Value',
+		description = `Type the text, or upload a file of any kind, up to ${size(FILE_LIMIT)}.`
 	}: {
 		id: string;
 		kind: EntryKind;
@@ -37,6 +38,8 @@
 		/** What the field holds, ready to send, or `null` until it holds a valid change. */
 		value: ValueInput | null;
 		label?: string;
+		/** How to fill in a file's value, said under its field. */
+		description?: string;
 	} = $props();
 
 	const initial = untrack(() => (current?.shown === 'text' ? current.text : ''));
@@ -219,9 +222,7 @@
 			<Field.Error id="{id}-hint">{problem}</Field.Error>
 		{:else}
 			<Field.Description id="{id}-hint">
-				{[hint, `Type the text, or upload a file of any kind, up to ${size(FILE_LIMIT)}.`]
-					.filter(Boolean)
-					.join(' ')}
+				{[hint, description].filter(Boolean).join(' ')}
 			</Field.Description>
 		{/if}
 	</Field.Field>

@@ -661,6 +661,7 @@ async function setupApi(page: Page, entries: SetupEntry[], calls: Call[]) {
 			const sent: NewEntry = route.request().postDataJSON();
 			const made = entry({
 				id: crypto.randomUUID(),
+				kind: sent.kind,
 				target: sent.target,
 				secret: sent.secret,
 				value:
@@ -680,10 +681,10 @@ const sent = (calls: Call[]) =>
 		.filter((call) => call.method !== 'GET')
 		.map(({ method, path, body }) => [method, path, body]);
 
-const created = (target: string, secret: boolean, text: string) => [
+const created = (target: string, secret: boolean, text: string, kind = 'variable') => [
 	'POST',
 	'/api/setup',
-	{ kind: 'variable', target, secret, applyToNew: true, value: { text } }
+	{ kind, target, secret, applyToNew: true, value: { text } }
 ];
 
 test('the LLM providers preset saves a key with an address as three variables, then hides it', async ({
@@ -828,6 +829,142 @@ test("the LLM providers preset shows Corral's refusal next to the field it names
 		'aria-invalid',
 		'true'
 	);
+	await expect(dialog.getByRole('alert')).toHaveCount(1);
+});
+
+const identity = '[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n';
+
+test('the git identity preset writes ~/.gitconfig and the token, then reads them back', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Git identity' });
+	await expect(dialog).toContainText(
+		'Written as ~/.gitconfig, with the token or SSH key git uses to reach your repositories.'
+	);
+	await expect(dialog.getByRole('radio', { name: 'Nothing' })).toBeChecked();
+	await dialog.getByLabel('Name', { exact: true }).fill('Ada Lovelace');
+	await dialog.getByLabel('Email', { exact: true }).fill('ada@example.com');
+	await dialog.getByRole('radio', { name: 'A token' }).click();
+	await expect(dialog.getByLabel('Host', { exact: true })).toHaveAttribute(
+		'placeholder',
+		'github.com'
+	);
+	await expect(dialog.getByLabel('User', { exact: true })).toHaveAttribute('placeholder', 'git');
+	await dialog.getByLabel('Host', { exact: true }).fill('github.com');
+	await dialog.getByLabel('User', { exact: true }).fill('ada');
+	await dialog.getByLabel('Token', { exact: true }).fill('ghp_s3cret');
+	await dialog.getByRole('button', { name: 'Save identity' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved your git identity')).toBeVisible();
+	expect(sent(calls)).toEqual([
+		created(
+			'.gitconfig',
+			false,
+			`${identity}[credential]\n\thelper = store\n[credential "https://github.com"]\n\tusername = ada\n[init]\n\tdefaultBranch = main\n`,
+			'file'
+		),
+		created('.git-credentials', true, 'https://ada:ghp_s3cret@github.com\n', 'file')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'Ada Lovelace <ada@example.com>, token for github.com'
+	);
+	await page.getByRole('button', { name: 'Change Git identity' }).click();
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Ada Lovelace');
+	await expect(dialog.getByLabel('Email', { exact: true })).toHaveValue('ada@example.com');
+	await expect(dialog.getByRole('radio', { name: 'A token' })).toBeChecked();
+	await expect(dialog.getByLabel('Host', { exact: true })).toHaveValue('github.com');
+	await expect(dialog.getByLabel('User', { exact: true })).toHaveValue('ada');
+	await expect(dialog).toContainText('Set, hidden');
+	for (const input of await dialog.locator('input, textarea').all()) {
+		await expect(input).not.toHaveValue(/s3cret/);
+	}
+	const save = dialog.getByRole('button', { name: 'Save identity' });
+	await expect(save).toBeDisabled();
+	await dialog.getByLabel('Host', { exact: true }).fill('gitlab.com');
+	await expect(dialog.getByLabel('Token', { exact: true })).toHaveAccessibleDescription(
+		'Type the token again to save it for this host and user.'
+	);
+	await expect(save).toBeDisabled();
+	await dialog.getByLabel('Token', { exact: true }).fill('glpat-s3cret');
+	await expect(save).toBeEnabled();
+});
+
+test('the git identity preset sends an SSH key as a secret file, and never shows it again', async ({
+	page
+}) => {
+	const privateKey =
+		'-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE=\n-----END OPENSSH PRIVATE KEY-----\n';
+	const publicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 ada@laptop';
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Git identity' });
+	await dialog.getByLabel('Name', { exact: true }).fill('Ada Lovelace');
+	await dialog.getByLabel('Email', { exact: true }).fill('ada@example.com');
+	const ssh = dialog.getByRole('radio', { name: 'An SSH key' });
+	await expect(ssh).toHaveAccessibleDescription(
+		'Written to ~/.ssh/id_ed25519, replacing a key kept there.'
+	);
+	await ssh.click();
+	const save = dialog.getByRole('button', { name: 'Save identity' });
+	await expect(save).toBeDisabled();
+	await dialog.locator('#git-private-key-upload').setInputFiles({
+		name: 'id_ed25519',
+		mimeType: 'application/octet-stream',
+		buffer: Buffer.from(privateKey)
+	});
+	await dialog.getByLabel('Public key', { exact: true }).fill(publicKey);
+	await save.click();
+	await expect(dialog).toBeHidden();
+	expect(sent(calls)).toEqual([
+		created('.gitconfig', false, `${identity}[init]\n\tdefaultBranch = main\n`, 'file'),
+		created('.ssh/id_ed25519', true, privateKey, 'file'),
+		created('.ssh/id_ed25519.pub', false, `${publicKey}\n`, 'file')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'Ada Lovelace <ada@example.com>, SSH key'
+	);
+	await page.getByRole('button', { name: 'Change Git identity' }).click();
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Ada Lovelace');
+	await expect(ssh).toBeChecked();
+	await expect(dialog).toContainText('Set, hidden');
+	await expect(dialog.locator('textarea')).toHaveCount(0);
+	await dialog.getByRole('button', { name: 'Replace the SSH key' }).click();
+	await expect(dialog.getByLabel('Private key', { exact: true })).toBeFocused();
+	await expect(dialog.getByLabel('Private key', { exact: true })).toHaveValue('');
+});
+
+test("the git identity preset shows Corral's refusal next to the field it names", async ({
+	page
+}) => {
+	const refusal = 'conflict: file .git-credentials is set for every sandbox by the admin';
+	await page.route('**/api/setup', (route) => {
+		const request = route.request();
+		if (request.method() === 'GET') {
+			return route.fulfill({ json: [] });
+		}
+		return request.postDataJSON().target === '.git-credentials'
+			? route.fulfill({ status: 409, json: { error: refusal } })
+			: route.fulfill({ status: 201, json: entry({ kind: 'file', target: '.gitconfig' }) });
+	});
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Git identity' });
+	await dialog.getByRole('radio', { name: 'A token' }).click();
+	await dialog.getByLabel('Host', { exact: true }).fill('github.com');
+	await dialog.getByLabel('User', { exact: true }).fill('ada');
+	await dialog.getByLabel('Token', { exact: true }).fill('ghp_s3cret');
+	await dialog.getByRole('button', { name: 'Save identity' }).click();
+	const token = dialog.getByLabel('Token', { exact: true });
+	await expect(token).toHaveAttribute('aria-invalid', 'true');
+	await expect(token).toHaveAccessibleDescription(refusal);
 	await expect(dialog.getByRole('alert')).toHaveCount(1);
 });
 

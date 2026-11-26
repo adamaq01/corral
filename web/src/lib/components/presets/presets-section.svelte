@@ -4,6 +4,7 @@
 	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
 	import PlugIcon from '@lucide/svelte/icons/plug';
 	import type { SetupEntry } from '#lib/api/generated/index.js';
+	import GitDialog from '#lib/components/presets/git-dialog.svelte';
 	import LlmDialog from '#lib/components/presets/llm-dialog.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
@@ -31,8 +32,7 @@
 		summary: string | null;
 	};
 
-	const descriptions: Record<Exclude<Preset, 'llm'>, string> = {
-		git: 'Written as ~/.gitconfig, with the token or SSH key git uses to reach your repositories.',
+	const descriptions: Record<Exclude<Preset, 'llm' | 'git'>, string> = {
 		mcp: 'Applied to Claude Code, Codex, Pi and oh-my-pi at each start, as their user-scope servers.',
 		dotfiles: "Checked out into the home at a sandbox's first start, or files you add one by one."
 	};
@@ -97,8 +97,9 @@
 </section>
 
 <LlmDialog bind:open={open.llm} {entries} {onchanged} />
+<GitDialog bind:open={open.git} {entries} {onchanged} />
 {#each presets as preset (preset.key)}
-	{#if preset.key !== 'llm'}
+	{#if preset.key !== 'llm' && preset.key !== 'git'}
 		<Dialog.Root bind:open={open[preset.key]}>
 			<Dialog.Content>
 				<Dialog.Header>

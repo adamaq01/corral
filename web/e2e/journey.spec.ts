@@ -100,6 +100,22 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(page.getByRole('heading', { name: '~/.journey/notes' })).toBeVisible();
 	});
 
+	await test.step('save a git identity', async () => {
+		await page
+			.getByRole('navigation', { name: 'Main' })
+			.getByRole('link', { name: 'Setup' })
+			.click();
+		await page.getByRole('button', { name: 'Set up Git identity' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Git identity' });
+		await dialog.getByLabel('Name', { exact: true }).fill('Dora Journey');
+		await dialog.getByLabel('Email', { exact: true }).fill('dora@example.com');
+		await dialog.getByRole('button', { name: 'Save identity' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+			'Dora Journey <dora@example.com>'
+		);
+	});
+
 	let destination: string[] = [];
 	await test.step('create a sandbox and see it reach running', async () => {
 		await page.getByRole('link', { name: 'Sandboxes' }).first().click();
@@ -109,13 +125,14 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		const variable = dialog.getByRole('checkbox', { name: 'JOURNEY_TOKEN' });
 		await expect(variable).toBeChecked();
 		await expect(dialog.getByRole('checkbox', { name: '~/.journey/notes' })).not.toBeChecked();
+		await expect(dialog.getByRole('checkbox', { name: '~/.gitconfig' })).toBeChecked();
 		await variable.click();
 		await dialog.getByRole('button', { name: 'Create sandbox' }).click();
 		await expect(page).toHaveURL('/sandboxes/main');
 		await expect(page.getByRole('heading', { name: 'main' })).toBeVisible();
 		await expect(
-			page.getByText('Nothing is attached to this sandbox. You have 2 to choose from.')
-		).toBeVisible();
+			page.getByRole('list', { name: 'Attached to main' }).getByRole('listitem')
+		).toHaveText(/~\/\.gitconfig/);
 		await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 90_000 });
 
 		await page.getByRole('button', { name: 'Copy SSH', exact: true }).click();
@@ -130,6 +147,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		expect(await sshOutput(destination, key, 'printenv JOURNEY_TOKEN || echo absent')).toBe(
 			'absent'
 		);
+		expect(await sshOutput(destination, key, 'git config user.name')).toBe('Dora Journey');
 	});
 
 	await test.step('attach both to main, and give main a value of its own', async () => {
@@ -140,12 +158,12 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await page.getByRole('link', { name: /main/ }).click();
 		const section = page.getByRole('list', { name: 'Attached to main' });
 		const attach = page.getByRole('dialog', { name: 'Attach to main' });
-		await page.getByRole('button', { name: 'Attach variables and files' }).click();
+		await page.getByRole('button', { name: 'Attach', exact: true }).click();
 		await attach.getByRole('checkbox').first().click();
 		await attach.getByRole('checkbox').last().click();
 		await attach.getByRole('button', { name: 'Attach 2' }).click();
 		await expect(attach).toBeHidden();
-		await expect(section.getByRole('listitem')).toHaveCount(2);
+		await expect(section.getByRole('listitem')).toHaveCount(3);
 		await expect(page.getByText('Restart to apply your setup changes')).toBeVisible();
 
 		await page.getByRole('button', { name: 'Override for this sandbox: JOURNEY_TOKEN' }).click();
@@ -185,7 +203,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(section.getByText('Override', { exact: true })).toBeHidden();
 		await page.getByRole('button', { name: 'Detach ~/.journey/notes' }).click();
 		await confirm.getByRole('button', { name: 'Detach' }).click();
-		await expect(section.getByRole('listitem')).toHaveCount(1);
+		await expect(section.getByRole('listitem')).toHaveCount(2);
 		await expect(page.getByText('Restart to apply your setup changes')).toBeVisible();
 
 		await page.getByRole('button', { name: 'Restart' }).click();

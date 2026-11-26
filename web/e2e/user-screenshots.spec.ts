@@ -389,6 +389,15 @@ inEveryView((look) => {
 
 		await page.keyboard.press('Escape');
 		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Change Git identity' }).click();
+		await dialog.getByLabel('Name', { exact: true }).fill('Bob Example');
+		await dialog.getByLabel('Email', { exact: true }).fill('bob@example.lan');
+		await expect(dialog.getByRole('radio', { name: 'An SSH key' })).toBeChecked();
+		await expect(dialog).toContainText('Set, hidden');
+		await look(page, 'setup-git', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'Add variable' }).click();
 		await dialog.getByLabel('Name').fill('github_token');
 		await dialog.getByRole('switch', { name: 'Secret' }).click();

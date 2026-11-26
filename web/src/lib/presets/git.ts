@@ -65,6 +65,11 @@ export function writeGit(current: SetupEntry[], form: GitForm): Change[] {
 	return changes;
 }
 
+/** Whether a refusal from Corral names the file the token is kept in. */
+export function namesToken(message: string): boolean {
+	return message.includes(`file ${CREDENTIALS.target}`);
+}
+
 /** One line naming who commits and how git reaches repositories, or `null` when nothing is set. */
 export function gitSummary(state: GitState): string | null {
 	const who = [state.name, state.email && `<${state.email}>`].filter(Boolean).join(' ');
