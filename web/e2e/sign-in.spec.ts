@@ -47,13 +47,13 @@ test.describe('signed in', () => {
 	test.use({ role: 'member' });
 
 	test('reloading a deep link stays on that page', async ({ page }) => {
-		await page.goto('/keys');
-		await expect(page.getByRole('heading', { name: 'SSH keys' })).toBeVisible();
+		await page.goto('/account');
+		await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
 
 		await page.reload();
-		await expect(page).toHaveURL('/keys');
-		await expect(page.getByRole('heading', { name: 'SSH keys' })).toBeVisible();
-		await expect(page).toHaveTitle('SSH keys · Corral');
+		await expect(page).toHaveURL('/account');
+		await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+		await expect(page).toHaveTitle('Account · Corral');
 	});
 
 	test('signing out ends the session', async ({ page }) => {
@@ -63,8 +63,8 @@ test.describe('signed in', () => {
 		await page.getByRole('menuitem', { name: 'Sign out' }).click();
 		await expect(page).toHaveURL('/sign-in');
 
-		await page.goto('/keys');
-		await expect(page).toHaveURL('/sign-in?next=%2Fkeys');
+		await page.goto('/account');
+		await expect(page).toHaveURL('/sign-in?next=%2Faccount');
 		expect((await page.request.get('/api/me')).status()).toBe(401);
 	});
 });

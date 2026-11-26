@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { account, expect, signIn, test } from './fixtures';
 
 test.describe('an admin', () => {
@@ -7,7 +7,7 @@ test.describe('an admin', () => {
 	test('runs a local account from creation to deletion', async ({ page, browser }) => {
 		const carol = { username: 'carol', password: 'carol, first of her name' };
 
-		await page.goto('/admin/accounts');
+		await page.goto('/admin/people');
 		await page.getByRole('button', { name: 'New account' }).click();
 		const create = page.getByRole('dialog', { name: 'New local account' });
 		await create.getByLabel('Username').fill(carol.username);
@@ -32,11 +32,11 @@ test.describe('an admin', () => {
 		const sandboxes = page.getByRole('table', { name: 'All sandboxes' });
 		await expect(sandboxes.getByRole('row', { name: /carol/ })).toContainText('main');
 
-		await page.goto('/admin/users');
+		await page.goto('/admin/people');
 		const users = page.getByRole('table', { name: 'Users' });
 		const user = users.getByRole('row', { name: /carol/ });
 		await expect(user).toContainText('Active');
-		await rowAction(page, 'carol', 'Disable user');
+		await rowAction(users, 'carol', 'Disable user');
 		const disable = page.getByRole('alertdialog', { name: 'Disable carol?' });
 		await expect(disable).toContainText('Their sandboxes, SSH keys and environment stay');
 		await disable.getByRole('button', { name: 'Disable user' }).click();
@@ -50,13 +50,12 @@ test.describe('an admin', () => {
 		await signIn(member, carol);
 		await expect(form.getByRole('alert')).toHaveText('this account is disabled');
 
-		await rowAction(page, 'carol', 'Enable user');
+		await rowAction(users, 'carol', 'Enable user');
 		await expect(user).toContainText('Active');
 		await signIn(member, carol);
 		await expect(member).toHaveURL('/sandboxes');
 
-		await page.goto('/admin/accounts');
-		await rowAction(page, 'carol', 'Reset password');
+		await rowAction(accounts, 'carol', 'Reset password');
 		const reset = page.getByRole('dialog', { name: 'Reset the password of carol' });
 		const renewed = { ...carol, password: 'carol, second of her name' };
 		await reset.getByLabel('New password').fill(renewed.password);
@@ -71,7 +70,7 @@ test.describe('an admin', () => {
 		await signIn(member, renewed);
 		await expect(member).toHaveURL('/sandboxes');
 
-		await rowAction(page, 'carol', 'Delete user');
+		await rowAction(accounts, 'carol', 'Delete user');
 		const confirm = page.getByRole('alertdialog', { name: 'Delete carol?' });
 		await expect(confirm).toContainText('sandboxes, SSH keys and environment');
 		const remove = confirm.getByRole('button', { name: 'Delete user' });
@@ -81,7 +80,7 @@ test.describe('an admin', () => {
 		await expect(confirm).toBeHidden();
 		await expect(accounts.getByRole('row', { name: /carol/ })).toHaveCount(0);
 
-		for (const path of ['/admin/users', '/admin/sandboxes']) {
+		for (const path of ['/admin/people', '/admin/sandboxes']) {
 			await page.goto(path);
 			await loaded(page);
 			await expect(page.getByRole('row', { name: /carol/ })).toHaveCount(0);
@@ -131,20 +130,20 @@ test.describe('an admin', () => {
 		await expect(page.getByText('dana has no sandbox named probe')).toBeVisible();
 	});
 
-	test('cannot disable or delete themselves from the users page', async ({ page }) => {
-		await page.goto('/admin/users');
+	test('cannot disable or delete themselves from People', async ({ page }) => {
+		await page.goto('/admin/people');
 		const self = page.getByRole('table', { name: 'Users' }).getByRole('row', {
 			name: new RegExp(account('admin').username)
 		});
 		await expect(self).toContainText('You');
 		await expect(self.getByRole('button')).toHaveCount(0);
-		await self.getByRole('link', { name: 'Profile' }).click();
-		await expect(page).toHaveURL('/profile');
+		await self.getByRole('link', { name: 'Account' }).click();
+		await expect(page).toHaveURL('/account');
 	});
 
-	test('cannot delete their own local account, only from their profile', async ({ page }) => {
+	test('cannot delete their own local account, only from Account', async ({ page }) => {
 		const { username } = account('admin');
-		await page.goto('/admin/accounts');
+		await page.goto('/admin/people');
 		const accounts = page.getByRole('table', { name: 'Local accounts' });
 		await expect(accounts.getByRole('row', { name: new RegExp(username) })).toContainText('You');
 		await expect(accounts.getByRole('row', { name: /bob/ })).not.toContainText('You');
@@ -152,8 +151,8 @@ test.describe('an admin', () => {
 		await page.getByRole('button', { name: `Actions for ${username}` }).click();
 		await expect(page.getByRole('menuitem', { name: 'Change password' })).toBeVisible();
 		await expect(page.getByRole('menuitem', { name: 'Delete user', exact: true })).toHaveCount(0);
-		await page.getByRole('menuitem', { name: 'Delete from Profile' }).click();
-		await expect(page).toHaveURL('/profile');
+		await page.getByRole('menuitem', { name: 'Delete from Account' }).click();
+		await expect(page).toHaveURL('/account');
 	});
 });
 
@@ -163,8 +162,8 @@ test.describe('a member', () => {
 	test('never sees the Admin group and is sent away from admin pages', async ({ page }) => {
 		const admin = account('admin').username;
 		for (const path of [
-			'/admin/users',
-			'/admin/accounts',
+			'/admin/people',
+			'/admin/settings',
 			'/admin/sandboxes',
 			`/admin/sandboxes/${admin}/main`
 		]) {
@@ -184,7 +183,7 @@ async function loaded(page: Page) {
 	await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
 }
 
-async function rowAction(page: Page, handle: string, action: string) {
-	await page.getByRole('button', { name: `Actions for ${handle}` }).click();
-	await page.getByRole('menuitem', { name: action, exact: true }).click();
+async function rowAction(table: Locator, handle: string, action: string) {
+	await table.getByRole('button', { name: `Actions for ${handle}` }).click();
+	await table.page().getByRole('menuitem', { name: action, exact: true }).click();
 }

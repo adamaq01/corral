@@ -8,7 +8,6 @@
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import FormDialog from '#lib/components/form-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
-	import PageHeader from '#lib/components/page-header.svelte';
 	import PasswordInput from '#lib/components/password-input.svelte';
 	import TableSkeleton from '#lib/components/table-skeleton.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
@@ -96,14 +95,16 @@
 	<Button onclick={startCreating}><PlusIcon />New account</Button>
 {/snippet}
 
-<div class="space-y-6">
-	<PageHeader title="Local accounts" description="The accounts that sign in with a password.">
-		{#snippet actions()}
-			{#if list.current.state === 'ready' && list.current.value.length > 0}
-				{@render newAccountButton()}
-			{/if}
-		{/snippet}
-	</PageHeader>
+<section class="space-y-4" aria-labelledby="local-accounts">
+	<header class="flex flex-wrap items-center justify-between gap-x-6 gap-y-4">
+		<div class="grid gap-1">
+			<h2 id="local-accounts" class="text-lg font-semibold">Local accounts</h2>
+			<p class="text-sm text-muted-foreground">The accounts that sign in with a password.</p>
+		</div>
+		{#if list.current.state === 'ready' && list.current.value.length > 0}
+			{@render newAccountButton()}
+		{/if}
+	</header>
 
 	{#if list.current.state === 'failed'}
 		<LoadFailed
@@ -170,7 +171,7 @@
 											{#if account.yours}
 												<DropdownMenu.Item>
 													{#snippet child({ props })}
-														<a href="/profile" {...props}>Delete from Profile</a>
+														<a href="/account" {...props}>Delete from Account</a>
 													{/snippet}
 												</DropdownMenu.Item>
 											{:else}
@@ -191,7 +192,7 @@
 			</Table.Root>
 		</div>
 	{/if}
-</div>
+</section>
 
 <FormDialog
 	bind:open={creating}

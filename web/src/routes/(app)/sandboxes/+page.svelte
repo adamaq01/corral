@@ -94,7 +94,7 @@
 				<Empty.Title>No sandboxes yet</Empty.Title>
 				<Empty.Description>
 					Create one, then connect to it with SSH or Herdr using a key from
-					<a href="/keys">SSH keys</a>.
+					<a href="/account#keys">SSH keys</a>.
 				</Empty.Description>
 			</Empty.Header>
 			<Empty.Content>

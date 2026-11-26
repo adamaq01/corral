@@ -25,14 +25,14 @@ test('signs in, moves around and signs out with the keyboard alone', async ({ pa
 
 	await tabTo(
 		page,
-		page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'SSH keys' })
+		page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Account' })
 	);
 	await page.keyboard.press('Enter');
-	await expect(page).toHaveURL('/keys');
+	await expect(page).toHaveURL('/account');
 
-	await tabTo(page, page.getByRole('button', { name: 'Account' }));
+	await tabTo(page, page.getByRole('button', { name: /^Account/ }));
 	await page.keyboard.press('Enter');
-	await expect(page.getByRole('menuitem', { name: 'Profile' })).toBeFocused();
+	await expect(page.getByRole('menuitem', { name: 'Account' })).toBeFocused();
 	await page.keyboard.press('End');
 	await expect(page.getByRole('menuitem', { name: 'Sign out' })).toBeFocused();
 	await page.keyboard.press('Enter');
@@ -44,7 +44,7 @@ test.describe('a member', () => {
 
 	test('opens a dialog from the keyboard and leaves it with Escape', async ({ page }) => {
 		await page.route('**/api/keys', (route) => route.fulfill({ json: [] }));
-		await page.goto('/keys');
+		await page.goto('/account');
 		const add = page.getByRole('button', { name: 'Add key' });
 		await tabTo(page, add);
 		await page.keyboard.press('Enter');
@@ -72,8 +72,10 @@ test.describe('an admin', () => {
 			allowance: null
 		};
 		await page.route('**/api/admin/users', (route) => route.fulfill({ json: [bob] }));
-		await page.goto('/admin/users');
-		const actions = page.getByRole('button', { name: 'Actions for bob' });
+		await page.goto('/admin/people');
+		const actions = page
+			.getByRole('table', { name: 'Users' })
+			.getByRole('button', { name: 'Actions for bob' });
 		await tabTo(page, actions);
 		await page.keyboard.press('Enter');
 		await expect(page.getByRole('menuitem', { name: 'Their sandboxes' })).toBeFocused();

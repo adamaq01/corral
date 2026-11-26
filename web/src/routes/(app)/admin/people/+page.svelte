@@ -8,6 +8,7 @@
 	import type { User, UserStatus } from '#lib/api/generated/index.js';
 	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
+	import AccountsManager from '#lib/components/people/accounts-manager.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
 	import TableSkeleton from '#lib/components/table-skeleton.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
@@ -23,6 +24,10 @@
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
+
+	const accountsUrl = $derived(
+		data.providers.find((provider) => provider.accounts !== null)?.accounts
+	);
 
 	const statuses: Record<UserStatus, { label: string; variant: BadgeVariant }> = {
 		active: { label: 'Active', variant: 'secondary' },
@@ -78,7 +83,7 @@
 </script>
 
 <div class="space-y-6">
-	<PageHeader title="Users" description="Everyone who has signed in to Corral." />
+	<PageHeader title="People" description="Everyone who has signed in to Corral." />
 
 	{#if failure}
 		<Alert.Root variant="destructive">
@@ -163,7 +168,7 @@
 								<Table.Cell class={wide}><Timestamp value={user.createdAt} /></Table.Cell>
 								<Table.Cell class="w-0 text-right">
 									{#if self}
-										<Button variant="ghost" size="sm" href="/profile">Profile</Button>
+										<Button variant="ghost" size="sm" href="/account">Account</Button>
 									{:else}
 										<DropdownMenu.Root>
 											<DropdownMenu.Trigger>
@@ -221,6 +226,10 @@
 			A role comes from how each person signs in: their single sign-on groups, or their local
 			account.
 		</p>
+	{/if}
+
+	{#if accountsUrl}
+		<AccountsManager url={accountsUrl} />
 	{/if}
 </div>
 

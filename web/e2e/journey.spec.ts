@@ -90,7 +90,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 
 		await page
 			.getByRole('navigation', { name: 'Main' })
-			.getByRole('link', { name: 'SSH keys' })
+			.getByRole('link', { name: 'Account' })
 			.click();
 		await page.getByRole('button', { name: 'Add key' }).first().click();
 		const dialog = page.getByRole('dialog', { name: 'Add an SSH key' });
@@ -244,8 +244,8 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 
 	await test.step('delete the account', async () => {
 		await page.getByRole('button', { name: 'Account' }).click();
-		await page.getByRole('menuitem', { name: 'Profile' }).click();
-		await expect(page).toHaveURL('/profile');
+		await page.getByRole('menuitem', { name: 'Account' }).click();
+		await expect(page).toHaveURL('/account');
 		await page.getByRole('button', { name: 'Delete account' }).click();
 		const dialog = page.getByRole('alertdialog', { name: 'Delete your account?' });
 		const confirm = dialog.getByRole('button', { name: 'Delete account' });

@@ -7,10 +7,30 @@ test.describe('an admin', () => {
 		await page.goto('/sandboxes');
 
 		const admin = page.getByRole('navigation', { name: 'Admin' });
-		await expect(admin.getByRole('link')).toHaveText(['Users', 'Local accounts', 'All sandboxes']);
-		await admin.getByRole('link', { name: 'Users' }).click();
-		await expect(page).toHaveURL('/admin/users');
-		await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
+		await expect(admin.getByRole('link')).toHaveText(['Settings', 'People', 'All sandboxes']);
+		await admin.getByRole('link', { name: 'People' }).click();
+		await expect(page).toHaveURL('/admin/people');
+		await expect(page.getByRole('heading', { name: 'People' })).toBeVisible();
+
+		await admin.getByRole('link', { name: 'Settings' }).click();
+		await expect(page).toHaveURL('/admin/settings/catalog');
+		await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+		const tabs = page.getByRole('navigation', { name: 'Settings' });
+		await expect(tabs.getByRole('link')).toHaveText(['Catalog', 'Limits', 'Registries']);
+		await expect(tabs.getByRole('link', { name: 'Catalog' })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
+		await tabs.getByRole('link', { name: 'Limits' }).click();
+		await expect(page).toHaveURL('/admin/settings/limits');
+		await expect(tabs.getByRole('link', { name: 'Limits' })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
+		await expect(admin.getByRole('link', { name: 'Settings' })).toHaveAttribute(
+			'aria-current',
+			'page'
+		);
 	});
 });
 
@@ -22,13 +42,12 @@ test.describe('a member', () => {
 
 		await expect(page.getByRole('navigation', { name: 'Main' }).getByRole('link')).toHaveText([
 			'Sandboxes',
-			'SSH keys',
 			'Environment',
-			'Profile'
+			'Account'
 		]);
 		await expect(page.getByRole('navigation', { name: 'Admin' })).toHaveCount(0);
 
-		await page.goto('/admin/users');
+		await page.goto('/admin/people');
 		await expect(page).toHaveURL('/sandboxes');
 	});
 
@@ -60,14 +79,14 @@ test.describe('a member', () => {
 			await expect(nav).toBeHidden();
 
 			await page.getByRole('button', { name: 'Toggle Sidebar' }).click();
-			await nav.getByRole('link', { name: 'SSH keys' }).click();
-			await expect(page).toHaveURL('/keys');
+			await nav.getByRole('link', { name: 'Account' }).click();
+			await expect(page).toHaveURL('/account');
 			await expect(nav).toBeHidden();
-			await expect(page.getByRole('heading', { name: 'SSH keys' })).toBeVisible();
+			await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
 			const header = page.locator('header', {
 				has: page.getByRole('button', { name: 'Toggle Sidebar' })
 			});
-			await expect(header.getByText('SSH keys')).toBeVisible();
+			await expect(header.getByText('Account')).toBeVisible();
 		});
 	});
 });

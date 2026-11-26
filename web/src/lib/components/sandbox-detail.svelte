@@ -300,7 +300,10 @@
 			<Card.Header>
 				<Card.Title>Connect</Card.Title>
 				<Card.Description>
-					Any SSH client works with a key from <a class="underline underline-offset-4" href="/keys">
+					Any SSH client works with a key from <a
+						class="underline underline-offset-4"
+						href="/account#keys"
+					>
 						SSH keys
 					</a>.
 					{current.deleteAt

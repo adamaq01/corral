@@ -167,48 +167,44 @@ async function answer(page: Page, path: string, body: unknown, status = 200) {
 inEveryView((look) => {
 	test.use({ role: 'admin' });
 
-	test('users', async ({ page }) => {
+	test('people', async ({ page }) => {
 		await answer(page, '/api/admin/users', users);
-		await page.goto('/admin/users');
-		await page.getByRole('row', { name: /linus/ }).waitFor();
-		await look(page, 'admin-users');
+		await answer(page, '/auth/local/accounts', accounts);
+		await page.goto('/admin/people');
+		const people = page.getByRole('table', { name: 'Users' });
+		await people.getByRole('row', { name: /linus/ }).waitFor();
+		await page
+			.getByRole('table', { name: 'Local accounts' })
+			.getByRole('row', { name: /grace-hopper/ })
+			.waitFor();
+		await look(page, 'people');
 
-		await page.getByRole('button', { name: 'Actions for bob' }).click();
+		await people.getByRole('button', { name: 'Actions for bob' }).click();
 		await page.getByRole('menuitem', { name: 'Delete user' }).click();
 		await page.getByRole('alertdialog').waitFor();
-		await look(page, 'admin-users-delete');
+		await look(page, 'people-delete');
 
 		await page.keyboard.press('Escape');
 		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
-		await page.getByRole('button', { name: 'Actions for bob' }).click();
+		await people.getByRole('button', { name: 'Actions for bob' }).click();
 		await page.getByRole('menuitem', { name: 'Disable user' }).click();
 		await page.getByRole('alertdialog').waitFor();
-		await look(page, 'admin-users-disable');
-	});
+		await look(page, 'people-disable');
 
-	test('users, empty', async ({ page }) => {
-		await answer(page, '/api/admin/users', []);
-		await page.goto('/admin/users');
-		await page.getByText('No users yet').waitFor();
-		await look(page, 'admin-users-empty');
-	});
-
-	test('local accounts', async ({ page }) => {
-		await answer(page, '/auth/local/accounts', accounts);
-		await page.goto('/admin/accounts');
-		await page.getByRole('row', { name: /grace-hopper/ }).waitFor();
-		await look(page, 'admin-accounts');
-
+		await page.keyboard.press('Escape');
+		await page.getByRole('alertdialog').waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'New account' }).click();
 		await page.getByRole('dialog').waitFor();
-		await look(page, 'admin-accounts-new');
+		await look(page, 'people-new-account');
 	});
 
-	test('local accounts, empty', async ({ page }) => {
+	test('people, empty', async ({ page }) => {
+		await answer(page, '/api/admin/users', []);
 		await answer(page, '/auth/local/accounts', []);
-		await page.goto('/admin/accounts');
+		await page.goto('/admin/people');
+		await page.getByText('No users yet').waitFor();
 		await page.getByText('No local accounts').waitFor();
-		await look(page, 'admin-accounts-empty');
+		await look(page, 'people-empty');
 	});
 
 	test('all sandboxes', async ({ page }) => {
