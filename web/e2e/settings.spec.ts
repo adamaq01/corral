@@ -1,7 +1,6 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { promisify } from 'node:util';
 import { request, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import type {
 	AttachedEntry,
@@ -10,11 +9,11 @@ import type {
 	CatalogSettings,
 	OwnedSandbox,
 	Sandbox,
-	SandboxSsh,
 	SharedEntry,
 	SizeSetting
 } from '../src/lib/api/generated/index.js';
 import { expect, session, test } from './fixtures';
+import { sshOutput } from './ssh';
 
 type Size = Omit<SizeSetting, 'source' | 'enabled'>;
 
@@ -326,8 +325,11 @@ test.describe('an admin', () => {
 				)
 				.toEqual({ state: 'running', staleSetup: false });
 			const { ssh } = await sandbox();
-			expect(await printenv(ssh, key, 'GATEWAY_URL')).toBe('https://llm.lan/v1');
-			expect(await printenv(ssh, key, 'TEAM_PROXY')).toBe('http://proxy.lan:3128');
+			const destination = ['-p', String(ssh.port), `${ssh.username}@${ssh.host}`];
+			expect(await sshOutput(destination, key, 'printenv GATEWAY_URL')).toBe('https://llm.lan/v1');
+			expect(await sshOutput(destination, key, 'printenv TEAM_PROXY')).toBe(
+				'http://proxy.lan:3128'
+			);
 		});
 
 		await test.step('delete both, each after typing its name', async () => {
@@ -491,35 +493,6 @@ async function sharedSetup(page: Page): Promise<SharedEntry[]> {
 	const response = await page.request.get('/api/admin/settings/shared-setup');
 	expect(response.ok(), await response.text()).toBe(true);
 	return response.json();
-}
-
-/** The value of variable `name` in a new SSH session of the sandbox, with the gate's key pinned. */
-async function printenv(ssh: SandboxSsh, key: string, name: string): Promise<string> {
-	const { stdout } = await promisify(execFile)('ssh', [
-		'-F',
-		'none',
-		'-i',
-		key,
-		'-o',
-		'IdentitiesOnly=yes',
-		'-o',
-		'IdentityAgent=none',
-		'-o',
-		'BatchMode=yes',
-		'-o',
-		`UserKnownHostsFile=${process.env.CORRAL_E2E_KNOWN_HOSTS}`,
-		'-o',
-		'StrictHostKeyChecking=yes',
-		'-o',
-		'ConnectTimeout=10',
-		'-o',
-		'LogLevel=ERROR',
-		'-p',
-		String(ssh.port),
-		`${ssh.username}@${ssh.host}`,
-		`printenv ${name}`
-	]);
-	return stdout.trim();
 }
 
 /** A member signed in with a local account made for one test, which deletes it with `/api/me`. */

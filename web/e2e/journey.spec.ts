@@ -1,55 +1,14 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from '@playwright/test';
 import { expect, session, signIn, test } from './fixtures';
+import { sshOutput } from './ssh';
 
 const keyDir = mkdtempSync(join(tmpdir(), 'corral-web-journey-'));
 test.afterAll(() => rmSync(keyDir, { recursive: true, force: true }));
-
-/**
- * Runs `remote` over `command`, an SSH command as the UI shows it, with the test's key and
- * the gate's host key pinned.
- */
-function overSsh(command: string, key: string, remote: string): Promise<string> {
-	const [program, ...args] = command.split(' ');
-	const options = [
-		'-F',
-		'none',
-		'-i',
-		key,
-		'-o',
-		'IdentitiesOnly=yes',
-		'-o',
-		'IdentityAgent=none',
-		'-o',
-		'BatchMode=yes',
-		'-o',
-		`UserKnownHostsFile=${process.env.CORRAL_E2E_KNOWN_HOSTS}`,
-		'-o',
-		'StrictHostKeyChecking=yes',
-		'-o',
-		'ConnectTimeout=10',
-		'-o',
-		'LogLevel=ERROR'
-	];
-	return new Promise((resolve, reject) => {
-		const ssh = spawn(program, [...options, ...args, remote], {
-			stdio: ['ignore', 'pipe', 'pipe']
-		});
-		let [stdout, stderr] = ['', ''];
-		ssh.stdout.on('data', (data) => (stdout += data));
-		ssh.stderr.on('data', (data) => (stderr += data));
-		ssh.once('error', reject);
-		ssh.once('exit', (code) =>
-			code === 0
-				? resolve(stdout.trim())
-				: reject(new Error(`${command} exited ${code}: ${stderr}`))
-		);
-	});
-}
 
 function containersOf(handle: string): string[] {
 	return execFileSync(
@@ -141,7 +100,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(page.getByRole('heading', { name: '~/.journey/notes' })).toBeVisible();
 	});
 
-	let sshCommand = '';
+	let destination: string[] = [];
 	await test.step('create a sandbox and see it reach running', async () => {
 		await page.getByRole('link', { name: 'Sandboxes' }).first().click();
 		await page.getByRole('button', { name: 'New sandbox' }).click();
@@ -161,13 +120,16 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 
 		await page.getByRole('button', { name: 'Copy SSH', exact: true }).click();
 		await expect(page.getByText('Copied')).toBeVisible();
-		sshCommand = await page.evaluate(() => navigator.clipboard.readText());
+		const sshCommand = await page.evaluate(() => navigator.clipboard.readText());
 		expect(sshCommand).toMatch(/^ssh -p \d+ main\.dora@127\.0\.0\.1$/);
+		destination = sshCommand.split(' ').slice(1);
 	});
 
 	await test.step('SSH in with the copied command and the added key', async () => {
-		expect(await overSsh(sshCommand, key, 'id -un')).toBe('sandbox');
-		expect(await overSsh(sshCommand, key, 'printenv JOURNEY_TOKEN || echo absent')).toBe('absent');
+		expect(await sshOutput(destination, key, 'id -un')).toBe('sandbox');
+		expect(await sshOutput(destination, key, 'printenv JOURNEY_TOKEN || echo absent')).toBe(
+			'absent'
+		);
 	});
 
 	await test.step('attach both to main, and give main a value of its own', async () => {
@@ -206,9 +168,9 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(restarting).toBeVisible();
 		await expect(restarting).toBeHidden({ timeout: 60_000 });
 		await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 90_000 });
-		expect(await overSsh(sshCommand, key, 'printenv JOURNEY_TOKEN')).toBe(`${token}-main`);
-		expect(await overSsh(sshCommand, key, 'cat .journey/notes')).toBe(`token=${token}-main`);
-		expect(await overSsh(sshCommand, key, 'stat -c %a .journey/notes')).toBe('600');
+		expect(await sshOutput(destination, key, 'printenv JOURNEY_TOKEN')).toBe(`${token}-main`);
+		expect(await sshOutput(destination, key, 'cat .journey/notes')).toBe(`token=${token}-main`);
+		expect(await sshOutput(destination, key, 'stat -c %a .journey/notes')).toBe('600');
 	});
 
 	await test.step('remove the override, and detach the file, which the next start removes', async () => {
@@ -231,8 +193,8 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(restarting).toBeVisible();
 		await expect(restarting).toBeHidden({ timeout: 60_000 });
 		await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 90_000 });
-		expect(await overSsh(sshCommand, key, 'test -e .journey/notes || echo gone')).toBe('gone');
-		expect(await overSsh(sshCommand, key, 'printenv JOURNEY_TOKEN')).toBe(token);
+		expect(await sshOutput(destination, key, 'test -e .journey/notes || echo gone')).toBe('gone');
+		expect(await sshOutput(destination, key, 'printenv JOURNEY_TOKEN')).toBe(token);
 	});
 
 	await test.step('delete the sandbox', async () => {

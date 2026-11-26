@@ -1,55 +1,14 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request } from '@playwright/test';
 import { expect, session, signIn, test } from './fixtures';
+import { overSsh } from './ssh';
 
 const keyDir = mkdtempSync(join(tmpdir(), 'corral-web-connect-'));
 test.afterAll(() => rmSync(keyDir, { recursive: true, force: true }));
-
-/**
- * Runs `remote` over ssh to `destination`, with the test's key and the gate's host key pinned.
- */
-function overSsh(
-	destination: string[],
-	key: string,
-	remote: string
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
-	const options = [
-		'-F',
-		'none',
-		'-i',
-		key,
-		'-o',
-		'IdentitiesOnly=yes',
-		'-o',
-		'IdentityAgent=none',
-		'-o',
-		'BatchMode=yes',
-		'-o',
-		'PreferredAuthentications=publickey',
-		'-o',
-		`UserKnownHostsFile=${process.env.CORRAL_E2E_KNOWN_HOSTS}`,
-		'-o',
-		'StrictHostKeyChecking=yes',
-		'-o',
-		'ConnectTimeout=10',
-		'-o',
-		'LogLevel=ERROR'
-	];
-	return new Promise((resolve, reject) => {
-		const ssh = spawn('ssh', [...options, ...destination, remote], {
-			stdio: ['ignore', 'pipe', 'pipe']
-		});
-		let [stdout, stderr] = ['', ''];
-		ssh.stdout.on('data', (data) => (stdout += data));
-		ssh.stderr.on('data', (data) => (stderr += data));
-		ssh.once('error', reject);
-		ssh.once('exit', (code) => resolve({ code, stdout: stdout.trim(), stderr }));
-	});
-}
 
 test('connecting to a sandbox not made yet makes it from the account defaults, then opens it', async ({
 	page,
