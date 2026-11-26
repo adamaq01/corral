@@ -5,9 +5,12 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Seek};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
+
+use rustix::process::{Pid, Signal, kill_process_group};
 
 use crate::notices;
 use crate::sandbox_file::{Repository, SandboxFile};
@@ -77,6 +80,7 @@ fn git_clone(
         .stdin(std::process::Stdio::null())
         .stdout(output.try_clone().map_err(failed)?)
         .stderr(output.try_clone().map_err(failed)?)
+        .process_group(0)
         .spawn();
     let mut child = match spawned {
         Ok(child) => child,
@@ -89,7 +93,8 @@ fn git_clone(
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            // The whole group, since git's ssh or credential helper outlives git killed alone.
+            let _ = kill_process_group(Pid::from_child(&child), Signal::KILL);
             let _ = child.wait();
             let _ = std::fs::remove_dir_all(target);
             return Err(Failure::Failed(
@@ -165,12 +170,16 @@ mod tests {
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
 
+    use rustix::io::Errno;
+    use rustix::process::{Pid, test_kill_process};
+
     use super::run;
     use crate::notices;
 
     /// Clones as git would, except into a directory named `missing`, where it fails as git does
-    /// for an unknown repository, `private`, where it fails as git does when ssh is refused, and
-    /// `slow`, where it never ends.
+    /// for an unknown repository, `private`, where it fails as git does when ssh is refused,
+    /// `slow`, where it never ends, and `stalled`, where it never ends waiting on a child of its
+    /// own, as git waits on ssh, whose pid it writes to `grandchild` in the home.
     const FAKE_GIT: &str = r#"#!/bin/sh
 PATH=/usr/bin:/bin
 for arg; do url=$target; target=$arg; done
@@ -193,6 +202,12 @@ case "$target" in
   */slow)
     mkdir -p "$target"
     exec sleep 30
+    ;;
+  */stalled)
+    mkdir -p "$target"
+    sleep 300 &
+    echo $! >"${target%/*}/grandchild"
+    wait
     ;;
 esac
 mkdir -p "$target/.git"
@@ -353,6 +368,27 @@ printf '%s\n' "$@" "GIT_TERMINAL_PROMPT=$GIT_TERMINAL_PROMPT" "GIT_SSH_COMMAND=$
             ["Cloning https://github.com/me/slow failed: git took too long and was stopped"]
         );
         assert!(!home.join("slow").exists());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_timed_out_clone_takes_its_children_with_it() {
+        let home = home(
+            "stalled",
+            r#"{"url": "git@github.com:me/stalled.git", "branch": null}"#,
+        );
+        run(&home, fake_git().as_os_str(), Duration::from_secs(1));
+        assert_eq!(
+            notices::read(&home),
+            ["Cloning git@github.com:me/stalled.git failed: git took too long and was stopped"]
+        );
+        let grandchild = std::fs::read_to_string(home.join("grandchild")).unwrap();
+        let grandchild = Pid::from_raw(grandchild.trim().parse().unwrap()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while test_kill_process(grandchild) != Err(Errno::SRCH) {
+            assert!(Instant::now() < deadline, "git's child outlived the clone");
+            std::thread::sleep(Duration::from_millis(50));
+        }
         std::fs::remove_dir_all(&home).unwrap();
     }
 

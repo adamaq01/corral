@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+rustix = { version = "1.1.6", features = ["process"] }
 ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
 
 [lints]
