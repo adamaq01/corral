@@ -47,10 +47,15 @@ check() {
 # What the gate does for each connection: a fresh key, and corral-sshd run with its public half.
 ssh-keygen -q -t ed25519 -N '' -C gate -f "$work/key"
 public_key=$(cut -d' ' -f1,2 "$work/key.pub")
-# The session variables, as the engine writes them before each start.
-mkdir -p "$work/session/etc/corral"
-echo 'SetEnv "FOO_TOKEN=bar"' >"$work/session/etc/corral/sshd_env.conf"
-chmod 0400 "$work/session/etc/corral/sshd_env.conf"
+# The session variables, as the engine writes them before each start: the SetEnv line $1.
+write_session_env() {
+  local file=$work/session/etc/corral/sshd_env.conf
+  mkdir -p "${file%/*}"
+  rm -f "$file"
+  echo "$1" >"$file"
+  chmod 0400 "$file"
+}
+write_session_env 'SetEnv "FOO_TOKEN=bar"'
 
 ssh_options=(-F /dev/null -i "$work/key" -o BatchMode=yes -o IdentitiesOnly=yes
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
@@ -290,10 +295,65 @@ Cloned file:///srv/repo.git into ~/repo" \
   docker volume rm "$volume" >/dev/null
 }
 
+# Each start applies the setup's MCP servers and gateway addresses to the files of the agents a
+# sandbox may run, and leaves the rest of those files as the agents wrote them.
+check_agents() {
+  base=alpine:3.24
+  local fetch='{"fetch":{"args":["mcp-server-fetch"],"command":"uvx"}}'
+  local codex='model = "gpt-5"
+
+[mcp_servers.fetch]
+command = "uvx"
+args = ["mcp-server-fetch"]'
+  stage_home_files "" </dev/null
+  start_server "$base"
+  check "with neither servers nor addresses, no agent file is created" "" \
+    "$(ssh_run 'cd ~ && ls -d .claude.json .codex .pi .omp 2>/dev/null; true')"
+
+  ssh_run 'cat >~/.claude.json' <<<'{"numStartups": 3, "mcpServers": {"old": {"command": "old"}}}'
+  ssh_run 'mkdir ~/.codex && cat >~/.codex/config.toml' <<<'model = "gpt-5"'
+  stage_home_files '{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}' \
+    <<<'0 0644 .config/corral-agents/mcp.json'
+  write_session_env 'SetEnv "ANTHROPIC_BASE_URL=https://llm.home.example/anthropic" "OPENAI_BASE_URL=https://llm.home.example/openai"'
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "Claude Code's mcpServers is replaced and its other keys stay" \
+    "{\"mcpServers\":$fetch,\"numStartups\":3}" "$(ssh_run 'cat ~/.claude.json' | jq -cS .)"
+  check "Pi's and oh-my-pi's mcp.json are created with the same servers" \
+    "{\"mcpServers\":$fetch}
+{\"mcpServers\":$fetch}" "$(ssh_run 'cat ~/.pi/agent/mcp.json ~/.omp/agent/mcp.json' | jq -cS .)"
+  check "Codex's config keeps its model and gains the servers and the OpenAI address" \
+    'model = "gpt-5"
+openai_base_url = "https://llm.home.example/openai"
+
+[mcp_servers.fetch]
+command = "uvx"
+args = ["mcp-server-fetch"]' "$(ssh_run 'cat ~/.codex/config.toml')"
+  check "Pi's models.json has both addresses" \
+    '{"providers":{"anthropic":{"baseUrl":"https://llm.home.example/anthropic"},"openai":{"baseUrl":"https://llm.home.example/openai"}}}' \
+    "$(ssh_run 'cat ~/.pi/agent/models.json' | jq -cS .)"
+  check "the notices say what was applied to which agents" \
+    "Applied 1 MCP server to Claude Code, Codex, Pi and oh-my-pi
+Applied the gateway address to Claude Code, Codex, Pi and oh-my-pi" \
+    "$(ssh_run 'cat ~/.config/corral/notices')"
+
+  write_session_env 'SetEnv "FOO_TOKEN=bar"'
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a later start without the addresses removes them from Codex's config" "$codex" \
+    "$(ssh_run 'cat ~/.codex/config.toml')"
+  check "a later start without the addresses removes them from Pi's models.json" '{"providers":{}}' \
+    "$(ssh_run 'cat ~/.pi/agent/models.json' | jq -cS .)"
+
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+}
+
 for each in "${bases[@]}"; do
   check_base "$each"
 done
 check_repository
+check_agents
 
 # An image whose own uid 1000, and a group listing sandbox, would give the sandbox user more
 # groups.

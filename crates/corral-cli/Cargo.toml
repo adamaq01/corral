@@ -11,7 +11,12 @@ path = "src/main.rs"
 serde.workspace = true
 serde_json.workspace = true
 rustix = { version = "1.1.6", features = ["process"] }
+toml_edit = "0.25.21"
 ureq = { version = "3.5.2", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+corral-core = { path = "../corral-core" }
+secrecy.workspace = true
 
 [lints]
 workspace = true

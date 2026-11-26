@@ -82,8 +82,9 @@ system() {
 
 # Runs as the sandbox user: the skeleton on the first start, then the home files the engine
 # staged, each replacing what is at its path. A file written at an earlier start and no longer
-# staged is removed, unless it was changed since. The first start then clones the sandbox's
-# repository, if it names one, and adds how it went to the notices.
+# staged is removed, unless it was changed since. Every start then applies the setup's MCP
+# servers and gateway addresses to the agents' own files, and the first start clones the
+# sandbox's repository, if it names one, each adding how it went to the notices.
 home() {
   local skel first=
   if [ ! -e "$HOME_DIR/.corral-initialized" ]; then
@@ -113,6 +114,7 @@ home() {
   else
     $B rm -f "$NOTICES.new" "$NOTICES"
   fi
+  HOME=$HOME_DIR $O/bin/corral agents-apply
   [ -z "$first" ] || HOME=$HOME_DIR $O/bin/corral first-start
 }
 

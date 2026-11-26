@@ -286,6 +286,7 @@ fn init_container(workload: &Workload) -> Container {
         volume_mounts: Some(vec![
             home_mount(),
             read_only(HOME_FILES_VOLUME, home_staging::DIR),
+            session_env_mount(),
             read_only(OVERLAY_VOLUME, OVERLAY_PATH),
             VolumeMount {
                 name: ACCOUNTS_VOLUME.to_owned(),
@@ -303,10 +304,7 @@ fn sandbox_container(workload: &Workload) -> Container {
         sub_path: Some(file.to_owned()),
         ..read_only(ACCOUNTS_VOLUME, path)
     }));
-    mounts.push(VolumeMount {
-        sub_path: Some(session_env::FILE.to_owned()),
-        ..read_only(SESSION_ENV_VOLUME, session_env::PATH)
-    });
+    mounts.push(session_env_mount());
     let env = [
         ("HOME", HOME_PATH),
         ("USER", "sandbox"),
@@ -345,6 +343,13 @@ fn home_mount() -> VolumeMount {
         name: HOME_VOLUME.to_owned(),
         mount_path: HOME_PATH.to_owned(),
         ..VolumeMount::default()
+    }
+}
+
+fn session_env_mount() -> VolumeMount {
+    VolumeMount {
+        sub_path: Some(session_env::FILE.to_owned()),
+        ..read_only(SESSION_ENV_VOLUME, session_env::PATH)
     }
 }
 
@@ -547,6 +552,7 @@ mod tests {
                 "volumeMounts": [
                     home,
                     {"name": "home-files", "mountPath": "/etc/corral/home-files", "readOnly": true},
+                    {"name": "session-env", "mountPath": "/etc/corral/sshd_env.conf", "readOnly": true, "subPath": "sshd_env.conf"},
                     overlay,
                     {"name": "corral-accounts", "mountPath": "/run/corral-accounts"},
                 ],

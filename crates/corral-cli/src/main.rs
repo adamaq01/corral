@@ -2,13 +2,15 @@
 //! into the home at the sandbox's start.
 
 mod activity;
+mod agents;
 mod client;
 mod command;
 mod first_start;
 mod notices;
 mod sandbox_file;
+mod session_env;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
@@ -36,6 +38,14 @@ fn main() -> ExitCode {
         Command::FirstStart => {
             let path = std::env::var_os("PATH").unwrap_or_default();
             first_start::run(&home, &path, first_start::TIMEOUT);
+            return ExitCode::SUCCESS;
+        }
+        Command::AgentsApply => {
+            for notice in agents::apply(&home, Path::new(session_env::PATH)) {
+                if let Err(error) = notices::append(&home, &notice) {
+                    eprintln!("corral agents-apply: cannot add to the notices ({error}): {notice}");
+                }
+            }
             return ExitCode::SUCCESS;
         }
         _ => {}
@@ -112,7 +122,9 @@ fn run(command: &Command, file: &SandboxFile, corral: &impl Corral) -> Result<St
                 file.web.trim_end_matches('/')
             ))
         }
-        Command::Help | Command::ReportActivity | Command::FirstStart => Ok(USAGE.to_owned()),
+        Command::Help | Command::ReportActivity | Command::FirstStart | Command::AgentsApply => {
+            Ok(USAGE.to_owned())
+        }
     }
 }
 

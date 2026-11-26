@@ -27,6 +27,8 @@ pub enum Command {
     ReportActivity,
     /// Run by `corral-init` at the sandbox's first start.
     FirstStart,
+    /// Run by `corral-init` at each start, after the home files.
+    AgentsApply,
     Help,
 }
 
@@ -58,6 +60,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         ["keep-awake", time] => duration(time).map(|time| Command::KeepAwake(Some(time))),
         ["report-activity"] => Ok(Command::ReportActivity),
         ["first-start"] => Ok(Command::FirstStart),
+        ["agents-apply"] => Ok(Command::AgentsApply),
         ["delete"] => Ok(Command::Delete(None)),
         ["delete", "--confirm", name] => Ok(Command::Delete(Some((*name).to_owned()))),
         ["delete", confirm] if confirm.starts_with("--confirm=") => Ok(Command::Delete(Some(
@@ -109,6 +112,7 @@ mod tests {
         assert_eq!(parsed("keep-awake off"), Ok(Command::KeepAwake(None)));
         assert_eq!(parsed("report-activity"), Ok(Command::ReportActivity));
         assert_eq!(parsed("first-start"), Ok(Command::FirstStart));
+        assert_eq!(parsed("agents-apply"), Ok(Command::AgentsApply));
         for wrong in [
             "keep-awake",
             "keep-awake 4",
