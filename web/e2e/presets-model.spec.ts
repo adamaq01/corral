@@ -268,6 +268,54 @@ test.describe('git identity', () => {
 	});
 });
 
+test.describe('git identity, with a ~/.gitconfig of more sections', () => {
+	test('the sections the preset does not write stay, and a host it leaves goes', () => {
+		const current = [
+			file(
+				'.gitconfig',
+				'# Mine.\n[user]\n\tname = Old Name\n[alias]\n\tco = checkout\n' +
+					'[credential]\n\thelper = store\n[credential "https://github.com"]\n\tusername = old\n' +
+					'[credential "https://dev.azure.com"]\n\tuseHttpPath = true\n' +
+					'[init]\n\tdefaultBranch = trunk\n[core]\n\teditor = vim\n'
+			),
+			file('.git-credentials', null)
+		];
+		const form: GitForm = {
+			name: 'Ada Lovelace',
+			email: 'ada@example.com',
+			reach: { by: 'token', token: { host: 'gitlab.com', user: 'ada', token: 'glpat-1' } }
+		};
+
+		const [gitconfig] = writeGit(current, form);
+		expect(gitconfig).toMatchObject({
+			change: {
+				id: '.gitconfig-id',
+				value: {
+					text:
+						'[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n' +
+						'[credential]\n\thelper = store\n[credential "https://gitlab.com"]\n\tusername = ada\n' +
+						'[init]\n\tdefaultBranch = main\n' +
+						'# Mine.\n[alias]\n\tco = checkout\n' +
+						'[credential "https://dev.azure.com"]\n\tuseHttpPath = true\n[core]\n\teditor = vim\n'
+				}
+			}
+		});
+	});
+
+	test('clearing the identity leaves the other sections', () => {
+		const current = [
+			file(
+				'.gitconfig',
+				'[user]\n\tname = Ada Lovelace\n[alias]\n\tco = checkout\n[init]\n\tdefaultBranch = main\n'
+			)
+		];
+		const [gitconfig] = writeGit(current, { name: '', email: '', reach: { by: 'nothing' } });
+		expect(gitconfig).toMatchObject({
+			change: { value: { text: '[alias]\n\tco = checkout\n' } }
+		});
+	});
+});
+
 test.describe('MCP servers', () => {
 	const servers: McpServer[] = [
 		{ name: 'fetch', runs: 'command', command: 'uvx', args: ['mcp-server-fetch'], env: {} },

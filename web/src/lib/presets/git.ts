@@ -50,7 +50,10 @@ export function writeGit(current: SetupEntry[], form: GitForm): Change[] {
 	const login =
 		reach.by !== 'token' ? null : (reach.token ?? (before.by === 'token' ? before : null));
 	const empty = form.name === '' && form.email === '' && reach.by === 'nothing';
-	const changes = put(current, GITCONFIG, empty ? null : gitconfig(form, login));
+	const hosts = [before.by === 'token' ? before.host : '', login?.host ?? ''].filter(Boolean);
+	const others = otherSections(ownText(current, GITCONFIG) ?? '', hosts);
+	const text = (empty ? '' : gitconfig(form, login)) + others;
+	const changes = put(current, GITCONFIG, text.trim() === '' ? null : text);
 	if (reach.by !== 'token' || reach.token) {
 		const token = reach.by === 'token' ? reach.token : null;
 		changes.push(...put(current, CREDENTIALS, token && credentialsLine(token)));
@@ -121,6 +124,39 @@ function configValue(value: string): string {
 		: value;
 }
 
+/** A section header, `[section]` or `[section "subsection"]`, with its name and subsection. */
+const HEADER = /^\s*\[\s*([^\s\]"]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]/;
+
+function header(line: string): { section: string; subsection: string | null } | null {
+	const found = HEADER.exec(line);
+	return found
+		? { section: found[1].toLowerCase(), subsection: found[2]?.replace(/\\(.)/g, '$1') ?? null }
+		: null;
+}
+
+/**
+ * `text` without the sections the preset writes: `[user]`, `[init]`, `[credential]`, and
+ * `[credential "https://<host>"]` for each of `hosts`.
+ */
+function otherSections(text: string, hosts: string[]): string {
+	const owned = new Set(['user', 'init', 'credential']);
+	const scoped = new Set(hosts.map((host) => `https://${host}`));
+	let skipping = false;
+	return text
+		.split(/(?<=\n)/)
+		.filter((line) => {
+			const found = header(line);
+			if (found) {
+				skipping =
+					owned.has(found.section) &&
+					(found.subsection === null ||
+						(found.section === 'credential' && scoped.has(found.subsection)));
+			}
+			return !skipping;
+		})
+		.join('');
+}
+
 type ConfigLine = { section: string; subsection: string | null; key: string; value: string };
 
 /** The `key = value` lines of a git config text, with their section, enough to read it back. */
@@ -130,10 +166,9 @@ function parseGitConfig(text: string): ConfigLine[] {
 	let subsection: string | null = null;
 	for (const raw of text.split('\n')) {
 		const line = raw.trim();
-		const header = /^\[\s*([^\s\]"]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]/.exec(line);
-		if (header) {
-			section = header[1].toLowerCase();
-			subsection = header[2]?.replace(/\\(.)/g, '$1') ?? null;
+		const opened = header(line);
+		if (opened) {
+			({ section, subsection } = opened);
 			continue;
 		}
 		const assignment = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(.*)$/.exec(line);
