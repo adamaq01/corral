@@ -225,14 +225,37 @@ test.describe('an admin', () => {
 		await again;
 	});
 
-	test('cannot disable or delete themselves from People', async ({ page }) => {
+	test('sets their own sandbox allowance but cannot disable or delete themselves', async ({
+		page
+	}) => {
+		const { username } = account('admin');
 		await page.goto('/admin/people');
-		const self = page.getByRole('table', { name: 'People' }).getByRole('row', {
-			name: new RegExp(account('admin').username)
-		});
+		const people = page.getByRole('table', { name: 'People' });
+		const self = people.getByRole('row', { name: new RegExp(username) });
 		await expect(self).toContainText('You');
-		await expect(self.getByRole('button')).toHaveCount(0);
-		await self.getByRole('link', { name: 'Account' }).click();
+		await expect(self).toContainText('up to 5');
+
+		await people.getByRole('button', { name: `Actions for ${username}` }).click();
+		await expect(page.getByRole('menu').getByRole('menuitem')).toHaveText([
+			'Account',
+			'Sandbox allowance…'
+		]);
+		await page.getByRole('menuitem', { name: 'Sandbox allowance…' }).click();
+		const dialog = page.getByRole('dialog', { name: `Sandbox allowance for ${username}` });
+		await dialog.getByLabel('Sandboxes', { exact: true }).fill('7');
+		await dialog.getByRole('button', { name: 'Save allowance' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(page.getByText(`${username} may have up to 7 sandboxes`)).toBeVisible();
+
+		await page.reload();
+		await expect(self).toContainText('up to 7');
+		await rowAction(people, username, 'Sandbox allowance…');
+		await dialog.getByRole('radio', { name: 'The usual limit' }).click();
+		await dialog.getByRole('button', { name: 'Save allowance' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(self).toContainText('up to 5');
+
+		await rowAction(people, username, 'Account');
 		await expect(page).toHaveURL('/account');
 	});
 });
