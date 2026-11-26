@@ -25,7 +25,23 @@ export function allSandboxes(): Promise<OwnedSandbox[]> {
 	return api.get<OwnedSandbox[]>('/api/admin/sandboxes');
 }
 
+const sandbox = (handle: string, name: string) => `/api/admin/sandboxes/${handle}/${name}`;
+
 /** The sandbox with what its engine reports about how it runs. */
 export function sandboxDetails(handle: string, name: string): Promise<SandboxDetails> {
-	return api.get<SandboxDetails>(`/api/admin/sandboxes/${handle}/${name}`);
+	return api.get<SandboxDetails>(sandbox(handle, name));
+}
+
+/** Puts the sandbox of `handle` to sleep. */
+export function stopSandbox(handle: string, name: string): Promise<void> {
+	return api.post(`${sandbox(handle, name)}/stop`);
+}
+
+export function restartSandbox(handle: string, name: string): Promise<void> {
+	return api.post(`${sandbox(handle, name)}/restart`);
+}
+
+/** Deletes the sandbox of `handle` with its home directory. */
+export function deleteSandbox(handle: string, name: string): Promise<void> {
+	return api.delete(sandbox(handle, name));
 }

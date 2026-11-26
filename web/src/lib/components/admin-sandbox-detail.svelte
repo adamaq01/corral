@@ -3,6 +3,7 @@
 	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
+	import { sandboxesOf } from '#lib/all-sandboxes.js';
 	import { sandboxDetails } from '#lib/api/admin.js';
 	import { sandboxes } from '#lib/api/sandboxes.js';
 	import { choiceLabel } from '#lib/catalog.js';
@@ -76,7 +77,7 @@
 					class="shrink-0"
 				/>
 				<a
-					href="/admin/sandboxes?owner={encodeURIComponent(handle)}"
+					href={sandboxesOf(handle)}
 					class="rounded-sm font-medium break-all underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
 					title="Sandboxes of {handle}"
 				>

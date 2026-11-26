@@ -9,6 +9,7 @@
 
 <script lang="ts">
 	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
+	import { sandboxesOf } from '#lib/all-sandboxes.js';
 	import type { Role } from '#lib/api/generated/index.js';
 	import TableSkeleton from '#lib/components/table-skeleton.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
@@ -75,7 +76,7 @@
 									<span class="flex items-center gap-2 font-medium">
 										{#if person.user}
 											<a
-												href="/admin/sandboxes?owner={encodeURIComponent(person.handle)}"
+												href={sandboxesOf(person.handle)}
 												class="rounded-sm underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
 												title="Sandboxes of {person.handle}"
 											>
@@ -149,9 +150,7 @@
 		{@const user = person.user}
 		<DropdownMenu.Item>
 			{#snippet child({ props })}
-				<a href="/admin/sandboxes?owner={encodeURIComponent(user.handle)}" {...props}>
-					Their sandboxes
-				</a>
+				<a href={sandboxesOf(user.handle)} {...props}> Their sandboxes </a>
 			{/snippet}
 		</DropdownMenu.Item>
 		{#if user.status === 'active'}

@@ -1,11 +1,19 @@
 <script lang="ts">
 	import BoxesIcon from '@lucide/svelte/icons/boxes';
+	import CircleAlertIcon from '@lucide/svelte/icons/circle-alert';
+	import EllipsisIcon from '@lucide/svelte/icons/ellipsis';
 	import RefreshCwIcon from '@lucide/svelte/icons/refresh-cw';
+	import { SvelteMap } from 'svelte/reactivity';
+	import { toast } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { allSandboxes } from '#lib/api/admin.js';
+	import { ownerOf, sandboxesOf, shown, type AdminPower, type Row } from '#lib/all-sandboxes.js';
+	import * as admin from '#lib/api/admin.js';
+	import { failureMessage } from '#lib/api/client.js';
+	import type { Handle } from '#lib/api/generated/index.js';
 	import { sandboxes as sandboxApi } from '#lib/api/sandboxes.js';
 	import { choiceLabel } from '#lib/catalog.js';
+	import ConfirmDialog from '#lib/components/confirm-dialog.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
 	import RefreshStatus from '#lib/components/refresh-status.svelte';
@@ -13,8 +21,10 @@
 	import StateAnnouncer from '#lib/components/state-announcer.svelte';
 	import TableSkeleton from '#lib/components/table-skeleton.svelte';
 	import Timestamp from '#lib/components/timestamp.svelte';
+	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
+	import * as DropdownMenu from '#lib/components/ui/dropdown-menu/index.js';
 	import * as Empty from '#lib/components/ui/empty/index.js';
 	import * as Field from '#lib/components/ui/field/index.js';
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
@@ -25,10 +35,10 @@
 	import { states } from '#lib/sandbox-status.js';
 
 	const wide = 'hidden sm:table-cell';
-	const columns = [wide, '', '', wide, wide, wide];
+	const columns = [wide, '', '', wide, wide, wide, ''];
 
 	const listing = new Remote(async () => {
-		const [sandboxes, catalog] = await Promise.all([allSandboxes(), sandboxApi.catalog()]);
+		const [sandboxes, catalog] = await Promise.all([admin.allSandboxes(), sandboxApi.catalog()]);
 		return { sandboxes, catalog };
 	});
 	keepFresh(
@@ -44,22 +54,72 @@
 		refreshing = false;
 	}
 
-	const owner = $derived(page.url.searchParams.get('owner') ?? '');
-	const owners = $derived(
-		[...new Set(listing.value?.sandboxes.map((sandbox) => sandbox.owner.handle))].sort()
-	);
-	const shown = $derived(
-		listing.value?.sandboxes.filter((sandbox) => owner === '' || sandbox.owner.handle === owner)
-	);
+	const owner = $derived(ownerOf(page.url));
+	const view = $derived(shown(listing.value?.sandboxes, owner));
 
-	function filter(handle: string) {
-		const url = new URL(page.url.href);
-		if (handle) {
-			url.searchParams.set('owner', handle);
-		} else {
-			url.searchParams.delete('owner');
+	function filter(handle: Handle | null) {
+		void goto(sandboxesOf(handle), { replace: true, reset: false });
+	}
+
+	const powers: Record<
+		AdminPower,
+		{
+			label: string;
+			pending: string;
+			run: (handle: Handle, name: string) => Promise<void>;
+			done: (fullName: string) => string;
 		}
-		void goto(url, { replace: true, reset: false });
+	> = {
+		stop: {
+			label: 'Sleep',
+			pending: 'Going to sleep…',
+			run: admin.stopSandbox,
+			done: (fullName) => `Put ${fullName} to sleep`
+		},
+		restart: {
+			label: 'Restart',
+			pending: 'Restarting…',
+			run: admin.restartSandbox,
+			done: (fullName) => `Restarted ${fullName}`
+		}
+	};
+
+	/** The powers in flight, by the full name of their sandbox. */
+	const pending = new SvelteMap<string, AdminPower>();
+	let failure = $state<{ title: string; message: string } | null>(null);
+
+	async function act({ sandbox, fullName }: Row, power: AdminPower) {
+		failure = null;
+		pending.set(fullName, power);
+		try {
+			await powers[power].run(sandbox.owner.handle, sandbox.name);
+			toast.success(powers[power].done(fullName));
+		} catch (error) {
+			failure = {
+				title: `${powers[power].label} failed for ${fullName}`,
+				message: failureMessage(error)
+			};
+		}
+		await listing.reload();
+		pending.delete(fullName);
+	}
+
+	/** The row whose deletion is asked, kept while the dialog closes. */
+	let doomed = $state<Row | null>(null);
+	let confirming = $state(false);
+
+	function confirmDelete(row: Row) {
+		doomed = row;
+		confirming = true;
+	}
+
+	async function remove({ sandbox, fullName }: Row) {
+		try {
+			await admin.deleteSandbox(sandbox.owner.handle, sandbox.name);
+			toast.success(`Deleted ${fullName}`);
+		} finally {
+			await listing.reload();
+		}
 	}
 </script>
 
@@ -83,24 +143,19 @@
 
 	<StateAnnouncer sandboxes={listing.value?.sandboxes} />
 
-	{#if listing.value && (owners.length > 1 || owner !== '')}
-		<Field.Field orientation="horizontal" class="w-fit">
-			<Field.Label for="owner-filter" class="shrink-0">Owner</Field.Label>
-			<NativeSelect.Root
-				id="owner-filter"
-				value={owner}
-				onchange={(event) => filter(event.currentTarget.value)}
-			>
-				<NativeSelect.Option value="">Everyone</NativeSelect.Option>
-				{#each owners as handle (handle)}
-					<NativeSelect.Option value={handle}>{handle}</NativeSelect.Option>
-				{/each}
-				{#if owner !== '' && !owners.includes(owner)}
-					<NativeSelect.Option value={owner}>{owner}</NativeSelect.Option>
-				{/if}
-			</NativeSelect.Root>
-		</Field.Field>
-	{/if}
+	<Field.Field orientation="horizontal" class="w-fit">
+		<Field.Label for="owner-filter" class="shrink-0">Owner</Field.Label>
+		<NativeSelect.Root
+			id="owner-filter"
+			value={owner ?? ''}
+			onchange={(event) => filter(event.currentTarget.value || null)}
+		>
+			<NativeSelect.Option value="">Everyone</NativeSelect.Option>
+			{#each view.owners as handle (handle)}
+				<NativeSelect.Option value={handle}>{handle}</NativeSelect.Option>
+			{/each}
+		</NativeSelect.Root>
+	</Field.Field>
 
 	{#if listing.current.state === 'failed'}
 		<LoadFailed
@@ -108,7 +163,7 @@
 			error={listing.current.error}
 			onretry={() => listing.reload()}
 		/>
-	{:else if shown?.length === 0}
+	{:else if view.rows?.length === 0}
 		<Empty.Root class="border">
 			<Empty.Header>
 				<Empty.Media variant="icon"><BoxesIcon /></Empty.Media>
@@ -126,7 +181,7 @@
 			</Empty.Header>
 			{#if owner}
 				<Empty.Content>
-					<Button variant="outline" onclick={() => filter('')}>Show everyone's</Button>
+					<Button variant="outline" onclick={() => filter(null)}>Show everyone's</Button>
 				</Empty.Content>
 			{/if}
 		</Empty.Root>
@@ -141,16 +196,19 @@
 						<Table.Head class={wide}>Image</Table.Head>
 						<Table.Head class={wide}>Size</Table.Head>
 						<Table.Head class={wide}>Created</Table.Head>
+						<Table.Head><span class="sr-only">Actions</span></Table.Head>
 					</Table.Row>
 				</Table.Header>
 				<Table.Body>
-					{#if !listing.value || !shown}
+					{#if !listing.value || !view.rows}
 						<TableSkeleton {columns} />
 					{:else}
 						{@const catalog = listing.value.catalog}
-						{#each shown as sandbox (sandbox.ssh.username)}
+						{#each view.rows as row (row.fullName)}
+							{@const sandbox = row.sandbox}
 							{@const image = choiceLabel(catalog.images, sandbox.image)}
 							{@const size = choiceLabel(catalog.sizes, sandbox.size)}
+							{@const inFlight = pending.get(row.fullName)}
 							<Table.Row>
 								<Table.Cell class={wide}>
 									<div class="flex items-center gap-2">
@@ -168,7 +226,7 @@
 											<a
 												href="/admin/sandboxes/{sandbox.owner.handle}/{sandbox.name}"
 												class="rounded-sm underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-												aria-label="{sandbox.name}.{sandbox.owner.handle} details"
+												aria-label="{row.fullName} details"
 											>
 												{sandbox.name}
 											</a>
@@ -192,10 +250,38 @@
 										<span class="text-xs text-muted-foreground sm:hidden">{image} · {size}</span>
 									</div>
 								</Table.Cell>
-								<Table.Cell><SandboxStateBadge status={sandbox} detail /></Table.Cell>
+								<Table.Cell>
+									{#if inFlight}
+										<Badge variant="outline">
+											<Spinner role="presentation" aria-label={undefined} aria-hidden="true" />
+											{powers[inFlight].pending}
+										</Badge>
+									{:else}
+										<SandboxStateBadge status={sandbox} detail />
+									{/if}
+								</Table.Cell>
 								<Table.Cell class={wide}>{image}</Table.Cell>
 								<Table.Cell class={wide}>{size}</Table.Cell>
 								<Table.Cell class={wide}><Timestamp value={sandbox.createdAt} /></Table.Cell>
+								<Table.Cell class="w-0 text-right">
+									<DropdownMenu.Root>
+										<DropdownMenu.Trigger>
+											{#snippet child({ props })}
+												<Button
+													variant="ghost"
+													size="icon"
+													aria-label="Actions for {row.fullName}"
+													{...props}
+												>
+													<EllipsisIcon />
+												</Button>
+											{/snippet}
+										</DropdownMenu.Trigger>
+										<DropdownMenu.Content align="end">
+											{@render menu(row, inFlight !== undefined)}
+										</DropdownMenu.Content>
+									</DropdownMenu.Root>
+								</Table.Cell>
 							</Table.Row>
 						{/each}
 					{/if}
@@ -203,4 +289,46 @@
 			</Table.Root>
 		</div>
 	{/if}
+
+	{#if failure}
+		<Alert.Root variant="destructive">
+			<CircleAlertIcon />
+			<Alert.Title>{failure.title}</Alert.Title>
+			<Alert.Description class="first-letter:uppercase">{failure.message}</Alert.Description>
+		</Alert.Root>
+	{/if}
 </div>
+
+{#snippet menu(row: Row, busy: boolean)}
+	<DropdownMenu.Item>
+		{#snippet child({ props })}
+			<a href="/admin/sandboxes/{row.sandbox.owner.handle}/{row.sandbox.name}" {...props}>
+				Details
+			</a>
+		{/snippet}
+	</DropdownMenu.Item>
+	{#each row.powers as power (power)}
+		<DropdownMenu.Item disabled={busy} onSelect={() => act(row, power)}>
+			{powers[power].label}
+		</DropdownMenu.Item>
+	{/each}
+	{#if row.deletable}
+		<DropdownMenu.Item variant="destructive" disabled={busy} onSelect={() => confirmDelete(row)}>
+			Delete sandbox…
+		</DropdownMenu.Item>
+	{/if}
+{/snippet}
+
+{#if doomed}
+	{@const row = doomed}
+	<ConfirmDialog
+		bind:open={confirming}
+		title="Delete {row.fullName}?"
+		action="Delete sandbox"
+		confirmName={row.sandbox.name}
+		onconfirm={() => remove(row)}
+	>
+		This deletes {row.sandbox.owner.handle}'s sandbox {row.sandbox.name} and everything in its home directory.
+		It cannot be undone.
+	</ConfirmDialog>
+{/if}

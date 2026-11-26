@@ -160,8 +160,18 @@ test.describe('an admin', () => {
 		const created = await member.request.post('/api/sandboxes', { data: { name: 'probe' } });
 		expect(created.status(), await created.text()).toBe(201);
 
-		await page.goto('/admin/sandboxes');
-		await page.getByRole('link', { name: 'probe.dana details' }).click();
+		await page.goto('/admin/people');
+		await page.getByRole('table', { name: 'People' }).getByRole('link', { name: 'dana' }).click();
+		await expect(page).toHaveURL('/admin/sandboxes?owner=dana');
+		const owner = page.getByLabel('Owner');
+		await expect(owner).toHaveValue('dana');
+		await owner.selectOption('Everyone');
+		await expect(page).toHaveURL('/admin/sandboxes');
+		await owner.selectOption('dana');
+		await expect(page).toHaveURL('/admin/sandboxes?owner=dana');
+		const sandboxes = page.getByRole('table', { name: 'All sandboxes' });
+		const probe = sandboxes.getByRole('row', { name: /probe/ });
+		await rowAction(sandboxes, 'probe.dana', 'Details');
 		await expect(page).toHaveURL('/admin/sandboxes/dana/probe');
 		await expect(page.getByRole('heading', { level: 1 })).toHaveText('probe');
 		const facts = page.locator('dl');
@@ -177,11 +187,28 @@ test.describe('an admin', () => {
 			await expect(events).toContainText('Started', { timeout: 1_000 });
 		}).toPass({ timeout: 90_000 });
 
+		await page.goBack();
+		await expect(owner).toHaveValue('dana');
+		await rowAction(sandboxes, 'probe.dana', 'Sleep');
+		await expect(page.getByText('Put probe.dana to sleep')).toBeVisible();
+		await expect(probe).toContainText('Sleeping');
+
+		await rowAction(sandboxes, 'probe.dana', 'Delete sandbox…');
+		const confirm = page.getByRole('alertdialog', { name: 'Delete probe.dana?' });
+		await expect(confirm).toContainText("dana's sandbox probe");
+		const remove = confirm.getByRole('button', { name: 'Delete sandbox' });
+		await expect(remove).toBeDisabled();
+		await confirm.getByLabel('Type probe to confirm').fill('probe');
+		await remove.click();
+		await expect(confirm).toBeHidden();
+		await expect(page.getByText('Deleted probe.dana')).toBeVisible();
+		await expect(probe).toHaveCount(0);
+		await expect(page.getByText('dana has no sandboxes')).toBeVisible();
+		await expect(owner).toHaveValue('dana');
+
 		const deleted = await member.request.delete('/api/me');
 		expect(deleted.ok(), await deleted.text()).toBe(true);
 		await context.close();
-		await page.getByRole('button', { name: 'Refresh' }).click();
-		await expect(page.getByText('dana has no sandbox named probe')).toBeVisible();
 	});
 
 	test('cannot disable or delete themselves from People', async ({ page }) => {
@@ -223,7 +250,7 @@ async function loaded(page: Page) {
 	await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
 }
 
-async function rowAction(table: Locator, handle: string, action: string) {
-	await table.getByRole('button', { name: `Actions for ${handle}` }).click();
+async function rowAction(table: Locator, row: string, action: string) {
+	await table.getByRole('button', { name: `Actions for ${row}` }).click();
 	await table.page().getByRole('menuitem', { name: action, exact: true }).click();
 }

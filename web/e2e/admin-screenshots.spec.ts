@@ -371,6 +371,18 @@ inEveryView((look) => {
 		await expect(detail).toBeVisible();
 		expect(await detail.evaluate((text) => text.scrollWidth <= text.clientWidth)).toBe(true);
 		await look(page, 'admin-sandboxes');
+
+		const actions = page.getByRole('button', { name: 'Actions for main.ada' });
+		await actions.click();
+		await page.getByRole('menu').waitFor();
+		await look(page, 'admin-sandboxes-actions');
+
+		await page.keyboard.press('Escape');
+		await page.getByRole('menu').waitFor({ state: 'hidden' });
+		await actions.click();
+		await page.getByRole('menuitem', { name: 'Delete sandbox…' }).click();
+		await page.getByRole('alertdialog').waitFor();
+		await look(page, 'admin-sandboxes-delete');
 	});
 
 	test('all sandboxes, empty', async ({ page }) => {
