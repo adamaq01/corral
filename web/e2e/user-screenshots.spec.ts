@@ -398,6 +398,21 @@ inEveryView((look) => {
 
 		await page.keyboard.press('Escape');
 		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Set up MCP servers' }).click();
+		const fetch = dialog.getByRole('group', { name: 'Server 1' });
+		await fetch.getByLabel('Name', { exact: true }).fill('fetch');
+		await fetch.getByLabel('Command', { exact: true }).fill('uvx');
+		await fetch.getByLabel('Arguments', { exact: true }).fill('mcp-server-fetch');
+		await dialog.getByRole('button', { name: 'Add server' }).click();
+		const docs = dialog.getByRole('group', { name: 'Server 2' });
+		await docs.getByLabel('Name', { exact: true }).fill('docs');
+		await docs.getByRole('radio', { name: 'A URL' }).click();
+		await docs.getByLabel('URL', { exact: true }).fill('https://docs.example.lan/mcp');
+		await docs.getByLabel('Headers', { exact: true }).fill('X-Team: platform');
+		await look(page, 'setup-mcp', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
 		await page.getByRole('button', { name: 'Add variable' }).click();
 		await dialog.getByLabel('Name').fill('github_token');
 		await dialog.getByRole('switch', { name: 'Secret' }).click();

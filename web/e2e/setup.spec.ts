@@ -968,6 +968,128 @@ test("the git identity preset shows Corral's refusal next to the field it names"
 	await expect(dialog.getByRole('alert')).toHaveCount(1);
 });
 
+const servers = '.config/corral-agents/mcp.json';
+
+test('the MCP servers preset writes a command and a URL server as mcp.json, then reads them back', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up MCP servers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'MCP servers' });
+	await expect(dialog).toContainText(
+		'Applied to Claude Code, Codex, Pi and oh-my-pi at each start, as their user-scope servers.'
+	);
+	const first = dialog.getByRole('group', { name: 'Server 1' });
+	await expect(first.getByRole('radio', { name: 'A command' })).toBeChecked();
+	const name = first.getByLabel('Name', { exact: true });
+	await expect(name).toHaveAccessibleDescription('Letters, digits, - and _.');
+	await name.fill('my fetch');
+	await expect(name).toHaveAttribute('aria-invalid', 'true');
+	await expect(first.getByText('Letters, digits, - and _.')).toBeVisible();
+	await name.fill('fetch');
+	await expect(name).not.toHaveAttribute('aria-invalid');
+	await first.getByLabel('Command', { exact: true }).fill('uvx');
+	await first
+		.getByLabel('Arguments', { exact: true })
+		.fill('mcp-server-fetch\n--ignore-robots-txt');
+	await first.getByLabel('Variables', { exact: true }).fill('FETCH_TIMEOUT=30');
+
+	await dialog.getByRole('button', { name: 'Add server' }).click();
+	const second = dialog.getByRole('group', { name: 'Server 2' });
+	await expect(second.getByLabel('Name', { exact: true })).toBeFocused();
+	await second.getByLabel('Name', { exact: true }).fill('fetch');
+	await expect(second.getByLabel('Name', { exact: true })).toHaveAccessibleDescription(
+		'Another server has this name.'
+	);
+	const save = dialog.getByRole('button', { name: 'Save servers' });
+	await expect(save).toBeDisabled();
+	await second.getByLabel('Name', { exact: true }).fill('docs');
+	await second.getByRole('radio', { name: 'A URL' }).click();
+	await second.getByLabel('URL', { exact: true }).fill('https://docs.example/mcp');
+	await second.getByLabel('Headers', { exact: true }).fill('X-Team: platform');
+	await save.click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved the MCP servers')).toBeVisible();
+	const file = {
+		fetch: {
+			command: 'uvx',
+			args: ['mcp-server-fetch', '--ignore-robots-txt'],
+			env: { FETCH_TIMEOUT: '30' }
+		},
+		docs: { type: 'http', url: 'https://docs.example/mcp', headers: { 'X-Team': 'platform' } }
+	};
+	expect(sent(calls)).toEqual([
+		created(servers, false, `${JSON.stringify(file, null, 2)}\n`, 'file')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText('2 servers: fetch, docs');
+	await page.getByRole('button', { name: 'Change MCP servers' }).click();
+	await expect(first.getByLabel('Name', { exact: true })).toHaveValue('fetch');
+	await expect(first.getByRole('radio', { name: 'A command' })).toBeChecked();
+	await expect(first.getByLabel('Command', { exact: true })).toHaveValue('uvx');
+	await expect(first.getByLabel('Arguments', { exact: true })).toHaveValue(
+		'mcp-server-fetch\n--ignore-robots-txt'
+	);
+	await expect(first.getByLabel('Variables', { exact: true })).toHaveValue('FETCH_TIMEOUT=30');
+	await expect(second.getByLabel('Name', { exact: true })).toHaveValue('docs');
+	await expect(second.getByRole('radio', { name: 'A URL' })).toBeChecked();
+	await expect(second.getByLabel('URL', { exact: true })).toHaveValue('https://docs.example/mcp');
+	await expect(second.getByLabel('Headers', { exact: true })).toHaveValue('X-Team: platform');
+	await expect(dialog.getByRole('switch', { name: 'Secret' })).not.toBeChecked();
+	await expect(save).toBeDisabled();
+});
+
+test('with Secret on, the MCP servers preset sends a secret file, and only offers to replace it', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up MCP servers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'MCP servers' });
+	const first = dialog.getByRole('group', { name: 'Server 1' });
+	await first.getByLabel('Name', { exact: true }).fill('github');
+	await first.getByRole('radio', { name: 'A URL' }).click();
+	await first.getByLabel('URL', { exact: true }).fill('https://api.githubcopilot.com/mcp/');
+	await first.getByLabel('Headers', { exact: true }).fill('Authorization: Bearer ghp_s3cret');
+	const secret = dialog.getByRole('switch', { name: 'Secret' });
+	await expect(secret).toHaveAccessibleDescription(
+		'Keeps tokens in headers or variables hidden; the list cannot be read back here once it is secret, only replaced.'
+	);
+	await secret.click();
+	await dialog.getByRole('button', { name: 'Save servers' }).click();
+	await expect(dialog).toBeHidden();
+	const file = {
+		github: {
+			type: 'http',
+			url: 'https://api.githubcopilot.com/mcp/',
+			headers: { Authorization: 'Bearer ghp_s3cret' }
+		}
+	};
+	expect(sent(calls)).toEqual([
+		created(servers, true, `${JSON.stringify(file, null, 2)}\n`, 'file')
+	]);
+
+	const card = page.getByRole('list', { name: 'Presets' }).getByRole('listitem').nth(2);
+	await expect(card).toContainText('Secret');
+	await page.getByRole('button', { name: 'Change MCP servers' }).click();
+	await expect(dialog).toContainText('Set, hidden');
+	await expect(dialog.getByRole('group', { name: 'Server 1' })).toHaveCount(0);
+	for (const input of await dialog.locator('input, textarea').all()) {
+		await expect(input).not.toHaveValue(/s3cret/);
+	}
+	await expect(secret).toBeChecked();
+	await expect(secret).toBeDisabled();
+	await expect(dialog.getByRole('button', { name: 'Save servers' })).toBeDisabled();
+	await dialog.getByRole('button', { name: 'Replace the servers' }).click();
+	await expect(first.getByLabel('Name', { exact: true })).toBeFocused();
+	await expect(first.getByLabel('Name', { exact: true })).toHaveValue('');
+	await expect(secret).toBeChecked();
+	await expect(secret).toBeEnabled();
+});
+
 test('an entry lives through Corral: made, renamed, made secret and deleted', async ({ page }) => {
 	const suffix = Math.random().toString(36).slice(2, 8);
 	const first = `e2e_${suffix}`;

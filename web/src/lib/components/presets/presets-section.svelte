@@ -6,6 +6,7 @@
 	import type { SetupEntry } from '#lib/api/generated/index.js';
 	import GitDialog from '#lib/components/presets/git-dialog.svelte';
 	import LlmDialog from '#lib/components/presets/llm-dialog.svelte';
+	import McpDialog from '#lib/components/presets/mcp-dialog.svelte';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import * as Item from '#lib/components/ui/item/index.js';
@@ -32,8 +33,7 @@
 		summary: string | null;
 	};
 
-	const descriptions: Record<Exclude<Preset, 'llm' | 'git'>, string> = {
-		mcp: 'Applied to Claude Code, Codex, Pi and oh-my-pi at each start, as their user-scope servers.',
+	const descriptions: Record<Exclude<Preset, 'llm' | 'git' | 'mcp'>, string> = {
 		dotfiles: "Checked out into the home at a sandbox's first start, or files you add one by one."
 	};
 
@@ -98,8 +98,9 @@
 
 <LlmDialog bind:open={open.llm} {entries} {onchanged} />
 <GitDialog bind:open={open.git} {entries} {onchanged} />
+<McpDialog bind:open={open.mcp} {entries} {onchanged} />
 {#each presets as preset (preset.key)}
-	{#if preset.key !== 'llm' && preset.key !== 'git'}
+	{#if preset.key === 'dotfiles'}
 		<Dialog.Root bind:open={open[preset.key]}>
 			<Dialog.Content>
 				<Dialog.Header>
