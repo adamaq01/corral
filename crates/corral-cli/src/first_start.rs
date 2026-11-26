@@ -217,26 +217,39 @@ fn why_git_failed(output: &mut File, status: ExitStatus) -> String {
         )
 }
 
-/// `text` with the user, and any password, taken out of each URL in it.
+/// `text` with the user, and any password, taken out of each URL in it, and the login out of each
+/// `user:password@host:path` address, keeping the user of `user@host:path`.
 fn without_userinfo(text: &str) -> String {
     let mut shown = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(scheme) = rest.find("://") {
-        let (before, after) = rest.split_at(scheme + 3);
-        shown.push_str(before);
-        let end = after
-            .find(|c: char| c == '/' || c == '\'' || c == '"' || c.is_whitespace())
-            .unwrap_or(after.len());
-        let (authority, tail) = after.split_at(end);
-        shown.push_str(
-            authority
-                .rsplit_once('@')
-                .map_or(authority, |(_, host)| host),
-        );
-        rest = tail;
+    while !rest.is_empty() {
+        let end = rest
+            .find(|c: char| c == '\'' || c == '"' || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let (word, tail) = rest.split_at(end);
+        shown.push_str(&word_without_userinfo(word));
+        let delimiter = tail.chars().next().map_or(0, char::len_utf8);
+        shown.push_str(&tail[..delimiter]);
+        rest = &tail[delimiter..];
     }
-    shown.push_str(rest);
     shown
+}
+
+fn word_without_userinfo(word: &str) -> String {
+    if let Some((scheme, after)) = word.split_once("://") {
+        let (authority, path) = after.split_at(after.find('/').unwrap_or(after.len()));
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
+        return format!("{scheme}://{host}{path}");
+    }
+    let head = word.split('/').next().unwrap_or_default();
+    match head.rsplit_once('@') {
+        Some((login, host)) if login.contains(':') && host.contains(':') => {
+            word[login.len() + 1..].to_owned()
+        }
+        _ => word.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -546,6 +559,27 @@ record "$@" >"$dir/invocation"
             assert!(!home.join(".config/corral-agents/dotfiles.git").exists());
             std::fs::remove_dir_all(&home).unwrap();
         }
+    }
+
+    #[test]
+    fn a_login_in_an_scp_address_stays_out_of_the_notices() {
+        let home = home(
+            "scp-login",
+            r#"{"url": "me:tok@github.com:me/x.git", "branch": null}"#,
+        );
+        write_dotfiles(
+            &home,
+            r#"{"url": "me:tok@github.com:me/dotfiles.git", "branch": null}"#,
+        );
+        assert_eq!(
+            started(&home, fake_git()),
+            [
+                "Checking out dotfiles from github.com:me/dotfiles.git failed: the repository \
+                 must be an https://, ssh:// or git@host:path address",
+                "Cloned github.com:me/x.git into ~/x"
+            ]
+        );
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]
