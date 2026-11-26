@@ -52,18 +52,19 @@ may run: Claude Code, Codex, Pi and oh-my-pi. The MCP servers are those of
 `~/.config/corral-agents/mcp.json`, an object of servers by name, each a command (`command`,
 `args`, `env`) or a URL (`"type": "http"`, `url`, `headers`). They replace `mcpServers` in
 `~/.claude.json`, `~/.pi/agent/mcp.json` and `~/.omp/agent/mcp.json`, and `[mcp_servers]` in
-`~/.codex/config.toml`, where a URL's headers are `http_headers`. Corral keeps the names of the
-servers it applied in `~/.config/corral/agents-applied.json`: once `mcp.json` is gone or empty, the
-next start removes those servers from the agents' files and leaves any other server as it is, and
-an `mcp.json` that is not valid JSON changes no agent's servers. The addresses are the sandbox's `ANTHROPIC_BASE_URL` and
-`OPENAI_BASE_URL` variables, which Claude Code and oh-my-pi read themselves. Codex gets
-`OPENAI_BASE_URL` as `openai_base_url` in `~/.codex/config.toml`, and Pi gets each address as
-`providers.anthropic.baseUrl` or `providers.openai.baseUrl` in `~/.pi/agent/models.json`. Once a
-variable is gone, its key is removed, and so is a provider that the removal leaves empty.
-Everything else in these files stays as the agents wrote it, a file is written only when one of
-these keys changes in it, and a file that is not valid JSON or TOML is left alone. One line in the
-notices names the agents that got the servers, one the agents that got the address, and one says
-why for each file they could not be applied to, and for an `mcp.json` that is not valid JSON.
+`~/.codex/config.toml`, where a URL's headers are `http_headers`. An `mcp.json` that is not valid
+JSON changes no agent's servers. Corral keeps the names of the servers it applied in
+`~/.config/corral/agents-applied.json`, and once `mcp.json` is gone or empty, the next start
+removes those servers from the agents' files and leaves any other server as it is. The addresses
+are the sandbox's `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` variables, which Claude Code and
+oh-my-pi read themselves. Codex gets `OPENAI_BASE_URL` as `openai_base_url` in
+`~/.codex/config.toml`, and Pi gets each address as `providers.anthropic.baseUrl` or
+`providers.openai.baseUrl` in `~/.pi/agent/models.json`. Once a variable is gone, its key is
+removed, and so is a provider that the removal leaves empty. Everything else in these files stays
+as the agents wrote it, a file is written only when one of these keys changes in it, and a file
+that is not valid JSON or TOML is left alone. One line in the notices names the agents that got
+the servers, one the agents that got the address, and one says why for each file they could not be
+applied to, and for an `mcp.json` that is not valid JSON.
 
 The first start, the one that finds no `~/.corral-initialized`, copies the skeleton, writes the
 home files, checks out the setup's dotfiles, if any, writes the home files again, applies the MCP
@@ -73,16 +74,16 @@ servers and addresses, then clones the repository the sandbox was made with, if 
 for the repository's default branch. It is cloned bare into `~/.config/corral-agents/dotfiles.git`,
 which stays, and checked out with the home as its work tree: each of its files replaces what the
 skeleton put at its path, and a home file of the setup at the same path is then written over it,
-so the setup's file is the one that stays. Git runs as `sandbox` with the image's own `git` and `PATH`,
-never prompts, accepts the SSH host key of a host it has not seen, and stops after 5 minutes. Both
-URLs take the same shapes: `https://` without a login, `ssh://` without a password, `file:///`, or
-`user@host:path`. A private repository needs its token or key among the setup's files, such as
-`~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the setup's
-variables reach sessions, not git. One line in the notices says whether the dotfiles were checked
-out, and one whether the repository was cloned, and if not, why: a `dotfiles.json` that is not
-valid or a URL of another shape, `dotfiles.git` or the repository's directory exists already, the
-image has no `git`, or git's last `fatal:` line, else its last line of output. A failed checkout
-removes the `dotfiles.git` it cloned. Later starts never check out or clone.
+so the setup's file is the one that stays. Git runs as `sandbox` with the image's own `git` and
+`PATH`, never prompts, accepts the SSH host key of a host it has not seen, and stops after 5
+minutes. Both URLs take the same shapes: `https://` without a login, `ssh://` without a password,
+`file:///`, or `user@host:path`. A private repository needs its token or key among the setup's
+files, such as `~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the
+setup's variables reach sessions, not git. One line in the notices says whether the dotfiles were
+checked out, and one whether the repository was cloned, and if not, why: a `dotfiles.json` that is
+not valid or a URL of another shape, `dotfiles.git` or the repository's directory exists already,
+the image has no `git`, or git's last `fatal:` line, else its last line of output. A failed
+checkout removes the `dotfiles.git` it cloned. Later starts never check out or clone.
 
 Sessions run through OpenSSH on both engines, so they get its environment: `USER`, `HOME`,
 `SHELL` and the rest from the sandbox user's account, and the sandbox's variables, which the
