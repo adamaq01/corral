@@ -1,6 +1,7 @@
 <script lang="ts">
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import CopyPlusIcon from '@lucide/svelte/icons/copy-plus';
+	import InfoIcon from '@lucide/svelte/icons/info';
 	import PencilIcon from '@lucide/svelte/icons/pencil';
 	import SearchXIcon from '@lucide/svelte/icons/search-x';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
@@ -23,7 +24,7 @@
 	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
-	import { baseName, noun, settings, where } from '#lib/setup.js';
+	import { SHARING, baseName, noun, settings, where } from '#lib/setup.js';
 	import { Remote } from '#lib/remote.svelte.js';
 
 	let { id }: { id: string } = $props();
@@ -142,6 +143,8 @@
 	{:else}
 		{@const current = entry.current.value}
 		{@const variable = current.kind === 'variable'}
+		{@const own = current.shared === null}
+		{@const required = current.shared === 'required'}
 		{@const uses = new Map(current.sandboxes.map((used) => [used.sandbox, used]))}
 		{@const unattached = (owned.value ?? [])
 			.map((sandbox) => sandbox.name)
@@ -153,6 +156,9 @@
 						{#each where(current).split('/') as part, index (index)}{#if index > 0}/<wbr
 								/>{/if}{part}{/each}
 					</h1>
+					{#if current.shared}
+						<Badge variant="outline">{SHARING[current.shared].badge}</Badge>
+					{/if}
 					{#if current.secret}
 						<Badge variant="secondary">Secret</Badge>
 					{/if}
@@ -169,17 +175,26 @@
 						: 'A file Corral writes into the home at each start of the sandboxes it is attached to, replacing what is at its path. Edits made to it inside a sandbox are lost at the next start; change it here instead.'}
 				</p>
 			</div>
-			<div class="flex flex-wrap gap-2">
-				<Button variant="outline" onclick={() => (editing = true)}>
-					<PencilIcon />
-					Edit
-				</Button>
-				<Button variant="outline" onclick={() => (duplicating = true)}>
-					<CopyPlusIcon />
-					Duplicate
-				</Button>
-			</div>
+			{#if own}
+				<div class="flex flex-wrap gap-2">
+					<Button variant="outline" onclick={() => (editing = true)}>
+						<PencilIcon />
+						Edit
+					</Button>
+					<Button variant="outline" onclick={() => (duplicating = true)}>
+						<CopyPlusIcon />
+						Duplicate
+					</Button>
+				</div>
+			{/if}
 		</header>
+
+		{#if !own}
+			<Alert.Root>
+				<InfoIcon />
+				<Alert.Title>Set by the admin in Settings > Shared setup</Alert.Title>
+			</Alert.Root>
+		{/if}
 
 		{#if current.duplicate}
 			<Alert.Root variant="destructive">
@@ -199,14 +214,17 @@
 				<Card.Title>Value</Card.Title>
 				<Card.Description>
 					{current.secret
-						? 'Kept in the secret store and never shown again.'
-						: 'Not secret, so shown in full.'} A sandbox with an override keeps its own.
+						? `Kept in the secret store and never shown${own ? ' again' : ''}.`
+						: 'Not secret, so shown in full.'}
+					{required ? '' : 'A sandbox with an override keeps its own.'}
 				</Card.Description>
-				<Card.Action>
-					<Button variant="outline" size="sm" onclick={() => (replacing = true)}>
-						{current.secret ? 'Replace value' : 'Edit value'}
-					</Button>
-				</Card.Action>
+				{#if own}
+					<Card.Action>
+						<Button variant="outline" size="sm" onclick={() => (replacing = true)}>
+							{current.secret ? 'Replace value' : 'Edit value'}
+						</Button>
+					</Card.Action>
+				{/if}
 			</Card.Header>
 			<Card.Content>
 				<StoredValue
@@ -296,10 +314,13 @@
 			<Card.Header>
 				<Card.Title>Sandboxes</Card.Title>
 				<Card.Description>
-					{current.applyToNew ? 'Each sandbox you create gets it.' : 'New sandboxes do not get it.'} A
-					change reaches a sandbox at its next start.
+					{required
+						? 'Every sandbox gets it.'
+						: current.applyToNew
+							? 'Each sandbox you create gets it.'
+							: 'New sandboxes do not get it.'} A change reaches a sandbox at its next start.
 				</Card.Description>
-				{#if unattached.length > 1}
+				{#if !required && unattached.length > 1}
 					<Card.Action>
 						<Button
 							variant="outline"
@@ -312,94 +333,100 @@
 					</Card.Action>
 				{/if}
 			</Card.Header>
-			<Card.Content>
-				{#if owned.current.state === 'loading'}
-					<Skeleton class="h-10 rounded-lg" />
-				{:else if owned.current.state === 'failed'}
-					<LoadFailed
-						title="Loading your sandboxes failed"
-						error={owned.current.error}
-						onretry={() => owned.reload()}
-					/>
-				{:else if owned.current.value.length === 0}
-					<p class="text-sm text-muted-foreground">
-						You have no sandbox yet. {current.applyToNew ? 'The first one you create gets it.' : ''}
-					</p>
-				{:else}
-					<ul class="grid divide-y" aria-label="Your sandboxes">
-						{#each owned.current.value as sandbox (sandbox.name)}
-							{@const used = uses.get(sandbox.name)}
-							<li class="flex flex-wrap items-center gap-3 py-2.5 first:pt-0 last:pb-0">
-								<div class="grid min-w-0 flex-1 gap-1">
-									<p class="flex flex-wrap items-center gap-2 text-sm">
-										<a class="font-medium hover:underline" href="/sandboxes/{sandbox.name}">
-											{sandbox.name}
-										</a>
-										{#if used?.overridden}
-											<Badge variant="secondary">Overridden</Badge>
-										{/if}
-										{#if !used}
-											<span class="text-muted-foreground">Not attached</span>
-										{/if}
-									</p>
-									{#if used && used.unresolved.length > 0}
-										<p class="text-sm text-destructive">
-											Cannot start: {used.unresolved.join(', ')} not attached there.
+			{#if !required}
+				<Card.Content>
+					{#if owned.current.state === 'loading'}
+						<Skeleton class="h-10 rounded-lg" />
+					{:else if owned.current.state === 'failed'}
+						<LoadFailed
+							title="Loading your sandboxes failed"
+							error={owned.current.error}
+							onretry={() => owned.reload()}
+						/>
+					{:else if owned.current.value.length === 0}
+						<p class="text-sm text-muted-foreground">
+							You have no sandbox yet. {current.applyToNew
+								? 'The first one you create gets it.'
+								: ''}
+						</p>
+					{:else}
+						<ul class="grid divide-y" aria-label="Your sandboxes">
+							{#each owned.current.value as sandbox (sandbox.name)}
+								{@const used = uses.get(sandbox.name)}
+								<li class="flex flex-wrap items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+									<div class="grid min-w-0 flex-1 gap-1">
+										<p class="flex flex-wrap items-center gap-2 text-sm">
+											<a class="font-medium hover:underline" href="/sandboxes/{sandbox.name}">
+												{sandbox.name}
+											</a>
+											{#if used?.overridden}
+												<Badge variant="secondary">Overridden</Badge>
+											{/if}
+											{#if !used}
+												<span class="text-muted-foreground">Not attached</span>
+											{/if}
 										</p>
-									{/if}
-									{#if failure?.sandbox === sandbox.name}
-										<p class="text-sm text-destructive first-letter:uppercase" role="alert">
-											{failure.message}
-										</p>
-									{/if}
-								</div>
-								{#if used}
-									<Button
-										variant="ghost"
-										size="sm"
-										disabled={pending !== null}
-										onclick={() => (detaching = sandbox.name)}
-									>
-										Detach<span class="sr-only"> from {sandbox.name}</span>
-									</Button>
-								{:else}
-									<Button
-										variant="outline"
-										size="sm"
-										disabled={pending !== null}
-										onclick={() =>
-											act(
-												sandbox.name,
-												() => setup.attach(sandbox.name, current.id),
-												`Attached to ${sandbox.name}`
-											)}
-									>
-										{#if pending === sandbox.name}
-											<Spinner />
+										{#if used && used.unresolved.length > 0}
+											<p class="text-sm text-destructive">
+												Cannot start: {used.unresolved.join(', ')} not attached there.
+											</p>
 										{/if}
-										Attach<span class="sr-only"> to {sandbox.name}</span>
-									</Button>
-								{/if}
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</Card.Content>
+										{#if failure?.sandbox === sandbox.name}
+											<p class="text-sm text-destructive first-letter:uppercase" role="alert">
+												{failure.message}
+											</p>
+										{/if}
+									</div>
+									{#if used}
+										<Button
+											variant="ghost"
+											size="sm"
+											disabled={pending !== null}
+											onclick={() => (detaching = sandbox.name)}
+										>
+											Detach<span class="sr-only"> from {sandbox.name}</span>
+										</Button>
+									{:else}
+										<Button
+											variant="outline"
+											size="sm"
+											disabled={pending !== null}
+											onclick={() =>
+												act(
+													sandbox.name,
+													() => setup.attach(sandbox.name, current.id),
+													`Attached to ${sandbox.name}`
+												)}
+										>
+											{#if pending === sandbox.name}
+												<Spinner />
+											{/if}
+											Attach<span class="sr-only"> to {sandbox.name}</span>
+										</Button>
+									{/if}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</Card.Content>
+			{/if}
 		</Card.Root>
 
-		<Card.Root class="ring-destructive/30">
-			<Card.Header>
-				<Card.Title>Delete</Card.Title>
-				<Card.Description>
-					Detaches it from every sandbox and deletes its value and every override.
-				</Card.Description>
-			</Card.Header>
-			<Card.Footer>
-				<Button variant="destructive" onclick={() => (deleting = true)}>
-					Delete {noun(current.kind)}
-				</Button>
-			</Card.Footer>
-		</Card.Root>
+		{#if own}
+			<Card.Root class="ring-destructive/30">
+				<Card.Header>
+					<Card.Title>Delete</Card.Title>
+					<Card.Description>
+						Detaches it from every sandbox and deletes its value and every override.
+					</Card.Description>
+				</Card.Header>
+				<Card.Footer>
+					<Button variant="destructive" onclick={() => (deleting = true)}>
+						Delete {noun(current.kind)}
+					</Button>
+				</Card.Footer>
+			</Card.Root>
+		{/if}
 
 		<EntryDialog bind:open={editing} entry={current} onsaved={edited} />
 		<EntryDialog

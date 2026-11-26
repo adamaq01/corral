@@ -77,6 +77,40 @@ const setAt = '2026-11-20T17:45:00Z';
 
 const entries: SetupEntry[] = [
 	{
+		id: '1d9e0f1a-2b3c-4d4e-8f5a-6b7c8d9e0f1a',
+		kind: 'variable',
+		target: 'ANTHROPIC_BASE_URL',
+		secret: false,
+		template: false,
+		applyToNew: true,
+		value: { setAt, size: 40, shown: 'text', text: 'https://gateway.example.lan/v1/anthropic' },
+		createdAt: setAt,
+		sandboxes: sandboxes.map(({ name }) => ({ sandbox: name, overridden: false, unresolved: [] })),
+		executable: false,
+		references: [],
+		duplicate: false,
+		shared: 'required',
+		shadows: false,
+		shadowed: false
+	},
+	{
+		id: '2e0f1a2b-3c4d-4e5f-9a6b-7c8d9e0f1a2b',
+		kind: 'variable',
+		target: 'HF_TOKEN',
+		secret: true,
+		template: false,
+		applyToNew: false,
+		value: { setAt, size: 37, shown: 'hidden' },
+		createdAt: setAt,
+		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }],
+		executable: false,
+		references: [],
+		duplicate: false,
+		shared: 'offered',
+		shadows: false,
+		shadowed: false
+	},
+	{
 		id: '3f1c2a4e-5b6d-4e7f-8a9b-0c1d2e3f4a5b',
 		kind: 'variable',
 		target: 'ANTHROPIC_API_KEY',
@@ -91,7 +125,10 @@ const entries: SetupEntry[] = [
 		],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '4a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
@@ -105,7 +142,10 @@ const entries: SetupEntry[] = [
 		sandboxes: [],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '5b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e',
@@ -119,7 +159,10 @@ const entries: SetupEntry[] = [
 		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '6c4d5e6f-7a8b-4c9d-0e1f-2a3b4c5d6e7f',
@@ -138,7 +181,10 @@ const entries: SetupEntry[] = [
 		sandboxes: [{ sandbox: 'main', overridden: false, unresolved: [] }],
 		executable: false,
 		references: ['ANTHROPIC_API_KEY', 'OPENAI_BASE_URL'],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	},
 	{
 		id: '7d5e6f7a-8b9c-4d0e-1f2a-3b4c5d6e7f8a',
@@ -152,17 +198,21 @@ const entries: SetupEntry[] = [
 		sandboxes: [{ sandbox: 'agents', overridden: false, unresolved: [] }],
 		executable: false,
 		references: [],
-		duplicate: false
+		duplicate: false,
+		shared: null,
+		shadows: false,
+		shadowed: false
 	}
 ];
 
 const attached: AttachedEntry[] = [
+	{ entry: entries[1], override: null },
 	{
-		entry: entries[0],
+		entry: entries[2],
 		override: { setAt, size: 51, shown: 'masked', length: 51, head: 'sk-a', tail: 'Qw' }
 	},
-	{ entry: entries[2], override: null },
-	{ entry: entries[3], override: null }
+	{ entry: entries[4], override: null },
+	{ entry: entries[5], override: null }
 ];
 
 const picture = 'https://pictures.example/bob.svg';
@@ -373,9 +423,9 @@ inEveryView((look) => {
 
 	test('a setup entry', async ({ page }) => {
 		for (const [name, entry] of [
-			['setup-secret-variable', entries[0]],
-			['setup-template-file', entries[3]],
-			['setup-secret-file', entries[4]]
+			['setup-secret-variable', entries[2]],
+			['setup-template-file', entries[5]],
+			['setup-secret-file', entries[6]]
 		] as const) {
 			await serve(page, {
 				[`/api/setup/${entry.id}`]: entry,
@@ -407,6 +457,14 @@ inEveryView((look) => {
 		await page.goto('/setup/00000000-0000-0000-0000-000000000000');
 		await page.getByText('No such variable or file').waitFor();
 		await look(page, 'setup-missing');
+	});
+
+	test('a shared setup entry', async ({ page }) => {
+		const [required] = entries;
+		await serve(page, { [`/api/setup/${required.id}`]: required, '/api/sandboxes': sandboxes });
+		await page.goto(`/setup/${required.id}`);
+		await page.getByText('Set by the admin in Settings > Shared setup').waitFor();
+		await look(page, 'setup-shared-entry');
 	});
 
 	test('account', async ({ page }) => {

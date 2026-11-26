@@ -2,6 +2,7 @@ import type {
 	EntryChange,
 	EntryKind,
 	SetupEntry,
+	Shared,
 	StoredValue,
 	ValueInput
 } from '#lib/api/generated/index.js';
@@ -44,6 +45,46 @@ export function summary(value: StoredValue): string {
 		case 'hidden':
 			return `Secret, ${size(value.size)}`;
 	}
+}
+
+/** How the admin shares an entry, as its badge and as its listing says it. */
+export const SHARING: Record<Shared, { badge: string; reach: string }> = {
+	required: { badge: 'Required', reach: 'set by the admin for every sandbox' },
+	offered: { badge: 'Offered', reach: 'offered to every sandbox' }
+};
+
+/** The member's setup as the Setup page lists it: what the admin shares, then their own. */
+export type Sections = { shared: SetupEntry[]; yours: SetupEntry[] };
+
+export function sections(entries: SetupEntry[]): Sections {
+	return {
+		shared: entries.filter((entry) => entry.shared !== null),
+		yours: entries.filter((entry) => entry.shared === null)
+	};
+}
+
+/** One line saying what the entry holds and which sandboxes get it. */
+export function described(entry: SetupEntry): string {
+	const lines = entry.value.shown === 'text' ? lineCount(entry.value.text) : 0;
+	const value =
+		entry.kind === 'variable' || entry.value.shown !== 'text'
+			? summary(entry.value)
+			: `${lines} ${lines === 1 ? 'line' : 'lines'}`;
+	const on =
+		entry.sandboxes.length === 0
+			? 'no sandbox'
+			: entry.sandboxes.map((used) => used.sandbox).join(', ');
+	const reach =
+		entry.shared === 'required'
+			? [SHARING.required.reach]
+			: [
+					entry.shared && SHARING[entry.shared].reach,
+					`attached to ${on}`,
+					entry.applyToNew ? 'new sandboxes get it' : null,
+					entry.shadowed ? 'yours replaces it' : null
+				];
+	const told = reach.filter(Boolean).join(' · ');
+	return value ? `${value} · ${told}` : `${told[0].toUpperCase()}${told.slice(1)}`;
 }
 
 /** How the entry lands in a sandbox: `NAME` or `~/path`. */

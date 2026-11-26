@@ -13,7 +13,7 @@
 	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Spinner } from '#lib/components/ui/spinner/index.js';
-	import { summary, where } from '#lib/setup.js';
+	import { SHARING, summary, where } from '#lib/setup.js';
 
 	let {
 		open = $bindable(),
@@ -133,6 +133,9 @@
 									<span class="flex flex-wrap items-center gap-1.5 text-sm font-medium">
 										<Icon class="size-3.5 text-muted-foreground" aria-hidden="true" />
 										<span class="font-mono break-all">{where(entry)}</span>
+										{#if entry.shared}
+											<Badge variant="outline">{SHARING[entry.shared].badge}</Badge>
+										{/if}
 										{#if entry.secret}
 											<Badge variant="secondary">Secret</Badge>
 										{/if}

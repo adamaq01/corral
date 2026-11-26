@@ -14,18 +14,21 @@
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
 	import { Skeleton } from '#lib/components/ui/skeleton/index.js';
-	import { baseName, where } from '#lib/setup.js';
+	import { SHARING, baseName, where } from '#lib/setup.js';
 	import { Remote } from '#lib/remote.svelte.js';
 
 	let { sandbox, onchanged }: { sandbox: string; onchanged: () => Promise<void> } = $props();
 
-	const attached = new Remote(() => setup.ofSandbox(sandbox));
-	const registry = new Remote(setup.list);
-	const unattached = $derived(
-		(registry.value ?? []).filter(
-			(entry) => !attached.value?.some((held) => held.entry.id === entry.id)
-		)
-	);
+	// A required entry reaches every sandbox unattached, so the sandbox's own list leaves it out.
+	const here = new Remote(async () => {
+		const [attached, registry] = await Promise.all([setup.ofSandbox(sandbox), setup.list()]);
+		const ids = new Set(attached.map(({ entry }) => entry.id));
+		const required = registry.filter((entry) => entry.shared === 'required');
+		return {
+			gets: [...required.map((entry) => ({ entry, override: null })), ...attached],
+			attachable: registry.filter((entry) => entry.shared !== 'required' && !ids.has(entry.id))
+		};
+	});
 
 	let attaching = $state(false);
 	let overriding = $state<AttachedEntry | null>(null);
@@ -34,7 +37,7 @@
 	let detaching = $state<AttachedEntry | null>(null);
 
 	async function changed() {
-		await Promise.all([attached.reload(), registry.reload(), onchanged()]);
+		await Promise.all([here.reload(), onchanged()]);
 	}
 
 	function openOverride(held: AttachedEntry) {
@@ -71,14 +74,9 @@
 			<a class="underline underline-offset-4" href="/setup">Setup</a>. An override gives one of them
 			another value here alone.
 		</Card.Description>
-		{#if attached.value?.length}
+		{#if here.value?.gets.length}
 			<Card.Action>
-				<Button
-					variant="outline"
-					size="sm"
-					disabled={!registry.value}
-					onclick={() => (attaching = true)}
-				>
+				<Button variant="outline" size="sm" onclick={() => (attaching = true)}>
 					<PlusIcon />
 					Attach
 				</Button>
@@ -86,26 +84,27 @@
 		{/if}
 	</Card.Header>
 	<Card.Content>
-		{#if attached.current.state === 'loading'}
+		{#if here.current.state === 'loading'}
 			<div class="grid gap-2" role="status" aria-label="Loading the sandbox's setup">
 				<Skeleton class="h-14 rounded-lg" />
 			</div>
-		{:else if attached.current.state === 'failed'}
+		{:else if here.current.state === 'failed'}
 			<LoadFailed
 				title="Loading the sandbox's setup failed"
-				error={attached.current.error}
-				onretry={() => attached.reload()}
+				error={here.current.error}
+				onretry={() => here.reload()}
 			/>
-		{:else if attached.current.value.length === 0}
+		{:else if here.current.value.gets.length === 0}
+			{@const choices = here.current.value.attachable.length}
 			<div
 				class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed p-4"
 			>
 				<p class="text-sm text-muted-foreground">
-					Nothing is attached to this sandbox. {(registry.value?.length ?? 0) > 0
-						? `You have ${registry.value?.length} to choose from.`
+					Nothing is attached to this sandbox. {choices > 0
+						? `You have ${choices} to choose from.`
 						: 'Add an API key, a token or a config file on Setup first.'}
 				</p>
-				{#if (registry.value?.length ?? 0) > 0}
+				{#if choices > 0}
 					<Button variant="outline" size="sm" onclick={() => (attaching = true)}>
 						<PlusIcon />
 						Attach variables and files
@@ -116,7 +115,7 @@
 			</div>
 		{:else}
 			<ul class="grid divide-y" aria-label="Attached to {sandbox}">
-				{#each attached.current.value as held (held.entry.id)}
+				{#each here.current.value.gets as held (held.entry.id)}
 					{@const entry = held.entry}
 					{@const Icon = entry.kind === 'variable' ? VariableIcon : FileTextIcon}
 					{@const unresolved =
@@ -129,6 +128,9 @@
 									<a class="font-mono break-all hover:underline" href="/setup/{entry.id}">
 										{where(entry)}
 									</a>
+									{#if entry.shared}
+										<Badge variant="outline">{SHARING[entry.shared].badge}</Badge>
+									{/if}
 									{#if entry.secret}
 										<Badge variant="secondary">Secret</Badge>
 									{/if}
@@ -152,36 +154,38 @@
 								{/if}
 							</div>
 						</div>
-						<div class="flex flex-wrap items-start gap-2 sm:justify-end">
-							<Button
-								variant="outline"
-								size="sm"
-								aria-label="{held.override
-									? 'Change override of'
-									: 'Override for this sandbox:'} {where(entry)}"
-								onclick={() => openOverride(held)}
-							>
-								{held.override ? 'Change override' : 'Override for this sandbox'}
-							</Button>
-							{#if held.override}
+						{#if entry.shared !== 'required'}
+							<div class="flex flex-wrap items-start gap-2 sm:justify-end">
 								<Button
 									variant="outline"
 									size="sm"
-									aria-label="Remove override of {where(entry)}"
-									onclick={() => (clearing = held)}
+									aria-label="{held.override
+										? 'Change override of'
+										: 'Override for this sandbox:'} {where(entry)}"
+									onclick={() => openOverride(held)}
 								>
-									Remove override
+									{held.override ? 'Change override' : 'Override for this sandbox'}
 								</Button>
-							{/if}
-							<Button
-								variant="ghost"
-								size="sm"
-								aria-label="Detach {where(entry)}"
-								onclick={() => (detaching = held)}
-							>
-								Detach
-							</Button>
-						</div>
+								{#if held.override}
+									<Button
+										variant="outline"
+										size="sm"
+										aria-label="Remove override of {where(entry)}"
+										onclick={() => (clearing = held)}
+									>
+										Remove override
+									</Button>
+								{/if}
+								<Button
+									variant="ghost"
+									size="sm"
+									aria-label="Detach {where(entry)}"
+									onclick={() => (detaching = held)}
+								>
+									Detach
+								</Button>
+							</div>
+						{/if}
 					</li>
 				{/each}
 			</ul>
@@ -189,7 +193,12 @@
 	</Card.Content>
 </Card.Root>
 
-<AttachEntryDialog bind:open={attaching} {sandbox} entries={unattached} onAttached={changed} />
+<AttachEntryDialog
+	bind:open={attaching}
+	{sandbox}
+	entries={here.value?.attachable ?? []}
+	onAttached={changed}
+/>
 
 {#if overriding}
 	{@const entry = overriding.entry}
