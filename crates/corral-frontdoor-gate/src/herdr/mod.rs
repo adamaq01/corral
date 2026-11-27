@@ -3,10 +3,9 @@
 //! line the gate reads what Herdr sends: only what a person does counts as work. While the
 //! sandbox sleeps, the gate answers as its core with no terminals; the first thing a person does
 //! wakes it, and the gate hands the line over to the real core, the call that woke it first. It
-//! answers only as a core it met: a line to a sleeping sandbox whose core it never met, or one it
-//! cannot read, wakes the sandbox. When the sandbox goes to sleep under the line, the gate tells
-//! Herdr its terminals ended and answers as the empty core again. Whatever the gate cannot read,
-//! it relays as it is, as passive.
+//! answers only as a core it met: a hello on a line the gate has no identity for wakes it. When the
+//! sandbox goes to sleep under the line, the gate tells Herdr its terminals ended and answers as
+//! the empty core again. Whatever the gate cannot read, it relays as it is, as passive.
 
 mod classify;
 mod empty;
@@ -194,32 +193,29 @@ pub(crate) async fn run(
             bridge
         }
         Looked::Asleep { client_state } => {
-            match (&hello, client_state.as_deref().and_then(identity_of)) {
-                (Ok(hello), Some(identity)) => {
-                    carried.hello_params = hello.params.clone();
-                    carried.hello_id = hello.id.clone();
-                    carried.identity = Some(identity.clone());
-                    let answer = wire::result(&hello.id, &identity.hello(hello.framed));
-                    carried.send_line(&answer).await;
-                    let empty = EmptyCore::new(identity, carried.link.sandbox(), None);
-                    return carried.carry(Mode::Empty(empty), from_client).await;
-                }
-                (Ok(_), None) => info!(
-                    username = carried.link.username,
-                    "no Herdr identity is kept for the sandbox yet, so this connection wakes it"
-                ),
-                (Err(_), _) => info!(
-                    username = carried.link.username,
-                    "the gate cannot read this Herdr line, so it wakes the sandbox"
-                ),
+            let Ok(hello) = &hello else {
+                let reason = format!(
+                    "{} is asleep, and this line did not start with a Herdr hello",
+                    carried.link.sandbox()
+                );
+                return carried.refuse(None, &reason).await;
+            };
+            if let Some(identity) = client_state.as_deref().and_then(identity_of) {
+                carried.hello_params = hello.params.clone();
+                carried.hello_id = hello.id.clone();
+                carried.identity = Some(identity.clone());
+                let answer = wire::result(&hello.id, &identity.hello(hello.framed));
+                carried.send_line(&answer).await;
+                let empty = EmptyCore::new(identity, carried.link.sandbox(), None);
+                return carried.carry(Mode::Empty(empty), from_client).await;
             }
+            info!(
+                username = carried.link.username,
+                "no Herdr identity is kept for the sandbox yet, so this connection wakes it"
+            );
             match carried.link.bridge().await {
                 Ok(bridge) => bridge,
-                Err(reason) => {
-                    return carried
-                        .refuse(hello.ok().map(|hello| hello.id), &reason)
-                        .await;
-                }
+                Err(reason) => return carried.refuse(Some(hello.id.clone()), &reason).await,
             }
         }
     };

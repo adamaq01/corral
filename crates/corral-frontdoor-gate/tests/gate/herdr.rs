@@ -42,14 +42,19 @@ impl Line {
 
     /// Says `hello` as Herdr does first, and returns the answer.
     async fn hello(&mut self) -> Value {
-        let hello = json!({
+        self.first(json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "hello",
             "params": { "generation": 1, "framed": true, "calls_you": "laptop" },
-        });
+        }))
+        .await
+    }
+
+    /// Says `message` as the line's first, and returns the answer.
+    async fn first(&mut self, message: Value) -> Value {
         self.to_core
-            .write_all(format!("{hello}\n").as_bytes())
+            .write_all(format!("{message}\n").as_bytes())
             .await
             .unwrap();
         let end = self
@@ -170,5 +175,29 @@ async fn herdr_saying_hello_to_a_sleeping_sandbox_whose_core_the_gate_met_does_n
     let mut line = Line::open(&f);
     let hello = line.hello().await;
     assert_eq!(hello["result"]["core"]["id"], core, "{hello}");
+    assert_eq!(status(&f).await, SandboxStatus::Sleeping);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unknown_herdr_line_that_does_not_start_with_a_hello_does_not_wake_the_sandbox() {
+    if !docker_available() {
+        return;
+    }
+    let f = Fixture::new(Limits::default()).await;
+    f.world.sandboxes.stop(&f.adam, &f.main.name).await.unwrap();
+
+    let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "terminal.list", "params": {} });
+    let refused = Line::open(&f).first(list).await;
+    assert_eq!(
+        (
+            &refused["error"]["data"]["kind"],
+            &refused["error"]["message"]
+        ),
+        (
+            &json!("unavailable"),
+            &json!("main is asleep, and this line did not start with a Herdr hello")
+        ),
+        "{refused}"
+    );
     assert_eq!(status(&f).await, SandboxStatus::Sleeping);
 }
