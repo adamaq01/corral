@@ -80,30 +80,12 @@ impl RegistryLogins for EnvRegistryLogins {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-    use std::sync::{Arc, Mutex};
-
     use corral_core::app::{Configured, Registry, Source};
-    use corral_core::fakes::World;
+    use corral_core::fakes::{Logs, World};
     use corral_core::ports::RegistryLogins;
     use secrecy::ExposeSecret;
-    use tracing_subscriber::util::SubscriberInitExt;
 
     use super::EnvRegistryLogins;
-
-    #[derive(Clone, Default)]
-    struct Capture(Arc<Mutex<Vec<u8>>>);
-
-    impl io::Write for Capture {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
 
     fn logins(password: Option<&'static str>) -> EnvRegistryLogins {
         let world = World::with_configured(Configured {
@@ -125,13 +107,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unset_password_variable_means_no_login_and_a_warning() {
-        let capture = Capture::default();
-        let writer = capture.clone();
-        let _scope = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish()
-            .set_default();
+        let logs = Logs::capture();
 
         for password in [None, Some("")] {
             let unset = logins(password);
@@ -142,9 +118,16 @@ mod tests {
             }
             assert!(!unset.password_present("CORRAL_GHCR"));
         }
-        let logs = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
-        assert_eq!(logs.matches("WARN").count(), 2, "{logs}");
-        assert_eq!(logs.matches("CORRAL_GHCR").count(), 2, "{logs}");
+        let warned = logs.of(
+            "the registry's password variable is not set, so Corral reaches it without a login",
+        );
+        assert_eq!(warned.len(), 2, "{warned:#?}");
+        assert!(
+            warned
+                .iter()
+                .all(|line| line.starts_with(" WARN") && line.contains("CORRAL_GHCR")),
+            "{warned:#?}"
+        );
 
         let set = logins(Some("tok"));
         let registries = set.registries().await.unwrap();

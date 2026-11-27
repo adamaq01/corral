@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use corral_api::router;
 use corral_api::testing::{Browser, Reply, api, trusting_provider};
 use corral_core::domain::{Handle, Role};
-use corral_core::fakes::{PROVIDER, World};
+use corral_core::fakes::{Logs, PROVIDER, World};
 use corral_identity_local::LocalProvider;
 use corral_sql::Pool;
 use corral_sql::testing::Databases;
@@ -114,6 +114,7 @@ async fn the_account_decides_the_role(pool: Pool) {
 
 async fn wrong_password_and_unknown_user_are_both_forbidden(pool: Pool) {
     let corral = Corral::open(pool, &[("adam", Role::Member)]).await;
+    let logs = Logs::capture();
     for (username, attempt) in [
         ("adam", "wrong horse battery"),
         ("nobody", PASSWORD),
@@ -132,6 +133,33 @@ async fn wrong_password_and_unknown_user_are_both_forbidden(pool: Pool) {
             StatusCode::UNAUTHORIZED
         );
     }
+    let refused = logs.of("a sign-in failed");
+    let usernames: Vec<_> = refused
+        .iter()
+        .map(|line| {
+            assert!(line.starts_with(" WARN"), "{line}");
+            assert!(
+                line.contains("provider=local")
+                    && line.ends_with("reason=\"wrong username or password\""),
+                "{line}"
+            );
+            line.split("username=")
+                .nth(1)
+                .unwrap()
+                .split(" reason=")
+                .next()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        usernames,
+        ["\"adam\"", "\"nobody\"", "\"Not A Handle\"", "\"Adam\""]
+    );
+    assert!(
+        !logs.lines().join("\n").contains("horse"),
+        "{:#?}",
+        logs.lines()
+    );
 }
 
 async fn fastest_refusal(corral: &Corral, username: &str) -> Duration {

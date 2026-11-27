@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-fakes = []
+fakes = ["dep:tracing-subscriber"]
 contract = ["fakes", "dep:futures-util"]
 
 [dependencies]
@@ -19,12 +19,15 @@ serde_json.workspace = true
 sha2 = "0.11.1"
 ssh-key.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 ts-rs.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

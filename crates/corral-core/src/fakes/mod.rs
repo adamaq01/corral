@@ -1,5 +1,6 @@
 mod activity;
 mod engine;
+mod logs;
 mod provider;
 mod registry;
 mod repos;
@@ -12,6 +13,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub use activity::RecordedSignals;
 pub use engine::{EngineCall, FakeEngine};
+pub use logs::Logs;
 pub use provider::FakeProvider;
 pub use registry::FakeRegistry;
 pub use repos::{MemoryKeyRepo, MemorySandboxRepo, MemoryUserRepo};

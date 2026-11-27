@@ -12,6 +12,7 @@ use corral_api::{
     ApiError, CurrentUser, Identities, LoginKind, ProviderCookies, ProviderDescription,
     ProviderRoutes, QueryParams, SignedIn, TypeScript, provider_path, return_path, sign_in_failed,
 };
+use corral_core::ports::Identity;
 use serde::Deserialize;
 
 use crate::login_secrets::LoginSecrets;
@@ -116,6 +117,19 @@ async fn sign_in(
     answer: Callback,
     identities: Identities,
 ) -> Result<(SignedIn, String), ApiError> {
+    let (identity, return_to) = finish(oidc, secrets, answer).await.inspect_err(|error| {
+        let (provider, reason) = (OidcProvider::ID, error.to_string());
+        tracing::warn!(%provider, reason, "a sign-in failed");
+    })?;
+    Ok((identities.sign_in(identity).await?, return_to))
+}
+
+/// The identity the provider's answer establishes, and where its login returns to.
+async fn finish(
+    oidc: &OidcProvider,
+    secrets: Option<LoginSecrets>,
+    answer: Callback,
+) -> Result<(Identity, String), ApiError> {
     let secrets = secrets.ok_or_else(|| {
         ApiError::new(StatusCode::BAD_REQUEST, "no login in progress, start again")
     })?;
@@ -123,7 +137,7 @@ async fn sign_in(
     let identity = oidc
         .finish(secrets, answer.state.as_deref(), answer.code.as_deref())
         .await?;
-    Ok((identities.sign_in(identity).await?, return_to))
+    Ok((identity, return_to))
 }
 
 #[cfg(test)]

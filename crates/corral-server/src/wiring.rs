@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use axum::Router;
+use axum::middleware::from_fn;
 use axum::routing::get;
 use corral_activity::{Busy, Settings, Signals, Sweepable};
 use corral_api::{Api, ProviderRoutes, SshEndpoint};
@@ -122,7 +123,7 @@ pub async fn build(config: &Config, shutdown: CancellationToken) -> Result<App> 
         public = public.fallback_service(ui.router());
     }
     Ok(App {
-        public,
+        public: public.layer(from_fn(corral_api::access_log)),
         internal: internal.route("/healthz", get(healthz)),
         lifecycle,
         deletions,

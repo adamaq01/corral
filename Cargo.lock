@@ -922,6 +922,8 @@ dependencies = [
  "ssh-key 0.6.7",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "ts-rs",
  "uuid",
 ]
@@ -1014,6 +1016,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "tracing",
  "ts-rs",
  "uuid",
 ]

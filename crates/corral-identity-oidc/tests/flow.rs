@@ -6,7 +6,7 @@ use axum::http::{StatusCode, header};
 use chrono::{Duration, Utc};
 use corral_api::router;
 use corral_api::testing::{Browser, Reply, api};
-use corral_core::fakes::World;
+use corral_core::fakes::{Logs, World};
 use corral_identity_oidc::{OidcConfig, OidcProvider};
 use openidconnect::core::{
     CoreGenderClaim, CoreJsonWebKeySet, CoreJweContentEncryptionAlgorithm, CoreJwsSigningAlgorithm,
@@ -293,6 +293,7 @@ async fn a_different_or_missing_returned_state_is_forbidden_before_the_code_is_r
         .issue(issuer.id_token("any-nonce", Some(&[MEMBERS])))
         .await;
     let mut browser = browser(&app);
+    let logs = Logs::capture();
 
     start(&mut browser).await;
     let forged = callback(&mut browser, "forged-state").await;
@@ -304,6 +305,15 @@ async fn a_different_or_missing_returned_state_is_forbidden_before_the_code_is_r
 
     for reply in [forged, missing] {
         assert_eq!(sent_back_to(&reply), "/sign-in?error=forbidden");
+    }
+    let refused = logs.of("a sign-in failed");
+    assert_eq!(refused.len(), 2, "{:#?}", logs.lines());
+    for line in refused {
+        assert!(line.starts_with(" WARN"), "{line}");
+        assert!(
+            line.ends_with("a sign-in failed provider=oidc reason=\"forbidden\""),
+            "{line}"
+        );
     }
     assert_eq!(issuer.token_requests().await.len(), 0);
     assert_eq!(

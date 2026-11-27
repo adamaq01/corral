@@ -6,12 +6,15 @@ use corral_core::Error;
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::access_log::Failure;
+
 /// A `{"error": message}` response with its status. Core errors keep their message; internal
-/// ones are logged and answered with a generic 500.
+/// ones answer a generic 500, and their cause goes to the request's log line alone.
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    cause: Option<String>,
 }
 
 /// What every error answers with.
@@ -25,12 +28,15 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            cause: None,
         }
     }
 
     pub(crate) fn internal(cause: &dyn std::fmt::Display) -> Self {
-        tracing::error!(error = %cause, "request failed");
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        Self {
+            cause: Some(cause.to_string()),
+            ..Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+        }
     }
 
     #[must_use]
@@ -92,14 +98,25 @@ impl From<QueryRejection> for ApiError {
     }
 }
 
+/// The cause of an internal error, else the message, for logs.
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.cause.as_deref().unwrap_or(&self.message))
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ErrorBody {
                 error: self.message,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(cause) = self.cause {
+            response.extensions_mut().insert(Failure(cause));
+        }
+        response
     }
 }

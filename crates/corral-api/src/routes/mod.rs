@@ -17,6 +17,16 @@ use crate::state::AppState;
 /// Every path under these is the API's, unknown ones included.
 const PREFIXES: [&str; 2] = ["/api", "/auth"];
 
+/// Whether the log shows requests to `path` only at debug: those outside the API, such as the
+/// web UI's files and probes, and a sandbox's activity reports.
+pub(crate) fn is_quiet(path: &str) -> bool {
+    let api = PREFIXES.iter().any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    });
+    !api || path == inside::ACTIVITY
+}
+
 pub(crate) fn all(providers: Vec<ProviderListing>) -> Router<AppState> {
     let mut router = Router::new();
     for prefix in PREFIXES {

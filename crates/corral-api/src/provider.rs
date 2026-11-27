@@ -151,7 +151,18 @@ impl<S: Send + Sync> FromRequestParts<S> for Identities {
 impl Identities {
     /// Logs the person in as their user, made at their first login, and starts their session.
     pub async fn sign_in(self, identity: Identity) -> Result<SignedIn, ApiError> {
-        let user = self.api.accounts.login(&self.provider, identity).await?;
+        let provider = &*self.provider;
+        let username = identity.username.clone();
+        let user = match self.api.accounts.login(provider, identity).await {
+            Ok(user) => user,
+            Err(error) => {
+                let error = ApiError::from(error);
+                let reason = error.to_string();
+                tracing::warn!(%provider, username, reason, "a sign-in failed");
+                return Err(error);
+            }
+        };
+        tracing::info!(%provider, handle = %user.handle, "signed in");
         Ok(SignedIn {
             session: self.session.start(user.id, Utc::now()),
             user,
@@ -277,9 +288,44 @@ impl IntoResponseParts for ProviderCookies {
 #[cfg(test)]
 mod tests {
     use axum::http::StatusCode;
+    use corral_core::fakes::{Logs, PROVIDER, World};
+    use serde_json::json;
 
     use super::{return_path, sign_in_failed};
     use crate::error::ApiError;
+    use crate::router;
+    use crate::testing::{Browser, api, trusting_provider};
+
+    #[tokio::test]
+    async fn each_sign_in_is_logged_and_a_refused_one_is_a_warning() {
+        let app = router(api(&World::new()), vec![trusting_provider(PROVIDER)]);
+        let mut browser = Browser::new(&app, "192.0.2.10:50000");
+        let logs = Logs::capture();
+        for (username, role) in [("adam", Some("member")), ("eve", None)] {
+            let login =
+                json!({ "subject": format!("sub-{username}"), "username": username, "role": role });
+            browser.post("/auth/test/login", login).await;
+        }
+
+        let signed_in = logs.one("signed in");
+        assert!(signed_in.starts_with(" INFO"), "{signed_in}");
+        assert!(
+            signed_in.ends_with("signed in provider=test handle=adam"),
+            "{signed_in}"
+        );
+        let refused = logs.one("a sign-in failed");
+        assert!(refused.starts_with(" WARN"), "{refused}");
+        assert!(
+            refused
+                .ends_with("a sign-in failed provider=test username=\"eve\" reason=\"forbidden\""),
+            "{refused}"
+        );
+        assert!(
+            !logs.lines().join("\n").contains("sub-"),
+            "{:#?}",
+            logs.lines()
+        );
+    }
 
     #[test]
     fn only_paths_on_this_origin_are_returned_to() {

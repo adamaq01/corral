@@ -3,6 +3,7 @@ use axum::http::request::Parts;
 use chrono::Utc;
 use corral_core::domain::{Admin, User};
 
+use crate::access_log::Requester;
 use crate::error::ApiError;
 use crate::session::Session;
 use crate::state::shared;
@@ -18,7 +19,9 @@ impl<S: Send + Sync> FromRequestParts<S> for CurrentUser {
         let user = Session::from_parts(parts, &api)
             .current(Utc::now())
             .ok_or_else(ApiError::unauthenticated)?;
-        Ok(Self(api.accounts.require_active(user).await?))
+        let user = api.accounts.require_active(user).await?;
+        Requester::signed_in(parts, &user.handle);
+        Ok(Self(user))
     }
 }
 

@@ -20,6 +20,9 @@ use crate::error::ApiError;
 use crate::extract::JsonBody;
 use crate::state::{AppState, shared};
 
+/// Where a running sandbox reports what it used, about once a minute.
+pub(crate) const ACTIVITY: &str = "/api/sandbox/activity";
+
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/sandbox", get(show))
@@ -27,7 +30,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/sandbox/stop", post(stop))
         .route("/api/sandbox/delete", post(delete))
         .route("/api/sandbox/keep-awake", post(keep_awake))
-        .route("/api/sandbox/activity", post(report_activity))
+        .route(ACTIVITY, post(report_activity))
 }
 
 /// The sandbox whose current token the request carries as `Authorization: Bearer <token>`.

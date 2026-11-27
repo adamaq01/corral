@@ -113,14 +113,19 @@ async fn login_route(
     identities: Identities,
     JsonBody(form): JsonBody<PasswordLogin>,
 ) -> Result<SignedIn, ApiError> {
-    let identity = verify_limited(
+    let verified = verify_limited(
         &local,
         &form.username,
         address,
         &form.password,
         WRONG_PASSWORD,
     )
-    .await?;
+    .await;
+    let identity = verified.inspect_err(|error| {
+        let reason = error.to_string();
+        let provider = LocalProvider::ID;
+        tracing::warn!(%provider, username = form.username, reason, "a sign-in failed");
+    })?;
     identities.sign_in(identity).await
 }
 
