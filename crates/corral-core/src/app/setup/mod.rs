@@ -1,6 +1,7 @@
 mod adoption;
 mod compose;
 mod registry;
+
 #[cfg(test)]
 mod tests;
 
@@ -9,6 +10,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use secrecy::{ExposeSecret, SecretSlice};
+use tracing::{debug, info};
 
 use compose::{Composed, amount, compose, template_of, unresolved};
 pub use compose::{FILE_LIMIT, FILES_LIMIT, VARIABLE_LIMIT, VARIABLES_LIMIT};
@@ -298,7 +300,7 @@ impl Setup {
     pub async fn attach(&self, owner: &User, name: &SandboxName, id: EntryId) -> Result<()> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
-        registry.attachable(id)?;
+        let target = registry.attachable(id)?.target.to_string();
         if registry.attachment(&sandbox.id, id).is_some() {
             return Ok(());
         }
@@ -312,6 +314,7 @@ impl Setup {
         self.validate(owner.id, None, &registry, &proposed, &Reach::of(&sandbox))
             .await?;
         self.repo.attach(&attachment).await?;
+        debug!(sandbox = %sandbox.id.0, entry = target, "attached a setup entry");
         self.changed(&[sandbox.id]).await
     }
 
@@ -319,13 +322,15 @@ impl Setup {
     pub async fn detach(&self, owner: &User, name: &SandboxName, id: EntryId) -> Result<()> {
         let sandbox = self.sandbox(owner, name).await?;
         let registry = self.registry(owner.id).await?;
-        let keeper = registry.attachable(id)?.owner.secrets_owner();
+        let entry = registry.attachable(id)?;
+        let (keeper, target) = (entry.owner.secrets_owner(), entry.target.to_string());
         let attachment = attached(&registry, &sandbox, id)?.clone();
         let mut proposed = registry.clone();
         proposed.remove_attachment(&sandbox.id, id);
         self.validate(owner.id, None, &registry, &proposed, &Reach::of(&sandbox))
             .await?;
         self.repo.detach(&sandbox.id, id).await?;
+        debug!(sandbox = %sandbox.id.0, entry = target, "detached a setup entry");
         self.forget(keeper, overriding_secret(&attachment)).await;
         self.changed(&[sandbox.id]).await
     }
@@ -433,7 +438,11 @@ impl Setup {
 
     /// A required entry reaches every sandbox at its next start; an offered one, new sandboxes
     /// when it applies to them.
-    pub async fn create_shared(&self, _: &Admin, new: NewSharedEntry) -> Result<SharedEntryView> {
+    pub async fn create_shared(
+        &self,
+        admin: &Admin,
+        new: NewSharedEntry,
+    ) -> Result<SharedEntryView> {
         let NewSharedEntry { shared, entry: new } = new;
         let mut proposed = self.repo.shared_entries().await?;
         check_shared_target(&proposed, &new.target, None)?;
@@ -465,6 +474,7 @@ impl Setup {
         if shared == Shared::Required {
             self.changed_everywhere().await?;
         }
+        changed_shared(admin, &entry);
         self.shared_view(entry).await
     }
 
@@ -473,7 +483,7 @@ impl Setup {
     /// their overrides are forgotten.
     pub async fn change_shared(
         &self,
-        _: &Admin,
+        admin: &Admin,
         id: EntryId,
         change: SharedEntryChange,
     ) -> Result<SharedEntryView> {
@@ -523,12 +533,13 @@ impl Setup {
             self.changed(&affected(&before, &after, valued, &attachments))
                 .await?;
         }
+        changed_shared(admin, &after);
         self.shared_view(after).await
     }
 
     /// Detaches the shared entry from every sandbox, which loses it at its next start, and
     /// forgets their overrides.
-    pub async fn delete_shared(&self, _: &Admin, id: EntryId) -> Result<()> {
+    pub async fn delete_shared(&self, admin: &Admin, id: EntryId) -> Result<()> {
         let mut proposed = self.repo.shared_entries().await?;
         let entry = proposed
             .iter()
@@ -546,11 +557,13 @@ impl Setup {
         self.forget_all(UserId::SHARED, attachments.iter().map(overriding_secret))
             .await;
         if entry.owner.shared() == Some(Shared::Required) {
-            self.changed_everywhere().await
+            self.changed_everywhere().await?;
         } else {
             self.changed(attachments.iter().map(|attachment| &attachment.sandbox))
-                .await
+                .await?;
         }
+        changed_shared(admin, &entry);
+        Ok(())
     }
 
     /// What the sandbox gets at a start that issues it `token`. Refuses when a template file
@@ -612,6 +625,8 @@ impl Setup {
                     overriding: None,
                 })
                 .await?;
+            let target = entry.target.to_string();
+            debug!(sandbox = %sandbox.id.0, entry = target, "attached a setup entry");
         }
         Ok(())
     }
@@ -1528,4 +1543,9 @@ fn and_listed(handles: &[Handle]) -> String {
             format!("{} and {last}", rest.join(", "))
         }
     }
+}
+
+fn changed_shared(admin: &Admin, entry: &Entry) {
+    let (admin, entry) = (admin.handle(), entry.target.to_string());
+    info!(%admin, kind = %"shared_setup", entry, "changed the settings");
 }

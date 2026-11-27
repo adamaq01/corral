@@ -143,6 +143,7 @@ async fn change_password(
     })?;
     verify_limited(&local, username, address, &change.current, "wrong password").await?;
     local.set_password(username, change.password).await?;
+    tracing::info!(user = %user.handle, "changed their own password");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -194,23 +195,30 @@ async fn list(
 }
 
 async fn create(
-    _: CurrentAdmin,
+    CurrentAdmin(admin): CurrentAdmin,
     State(local): Local,
     JsonBody(account): JsonBody<NewAccount>,
 ) -> Result<StatusCode, ApiError> {
-    local
-        .create(&account.username, account.password, account.role)
-        .await?;
+    let NewAccount {
+        username,
+        password,
+        role,
+    } = account;
+    local.create(&username, password, role).await?;
+    let admin = admin.handle();
+    tracing::info!(%admin, %username, ?role, "created a local account");
     Ok(StatusCode::CREATED)
 }
 
 async fn set_password(
-    _: CurrentAdmin,
+    CurrentAdmin(admin): CurrentAdmin,
     State(local): Local,
     PathParam(username): PathParam<String>,
     JsonBody(body): JsonBody<NewPassword>,
 ) -> Result<StatusCode, ApiError> {
     local.set_password(&username, body.password).await?;
+    let admin = admin.handle();
+    tracing::info!(%admin, %username, "reset a local account's password");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -223,6 +231,8 @@ async fn remove(
 ) -> Result<StatusCode, ApiError> {
     let existed = local.exists(&username).await?;
     if identities.delete(&admin, &username).await? || existed {
+        let admin = admin.handle();
+        tracing::info!(%admin, %username, "deleted a local account");
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(Error::NotFound(format!("local account {username}")).into())

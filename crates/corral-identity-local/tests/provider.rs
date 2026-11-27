@@ -195,6 +195,7 @@ async fn admins_create_list_and_reset_accounts(pool: Pool) {
     )
     .await;
     let mut root = corral.signed_in("root").await;
+    let logs = Logs::capture();
     let created = root
         .post(
             "/auth/local/accounts",
@@ -247,6 +248,19 @@ async fn admins_create_list_and_reset_accounts(pool: Pool) {
             .await;
         assert_eq!(reply.status, StatusCode::NOT_FOUND, "{absent}");
     }
+    assert!(
+        logs.one("created a local account")
+            .ends_with("created a local account admin=root username=eve role=Member")
+    );
+    assert!(
+        logs.one("reset a local account's password")
+            .ends_with("reset a local account's password admin=root username=eve")
+    );
+    assert!(
+        !logs.lines().join("\n").contains("eve's"),
+        "{:#?}",
+        logs.lines()
+    );
 
     let accounts = root.get("/auth/local/accounts").await;
     assert!(!accounts.text().contains("argon2"), "{}", accounts.text());
@@ -327,8 +341,17 @@ async fn deleting_an_account_deletes_its_user_and_frees_the_username(pool: Pool)
     let created = adam.post("/api/sandboxes", json!({ "name": "main" })).await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
 
+    let logs = Logs::capture();
     let deleted = root.call("DELETE", "/auth/local/accounts/adam", None).await;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
+    assert!(
+        logs.one("deleted a local account")
+            .ends_with("deleted a local account admin=root username=adam")
+    );
+    assert!(
+        logs.one("deleted a user")
+            .ends_with("deleted a user user=adam by=root")
+    );
     assert_eq!(adam.get("/api/me").await.status, StatusCode::FORBIDDEN);
     assert_eq!(root.get("/api/admin/sandboxes").await.json(), json!([]));
     let users = root.get("/api/admin/users").await.json();
@@ -468,8 +491,13 @@ async fn only_admins_manage_accounts(pool: Pool) {
 async fn a_user_changes_their_own_password(pool: Pool) {
     let corral = Corral::open(pool, &[("bob", Role::Member)]).await;
     let mut bob = corral.signed_in("bob").await;
+    let logs = Logs::capture();
     let changed = change_password(&mut bob, PASSWORD, TWELVE_CHARS).await;
     assert_eq!(changed.status, StatusCode::NO_CONTENT, "{}", changed.text());
+    assert!(
+        logs.one("changed their own password")
+            .ends_with("changed their own password user=bob")
+    );
     let mut again = corral.browser();
     assert_eq!(
         log_in(&mut again, "bob", TWELVE_CHARS).await.status,

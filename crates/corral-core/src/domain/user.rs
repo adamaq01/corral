@@ -76,15 +76,20 @@ impl User {
 
 /// Proof that the acting user is an admin, for ports that act on an admin's behalf.
 #[derive(Debug)]
-pub struct Admin(());
+pub struct Admin(Handle);
 
 impl Admin {
     pub fn check(actor: &User) -> Result<Self> {
         if actor.role == Role::Admin {
-            Ok(Self(()))
+            Ok(Self(actor.handle.clone()))
         } else {
             Err(Error::Forbidden)
         }
+    }
+
+    #[must_use]
+    pub fn handle(&self) -> &Handle {
+        &self.0
     }
 }
 

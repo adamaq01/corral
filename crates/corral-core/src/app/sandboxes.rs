@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
+use tracing::{debug, info};
 use ts_rs::TS;
 
 use super::{Catalog, ImageOption, Settings, Setup, SizePreset};
@@ -139,13 +140,17 @@ impl Sandboxes {
     /// Refuses an image or a size the catalog does not offer.
     pub async fn set_defaults(&self, owner: &User, defaults: &SandboxDefaults) -> Result<()> {
         let catalog = self.catalog().await?;
-        offered_image(&catalog, &defaults.image)?;
-        offered_size(&catalog, &defaults.size)?;
+        offered_image(&catalog, &defaults.image)
+            .and(offered_size(&catalog, &defaults.size))
+            .inspect_err(refused("set_defaults", owner))?;
         self.users.set_sandbox_defaults(owner.id, defaults).await
     }
 
     pub async fn create(&self, owner: &User, request: CreateSandbox) -> Result<SandboxView> {
-        let mut sandbox = self.provision(owner, request).await?;
+        let mut sandbox = self
+            .provision(owner, request)
+            .await
+            .inspect_err(refused("create", owner))?;
         // The sandbox exists whether or not it starts; its view reports where the start got.
         let _ = self.start_within(&mut sandbox, Duration::ZERO).await;
         let is_default = self.is_default(&sandbox).await?;
@@ -169,7 +174,7 @@ impl Sandboxes {
         match self.provision(owner, request).await {
             // Another login made it first.
             Err(Error::Conflict(_)) => self.find(owner, name).await,
-            provisioned => provisioned,
+            provisioned => provisioned.inspect_err(refused("create", owner)),
         }
     }
 
@@ -224,6 +229,14 @@ impl Sandboxes {
             self.forget(&sandbox).await?;
             return Err(error);
         }
+        info!(
+            sandbox = %sandbox.id.0,
+            owner = %owner.handle,
+            name = %sandbox.name,
+            image = %sandbox.image,
+            size = %sandbox.size,
+            "created a sandbox"
+        );
         Ok(sandbox)
     }
 
@@ -290,7 +303,10 @@ impl Sandboxes {
     }
 
     pub async fn delete(&self, owner: &User, name: &SandboxName) -> Result<()> {
-        let sandbox = self.find(owner, name).await?;
+        let sandbox = self
+            .find(owner, name)
+            .await
+            .inspect_err(refused("delete", owner))?;
         self.remove(&sandbox).await
     }
 
@@ -304,7 +320,9 @@ impl Sandboxes {
     /// Deletes the sandbox from the engine, home included, then forgets it.
     pub(super) async fn remove(&self, sandbox: &Sandbox) -> Result<()> {
         self.engine.delete(&sandbox.id).await?;
-        self.forget(sandbox).await
+        self.forget(sandbox).await?;
+        info!(sandbox = %sandbox.id.0, "deleted a sandbox");
+        Ok(())
     }
 
     async fn forget(&self, sandbox: &Sandbox) -> Result<()> {
@@ -314,21 +332,34 @@ impl Sandboxes {
     }
 
     pub async fn wake(&self, owner: &User, name: &SandboxName) -> Result<Readiness> {
-        let mut sandbox = self.find(owner, name).await?;
-        self.start_within(&mut sandbox, self.timeouts.wake_deadline)
-            .await
+        let woken = async {
+            let mut sandbox = self.find(owner, name).await?;
+            self.start_within(&mut sandbox, self.timeouts.wake_deadline)
+                .await
+        };
+        woken.await.inspect_err(refused("wake", owner))
     }
 
     pub async fn stop(&self, owner: &User, name: &SandboxName) -> Result<()> {
-        let sandbox = self.find(owner, name).await?;
-        self.halt(&sandbox).await
+        let sandbox = self
+            .find(owner, name)
+            .await
+            .inspect_err(refused("stop", owner))?;
+        self.halt(&sandbox).await?;
+        info!(sandbox = %sandbox.id.0, "put a sandbox to sleep");
+        Ok(())
     }
 
     pub async fn restart(&self, owner: &User, name: &SandboxName) -> Result<()> {
-        let mut sandbox = self.find(owner, name).await?;
-        not_doomed(&sandbox)?;
-        self.halt(&sandbox).await?;
-        self.start_within(&mut sandbox, Duration::ZERO).await?;
+        let restarted = async {
+            let mut sandbox = self.find(owner, name).await?;
+            not_doomed(&sandbox)?;
+            self.halt(&sandbox).await?;
+            self.start_within(&mut sandbox, Duration::ZERO).await?;
+            Ok(sandbox)
+        };
+        let sandbox = restarted.await.inspect_err(refused("restart", owner))?;
+        info!(sandbox = %sandbox.id.0, "restarted a sandbox");
         Ok(())
     }
 
@@ -345,10 +376,15 @@ impl Sandboxes {
         name: &SandboxName,
         timeout: Option<Duration>,
     ) -> Result<SandboxView> {
-        if let Some(timeout) = timeout {
-            self.timeouts.idle.check_timeout(timeout)?;
-        }
-        let sandbox = self.find(owner, name).await?;
+        let checked = async {
+            if let Some(timeout) = timeout {
+                self.timeouts.idle.check_timeout(timeout)?;
+            }
+            self.find(owner, name).await
+        };
+        let sandbox = checked
+            .await
+            .inspect_err(refused("set_idle_timeout", owner))?;
         self.repo.set_idle_timeout(&sandbox.id, timeout).await?;
         self.get(owner, name).await
     }
@@ -361,10 +397,13 @@ impl Sandboxes {
         name: &SandboxName,
         until: Option<DateTime<Utc>>,
     ) -> Result<SandboxView> {
-        if let Some(until) = until {
-            self.timeouts.idle.check_keep_awake(until, Utc::now())?;
-        }
-        let sandbox = self.find(owner, name).await?;
+        let checked = async {
+            if let Some(until) = until {
+                self.timeouts.idle.check_keep_awake(until, Utc::now())?;
+            }
+            self.find(owner, name).await
+        };
+        let sandbox = checked.await.inspect_err(refused("keep_awake", owner))?;
         self.repo.set_keep_awake_until(&sandbox.id, until).await?;
         self.get(owner, name).await
     }
@@ -387,7 +426,10 @@ impl Sandboxes {
     }
 
     pub async fn set_default(&self, owner: &User, name: &SandboxName) -> Result<()> {
-        let sandbox = self.find(owner, name).await?;
+        let sandbox = self
+            .find(owner, name)
+            .await
+            .inspect_err(refused("set_default", owner))?;
         self.repo.set_default(owner.id, &sandbox.id).await
     }
 
@@ -405,13 +447,21 @@ impl Sandboxes {
 
     /// Starts the sandbox with its current setup, waiting up to the wake deadline.
     pub async fn start(&self, sandbox: &Sandbox) -> Result<Readiness> {
-        self.start_within(&mut sandbox.clone(), self.timeouts.wake_deadline)
-            .await
+        let started = self
+            .start_within(&mut sandbox.clone(), self.timeouts.wake_deadline)
+            .await;
+        started.inspect_err(|error| {
+            if error.is_refusal() {
+                let (sandbox, reason) = (&sandbox.id.0, error.to_string());
+                info!(action = %"start", %sandbox, reason, "refused a sandbox action");
+            }
+        })
     }
 
     /// Records the start on `sandbox` too, unless the engine kept it running as it was.
     /// Issues the sandbox a token for the start, which it keeps only if the start boots it.
     async fn start_within(&self, sandbox: &mut Sandbox, deadline: Duration) -> Result<Readiness> {
+        let began = Instant::now();
         not_doomed(sandbox)?;
         // Taken before the setup loads, so a change made while it starts counts as after it.
         let at = Utc::now();
@@ -427,6 +477,15 @@ impl Sandboxes {
                 .record_start(&sandbox.id, at, &token.hash())
                 .await?;
             sandbox.started_at = Some(at);
+        }
+        let (id, booted, ms) = (&sandbox.id.0, started.booted, began.elapsed().as_millis());
+        let ready = started.readiness == Readiness::Ready;
+        // Only a start from stopped is news: a connection arrives at a running sandbox this way,
+        // and the front door asks again each second while one wakes.
+        if booted {
+            info!(sandbox = %id, booted, ready, ms, "started a sandbox");
+        } else {
+            debug!(sandbox = %id, booted, ready, ms, "started a sandbox");
         }
         Ok(started.readiness)
     }
@@ -544,6 +603,16 @@ fn mebibytes(bytes: u64) -> String {
     format!("{} MiB", bytes.div_ceil(1 << 20))
 }
 
+/// Logs a refusal of `action` for `owner` with its reason. A failure is logged where it is answered.
+pub(super) fn refused<'a>(action: &'static str, owner: &'a User) -> impl FnOnce(&Error) + 'a {
+    move |error| {
+        if error.is_refusal() {
+            let reason = error.to_string();
+            info!(%action, owner = %owner.handle, reason, "refused a sandbox action");
+        }
+    }
+}
+
 /// A sandbox scheduled for deletion stays stopped until its owner cancels the deletion.
 fn not_doomed(sandbox: &Sandbox) -> Result<()> {
     match sandbox.delete_at {
@@ -567,13 +636,15 @@ mod tests {
     use crate::app::{Allowance, Catalog, CatalogChange, LimitsChange, NamedImages};
     use crate::domain::Handle;
     use crate::domain::{Entry, Sandbox, SandboxStatus, SizeKey, User};
-    use crate::fakes::EngineCall;
+    use crate::fakes::{EngineCall, Logs};
     use crate::fakes::{
         MAX_SANDBOXES, WAKE_DEADLINE, World, admin_proof, bytes, catalog, catalog_change,
         default_names, defaults, exposed, file, request, sandbox_name, size_preset, unchanged,
         variable,
     };
     use crate::{Error, Result};
+
+    const SANDBOXES: &str = "corral_core::app::sandboxes";
 
     fn change(entry: &Entry, value: Option<&str>) -> EntryChange {
         EntryChange {
@@ -582,6 +653,71 @@ mod tests {
         }
     }
     use crate::ports::{EventKind, Fact, Readiness, SandboxEngine, UserRepo};
+
+    #[tokio::test]
+    async fn each_action_and_refusal_is_logged_without_a_members_values() {
+        let w = World::new();
+        let adam = w.member("adam").await;
+        w.entry(&adam, variable("GH_TOKEN"), "the-secret-value", true)
+            .await;
+        let logs = Logs::capture();
+        let main = w.sandbox(&adam, "main").await;
+        let refused = w.sandboxes.create(&adam, request("main", None, None)).await;
+        assert!(matches!(refused, Err(Error::Conflict(_))), "{refused:?}");
+        let name = sandbox_name("main");
+        w.sandboxes.stop(&adam, &name).await.unwrap();
+        w.sandboxes.wake(&adam, &name).await.unwrap();
+        w.sandboxes.start(&main).await.unwrap();
+        w.sandboxes.restart(&adam, &name).await.unwrap();
+        w.sandboxes.delete(&adam, &name).await.unwrap();
+        let missing = w.sandboxes.stop(&adam, &name).await;
+        assert!(matches!(missing, Err(Error::NotFound(_))), "{missing:?}");
+
+        let untimed: Vec<String> = logs
+            .lines()
+            .iter()
+            .map(|line| {
+                let fields = line.split(' ').filter(|field| !field.starts_with("ms="));
+                fields.collect::<Vec<_>>().join(" ")
+            })
+            .collect();
+        let started = format!(
+            " INFO {SANDBOXES}: started a sandbox sandbox={} booted=true ready=true",
+            main.id.0
+        );
+        let id = &main.id.0;
+        assert_eq!(
+            untimed,
+            [
+                format!(
+                    "DEBUG corral_core::app::setup: attached a setup entry sandbox={id} \
+                     entry=\"variable GH_TOKEN\""
+                ),
+                format!(
+                    " INFO {SANDBOXES}: created a sandbox sandbox={id} owner=adam name=main \
+                     image=base size=small"
+                ),
+                started.clone(),
+                format!(
+                    " INFO {SANDBOXES}: refused a sandbox action action=create owner=adam \
+                     reason=\"conflict: sandbox main already exists\""
+                ),
+                format!(" INFO {SANDBOXES}: put a sandbox to sleep sandbox={id}"),
+                started.clone(),
+                format!(
+                    "DEBUG {SANDBOXES}: started a sandbox sandbox={id} booted=false ready=true"
+                ),
+                started,
+                format!(" INFO {SANDBOXES}: restarted a sandbox sandbox={id}"),
+                format!(" INFO {SANDBOXES}: deleted a sandbox sandbox={id}"),
+                format!(
+                    " INFO {SANDBOXES}: refused a sandbox action action=stop owner=adam \
+                     reason=\"not found: sandbox main\""
+                ),
+            ]
+        );
+        assert!(!untimed.join("\n").contains("the-secret-value"));
+    }
 
     #[tokio::test]
     async fn create_provisions_from_the_catalog_then_starts_without_waiting() {

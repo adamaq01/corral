@@ -1,5 +1,7 @@
 use chrono::{DateTime, TimeDelta, Utc};
+use tracing::info;
 
+use super::sandboxes::refused;
 use super::{CallingSandbox, Sandboxes};
 use crate::domain::{Sandbox, SandboxName, User};
 use crate::{Error, Result};
@@ -27,6 +29,22 @@ impl Sandboxes {
         confirm: &str,
         now: DateTime<Utc>,
     ) -> Result<DateTime<Utc>> {
+        let sandbox = self
+            .confirmed(calling, confirm)
+            .await
+            .inspect_err(refused("schedule_deletion", calling.owner()))?;
+        if let Some(at) = sandbox.delete_at {
+            return Ok(at);
+        }
+        let at = now + DELETION_GRACE;
+        self.repo.set_delete_at(&sandbox.id, Some(at)).await?;
+        info!(sandbox = %sandbox.id.0, delete_at = %at, "scheduled a sandbox's deletion");
+        Ok(at)
+    }
+
+    /// The calling sandbox, if its owner lets sandboxes delete themselves and `confirm` is its
+    /// name.
+    async fn confirmed(&self, calling: &CallingSandbox, confirm: &str) -> Result<Sandbox> {
         if !self.deletes_from_inside(calling.owner()).await? {
             return Err(Error::Inactive(
                 "deleting a sandbox from inside it is off; turn it on in your profile in the \
@@ -41,18 +59,20 @@ impl Sandboxes {
                 sandbox.name
             )));
         }
-        if let Some(at) = sandbox.delete_at {
-            return Ok(at);
-        }
-        let at = now + DELETION_GRACE;
-        self.repo.set_delete_at(&sandbox.id, Some(at)).await?;
-        Ok(at)
+        Ok(sandbox)
     }
 
     /// Cancels the sandbox's scheduled deletion, if any. It stays stopped.
     pub async fn cancel_deletion(&self, owner: &User, name: &SandboxName) -> Result<()> {
-        let sandbox = self.find(owner, name).await?;
-        self.repo.set_delete_at(&sandbox.id, None).await
+        let sandbox = self
+            .find(owner, name)
+            .await
+            .inspect_err(refused("cancel_deletion", owner))?;
+        self.repo.set_delete_at(&sandbox.id, None).await?;
+        if sandbox.delete_at.is_some() {
+            info!(sandbox = %sandbox.id.0, "cancelled a sandbox's deletion");
+        }
+        Ok(())
     }
 
     /// Deletes every sandbox whose deletion is due at `now`, each with the result of its delete.

@@ -27,6 +27,12 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether it refuses what was asked, rather than failing at it.
+    #[must_use]
+    pub fn is_refusal(&self) -> bool {
+        !matches!(self, Self::Internal { .. })
+    }
+
     pub fn internal(context: impl Into<String>, source: impl Into<Source>) -> Self {
         Self::Internal {
             context: context.into(),

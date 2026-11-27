@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use tracing::info;
 use uuid::Uuid;
 
 use super::{Sandboxes, Setup};
@@ -43,9 +44,11 @@ impl Accounts {
                 self.users
                     .update(&User {
                         status: UserStatus::Disabled,
-                        ..user
+                        ..user.clone()
                     })
                     .await?;
+                let user = &user.handle;
+                info!(%user, %provider, "disabled a user who lost their role");
             }
             return Err(Error::Forbidden);
         };
@@ -74,7 +77,7 @@ impl Accounts {
     }
 
     /// `Conflict` for a user being deleted: only finishing the deletion moves them on.
-    pub async fn set_enabled(&self, _: &Admin, target: UserId, enabled: bool) -> Result<User> {
+    pub async fn set_enabled(&self, admin: &Admin, target: UserId, enabled: bool) -> Result<User> {
         let user = self.get(target).await?;
         if user.status == UserStatus::Deleting {
             return Err(Error::Conflict(format!(
@@ -89,6 +92,12 @@ impl Accounts {
         };
         let user = User { status, ..user };
         self.users.update(&user).await?;
+        let (admin, handle) = (admin.handle(), &user.handle);
+        if enabled {
+            info!(%admin, user = %handle, "enabled a user");
+        } else {
+            info!(%admin, user = %handle, "disabled a user");
+        }
         Ok(user)
     }
 
@@ -98,10 +107,15 @@ impl Accounts {
 
     /// Deletes the user the provider's subject logged in as, if any, else only has the provider
     /// forget the subject. Whether there was such a user.
-    pub async fn delete_identity(&self, _: &Admin, provider: &str, subject: &str) -> Result<bool> {
+    pub async fn delete_identity(
+        &self,
+        admin: &Admin,
+        provider: &str,
+        subject: &str,
+    ) -> Result<bool> {
         let subject_of_user = User::subject_of(provider, subject);
         if let Some(user) = self.users.by_subject(&subject_of_user).await? {
-            self.erase(user).await?;
+            self.erase(user, admin.handle()).await?;
             return Ok(true);
         }
         if let Some(provider) = self.provider(provider) {
@@ -110,8 +124,8 @@ impl Accounts {
         Ok(false)
     }
 
-    pub async fn delete_user(&self, _: &Admin, id: UserId) -> Result<()> {
-        self.erase(self.get(id).await?).await
+    pub async fn delete_user(&self, admin: &Admin, id: UserId) -> Result<()> {
+        self.erase(self.get(id).await?, admin.handle()).await
     }
 
     /// A user deletes themselves, or finishes a deletion of theirs that failed part way, but
@@ -121,13 +135,14 @@ impl Accounts {
         if user.status == UserStatus::Disabled {
             return Err(Error::Forbidden);
         }
-        self.erase(user).await
+        let handle = user.handle.clone();
+        self.erase(user, &handle).await
     }
 
     /// Deletes the user and everything they own, each step safe to repeat, so running it again
     /// after a failure finishes the job. The user is marked deleting first, so logins, sessions
     /// and SSH stop at once, and their row goes last, so a retry still finds them.
-    async fn erase(&self, user: User) -> Result<()> {
+    async fn erase(&self, user: User, by: &Handle) -> Result<()> {
         if user.status != UserStatus::Deleting {
             self.users
                 .update(&User {
@@ -147,6 +162,7 @@ impl Accounts {
             provider.forget(subject).await?;
         }
         self.users.delete(user.id).await?;
+        info!(user = %user.handle, %by, "deleted a user");
         Ok(())
     }
 
@@ -183,6 +199,7 @@ impl Accounts {
             created_at: Utc::now(),
         };
         self.users.insert(&user).await?;
+        info!(user = %user.handle, role = ?user.role, "added a user at their first sign-in");
         Ok(user)
     }
 }
@@ -204,10 +221,51 @@ mod tests {
     use crate::app::Arrival;
     use crate::domain::{PictureUrl, Role, User, UserId, UserStatus};
     use crate::fakes::{
-        ADAM_KEY, EVE_KEY, PROVIDER, World, admin_proof, bytes, file, identity, sandbox_name,
+        ADAM_KEY, EVE_KEY, Logs, PROVIDER, World, admin_proof, bytes, file, identity, sandbox_name,
         variable,
     };
     use crate::ports::{Identity, SandboxEngine, UserRepo};
+
+    #[tokio::test]
+    async fn people_changes_and_ssh_keys_are_logged_with_who_made_them() {
+        let w = World::new();
+        let root = w.admin("root").await;
+        let admin = admin_proof(&root);
+        let adam = w.member("adam").await;
+        let logs = Logs::capture();
+        let key = w.keys.add(&adam, "laptop", ADAM_KEY).await.unwrap();
+        w.keys.remove(&adam, key.id).await.unwrap();
+        w.accounts
+            .set_enabled(&admin, adam.id, false)
+            .await
+            .unwrap();
+        w.accounts.set_enabled(&admin, adam.id, true).await.unwrap();
+        w.accounts.delete_user(&admin, adam.id).await.unwrap();
+        let eve = w.member("eve").await;
+        w.accounts.delete_self(eve.id).await.unwrap();
+
+        let fingerprint = key.public_key.fingerprint();
+        let shown: Vec<_> = logs
+            .lines()
+            .into_iter()
+            .map(|line| line.split(": ").nth(1).unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                format!(
+                    "added an SSH key owner=adam key={} label=\"laptop\" fingerprint=\"{fingerprint}\"",
+                    key.id
+                ),
+                format!("removed an SSH key owner=adam key={}", key.id),
+                "disabled a user admin=root user=adam".to_owned(),
+                "enabled a user admin=root user=adam".to_owned(),
+                "deleted a user user=adam by=root".to_owned(),
+                "added a user at their first sign-in user=eve role=Member".to_owned(),
+                "deleted a user user=eve by=eve".to_owned(),
+            ]
+        );
+    }
 
     #[tokio::test]
     async fn login_requires_a_role() {

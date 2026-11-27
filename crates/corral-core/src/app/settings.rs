@@ -2,6 +2,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tracing::info;
 
 use super::{Catalog, CatalogDefaults, ImageOption, NamedImages, SizePreset, Source};
 use crate::domain::{Admin, ImageKey, Sandbox, SandboxImage, SizeKey, User, UserId};
@@ -155,7 +156,7 @@ impl Settings {
     }
 
     /// Refuses what the config sets, and removing an entry a sandbox was made from.
-    pub async fn set_catalog(&self, _: &Admin, change: CatalogChange) -> Result<()> {
+    pub async fn set_catalog(&self, admin: &Admin, change: CatalogChange) -> Result<()> {
         let configured = &self.configured;
         refuse_configured(&configured.images, &change.images)?;
         refuse_configured(&configured.sizes, &change.sizes)?;
@@ -180,7 +181,9 @@ impl Settings {
             .clone()
             .unwrap_or_else(|| after.defaults.value.clone());
         Catalog::new(after.images, after.sizes, defaults)?;
-        self.repo.set_catalog(&change).await
+        self.repo.set_catalog(&change).await?;
+        changed(admin, "catalog");
+        Ok(())
     }
 
     pub async fn limits(&self) -> Result<Limits> {
@@ -208,7 +211,7 @@ impl Settings {
         })
     }
 
-    pub async fn set_limits(&self, _: &Admin, change: LimitsChange) -> Result<()> {
+    pub async fn set_limits(&self, admin: &Admin, change: LimitsChange) -> Result<()> {
         for (name, configured, changed) in [
             (
                 "max_sandboxes_per_member",
@@ -228,7 +231,9 @@ impl Settings {
                 return Err(Error::Invalid(format!("{name} is set in config")));
             }
         }
-        self.repo.set_limits(&change).await
+        self.repo.set_limits(&change).await?;
+        changed(admin, "limits");
+        Ok(())
     }
 
     pub async fn registries(&self) -> Result<Vec<Registry>> {
@@ -259,7 +264,7 @@ impl Settings {
     }
 
     /// Refuses a host the config sets, or one listed twice, in any case.
-    pub async fn set_registries(&self, _: &Admin, registries: Vec<Registry>) -> Result<()> {
+    pub async fn set_registries(&self, admin: &Admin, registries: Vec<Registry>) -> Result<()> {
         for (index, row) in registries.iter().enumerate() {
             row.check()?;
             if lists(&self.configured.registries, &row.registry) {
@@ -275,7 +280,9 @@ impl Settings {
                 )));
             }
         }
-        self.repo.set_registries(&registries).await
+        self.repo.set_registries(&registries).await?;
+        changed(admin, "registries");
+        Ok(())
     }
 
     pub async fn allowance(&self, user: UserId) -> Result<Option<Allowance>> {
@@ -285,7 +292,7 @@ impl Settings {
     /// The user it is set for.
     pub async fn set_allowance(
         &self,
-        _: &Admin,
+        admin: &Admin,
         user: UserId,
         allowance: Option<Allowance>,
     ) -> Result<User> {
@@ -298,6 +305,8 @@ impl Settings {
             .await?
             .ok_or_else(|| Error::NotFound(format!("user {}", user.0)))?;
         self.repo.set_allowance(user.id, allowance.as_ref()).await?;
+        let (admin, handle) = (admin.handle(), &user.handle);
+        info!(%admin, kind = %"allowance", user = %handle, "changed the settings");
         Ok(user)
     }
 
@@ -584,6 +593,10 @@ fn owned_by(row: Registry, source: Source) -> Registry {
     Registry { source, ..row }
 }
 
+fn changed(admin: &Admin, kind: &str) {
+    info!(admin = %admin.handle(), %kind, "changed the settings");
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
@@ -596,10 +609,11 @@ mod tests {
         Allowance, CatalogChange, Configured, Limits, LimitsChange, Locked, Registry, Settings,
     };
     use crate::app::{Catalog, CatalogDefaults, ImageOption, NamedImages, Source};
+    use crate::domain::Shared;
     use crate::domain::{ImageKey, SizeKey, UserId};
     use crate::fakes::{
-        MAX_SANDBOXES, MemorySettingsRepo, World, admin_proof, catalog, catalog_change,
-        image_option,
+        Logs, MAX_SANDBOXES, MemorySettingsRepo, World, admin_proof, catalog, catalog_change,
+        image_option, shared_variable,
     };
     use crate::ports::SettingsRepo;
     use crate::{Error, Result};
@@ -643,6 +657,53 @@ mod tests {
             enabled: false,
             ..image
         }
+    }
+
+    #[tokio::test]
+    async fn each_settings_change_is_logged_with_its_admin_and_kind() {
+        let w = World::new();
+        let root = admin_proof(&w.admin("root").await);
+        let adam = w.member("adam").await;
+        let logs = Logs::capture();
+        let limits = LimitsChange {
+            max_sandboxes_per_member: Some(3),
+            max_running: None,
+        };
+        w.settings.set_limits(&root, limits).await.unwrap();
+        let allowance = Allowance { max_sandboxes: 5 };
+        w.settings
+            .set_allowance(&root, adam.id, Some(allowance))
+            .await
+            .unwrap();
+        w.settings
+            .set_catalog(&root, catalog_change(&catalog()))
+            .await
+            .unwrap();
+        w.settings.set_registries(&root, Vec::new()).await.unwrap();
+        let shared = shared_variable("NPM_TOKEN", "the-shared-secret", Shared::Offered);
+        w.setup.create_shared(&root, shared).await.unwrap();
+
+        let changed: Vec<_> = logs
+            .of("changed the settings")
+            .into_iter()
+            .map(|line| {
+                line.split("changed the settings ")
+                    .nth(1)
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(
+            changed,
+            [
+                "admin=root kind=limits",
+                "admin=root kind=allowance user=adam",
+                "admin=root kind=catalog",
+                "admin=root kind=registries",
+                "admin=root kind=shared_setup entry=\"variable NPM_TOKEN\"",
+            ]
+        );
+        assert!(!logs.lines().join("\n").contains("the-shared-secret"));
     }
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use tracing::info;
 use uuid::Uuid;
 
 use crate::domain::{SshKey, SshPublicKey, User};
@@ -27,6 +28,8 @@ impl Keys {
             created_at: Utc::now(),
         };
         self.keys.insert(&key).await?;
+        let (owner, fingerprint) = (&owner.handle, key.public_key.fingerprint());
+        info!(%owner, key = %key.id, label = key.label, fingerprint, "added an SSH key");
         Ok(key)
     }
 
@@ -36,6 +39,7 @@ impl Keys {
 
     pub async fn remove(&self, owner: &User, id: Uuid) -> Result<()> {
         if self.keys.delete(owner.id, id).await? {
+            info!(owner = %owner.handle, key = %id, "removed an SSH key");
             Ok(())
         } else {
             Err(Error::NotFound(format!("key {id}")))
