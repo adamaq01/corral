@@ -3,10 +3,12 @@
 //! a channel of the sandbox's sshd, and relays both ways.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use corral_core::domain::SandboxId;
 use russh::{Channel, ChannelId, ChannelMsg, Disconnect, Pty, server};
 use tokio::sync::{mpsc, oneshot};
+use tracing::info;
 
 use crate::herdr;
 use crate::link::Link;
@@ -54,6 +56,48 @@ enum Request {
     Shell,
     Exec(Vec<u8>),
     Subsystem(String),
+}
+
+impl Request {
+    /// What the log calls it, never with the command or a name the client chose.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Exec(_) => "exec",
+            Self::Subsystem(name) if name == "sftp" => "sftp",
+            Self::Subsystem(_) => "subsystem",
+        }
+    }
+}
+
+/// A channel the gate carries into a sandbox, logged as opened, then as closed with how long it
+/// lasted once dropped.
+pub(crate) struct Carried {
+    username: String,
+    sandbox: SandboxId,
+    kind: &'static str,
+    opened: Instant,
+}
+
+impl Carried {
+    pub(crate) fn open(link: &Link, sandbox: &SandboxId, kind: &'static str) -> Self {
+        let username = link.username.clone();
+        info!(username, sandbox = %sandbox.0, %kind, "opened a session");
+        Self {
+            username,
+            sandbox: sandbox.clone(),
+            kind,
+            opened: Instant::now(),
+        }
+    }
+}
+
+impl Drop for Carried {
+    fn drop(&mut self) {
+        let ms = self.opened.elapsed().as_millis();
+        let (username, sandbox, kind) = (&self.username, &self.sandbox.0, self.kind);
+        info!(username, %sandbox, %kind, ms, "closed a session");
+    }
 }
 
 /// What the client asked of the channel before it reached the sandbox.
@@ -169,6 +213,7 @@ pub(crate) async fn run(link: Arc<Link>, outer: Channel<server::Msg>) {
         let reason = "the sandbox's sshd refused another session".to_owned();
         return refuse(&link, id, on_terminal, &reason, from_client).await;
     };
+    let _session = Carried::open(&link, bridge.work.sandbox(), request.kind());
     let (inner_read, inner_write) = inner.split();
     let (replies, mut reply) = mpsc::unbounded_channel();
     bridge.work.note();

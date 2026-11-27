@@ -15,6 +15,7 @@ use crate::Limits;
 use crate::api::Authenticate;
 use crate::backlog::Backlog;
 use crate::link::{Link, Reach};
+use crate::session::Carried;
 use crate::{relay, session};
 
 const ADMINISTRATIVELY_PROHIBITED: u32 = 1;
@@ -25,7 +26,7 @@ pub(crate) struct Connection {
     peer: SocketAddr,
     id: String,
     backlog: Arc<Backlog>,
-    authenticated: Option<oneshot::Sender<()>>,
+    authenticated: Option<oneshot::Sender<String>>,
     unauthenticated: Option<OwnedSemaphorePermit>,
     /// The username the client last proved a credential for.
     proven: Option<String>,
@@ -39,8 +40,8 @@ pub(crate) struct Connection {
 pub(crate) struct Watched {
     pub(crate) peer: SocketAddr,
     pub(crate) backlog: Arc<Backlog>,
-    /// Told once the client authenticates, which ends its login grace.
-    pub(crate) authenticated: oneshot::Sender<()>,
+    /// Told the username once the client authenticates, which ends its login grace.
+    pub(crate) authenticated: oneshot::Sender<String>,
     /// A place among the unauthenticated connections, given back once the client authenticates.
     pub(crate) unauthenticated: OwnedSemaphorePermit,
     /// Cancelled once the connection ends.
@@ -136,6 +137,7 @@ impl Connection {
             match opening(bridge.clone()).await {
                 Ok(inner) => {
                     reply.accept().await;
+                    let _session = Carried::open(&link, bridge.work.sandbox(), "forward");
                     let work = bridge.work.clone();
                     relay::bytes(
                         channel,
@@ -229,7 +231,7 @@ impl russh::server::Handler for Connection {
         let username = self.proven.clone().ok_or(russh::Error::NotAuthenticated)?;
         info!(username, peer = %self.peer, "authenticated a connection");
         if let Some(authenticated) = self.authenticated.take() {
-            let _ = authenticated.send(());
+            let _ = authenticated.send(username.clone());
         }
         self.unauthenticated = None;
         self.link = Some(Arc::new(Link::new(

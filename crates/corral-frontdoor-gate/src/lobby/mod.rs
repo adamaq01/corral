@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use russh::{ChannelId, ChannelMsg};
-use tracing::warn;
+use tracing::{info, warn};
 
 pub(crate) use script::{is_script, run as script};
 pub(crate) use words::LEFT;
@@ -188,7 +188,12 @@ async fn check(link: Arc<Link>, reference: String) -> Option<String> {
 
 async fn make(link: Arc<Link>, create: Create) -> Result<(), String> {
     match link.server().create(&create).await {
-        Ok(Created::Made { .. }) => Ok(()),
+        Ok(Created::Made { made }) => {
+            let Create { username, .. } = &create;
+            let (name, image, size) = (&made.name, &made.image, &made.size);
+            info!(username, %name, %image, %size, "made a sandbox from the installer");
+            Ok(())
+        }
         Ok(Created::Refused { reason }) => Err(reason),
         Err(error) => {
             warn!(%error, username = create.username, "could not ask Corral to make a sandbox");

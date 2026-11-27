@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use corral_core::ports::SandboxStreams;
 use russh::keys::PrivateKey;
@@ -94,6 +94,7 @@ impl Gate {
         peer: std::net::SocketAddr,
         place: OwnedSemaphorePermit,
     ) {
+        let began = Instant::now();
         let backlog = Backlog::new(self.limits.backlog);
         let (authenticated, authenticating) = oneshot::channel();
         // However the connection ends, its bridge into the sandbox ends with it.
@@ -116,9 +117,12 @@ impl Gate {
             .await?
             .await
         };
+        let mut username = None;
         let grace = async {
-            if let Ok(Ok(())) = tokio::time::timeout(self.limits.login_grace, authenticating).await
+            if let Ok(Ok(proven)) =
+                tokio::time::timeout(self.limits.login_grace, authenticating).await
             {
+                username = Some(proven);
                 std::future::pending::<()>().await;
             }
         };
@@ -129,6 +133,10 @@ impl Gate {
                 }
             }
             () = grace => debug!(%peer, "a connection did not authenticate in time"),
+        }
+        if let Some(username) = username {
+            let ms = began.elapsed().as_millis();
+            info!(username, %peer, ms, "an authenticated connection ended");
         }
     }
 }

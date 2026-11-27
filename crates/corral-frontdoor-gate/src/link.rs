@@ -41,9 +41,21 @@ pub(crate) enum Looked {
         client_state: Option<String>,
     },
     Asleep {
+        sandbox: SandboxId,
         client_state: Option<String>,
     },
     Refused(String),
+}
+
+impl Looked {
+    /// The sandbox the connection arrives at, if any.
+    pub(crate) fn sandbox(&self) -> Option<&SandboxId> {
+        match self {
+            Self::Awake { bridge, .. } => Some(bridge.work.sandbox()),
+            Self::Asleep { sandbox, .. } => Some(sandbox),
+            Self::Refused(_) => None,
+        }
+    }
 }
 
 /// What makes a link, shared by every connection of the gate.
@@ -134,7 +146,14 @@ impl Link {
                     client_state,
                 }
             }
-            Arrived::Asleep { client_state, .. } => Looked::Asleep { client_state },
+            Arrived::Asleep {
+                sandbox,
+                client_state,
+                ..
+            } => Looked::Asleep {
+                sandbox: SandboxId(sandbox),
+                client_state,
+            },
             Arrived::Waking { name } => Looked::Refused(format!(
                 "sandbox {name} is still starting after {} s; its page in the web UI says why",
                 self.patience.as_secs()
@@ -180,24 +199,40 @@ impl Link {
     /// Wakes the sandbox, and waits until it takes sessions.
     async fn reach(&self) -> Result<(SandboxId, String), String> {
         let started = Instant::now();
+        let mut waking = false;
         let request = Arrive {
             username: self.username.clone(),
             wake: true,
             client: None,
         };
+        let username = &self.username;
         loop {
             let arrived = self.server.arrive(&request).await.map_err(|error| {
-                warn!(%error, username = self.username, "could not ask Corral for a sandbox");
+                warn!(%error, username, "could not ask Corral for a sandbox");
                 unreachable()
             })?;
             match arrived {
-                Arrived::Ready { sandbox, name, .. } => return Ok((SandboxId(sandbox), name)),
+                Arrived::Ready { sandbox, name, .. } => {
+                    if waking {
+                        let ms = started.elapsed().as_millis();
+                        let outcome = "ready";
+                        info!(username, %sandbox, ms, %outcome, "a wake finished");
+                    }
+                    return Ok((SandboxId(sandbox), name));
+                }
                 Arrived::Refused { reason } => {
-                    info!(username = self.username, reason, "refused a connection");
+                    info!(username, reason, "refused a connection");
                     return Err(reason);
                 }
                 Arrived::Waking { name, .. } | Arrived::Asleep { name, .. } => {
+                    if !waking {
+                        waking = true;
+                        info!(username, "a wake started");
+                    }
                     if started.elapsed() >= self.patience {
+                        let ms = started.elapsed().as_millis();
+                        let outcome = "timed_out";
+                        info!(username, ms, %outcome, "a wake finished");
                         return Err(format!(
                             "sandbox {name} is still starting after {} s; its page in the web UI \
                              says why",

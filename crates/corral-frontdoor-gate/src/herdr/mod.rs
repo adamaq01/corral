@@ -26,7 +26,7 @@ use self::wire::{CLOSE, DATA, Frame, Garbled, error, take_line};
 use crate::api::ClientState;
 use crate::link::{Link, Looked};
 use crate::relay::FromClient;
-use crate::session::REFUSED;
+use crate::session::{Carried, REFUSED};
 use crate::work::Work;
 
 const CLIENT: &str = "herdr";
@@ -159,6 +159,7 @@ pub(crate) async fn run(
 ) {
     let key = client_key(&command);
     let looked = link.look(&key).await;
+    let sandbox = looked.sandbox().cloned();
     let _ = link.client.channel_success(id).await;
     let mut carried = Line {
         link,
@@ -242,6 +243,7 @@ pub(crate) async fn run(
             Mode::Empty(EmptyCore::new(identity, carried.link.sandbox(), None))
         }
     };
+    let _session = sandbox.map(|sandbox| Carried::open(&carried.link, &sandbox, "herdr"));
     carried.carry(mode, from_client).await;
 }
 
