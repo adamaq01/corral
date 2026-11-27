@@ -2,9 +2,10 @@
 //! drops, so a plain bridge would keep a sandbox awake, and wake it on every reconnect. On that
 //! line the gate reads what Herdr sends: only what a person does counts as work. While the
 //! sandbox sleeps, the gate answers as its core with no terminals; the first thing a person does
-//! wakes it, and the gate hands the line over to the real core, the call that woke it first.
-//! When the sandbox goes to sleep under the line, the gate tells Herdr its terminals ended and
-//! answers as the empty core again. Whatever the gate cannot read, it relays as it is, as passive.
+//! wakes it, and the gate hands the line over to the real core, the call that woke it first. It
+//! answers only as a core it met: a hello on a line the gate has no identity for wakes it. When the
+//! sandbox goes to sleep under the line, the gate tells Herdr its terminals ended and answers as
+//! the empty core again. Whatever the gate cannot read, it relays as it is, as passive.
 
 mod classify;
 mod empty;
@@ -178,69 +179,76 @@ pub(crate) async fn run(
     let Some(hello) = carried.hello(&mut from_client).await else {
         return carried.end(None).await;
     };
-    let mode = match (looked, hello) {
-        (Looked::Refused(reason), hello) => {
+    let bridge = match looked {
+        Looked::Refused(reason) => {
             return carried
                 .refuse(hello.ok().map(|hello| hello.id), &reason)
                 .await;
         }
-        (
-            Looked::Awake {
-                bridge,
-                client_state,
-            },
-            Ok(hello),
-        ) => {
+        Looked::Awake {
+            bridge,
+            client_state,
+        } => {
             carried.identity = client_state.as_deref().and_then(identity_of);
-            match carried.open_core(&bridge.work).await {
-                Some(core) => {
-                    carried.hello_params = hello.params.clone();
-                    carried.hello_id = hello.id.clone();
-                    let mut sent = hello.line;
-                    sent.push(b'\n');
-                    let framed = hello.framed;
-                    core.send(sent).await;
-                    if framed {
-                        Mode::Bridged(core)
-                    } else {
-                        Mode::Raw(core)
-                    }
-                }
-                None => {
-                    return carried
-                        .refuse(Some(hello.id), "its core cannot be reached")
-                        .await;
-                }
-            }
+            bridge
         }
-        (Looked::Awake { bridge, .. }, Err(unread)) => {
-            match carried.open_core(&bridge.work).await {
-                Some(core) => {
-                    let mut sent = unread;
-                    sent.push(b'\n');
-                    core.send(sent).await;
-                    Mode::Raw(core)
-                }
-                None => return carried.end(None).await,
-            }
-        }
-        (Looked::Asleep { client_state, .. }, hello) => {
-            let identity = client_state.as_deref().and_then(identity_of);
-            let (Ok(hello), Some(identity)) = (hello, identity) else {
+        Looked::Asleep { client_state } => {
+            let Ok(hello) = &hello else {
                 let reason = format!(
-                    "{} is asleep: an ssh login as {} or the web UI wakes it",
-                    carried.link.sandbox(),
-                    carried.link.username
+                    "{} is asleep, and this line did not start with a Herdr hello",
+                    carried.link.sandbox()
                 );
                 return carried.refuse(None, &reason).await;
             };
-            carried.hello_params = hello.params.clone();
-            carried.hello_id = hello.id.clone();
-            carried.identity = Some(identity.clone());
-            let answer = wire::result(&hello.id, &identity.hello(hello.framed));
-            carried.send_line(&answer).await;
-            Mode::Empty(EmptyCore::new(identity, carried.link.sandbox(), None))
+            if let Some(identity) = client_state.as_deref().and_then(identity_of) {
+                carried.hello_params = hello.params.clone();
+                carried.hello_id = hello.id.clone();
+                carried.identity = Some(identity.clone());
+                let answer = wire::result(&hello.id, &identity.hello(hello.framed));
+                carried.send_line(&answer).await;
+                let empty = EmptyCore::new(identity, carried.link.sandbox(), None);
+                return carried.carry(Mode::Empty(empty), from_client).await;
+            }
+            info!(
+                username = carried.link.username,
+                "no Herdr identity is kept for the sandbox yet, so this connection wakes it"
+            );
+            match carried.link.bridge().await {
+                Ok(bridge) => bridge,
+                Err(reason) => return carried.refuse(Some(hello.id.clone()), &reason).await,
+            }
         }
+    };
+    let mode = match hello {
+        Ok(hello) => match carried.open_core(&bridge.work).await {
+            Some(core) => {
+                carried.hello_params = hello.params.clone();
+                carried.hello_id = hello.id.clone();
+                let mut sent = hello.line;
+                sent.push(b'\n');
+                let framed = hello.framed;
+                core.send(sent).await;
+                if framed {
+                    Mode::Bridged(core)
+                } else {
+                    Mode::Raw(core)
+                }
+            }
+            None => {
+                return carried
+                    .refuse(Some(hello.id), "its core cannot be reached")
+                    .await;
+            }
+        },
+        Err(unread) => match carried.open_core(&bridge.work).await {
+            Some(core) => {
+                let mut sent = unread;
+                sent.push(b'\n');
+                core.send(sent).await;
+                Mode::Raw(core)
+            }
+            None => return carried.end(None).await,
+        },
     };
     carried.carry(mode, from_client).await;
 }
