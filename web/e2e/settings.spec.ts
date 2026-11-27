@@ -9,6 +9,7 @@ import type {
 	CatalogSettings,
 	OwnedSandbox,
 	Sandbox,
+	SetupEntry,
 	SharedEntry,
 	SizeSetting
 } from '../src/lib/api/generated/index.js';
@@ -423,6 +424,81 @@ test.describe('an admin', () => {
 		const deleted = await member.delete('/api/me');
 		expect(deleted.ok(), await deleted.text()).toBe(true);
 		await member.dispose();
+	});
+
+	test('saves the shared addresses, which a member sees locked in the LLM providers preset', async ({
+		page,
+		baseURL,
+		browser
+	}) => {
+		const card = page.getByRole('region', { name: 'Addresses for every sandbox' });
+		await page.goto('/admin/settings/shared-setup');
+		await expect(card).toContainText('No shared addresses');
+		await card.getByLabel('Anthropic base URL').fill('https://llm.home.example');
+		await card.getByRole('button', { name: 'Use this address for every provider' }).click();
+		await expect(card.getByLabel('OpenAI base URL')).toHaveValue('https://llm.home.example');
+		await card.getByLabel('OpenAI base URL').fill('https://llm.home.example/openai');
+		await card.getByRole('button', { name: 'Save', exact: true }).click();
+		await expect(page.getByText('Saved the shared addresses')).toBeVisible();
+		await expect(card).toContainText(
+			'Anthropic through https://llm.home.example, OpenAI through https://llm.home.example/openai'
+		);
+		const table = page.getByRole('table', { name: 'Shared setup' });
+		for (const name of ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL']) {
+			await expect(entry(table, name)).toContainText('Required');
+		}
+
+		const context = await browser.newContext({ baseURL, storageState: session('member') });
+		const bob = await context.newPage();
+		await bob.goto('/setup');
+		await bob.getByRole('button', { name: /LLM providers$/ }).click();
+		const dialog = bob.getByRole('dialog', { name: 'LLM providers' });
+		const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+		for (const [provider, url] of [
+			['Anthropic', 'https://llm.home.example'],
+			['OpenAI', 'https://llm.home.example/openai']
+		]) {
+			const group = dialog.getByRole('group', { name: provider });
+			await expect(group.getByLabel('Base URL')).toHaveValue(url);
+			await expect(group.getByLabel('Base URL')).toBeDisabled();
+			await expect(group).toContainText('Set by the admin');
+		}
+		await expect(
+			dialog.getByRole('button', { name: 'Use this address for every provider' })
+		).toHaveCount(0);
+		await anthropic.getByLabel('Key', { exact: true }).fill('sk-ant-e2e-bob');
+		await dialog.getByRole('button', { name: 'Save providers' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(bob.getByText('Saved the LLM providers')).toBeVisible();
+
+		const listed: SetupEntry[] = await (await context.request.get('/api/setup')).json();
+		const llm = listed
+			.filter((held) => /^(ANTHROPIC|OPENAI)_/.test(held.target))
+			.map(({ target, shared, secret }) => ({ target, shared, secret }));
+		expect(llm).toEqual(
+			expect.arrayContaining([
+				{ target: 'ANTHROPIC_BASE_URL', shared: 'required', secret: false },
+				{ target: 'OPENAI_BASE_URL', shared: 'required', secret: false },
+				{ target: 'ANTHROPIC_AUTH_TOKEN', shared: null, secret: true },
+				{ target: 'ANTHROPIC_API_KEY', shared: null, secret: true }
+			])
+		);
+		expect(llm).toHaveLength(4);
+		for (const held of listed) {
+			if (held.shared === null && held.target.startsWith('ANTHROPIC_')) {
+				const removed = await context.request.delete(`/api/setup/${held.id}`);
+				expect(removed.ok(), await removed.text()).toBe(true);
+			}
+		}
+		await context.close();
+
+		await card.getByLabel('Anthropic base URL').fill('');
+		await card.getByLabel('OpenAI base URL').fill('');
+		await card.getByRole('button', { name: 'Save', exact: true }).click();
+		await expect(card).toContainText('No shared addresses');
+		const targets = (await sharedSetup(page)).map((shared) => shared.target);
+		expect(targets).not.toContain('ANTHROPIC_BASE_URL');
+		expect(targets).not.toContain('OPENAI_BASE_URL');
 	});
 });
 

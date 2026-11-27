@@ -377,10 +377,52 @@ inEveryView((look) => {
 		await serve(page, { '/api/setup': entries });
 		await page.goto('/setup');
 		await page.getByText('ANTHROPIC_API_KEY').waitFor();
+		await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+			'Anthropic through a gateway'
+		);
 		await look(page, 'setup');
 
-		await page.getByRole('button', { name: 'Add variable' }).click();
+		await page.getByRole('button', { name: 'Change LLM providers' }).click();
 		const dialog = page.getByRole('dialog');
+		await dialog.getByText('Type the key again so it is also sent as a bearer token.').waitFor();
+		await look(page, 'setup-llm', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Change Git identity' }).click();
+		await dialog.getByLabel('Name', { exact: true }).fill('Bob Example');
+		await dialog.getByLabel('Email', { exact: true }).fill('bob@example.lan');
+		await expect(dialog.getByRole('radio', { name: 'An SSH key' })).toBeChecked();
+		await expect(dialog).toContainText('Set, hidden');
+		await look(page, 'setup-git', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Set up MCP servers' }).click();
+		const fetch = dialog.getByRole('group', { name: 'Server 1' });
+		await fetch.getByLabel('Name', { exact: true }).fill('fetch');
+		await fetch.getByLabel('Command', { exact: true }).fill('uvx');
+		await fetch.getByLabel('Arguments', { exact: true }).fill('mcp-server-fetch');
+		await dialog.getByRole('button', { name: 'Add server' }).click();
+		const docs = dialog.getByRole('group', { name: 'Server 2' });
+		await docs.getByLabel('Name', { exact: true }).fill('docs');
+		await docs.getByRole('radio', { name: 'A URL' }).click();
+		await docs.getByLabel('URL', { exact: true }).fill('https://docs.example.lan/mcp');
+		await docs.getByLabel('Headers', { exact: true }).fill('X-Team: platform');
+		await look(page, 'setup-mcp', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Set up Dotfiles' }).click();
+		await dialog
+			.getByLabel('Repository', { exact: true })
+			.fill('https://github.com/bob-example/dotfiles.git');
+		await dialog.getByLabel('Branch', { exact: true }).fill('main');
+		await look(page, 'setup-dotfiles', { fullPage: false });
+
+		await page.keyboard.press('Escape');
+		await dialog.waitFor({ state: 'hidden' });
+		await page.getByRole('button', { name: 'Add variable' }).click();
 		await dialog.getByLabel('Name').fill('github_token');
 		await dialog.getByRole('switch', { name: 'Secret' }).click();
 		await dialog.getByLabel('Value', { exact: true }).fill('ghp_example0123456789');
@@ -451,7 +493,13 @@ inEveryView((look) => {
 			}
 			await look(page, name);
 		}
+	});
 
+	test("a setup entry's dialogs, and a missing one", async ({ page }) => {
+		const secretFile = entries[6];
+		await serve(page, { [`/api/setup/${secretFile.id}`]: secretFile, '/api/sandboxes': sandboxes });
+		await page.goto(`/setup/${secretFile.id}`);
+		await page.getByRole('list', { name: 'Your sandboxes' }).waitFor();
 		await page.getByRole('button', { name: 'Replace value' }).click();
 		await page.getByRole('dialog').waitFor();
 		await look(page, 'setup-replace', { fullPage: false });

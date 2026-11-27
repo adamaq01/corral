@@ -16,6 +16,7 @@
 	import ListSkeleton from '#lib/components/list-skeleton.svelte';
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import PageHeader from '#lib/components/page-header.svelte';
+	import PresetsSection from '#lib/components/presets/presets-section.svelte';
 	import RefreshStatus from '#lib/components/refresh-status.svelte';
 	import * as Alert from '#lib/components/ui/alert/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
@@ -181,49 +182,52 @@
 			error={list.current.error}
 			onretry={() => list.reload()}
 		/>
-	{:else if list.current.value.length === 0}
-		{@render noneYet()}
 	{:else}
+		<PresetsSection
+			entries={list.current.value}
+			onchanged={() => list.reload()}
+			onaddfile={() => add('file')}
+		/>
 		<div class="grid gap-3">
-			<div class="flex flex-wrap items-center gap-2">
-				<div class="relative min-w-48 flex-1">
-					<SearchIcon
-						class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-						aria-hidden="true"
-					/>
-					<Input
-						type="search"
-						placeholder="Find by name, path or sandbox"
-						aria-label="Find by name, path or sandbox"
-						class="pl-8"
-						bind:value={search}
-					/>
+			{#if list.current.value.length > 0}
+				<div class="flex flex-wrap items-center gap-2">
+					<div class="relative min-w-48 flex-1">
+						<SearchIcon
+							class="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+							aria-hidden="true"
+						/>
+						<Input
+							type="search"
+							placeholder="Find by name, path or sandbox"
+							aria-label="Find by name, path or sandbox"
+							class="pl-8"
+							bind:value={search}
+						/>
+					</div>
+					<NativeSelect.Root aria-label="Show" bind:value={show}>
+						<NativeSelect.Option value="all">All</NativeSelect.Option>
+						<NativeSelect.Option value="variable">Variables</NativeSelect.Option>
+						<NativeSelect.Option value="file">Files</NativeSelect.Option>
+						<NativeSelect.Option value="secret">Secret</NativeSelect.Option>
+					</NativeSelect.Root>
+					{#if parts.yours.some((entry) => entry.kind === 'variable')}
+						<Button variant="ghost" onclick={() => exportVariables(parts.yours)}>
+							<DownloadIcon />
+							Export .env
+						</Button>
+					{/if}
 				</div>
-				<NativeSelect.Root aria-label="Show" bind:value={show}>
-					<NativeSelect.Option value="all">All</NativeSelect.Option>
-					<NativeSelect.Option value="variable">Variables</NativeSelect.Option>
-					<NativeSelect.Option value="file">Files</NativeSelect.Option>
-					<NativeSelect.Option value="secret">Secret</NativeSelect.Option>
-				</NativeSelect.Root>
-				{#if parts.yours.some((entry) => entry.kind === 'variable')}
-					<Button variant="ghost" onclick={() => exportVariables(parts.yours)}>
-						<DownloadIcon />
-						Export .env
-					</Button>
-				{/if}
-			</div>
-			<RefreshStatus remote={list} />
-			{#if parts.shared.length === 0}
-				{@render listed('Setup', parts.yours)}
-			{:else}
+				<RefreshStatus remote={list} />
+			{/if}
+			{#if parts.shared.length > 0}
 				<h2 class="mt-3 text-lg font-semibold tracking-tight">Shared</h2>
 				{@render listed('Shared', parts.shared)}
-				<h2 class="mt-3 text-lg font-semibold tracking-tight">Yours</h2>
-				{#if parts.yours.length === 0}
-					{@render noneYet()}
-				{:else}
-					{@render listed('Yours', parts.yours)}
-				{/if}
+			{/if}
+			<h2 class="mt-3 text-lg font-semibold tracking-tight">Yours</h2>
+			{#if parts.yours.length === 0}
+				{@render noneYet()}
+			{:else}
+				{@render listed('Yours', parts.yours)}
 			{/if}
 		</div>
 	{/if}

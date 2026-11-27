@@ -11,6 +11,7 @@
 	import LoadFailed from '#lib/components/load-failed.svelte';
 	import RefreshStatus from '#lib/components/refresh-status.svelte';
 	import SharedEntryDialog from '#lib/components/settings/shared-entry-dialog.svelte';
+	import SharedLlmCard from '#lib/components/settings/shared-llm-card.svelte';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import * as Card from '#lib/components/ui/card/index.js';
@@ -107,6 +108,8 @@
 		</Button>
 	</div>
 {/snippet}
+
+<SharedLlmCard onsaved={() => list.reload()} />
 
 {#if list.current.state === 'failed'}
 	<LoadFailed

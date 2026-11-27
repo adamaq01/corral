@@ -47,10 +47,15 @@ check() {
 # What the gate does for each connection: a fresh key, and corral-sshd run with its public half.
 ssh-keygen -q -t ed25519 -N '' -C gate -f "$work/key"
 public_key=$(cut -d' ' -f1,2 "$work/key.pub")
-# The session variables, as the engine writes them before each start.
-mkdir -p "$work/session/etc/corral"
-echo 'SetEnv "FOO_TOKEN=bar"' >"$work/session/etc/corral/sshd_env.conf"
-chmod 0400 "$work/session/etc/corral/sshd_env.conf"
+# The session variables, as the engine writes them before each start: the SetEnv line $1.
+write_session_env() {
+  local file=$work/session/etc/corral/sshd_env.conf
+  mkdir -p "${file%/*}"
+  rm -f "$file"
+  echo "$1" >"$file"
+  chmod 0400 "$file"
+}
+write_session_env 'SetEnv "FOO_TOKEN=bar"'
 
 ssh_options=(-F /dev/null -i "$work/key" -o BatchMode=yes -o IdentitiesOnly=yes
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
@@ -65,13 +70,14 @@ interactive_login() {
     tr -d '\r'
 }
 
-# The home files the engine stages, as corral-init reads them: "<key> <mode> <path>" lines.
+# The home files the engine stages, as corral-init reads them: "<key> <mode> <path>" lines on
+# stdin, key 0 holding $1, key 1 holding $2 or "plain", and key 2 "blocked".
 stage_home_files() {
   local dir=$work/home-files/etc/corral/home-files
   rm -rf "$work/home-files" && mkdir -p "$dir"
   cat >"$dir/manifest"
   printf "%s" "$1" >"$dir/0"
-  printf "plain" >"$dir/1"
+  printf "%s" "${2:-plain}" >"$dir/1"
   printf "blocked" >"$dir/2"
   chmod 0700 "$dir" && chmod 0600 "$dir"/*
   tar -C "$work/home-files" --owner=1000 --group=1000 --numeric-owner \
@@ -234,27 +240,30 @@ stage_repository() {
     \"repository\": {\"url\": \"$1\", \"branch\": null}}" <<<'0 0600 .config/corral/sandbox.json'
 }
 
-# A bare repository of one commit, mounted read-only where the sandbox file names it.
+# A bare repository of one commit at $work/$1.git, which a test mounts read-only where a file of
+# the setup names it, holding the file $2 with the line $3, the file $4 with the line $5, and so on.
 make_repository() {
+  local source=$work/$1
   local git=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=corral
     -c user.email=corral@example.com)
-  "${git[@]}" init -q -b main "$work/source"
-  echo hello >"$work/source/README"
-  "${git[@]}" -C "$work/source" add README
-  "${git[@]}" -C "$work/source" commit -q -m first
-  "${git[@]}" clone -q --bare "$work/source" "$work/repo.git"
-  chmod -R a+rX "$work/repo.git"
+  shift
+  "${git[@]}" init -q -b main "$source"
+  while (($#)); do
+    mkdir -p "$(dirname "$source/$1")"
+    echo "$2" >"$source/$1"
+    shift 2
+  done
+  "${git[@]}" -C "$source" add -A
+  "${git[@]}" -C "$source" commit -q -m first
+  "${git[@]}" clone -q --bare "$source" "$source.git"
+  chmod -R a+rX "$source.git"
 }
 
 # The first start clones the repository the sandbox file names, with the image's git.
 check_repository() {
   local repository=(--mount "type=bind,source=$work/repo.git,target=/srv/repo.git,readonly")
   base=$with_git
-  docker build --quiet --tag "$with_git" - >/dev/null <<'EOF2'
-FROM alpine:3.24
-RUN apk add --no-cache git
-EOF2
-  make_repository
+  make_repository repo README hello
 
   stage_repository file:///srv/repo.git
   start_server "$with_git" "${repository[@]}"
@@ -290,10 +299,145 @@ Cloned file:///srv/repo.git into ~/repo" \
   docker volume rm "$volume" >/dev/null
 }
 
+# The dotfiles file of the setup, naming the repository $1, as the only staged home file.
+stage_dotfiles() {
+  stage_home_files "{\"url\": \"$1\", \"branch\": null}" <<<'0 0644 .config/corral-agents/dotfiles.json'
+}
+
+# The first start checks out the dotfiles the setup names into the home, over the skeleton.
+check_dotfiles() {
+  local dotfiles=(--mount "type=bind,source=$work/dotfiles.git,target=/srv/dotfiles.git,readonly")
+  base=$with_git
+  make_repository dotfiles .bashrc '# from the dotfiles' .config/tool/x x
+
+  stage_dotfiles file:///srv/dotfiles.git
+  start_server "$with_git" "${dotfiles[@]}"
+  check "the first start checks out the dotfiles into the home, the skeleton's .bashrc replaced" \
+    "# from the dotfiles
+x
+Dotfiles from file:///srv/dotfiles.git checked out into the home" \
+    "$(ssh_run 'cat ~/.bashrc ~/.config/tool/x ~/.config/corral/notices')"
+  ssh_run 'echo "# changed" >~/.bashrc && rm ~/.config/tool/x'
+  docker rm --force "$server" >/dev/null
+  start_server "$with_git" "${dotfiles[@]}"
+  check "a later start checks nothing out" "# changed absent absent" \
+    "$(ssh_run 'echo $(cat ~/.bashrc) $(test -e ~/.config/tool/x || echo absent) $(test -e ~/.config/corral/notices || echo absent)')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+
+  make_repository mine .gitconfig '[user] name = From the dotfiles' .inputrc 'set bell-style none'
+  local mine=(--mount "type=bind,source=$work/mine.git,target=/srv/mine.git,readonly")
+  stage_home_files '{"url": "file:///srv/mine.git", "branch": null}' \
+    "$(printf '[user]\n\tname = From the setup\n')" <<'MANIFEST'
+0 0644 .config/corral-agents/dotfiles.json
+1 0644 .gitconfig
+MANIFEST
+  start_server "$with_git" "${mine[@]}"
+  check "the setup's file wins over the dotfiles' at the same path, and their other files are there" \
+    "From the setup
+set bell-style none
+Dotfiles from file:///srv/mine.git checked out into the home
+2" "$(ssh_run 'git config --global user.name; cat ~/.inputrc ~/.config/corral/notices
+      wc -l <~/.config/corral/home-files')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+
+  stage_dotfiles https://nowhere.invalid/dotfiles.git
+  start_server "$with_git"
+  [[ "$(ssh_run 'cat ~/.config/corral/notices')" == \
+    "Checking out dotfiles from https://nowhere.invalid/dotfiles.git failed: "?* ]] ||
+    fail "$base: the notice of failed dotfiles: $(ssh_run 'cat ~/.config/corral/notices')"
+  echo "ok - $base: dotfiles that cannot be checked out are a notice and the sandbox starts"
+  check "dotfiles that cannot be checked out leave no bare clone" absent \
+    "$(ssh_run 'test -e ~/.config/corral-agents/dotfiles.git || echo absent')"
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+}
+
+# Each start applies the setup's MCP servers and gateway addresses to the files of the agents a
+# sandbox may run, and leaves the rest of those files as the agents wrote them.
+check_agents() {
+  base=alpine:3.24
+  local fetch='{"fetch":{"args":["mcp-server-fetch"],"command":"uvx"}}'
+  local codex='model = "gpt-5"
+
+[mcp_servers.fetch]
+command = "uvx"
+args = ["mcp-server-fetch"]'
+  stage_home_files "" </dev/null
+  start_server "$base"
+  check "with neither servers nor addresses, no agent file is created" "" \
+    "$(ssh_run 'cd ~ && ls -d .claude.json .codex .pi .omp 2>/dev/null; true')"
+
+  ssh_run 'cat >~/.claude.json' <<<'{"numStartups": 3, "mcpServers": {"local": {"command": "local"}}}'
+  ssh_run 'mkdir ~/.codex && cat >~/.codex/config.toml' <<<'model = "gpt-5"'
+  stage_home_files '{"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}' \
+    <<<'0 0644 .config/corral-agents/mcp.json'
+  write_session_env 'SetEnv "ANTHROPIC_BASE_URL=https://llm.home.example/anthropic" "OPENAI_BASE_URL=https://llm.home.example/openai"'
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "Claude Code's servers are merged by name and its other keys stay" \
+    '{"mcpServers":{"fetch":{"args":["mcp-server-fetch"],"command":"uvx"},"local":{"command":"local"}},"numStartups":3}' \
+    "$(ssh_run 'cat ~/.claude.json' | jq -cS .)"
+  check "Pi's and oh-my-pi's mcp.json are created with the same servers" \
+    "{\"mcpServers\":$fetch}
+{\"mcpServers\":$fetch}" "$(ssh_run 'cat ~/.pi/agent/mcp.json ~/.omp/agent/mcp.json' | jq -cS .)"
+  check "Codex's config keeps its model and gains the servers and the OpenAI address" \
+    'model = "gpt-5"
+openai_base_url = "https://llm.home.example/openai"
+
+[mcp_servers.fetch]
+command = "uvx"
+args = ["mcp-server-fetch"]' "$(ssh_run 'cat ~/.codex/config.toml')"
+  check "Pi's models.json has both addresses" \
+    '{"providers":{"anthropic":{"baseUrl":"https://llm.home.example/anthropic"},"openai":{"baseUrl":"https://llm.home.example/openai"}}}' \
+    "$(ssh_run 'cat ~/.pi/agent/models.json' | jq -cS .)"
+  check "the notices say what was applied to which agents" \
+    "Applied 1 MCP server to Claude Code, Codex, Pi and oh-my-pi
+Applied the gateway address to Claude Code, Codex, Pi and oh-my-pi" \
+    "$(ssh_run 'cat ~/.config/corral/notices')"
+
+  write_session_env 'SetEnv "FOO_TOKEN=bar"'
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a later start without the addresses removes them from Codex's config" "$codex" \
+    "$(ssh_run 'cat ~/.codex/config.toml')"
+  check "a later start without the addresses removes them from Pi's models.json" '{"providers":{}}' \
+    "$(ssh_run 'cat ~/.pi/agent/models.json' | jq -cS .)"
+
+  stage_home_files "" </dev/null
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a later start without mcp.json removes the servers Corral applied and keeps the others" \
+    '{"mcpServers":{"local":{"command":"local"}},"numStartups":3}
+{"mcpServers":{}}
+{"mcpServers":{}}
+model = "gpt-5"' \
+    "$(ssh_run 'cat ~/.claude.json ~/.pi/agent/mcp.json ~/.omp/agent/mcp.json' | jq -cS .
+      ssh_run 'cat ~/.codex/config.toml')"
+
+  local mine='model = "gpt-5"
+openai_base_url = "https://mine.example/openai"'
+  ssh_run 'cat >~/.codex/config.toml' <<<"$mine"
+  docker rm --force "$server" >/dev/null
+  start_server "$base"
+  check "a start without the address keeps an openai_base_url set by hand" "$mine" \
+    "$(ssh_run 'cat ~/.codex/config.toml')"
+
+  docker rm --force "$server" >/dev/null
+  docker volume rm "$volume" >/dev/null
+}
+
 for each in "${bases[@]}"; do
   check_base "$each"
 done
+docker build --quiet --tag "$with_git" - >/dev/null <<'EOF2'
+FROM alpine:3.24
+RUN apk add --no-cache git
+EOF2
 check_repository
+check_dotfiles
+check_agents
 
 # An image whose own uid 1000, and a group listing sandbox, would give the sandbox user more
 # groups.

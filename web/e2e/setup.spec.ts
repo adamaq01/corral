@@ -1,5 +1,10 @@
-import type { Page, Route } from '@playwright/test';
-import type { AttachedEntry, Sandbox, SetupEntry } from '../src/lib/api/generated/index.js';
+import type { Locator, Page, Route } from '@playwright/test';
+import type {
+	AttachedEntry,
+	NewEntry,
+	Sandbox,
+	SetupEntry
+} from '../src/lib/api/generated/index.js';
 import { expect, test, idle } from './fixtures';
 
 test.use({ role: 'member' });
@@ -397,7 +402,7 @@ test('shared entries come first, a required one locked, and yours says what it r
 	await page.route('**/api/sandboxes', (route) => route.fulfill({ json: [main] }));
 	await page.goto('/setup');
 
-	await expect(page.getByRole('heading', { level: 2 })).toHaveText(['Shared', 'Yours']);
+	await expect(page.getByRole('heading', { level: 2 })).toHaveText(['Presets', 'Shared', 'Yours']);
 	const shared = page.getByRole('list', { name: 'Shared' });
 	const yours = page.getByRole('list', { name: 'Yours' });
 	const required = shared.getByRole('link', { name: /ANTHROPIC_BASE_URL/ });
@@ -553,6 +558,672 @@ test('an import names how many variables it would import', async ({ page }) => {
 	await expect(button('Import 1 variable')).toBeEnabled();
 	await dialog.getByLabel('Variables').fill('EDITOR=vim\nPAGER=less');
 	await expect(button('Import 2 variables')).toBeEnabled();
+});
+
+const presets = ['LLM providers', 'Git identity', 'MCP servers', 'Dotfiles'];
+
+test('each preset says it is not set up on an empty setup, and opens its form', async ({
+	page
+}) => {
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
+	const cards = page.getByRole('list', { name: 'Presets' }).getByRole('listitem');
+	await expect(cards).toHaveCount(4);
+	for (const [index, preset] of presets.entries()) {
+		await expect(cards.nth(index).getByRole('heading', { level: 3 })).toHaveText(preset);
+		await expect(cards.nth(index)).toContainText('Not set up');
+		await expect(cards.nth(index).getByRole('button')).toHaveAccessibleName(`Set up ${preset}`);
+	}
+
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	await expect(page.getByRole('dialog', { name: 'Git identity' })).toBeVisible();
+});
+
+test('each preset sums up the entries it reads back', async ({ page }) => {
+	const text = (value: string): SetupEntry['value'] => ({
+		setAt,
+		size: value.length,
+		shown: 'text',
+		text: value
+	});
+	const hidden: SetupEntry['value'] = { setAt, size: 40, shown: 'hidden' };
+	const own: Partial<SetupEntry>[] = [
+		{ target: 'ANTHROPIC_BASE_URL', secret: false, value: text('https://llm.home.example') },
+		{ target: 'ANTHROPIC_API_KEY' },
+		{ target: 'ANTHROPIC_AUTH_TOKEN' },
+		{ target: 'OPENAI_API_KEY' },
+		{
+			kind: 'file',
+			target: '.gitconfig',
+			secret: false,
+			value: text(
+				'[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n[credential]\n\thelper = store\n[credential "https://github.com"]\n\tusername = ada\n[init]\n\tdefaultBranch = main\n'
+			)
+		},
+		{ kind: 'file', target: '.git-credentials', value: hidden },
+		{
+			kind: 'file',
+			target: '.config/corral-agents/mcp.json',
+			secret: false,
+			value: text(
+				JSON.stringify({
+					fetch: { command: 'uvx', args: ['mcp-server-fetch'], env: {} },
+					github: { type: 'http', url: 'https://api.githubcopilot.com/mcp/', headers: {} },
+					docs: { type: 'http', url: 'https://docs.example/mcp', headers: {} }
+				})
+			)
+		},
+		{
+			kind: 'file',
+			target: '.config/corral-agents/dotfiles.json',
+			secret: false,
+			value: text('{"url": "https://github.com/ada/dotfiles.git", "branch": "main"}')
+		}
+	];
+	const entries = own.map((extra, index) =>
+		entry({ id: `0b8c1d2e-3f4a-4b5c-8d6e-7f8a9b0c1d${String(index).padStart(2, '0')}`, ...extra })
+	);
+	await page.route('**/api/setup', (route) => route.fulfill({ json: entries }));
+	await page.goto('/setup');
+	const cards = page.getByRole('list', { name: 'Presets' }).getByRole('listitem');
+	for (const [index, summary] of [
+		'Anthropic through a gateway, OpenAI key set',
+		'Ada Lovelace <ada@example.com>, token for github.com',
+		'3 servers: fetch, github, docs',
+		'github.com/ada/dotfiles, main'
+	].entries()) {
+		await expect(cards.nth(index)).toContainText(summary);
+		await expect(cards.nth(index).getByRole('button')).toHaveAccessibleName(
+			`Change ${presets[index]}`
+		);
+	}
+});
+
+const masked: SetupEntry['value'] = {
+	setAt,
+	size: 12,
+	shown: 'masked',
+	length: 12,
+	head: null,
+	tail: null
+};
+
+/** Answers the Setup API with `entries`, adding what each create sends, and records the calls. */
+async function setupApi(page: Page, entries: SetupEntry[], calls: Call[]) {
+	let listed = entries;
+	await record(
+		page,
+		'/api/setup',
+		(route) => {
+			if (route.request().method() === 'GET') {
+				return { json: listed };
+			}
+			const sent: NewEntry = route.request().postDataJSON();
+			const made = entry({
+				id: crypto.randomUUID(),
+				kind: sent.kind,
+				target: sent.target,
+				secret: sent.secret,
+				value:
+					sent.secret || !('text' in sent.value)
+						? masked
+						: { setAt, size: sent.value.text.length, shown: 'text', text: sent.value.text }
+			});
+			listed = [...listed, made];
+			return { status: 201, json: made };
+		},
+		calls
+	);
+}
+
+const sent = (calls: Call[]) =>
+	calls
+		.filter((call) => call.method !== 'GET')
+		.map(({ method, path, body }) => [method, path, body]);
+
+const created = (target: string, secret: boolean, text: string, kind = 'variable') => [
+	'POST',
+	'/api/setup',
+	{ kind, target, secret, applyToNew: true, value: { text } }
+];
+
+test('the LLM providers preset saves a key with an address as three variables, then hides it', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	await expect(anthropic.getByLabel('Base URL')).toHaveAttribute(
+		'placeholder',
+		'https://llm.home.example'
+	);
+	await expect(anthropic).toContainText('Optional. Used exactly as typed, for a gateway or proxy.');
+	await anthropic.getByLabel('Base URL').fill('https://llm.home.example');
+	await anthropic.getByLabel('Key', { exact: true }).fill('sk-ant-typed');
+	await dialog.getByRole('button', { name: 'Save providers' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved the LLM providers')).toBeVisible();
+	expect(sent(calls)).toEqual([
+		created('ANTHROPIC_BASE_URL', false, 'https://llm.home.example'),
+		created('ANTHROPIC_API_KEY', true, 'sk-ant-typed'),
+		created('ANTHROPIC_AUTH_TOKEN', true, 'sk-ant-typed')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'Anthropic through a gateway'
+	);
+	await page.getByRole('button', { name: 'Change LLM providers' }).click();
+	await expect(anthropic.getByLabel('Base URL')).toHaveValue('https://llm.home.example');
+	await expect(anthropic).toContainText('Set, hidden');
+	for (const input of await dialog.locator('input').all()) {
+		await expect(input).not.toHaveValue(/sk-ant/);
+	}
+	await anthropic.getByRole('button', { name: 'Replace the Anthropic key' }).click();
+	await expect(anthropic.getByLabel('Key', { exact: true })).toBeFocused();
+	await expect(anthropic.getByLabel('Key', { exact: true })).toHaveValue('');
+	await expect(dialog.getByRole('button', { name: 'Save providers' })).toBeDisabled();
+});
+
+test("one provider's address fills the others, which stay editable", async ({ page }) => {
+	await page.route('**/api/setup', (route) => route.fulfill({ json: [] }));
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	const openai = dialog.getByRole('group', { name: 'OpenAI' });
+	const copy = (group: Locator) =>
+		group.getByRole('button', { name: 'Use this address for every provider' });
+	await expect(copy(dialog)).toHaveCount(0);
+
+	await openai.getByLabel('Base URL').fill('https://openai.home.example');
+	await expect(copy(openai)).toBeVisible();
+	await anthropic.getByLabel('Base URL').fill('https://llm.home.example');
+	await expect(copy(dialog)).toHaveCount(1);
+	await copy(anthropic).click();
+	await expect(openai.getByLabel('Base URL')).toHaveValue('https://llm.home.example');
+	await openai.getByLabel('Base URL').fill('https://llm.home.example/openai');
+	await expect(anthropic.getByLabel('Base URL')).toHaveValue('https://llm.home.example');
+});
+
+test('with the addresses set by the admin, the LLM providers preset saves the keys only', async ({
+	page
+}) => {
+	const openaiGateway = entry({
+		id: '5e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6b',
+		target: 'OPENAI_BASE_URL',
+		secret: false,
+		shared: 'required',
+		value: { setAt, size: 30, shown: 'text', text: 'https://llm.example.lan/openai' }
+	});
+	const key = entry({ target: 'ANTHROPIC_API_KEY', value: masked });
+	const calls: Call[] = [];
+	await setupApi(page, [gateway, openaiGateway, key], calls);
+	await record(page, `/api/setup/${key.id}`, () => ({ json: key }), calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Change LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	const openai = dialog.getByRole('group', { name: 'OpenAI' });
+	for (const [group, url] of [
+		[anthropic, 'https://llm.example.lan'],
+		[openai, 'https://llm.example.lan/openai']
+	] as const) {
+		await expect(group.getByLabel('Base URL')).toHaveValue(url);
+		await expect(group.getByLabel('Base URL')).toBeDisabled();
+		await expect(group).toContainText('Set by the admin');
+	}
+	await expect(
+		dialog.getByRole('button', { name: 'Use this address for every provider' })
+	).toHaveCount(0);
+
+	await expect(anthropic).toContainText('Type the key again so it is also sent as a bearer token.');
+	const save = dialog.getByRole('button', { name: 'Save providers' });
+	await expect(save).toBeDisabled();
+	await anthropic.getByLabel('Key', { exact: true }).fill('sk-ant-again');
+	await openai.getByLabel('Key', { exact: true }).fill('sk-openai');
+	await save.click();
+	await expect(dialog).toBeHidden();
+	expect(sent(calls)).toEqual([
+		[
+			'PUT',
+			`/api/setup/${key.id}`,
+			{
+				kind: 'variable',
+				target: 'ANTHROPIC_API_KEY',
+				secret: true,
+				template: false,
+				executable: false,
+				applyToNew: true,
+				value: { text: 'sk-ant-again' }
+			}
+		],
+		created('ANTHROPIC_AUTH_TOKEN', true, 'sk-ant-again'),
+		created('OPENAI_API_KEY', true, 'sk-openai')
+	]);
+});
+
+test('with a key set by the admin, the LLM providers preset locks it and saves the others', async ({
+	page
+}) => {
+	const adminKey = entry({
+		id: '6f5a6b7c-8d9e-4f0a-9b1c-2d3e4f5a6b7c',
+		target: 'ANTHROPIC_API_KEY',
+		shared: 'required',
+		value: { setAt, size: 40, shown: 'hidden' }
+	});
+	const calls: Call[] = [];
+	await setupApi(page, [adminKey], calls);
+	await page.goto('/setup');
+	const cards = page.getByRole('list', { name: 'Presets' });
+	await expect(cards).toContainText('Anthropic key set by the admin');
+	await page.getByRole('button', { name: 'Change LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	await expect(anthropic.getByText('Set by the admin')).toBeVisible();
+	await expect(anthropic.getByLabel('Key', { exact: true })).toHaveCount(0);
+	await expect(anthropic.getByRole('button', { name: /^(Replace|Remove)/ })).toHaveCount(0);
+
+	const openai = dialog.getByRole('group', { name: 'OpenAI' });
+	await openai.getByLabel('Key', { exact: true }).fill('sk-openai');
+	await dialog.getByRole('button', { name: 'Save providers' }).click();
+	await expect(dialog).toBeHidden();
+	expect(sent(calls)).toEqual([created('OPENAI_API_KEY', true, 'sk-openai')]);
+	await expect(cards).toContainText('Anthropic key set by the admin, OpenAI key set');
+});
+
+test("the LLM providers preset shows Corral's refusal next to the field it names", async ({
+	page
+}) => {
+	const refusal = 'conflict: variable ANTHROPIC_AUTH_TOKEN is set for every sandbox by the admin';
+	await page.route('**/api/setup', (route) => {
+		const request = route.request();
+		if (request.method() === 'GET') {
+			return route.fulfill({ json: [gateway] });
+		}
+		return request.postDataJSON().target === 'ANTHROPIC_AUTH_TOKEN'
+			? route.fulfill({ status: 409, json: { error: refusal } })
+			: route.fulfill({ status: 201, json: entry({ target: 'ANTHROPIC_API_KEY' }) });
+	});
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up LLM providers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'LLM providers' });
+	const anthropic = dialog.getByRole('group', { name: 'Anthropic' });
+	await anthropic.getByLabel('Key', { exact: true }).fill('sk-ant-typed');
+	await dialog.getByRole('button', { name: 'Save providers' }).click();
+	await expect(anthropic.getByRole('alert')).toHaveText(refusal);
+	await expect(anthropic.getByLabel('Key', { exact: true })).toHaveAttribute(
+		'aria-invalid',
+		'true'
+	);
+	await expect(dialog.getByRole('alert')).toHaveCount(1);
+});
+
+const identity = '[user]\n\tname = Ada Lovelace\n\temail = ada@example.com\n';
+
+test('the git identity preset writes ~/.gitconfig and the token, then reads them back', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Git identity' });
+	await expect(dialog).toContainText(
+		'Written as ~/.gitconfig, with the token or SSH key git uses to reach your repositories.'
+	);
+	await expect(dialog.getByRole('radio', { name: 'Nothing' })).toBeChecked();
+	await dialog.getByLabel('Name', { exact: true }).fill('Ada Lovelace');
+	await dialog.getByLabel('Email', { exact: true }).fill('ada@example.com');
+	await dialog.getByRole('radio', { name: 'A token' }).click();
+	await expect(dialog.getByLabel('Host', { exact: true })).toHaveAttribute(
+		'placeholder',
+		'github.com'
+	);
+	await expect(dialog.getByLabel('User', { exact: true })).toHaveAttribute('placeholder', 'git');
+	await dialog.getByLabel('Host', { exact: true }).fill('github.com');
+	await dialog.getByLabel('User', { exact: true }).fill('ada');
+	await dialog.getByLabel('Token', { exact: true }).fill('ghp_s3cret');
+	await dialog.getByRole('button', { name: 'Save identity' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved your git identity')).toBeVisible();
+	expect(sent(calls)).toEqual([
+		created(
+			'.gitconfig',
+			false,
+			`${identity}[credential]\n\thelper = store\n[credential "https://github.com"]\n\tusername = ada\n[init]\n\tdefaultBranch = main\n`,
+			'file'
+		),
+		created('.git-credentials', true, 'https://ada:ghp_s3cret@github.com\n', 'file')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'Ada Lovelace <ada@example.com>, token for github.com'
+	);
+	await page.getByRole('button', { name: 'Change Git identity' }).click();
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Ada Lovelace');
+	await expect(dialog.getByLabel('Email', { exact: true })).toHaveValue('ada@example.com');
+	await expect(dialog.getByRole('radio', { name: 'A token' })).toBeChecked();
+	await expect(dialog.getByLabel('Host', { exact: true })).toHaveValue('github.com');
+	await expect(dialog.getByLabel('User', { exact: true })).toHaveValue('ada');
+	await expect(dialog).toContainText('Set, hidden');
+	for (const input of await dialog.locator('input, textarea').all()) {
+		await expect(input).not.toHaveValue(/s3cret/);
+	}
+	const save = dialog.getByRole('button', { name: 'Save identity' });
+	await expect(save).toBeDisabled();
+	await dialog.getByLabel('Host', { exact: true }).fill('gitlab.com');
+	await expect(dialog.getByLabel('Token', { exact: true })).toHaveAccessibleDescription(
+		'Type the token again to save it for this host and user.'
+	);
+	await expect(save).toBeDisabled();
+	await dialog.getByLabel('Token', { exact: true }).fill('glpat-s3cret');
+	await expect(save).toBeEnabled();
+});
+
+test('the git identity preset sends an SSH key as a secret file, and never shows it again', async ({
+	page
+}) => {
+	const privateKey =
+		'-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE=\n-----END OPENSSH PRIVATE KEY-----\n';
+	const publicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 ada@laptop';
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Git identity' });
+	await dialog.getByLabel('Name', { exact: true }).fill('Ada Lovelace');
+	await dialog.getByLabel('Email', { exact: true }).fill('ada@example.com');
+	const ssh = dialog.getByRole('radio', { name: 'An SSH key' });
+	await expect(ssh).toHaveAccessibleDescription(
+		'Written to ~/.ssh/id_ed25519, replacing a key kept there.'
+	);
+	await ssh.click();
+	const save = dialog.getByRole('button', { name: 'Save identity' });
+	await expect(save).toBeDisabled();
+	await dialog.locator('#git-private-key-upload').setInputFiles({
+		name: 'id_ed25519',
+		mimeType: 'application/octet-stream',
+		buffer: Buffer.from(privateKey)
+	});
+	await dialog.getByLabel('Public key', { exact: true }).fill(publicKey);
+	await save.click();
+	await expect(dialog).toBeHidden();
+	expect(sent(calls)).toEqual([
+		created('.gitconfig', false, `${identity}[init]\n\tdefaultBranch = main\n`, 'file'),
+		created('.ssh/id_ed25519', true, privateKey, 'file'),
+		created('.ssh/id_ed25519.pub', false, `${publicKey}\n`, 'file')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'Ada Lovelace <ada@example.com>, SSH key'
+	);
+	await page.getByRole('button', { name: 'Change Git identity' }).click();
+	await expect(dialog.getByLabel('Name', { exact: true })).toHaveValue('Ada Lovelace');
+	await expect(ssh).toBeChecked();
+	await expect(dialog).toContainText('Set, hidden');
+	await expect(dialog.locator('textarea')).toHaveCount(0);
+	await dialog.getByRole('button', { name: 'Replace the SSH key' }).click();
+	await expect(dialog.getByLabel('Private key', { exact: true })).toBeFocused();
+	await expect(dialog.getByLabel('Private key', { exact: true })).toHaveValue('');
+});
+
+test("the git identity preset shows Corral's refusal next to the field it names", async ({
+	page
+}) => {
+	const refusal = 'conflict: file .git-credentials is set for every sandbox by the admin';
+	await page.route('**/api/setup', (route) => {
+		const request = route.request();
+		if (request.method() === 'GET') {
+			return route.fulfill({ json: [] });
+		}
+		return request.postDataJSON().target === '.git-credentials'
+			? route.fulfill({ status: 409, json: { error: refusal } })
+			: route.fulfill({ status: 201, json: entry({ kind: 'file', target: '.gitconfig' }) });
+	});
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Git identity' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Git identity' });
+	await dialog.getByRole('radio', { name: 'A token' }).click();
+	await dialog.getByLabel('Host', { exact: true }).fill('github.com');
+	await dialog.getByLabel('User', { exact: true }).fill('ada');
+	await dialog.getByLabel('Token', { exact: true }).fill('ghp_s3cret');
+	await dialog.getByRole('button', { name: 'Save identity' }).click();
+	const token = dialog.getByLabel('Token', { exact: true });
+	await expect(token).toHaveAttribute('aria-invalid', 'true');
+	await expect(token).toHaveAccessibleDescription(refusal);
+	await expect(dialog.getByRole('alert')).toHaveCount(1);
+});
+
+const servers = '.config/corral-agents/mcp.json';
+
+test('the MCP servers preset writes a command and a URL server as mcp.json, then reads them back', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up MCP servers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'MCP servers' });
+	await expect(dialog).toContainText(
+		'Applied to Claude Code, Codex, Pi and oh-my-pi at each start, as their user-scope servers.'
+	);
+	const first = dialog.getByRole('group', { name: 'Server 1' });
+	await expect(first.getByRole('radio', { name: 'A command' })).toBeChecked();
+	const name = first.getByLabel('Name', { exact: true });
+	await expect(name).toHaveAccessibleDescription('Letters, digits, - and _.');
+	await name.fill('my fetch');
+	await expect(name).toHaveAttribute('aria-invalid', 'true');
+	await expect(first.getByText('Letters, digits, - and _.')).toBeVisible();
+	await name.fill('fetch');
+	await expect(name).not.toHaveAttribute('aria-invalid');
+	await first.getByLabel('Command', { exact: true }).fill('uvx');
+	await first
+		.getByLabel('Arguments', { exact: true })
+		.fill('mcp-server-fetch\n--ignore-robots-txt');
+	await first.getByLabel('Variables', { exact: true }).fill('FETCH_TIMEOUT=30');
+
+	await dialog.getByRole('button', { name: 'Add server' }).click();
+	const second = dialog.getByRole('group', { name: 'Server 2' });
+	await expect(second.getByLabel('Name', { exact: true })).toBeFocused();
+	await second.getByLabel('Name', { exact: true }).fill('fetch');
+	await expect(second.getByLabel('Name', { exact: true })).toHaveAccessibleDescription(
+		'Another server has this name.'
+	);
+	const save = dialog.getByRole('button', { name: 'Save servers' });
+	await expect(save).toBeDisabled();
+	await second.getByLabel('Name', { exact: true }).fill('docs');
+	await second.getByRole('radio', { name: 'A URL' }).click();
+	await second.getByLabel('URL', { exact: true }).fill('https://docs.example/mcp');
+	await second.getByLabel('Headers', { exact: true }).fill('X-Team: platform');
+	await save.click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved the MCP servers')).toBeVisible();
+	const file = {
+		fetch: {
+			command: 'uvx',
+			args: ['mcp-server-fetch', '--ignore-robots-txt'],
+			env: { FETCH_TIMEOUT: '30' }
+		},
+		docs: { type: 'http', url: 'https://docs.example/mcp', headers: { 'X-Team': 'platform' } }
+	};
+	expect(sent(calls)).toEqual([
+		created(servers, false, `${JSON.stringify(file, null, 2)}\n`, 'file')
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText('2 servers: fetch, docs');
+	await page.getByRole('button', { name: 'Change MCP servers' }).click();
+	await expect(first.getByLabel('Name', { exact: true })).toHaveValue('fetch');
+	await expect(first.getByRole('radio', { name: 'A command' })).toBeChecked();
+	await expect(first.getByLabel('Command', { exact: true })).toHaveValue('uvx');
+	await expect(first.getByLabel('Arguments', { exact: true })).toHaveValue(
+		'mcp-server-fetch\n--ignore-robots-txt'
+	);
+	await expect(first.getByLabel('Variables', { exact: true })).toHaveValue('FETCH_TIMEOUT=30');
+	await expect(second.getByLabel('Name', { exact: true })).toHaveValue('docs');
+	await expect(second.getByRole('radio', { name: 'A URL' })).toBeChecked();
+	await expect(second.getByLabel('URL', { exact: true })).toHaveValue('https://docs.example/mcp');
+	await expect(second.getByLabel('Headers', { exact: true })).toHaveValue('X-Team: platform');
+	await expect(dialog.getByRole('switch', { name: 'Secret' })).not.toBeChecked();
+	await expect(save).toBeDisabled();
+});
+
+test('with Secret on, the MCP servers preset sends a secret file, and only offers to replace it', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up MCP servers' }).click();
+	const dialog = page.getByRole('dialog', { name: 'MCP servers' });
+	const first = dialog.getByRole('group', { name: 'Server 1' });
+	await first.getByLabel('Name', { exact: true }).fill('github');
+	await first.getByRole('radio', { name: 'A URL' }).click();
+	await first.getByLabel('URL', { exact: true }).fill('https://api.githubcopilot.com/mcp/');
+	await first.getByLabel('Headers', { exact: true }).fill('Authorization: Bearer ghp_s3cret');
+	const secret = dialog.getByRole('switch', { name: 'Secret' });
+	await expect(secret).toHaveAccessibleDescription(
+		'Keeps tokens in headers or variables hidden; the list cannot be read back here once it is secret, only replaced.'
+	);
+	await secret.click();
+	await dialog.getByRole('button', { name: 'Save servers' }).click();
+	await expect(dialog).toBeHidden();
+	const file = {
+		github: {
+			type: 'http',
+			url: 'https://api.githubcopilot.com/mcp/',
+			headers: { Authorization: 'Bearer ghp_s3cret' }
+		}
+	};
+	expect(sent(calls)).toEqual([
+		created(servers, true, `${JSON.stringify(file, null, 2)}\n`, 'file')
+	]);
+
+	const card = page.getByRole('list', { name: 'Presets' }).getByRole('listitem').nth(2);
+	await expect(card).toContainText('Secret');
+	await page.getByRole('button', { name: 'Change MCP servers' }).click();
+	await expect(dialog).toContainText('Set, hidden');
+	await expect(dialog.getByRole('group', { name: 'Server 1' })).toHaveCount(0);
+	for (const input of await dialog.locator('input, textarea').all()) {
+		await expect(input).not.toHaveValue(/s3cret/);
+	}
+	await expect(secret).toBeChecked();
+	await expect(secret).toBeDisabled();
+	await expect(dialog.getByRole('button', { name: 'Save servers' })).toBeDisabled();
+	await dialog.getByRole('button', { name: 'Replace the servers' }).click();
+	await expect(first.getByLabel('Name', { exact: true })).toBeFocused();
+	await expect(first.getByLabel('Name', { exact: true })).toHaveValue('');
+	await expect(secret).toBeChecked();
+	await expect(secret).toBeEnabled();
+});
+
+const dotfiles = '.config/corral-agents/dotfiles.json';
+
+test('the dotfiles preset refuses a URL with a login before sending, then writes dotfiles.json and reads it back', async ({
+	page
+}) => {
+	const calls: Call[] = [];
+	await setupApi(page, [], calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Set up Dotfiles' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Dotfiles' });
+	await expect(dialog).toContainText(
+		"Checked out into the home at a sandbox's first start, or files you add one by one."
+	);
+	const repository = dialog.getByLabel('Repository', { exact: true });
+	const branch = dialog.getByLabel('Branch', { exact: true });
+	const save = dialog.getByRole('button', { name: 'Save dotfiles' });
+	const rule = 'An https://, ssh:// or git@host:path address, with no password in it.';
+	await expect(repository).toHaveAccessibleDescription(rule);
+	await expect(branch).toBeDisabled();
+	await expect(save).toBeDisabled();
+
+	for (const login of [
+		'https://ada:tok3n@github.com/ada/dotfiles.git',
+		'https://ghp_tok3n@github.com/ada/dotfiles.git'
+	]) {
+		await repository.fill(login);
+		await expect(repository).toHaveAttribute('aria-invalid', 'true');
+		await expect(dialog.getByRole('alert')).toHaveText(rule);
+		await expect(save).toBeDisabled();
+	}
+	await repository.press('Enter');
+	await expect(dialog).toBeVisible();
+	expect(sent(calls)).toEqual([]);
+
+	await repository.fill('https://github.com/ada/dotfiles.git');
+	await expect(repository).not.toHaveAttribute('aria-invalid');
+	await expect(dialog.getByRole('alert')).toHaveCount(0);
+	await branch.fill('a..b');
+	await expect(dialog.getByRole('alert')).toContainText('git branch name');
+	await expect(save).toBeDisabled();
+	await branch.fill('main');
+	await save.click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved your dotfiles')).toBeVisible();
+	expect(sent(calls)).toEqual([
+		created(
+			dotfiles,
+			false,
+			'{\n  "url": "https://github.com/ada/dotfiles.git",\n  "branch": "main"\n}\n',
+			'file'
+		)
+	]);
+
+	await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+		'github.com/ada/dotfiles, main'
+	);
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	await expect(repository).toHaveValue('https://github.com/ada/dotfiles.git');
+	await expect(branch).toHaveValue('main');
+	await expect(save).toBeDisabled();
+});
+
+test('the dotfiles preset removes the repository, or hands over to Add a file', async ({
+	page
+}) => {
+	const held = entry({
+		kind: 'file',
+		target: dotfiles,
+		secret: false,
+		value: {
+			setAt,
+			size: 64,
+			shown: 'text',
+			text: '{"url": "git@github.com:ada/dotfiles.git", "branch": null}'
+		}
+	});
+	const calls: Call[] = [];
+	await setupApi(page, [held], calls);
+	await record(page, `/api/setup/${held.id}`, () => ({ status: 204 }), calls);
+	await page.goto('/setup');
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	const dialog = page.getByRole('dialog', { name: 'Dotfiles' });
+	const repository = dialog.getByLabel('Repository', { exact: true });
+	await expect(repository).toHaveValue('git@github.com:ada/dotfiles.git');
+	await expect(dialog.getByLabel('Branch', { exact: true })).toHaveValue('');
+	await dialog.getByRole('button', { name: 'Remove the repository' }).click();
+	await expect(repository).toHaveValue('');
+	await expect(repository).toBeFocused();
+	await dialog.getByRole('button', { name: 'Save dotfiles' }).click();
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('Saved your dotfiles')).toBeVisible();
+	expect(sent(calls)).toEqual([['DELETE', `/api/setup/${held.id}`, null]]);
+
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	await dialog.getByRole('button', { name: 'Add a file instead' }).click();
+	await expect(dialog).toBeHidden();
+	const adding = page.getByRole('dialog', { name: 'Add a file' });
+	await expect(adding.getByRole('radio', { name: 'File' })).toBeChecked();
+	await expect
+		.poll(() => adding.evaluate((node) => node.contains(document.activeElement)))
+		.toBe(true);
+	await page.keyboard.press('Escape');
+	await expect(adding).toBeHidden();
+	await page.getByRole('button', { name: 'Change Dotfiles' }).click();
+	await expect(dialog).toBeVisible();
 });
 
 test('an entry lives through Corral: made, renamed, made secret and deleted', async ({ page }) => {

@@ -154,6 +154,49 @@ block, and wakes, stops, restarts or deletes the sandbox.
   such as one started before an upgrade to this version, stays awake until it is restarted, and
   Corral logs that it does.
 
+### Presets
+
+The Setup page's **Presets** are forms for the common needs. Each saves ordinary entries that
+apply to new sandboxes, listed with your others and editable like them, and opening the preset
+again reads them back from those entries.
+
+**LLM providers** has a row for Anthropic and one for OpenAI, each an optional base URL, used
+exactly as typed, and a key. Anthropic's key is saved as `ANTHROPIC_API_KEY`, and with a URL
+also as `ANTHROPIC_AUTH_TOKEN` beside `ANTHROPIC_BASE_URL`, since a gateway takes one or the
+other. OpenAI's key is saved as `OPENAI_API_KEY`, with `OPENAI_BASE_URL` beside it when a URL is
+set. The keys are secret, the URLs plain. Claude Code reads `ANTHROPIC_BASE_URL` and sends
+`ANTHROPIC_AUTH_TOKEN` as a bearer token, and oh-my-pi reads the keys and both URLs from the
+variables. Codex reads `OPENAI_API_KEY` and takes the URL from `openai_base_url` in
+`~/.codex/config.toml`, and Pi reads the keys and takes each URL from
+`providers.<provider>.baseUrl` in `~/.pi/agent/models.json`: Corral writes both from the URL
+variables at each start. Admins set the URLs for every sandbox under **Settings** > **Shared
+setup**, as required entries; a member's form shows them locked and saves the keys alone. A key
+the admin sets there the same way locks that provider's key in the form too.
+
+**Git identity** writes `~/.gitconfig` with your name and email and `main` as the default
+branch, keeping every other key and section it already had. With a token, it also writes
+`~/.git-credentials`, secret, as the line `https://<user>:<token>@<host>`, and `~/.gitconfig`
+has git's `store` helper read it. With an SSH key, it writes `~/.ssh/id_ed25519`, secret, and
+`~/.ssh/id_ed25519.pub` when you give the public key.
+
+**MCP servers** writes `~/.config/corral-agents/mcp.json`, an object of servers by name, each a
+command (`command`, `args`, `env`) or a URL (`"type": "http"`, `url`, `headers`). With
+**Secret** on, for a token in a header or a variable, the file is secret and the form can only
+replace it. At each start Corral merges the servers by name into `mcpServers` in `~/.claude.json`
+for Claude Code, `~/.pi/agent/mcp.json` for Pi and `~/.omp/agent/mcp.json` for oh-my-pi, and into
+the `[mcp_servers]` table of `~/.codex/config.toml` for Codex. Each replaces a server of the same
+name there, and a server you added by hand in the sandbox stays. Once the file no longer lists a
+server Corral put there, the next start removes it.
+
+**Dotfiles** writes `~/.config/corral-agents/dotfiles.json`, a repository's URL and branch. A
+sandbox's first start checks the repository out into the home, then writes the setup's files
+again, so a file of the setup wins over the dotfiles' at the same path. A private repository
+needs the git identity's token or SSH key. The same form adds files one by one instead, as
+ordinary file entries.
+
+In the agents' own files, Corral changes only these keys and leaves the rest as the agents wrote
+it. [docs/images.md](../../docs/images.md) has what each start does.
+
 ### From inside a sandbox
 
 The `corral` command acts on the sandbox it runs in:

@@ -100,6 +100,33 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(page.getByRole('heading', { name: '~/.journey/notes' })).toBeVisible();
 	});
 
+	await test.step('save a git identity', async () => {
+		await page
+			.getByRole('navigation', { name: 'Main' })
+			.getByRole('link', { name: 'Setup' })
+			.click();
+		await page.getByRole('button', { name: 'Set up Git identity' }).click();
+		const dialog = page.getByRole('dialog', { name: 'Git identity' });
+		await dialog.getByLabel('Name', { exact: true }).fill('Dora Journey');
+		await dialog.getByLabel('Email', { exact: true }).fill('dora@example.com');
+		await dialog.getByRole('button', { name: 'Save identity' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(page.getByRole('list', { name: 'Presets' })).toContainText(
+			'Dora Journey <dora@example.com>'
+		);
+	});
+
+	await test.step('save an MCP server', async () => {
+		await page.getByRole('button', { name: 'Set up MCP servers' }).click();
+		const dialog = page.getByRole('dialog', { name: 'MCP servers' });
+		await dialog.getByLabel('Name', { exact: true }).fill('fetch');
+		await dialog.getByLabel('Command', { exact: true }).fill('uvx');
+		await dialog.getByLabel('Arguments', { exact: true }).fill('mcp-server-fetch');
+		await dialog.getByRole('button', { name: 'Save servers' }).click();
+		await expect(dialog).toBeHidden();
+		await expect(page.getByRole('list', { name: 'Presets' })).toContainText('1 server: fetch');
+	});
+
 	let destination: string[] = [];
 	await test.step('create a sandbox and see it reach running', async () => {
 		await page.getByRole('link', { name: 'Sandboxes' }).first().click();
@@ -109,13 +136,18 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		const variable = dialog.getByRole('checkbox', { name: 'JOURNEY_TOKEN' });
 		await expect(variable).toBeChecked();
 		await expect(dialog.getByRole('checkbox', { name: '~/.journey/notes' })).not.toBeChecked();
+		await expect(dialog.getByRole('checkbox', { name: '~/.gitconfig' })).toBeChecked();
+		await expect(
+			dialog.getByRole('checkbox', { name: '~/.config/corral-agents/mcp.json' })
+		).toBeChecked();
 		await variable.click();
 		await dialog.getByRole('button', { name: 'Create sandbox' }).click();
 		await expect(page).toHaveURL('/sandboxes/main');
 		await expect(page.getByRole('heading', { name: 'main' })).toBeVisible();
-		await expect(
-			page.getByText('Nothing is attached to this sandbox. You have 2 to choose from.')
-		).toBeVisible();
+		const attached = page.getByRole('list', { name: 'Attached to main' });
+		await expect(attached.getByRole('listitem')).toHaveCount(2);
+		await expect(attached).toContainText('~/.gitconfig');
+		await expect(attached).toContainText('~/.config/corral-agents/mcp.json');
 		await expect(page.getByText('Running', { exact: true })).toBeVisible({ timeout: 90_000 });
 
 		await page.getByRole('button', { name: 'Copy SSH', exact: true }).click();
@@ -130,6 +162,15 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		expect(await sshOutput(destination, key, 'printenv JOURNEY_TOKEN || echo absent')).toBe(
 			'absent'
 		);
+		expect(await sshOutput(destination, key, 'git config user.name')).toBe('Dora Journey');
+		const fetch = { command: 'uvx', args: ['mcp-server-fetch'], env: {} };
+		for (const file of ['.claude.json', '.pi/agent/mcp.json', '.omp/agent/mcp.json']) {
+			const read = JSON.parse(await sshOutput(destination, key, `cat ${file}`));
+			expect(read.mcpServers, file).toEqual({ fetch });
+		}
+		expect(await sshOutput(destination, key, 'cat .codex/config.toml')).toContain(
+			'[mcp_servers.fetch]\ncommand = "uvx"\nargs = ["mcp-server-fetch"]\n'
+		);
 	});
 
 	await test.step('attach both to main, and give main a value of its own', async () => {
@@ -140,12 +181,12 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await page.getByRole('link', { name: /main/ }).click();
 		const section = page.getByRole('list', { name: 'Attached to main' });
 		const attach = page.getByRole('dialog', { name: 'Attach to main' });
-		await page.getByRole('button', { name: 'Attach variables and files' }).click();
+		await page.getByRole('button', { name: 'Attach', exact: true }).click();
 		await attach.getByRole('checkbox').first().click();
 		await attach.getByRole('checkbox').last().click();
 		await attach.getByRole('button', { name: 'Attach 2' }).click();
 		await expect(attach).toBeHidden();
-		await expect(section.getByRole('listitem')).toHaveCount(2);
+		await expect(section.getByRole('listitem')).toHaveCount(4);
 		await expect(page.getByText('Restart to apply your setup changes')).toBeVisible();
 
 		await page.getByRole('button', { name: 'Override for this sandbox: JOURNEY_TOKEN' }).click();
@@ -185,7 +226,7 @@ test('a member keys, creates, reaches over SSH, configures and deletes a sandbox
 		await expect(section.getByText('Override', { exact: true })).toBeHidden();
 		await page.getByRole('button', { name: 'Detach ~/.journey/notes' }).click();
 		await confirm.getByRole('button', { name: 'Detach' }).click();
-		await expect(section.getByRole('listitem')).toHaveCount(1);
+		await expect(section.getByRole('listitem')).toHaveCount(3);
 		await expect(page.getByText('Restart to apply your setup changes')).toBeVisible();
 
 		await page.getByRole('button', { name: 'Restart' }).click();

@@ -47,15 +47,46 @@ removes a file it wrote earlier that is no longer attached unless it was changed
 what it could not do in `~/.config/corral/notices`, which the motd of an interactive login and
 `corral status` show.
 
+Every start then applies the setup's MCP servers and gateway addresses to the agents a sandbox
+may run: Claude Code, Codex, Pi and oh-my-pi. The MCP servers are those of
+`~/.config/corral-agents/mcp.json`, an object of servers by name, each a command (`command`,
+`args`, `env`) or a URL (`"type": "http"`, `url`, `headers`). They are merged by name into
+`mcpServers` in `~/.claude.json`, `~/.pi/agent/mcp.json` and `~/.omp/agent/mcp.json`, and into
+`[mcp_servers]` in `~/.codex/config.toml`, where a URL's headers are `http_headers`. Each replaces
+a server of the same name, and a server added by hand, such as with `claude mcp add --scope user`,
+stays. An `mcp.json` that is not valid JSON changes no agent's servers. Corral keeps the names of
+the servers it applied in `~/.config/corral/agents-applied.json`, and the next start removes from
+the agents' files those that `mcp.json` no longer lists, all of them once `mcp.json` is gone or
+empty. The addresses are the sandbox's `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` variables, which
+Claude Code and oh-my-pi read themselves. Codex gets `OPENAI_BASE_URL` as `openai_base_url` in
+`~/.codex/config.toml`, and Pi gets each address as `providers.anthropic.baseUrl` or
+`providers.openai.baseUrl` in `~/.pi/agent/models.json`. Corral records the addresses it applied in
+`agents-applied.json` too. Once a variable is gone, the next start removes its key where it still
+holds the address Corral applied, and a provider that the removal leaves empty, so a key set by
+hand or by the dotfiles is kept. Everything else in these files stays as the agents wrote it, a
+file is written only when one of these keys changes in it, and a file that is not valid JSON or
+TOML is left alone. One line in the notices names the agents that got the servers, one the agents
+that got the address, and one says why for each file they could not be applied to, and for an
+`mcp.json` that is not valid JSON.
+
 The first start, the one that finds no `~/.corral-initialized`, copies the skeleton, writes the
-home files, then clones the repository the sandbox was made with, if any, into `~/<name>`, the
-last segment of its URL without `.git`. The clone runs as `sandbox` with the image's own `git` and
+home files, checks out the setup's dotfiles, if any, writes the home files again, applies the MCP
+servers and addresses, then clones the repository the sandbox was made with, if any, into
+`~/<name>`, the last segment of its URL without `.git`. The dotfiles are the repository
+`~/.config/corral-agents/dotfiles.json` names, as `{"url": "...", "branch": "..."}` with `null`
+for the repository's default branch. It is cloned bare into `~/.config/corral-agents/dotfiles.git`,
+which stays, and checked out with the home as its work tree: each of its files replaces what the
+skeleton put at its path, and a home file of the setup at the same path is then written over it,
+so the setup's file is the one that stays. Git runs as `sandbox` with the image's own `git` and
 `PATH`, never prompts, accepts the SSH host key of a host it has not seen, and stops after 5
-minutes. A private repository needs its token or key among the setup's files, such as
-`~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the setup's
-variables reach sessions, not the clone. One line in the notices says whether it cloned, and if
-not, why: the directory exists already, the image has no `git`, or git's last `fatal:` line, else
-its last line of output. Later starts never clone.
+minutes. Both URLs take the same shapes: `https://` without a login, `ssh://` without a password,
+`file:///`, or `user@host:path`. A private repository needs its token or key among the setup's
+files, such as `~/.git-credentials` with a `~/.gitconfig` that reads it, or a key in `~/.ssh`: the
+setup's variables reach sessions, not git. One line in the notices says whether the dotfiles were
+checked out, and one whether the repository was cloned, and if not, why: a `dotfiles.json` that is
+not valid or a URL of another shape, `dotfiles.git` or the repository's directory exists already,
+the image has no `git`, or git's last `fatal:` line, else its last line of output. A failed
+checkout removes the `dotfiles.git` it cloned. Later starts never check out or clone.
 
 Sessions run through OpenSSH on both engines, so they get its environment: `USER`, `HOME`,
 `SHELL` and the rest from the sandbox user's account, and the sandbox's variables, which the
@@ -128,12 +159,13 @@ mount pinned to the image ID Corral pulled when it started, runs as root
 and profile, prepares the home as the sandbox user, then marks the sandbox ready in a tmpfs at
 `/run/corral` and waits. Each SSH connection is a `docker exec` of `corral-sshd` as uid 1000.
 
-Kubernetes (1.35 or later, for image volumes): the pod mounts the overlay as an image volume. A
-root init container runs `corral-init prepare`, which writes the account files into an emptyDir
-and prepares the home as the sandbox user. The sandbox container runs as uid 1000 under tini, with
-those files mounted over the image's `/etc/passwd`, `/etc/group`, `/etc/shadow`,
-`/etc/sudoers.d/corral-sandbox` and `/etc/profile.d/corral.sh`, and the sandbox's variables
-mounted at `/etc/corral/sshd_env.conf`. Each SSH connection is a pod exec of `corral-sshd`.
+Kubernetes (1.35 or later, for image volumes): the pod mounts the overlay as an image volume, and
+the sandbox's variables at `/etc/corral/sshd_env.conf` in both of its containers. A root init
+container runs `corral-init prepare`, which writes the account files into an emptyDir and prepares
+the home as the sandbox user. The sandbox container runs as uid 1000 under tini, with those files
+mounted over the image's `/etc/passwd`, `/etc/group`, `/etc/shadow`,
+`/etc/sudoers.d/corral-sandbox` and `/etc/profile.d/corral.sh`. Each SSH connection is a pod exec
+of `corral-sshd`.
 
 A new overlay reaches a sandbox at its next start from sleep: Docker remakes the container, its
 home kept, and Kubernetes starts the pod from a new template.
