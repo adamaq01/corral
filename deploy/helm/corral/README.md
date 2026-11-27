@@ -274,10 +274,30 @@ values change drops them: they carry `argocd.argoproj.io/sync-options: Delete=fa
 next to Helm's `helm.sh/resource-policy: keep`. Flux runs `helm uninstall`, which reads the
 latter.
 
+## Logs
+
+`kubectl --namespace corral logs deploy/corral` shows the server's log, and `deploy/corral-gate`
+the gate's. At `info`, the default, they have:
+
+- one line per request to the API, with its method, route, status, time in ms and the signed-in
+  user's handle, and a failed request at `error` with its cause
+- a line when an SSH connection authenticates and when it ends, and when each session in a
+  sandbox and each wake starts and ends, with the login, the sandbox and how long it took
+- one line per sandbox action (created, started, put to sleep, restarted, deleted) and per
+  refusal, with its reason
+- one line per admin change to settings, people or local accounts, per SSH key added or
+  removed, and per sign-in, a failed one at `warn`
+
+`logLevel` sets both, and takes `tracing` directives: a level, then `target=level` pairs.
+`info,corral_api=debug,corral_frontdoor_gate=debug` adds the requests for the web UI's files,
+probes and sandboxes' activity reports, and the SSH connections that fail or never authenticate.
+`corral_engine_agent_sandbox=debug` shows each Kubernetes resource the engine applies or patches.
+
+Nothing in the logs is a secret or a member's value: no password, token, setup value, query
+string, request body, or anything an SSH session carries.
+
 ## Operating it
 
-- Logs: `kubectl --namespace corral logs deploy/corral` and `deploy/corral-gate`. `logLevel`
-  sets the level of both.
 - A sandbox sleeps after `idle.timeoutSecs` with no work, and wakes on the next SSH login. Work
   is what a person does through SSH (typing, commands, file transfers, traffic through a forward)
   or the sandbox's own processor and network use, which it reports to Corral every

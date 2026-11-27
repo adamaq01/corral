@@ -9,7 +9,9 @@
 # behind an Ingress controller or Gateway, where every peer is the proxy.
 trustForwardedFor: false
 
-# logLevel sets RUST_LOG for the server, such as info, debug or corral_api=debug.
+# logLevel sets RUST_LOG for the server and the gate: a level, or tracing directives such as
+# info,corral_api=debug,corral_frontdoor_gate=debug, where corral_api is the request log and
+# corral_frontdoor_gate the SSH gate.
 logLevel: info
 
 # nameOverride replaces the chart name in resource names.

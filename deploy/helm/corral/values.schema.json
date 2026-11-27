@@ -22,7 +22,7 @@
       "type": "boolean"
     },
     "logLevel": {
-      "description": "RUST_LOG for the server.",
+      "description": "RUST_LOG for the server and the gate.",
       "type": "string",
       "minLength": 1
     },

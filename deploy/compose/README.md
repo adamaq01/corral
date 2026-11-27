@@ -259,8 +259,28 @@ the CA into the `corral` container and point `SSL_CERT_FILE` at it.
   its next start: restart it from its page, and the start remakes its container, its home kept.
 - `docker compose down` stops Corral and the gate only. Sandbox containers are not part of the
   Compose project: running ones keep running, on the `corral-sandboxes` network.
-- Logs: `docker compose logs corral gate`. `RUST_LOG` in `.env` sets the level (`info` by
-  default).
+
+## Logs
+
+`docker compose logs corral gate` shows the server's log and the gate's. At `info`, the
+default, they have:
+
+- one line per request to the API, with its method, route, status, time in ms and the signed-in
+  user's handle, and a failed request at `error` with its cause
+- a line when an SSH connection authenticates and when it ends, and when each session in a
+  sandbox and each wake starts and ends, with the login, the sandbox and how long it took
+- one line per sandbox action (created, started, put to sleep, restarted, deleted) and per
+  refusal, with its reason
+- one line per admin change to settings, people or local accounts, per SSH key added or
+  removed, and per sign-in, a failed one at `warn`
+
+`RUST_LOG` in `.env` sets both, and takes `tracing` directives: a level, then `target=level`
+pairs. `info,corral_api=debug,corral_frontdoor_gate=debug` adds the requests for the web UI's
+files, probes and sandboxes' activity reports, and the SSH connections that fail or never
+authenticate. `corral_engine_docker=debug` shows each container operation.
+
+Nothing in the logs is a secret or a member's value: no password, token, setup value, query
+string, request body, or anything an SSH session carries.
 
 ## Optional adapters
 
