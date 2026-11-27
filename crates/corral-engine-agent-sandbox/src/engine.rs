@@ -14,7 +14,7 @@ use kube::api::{DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Api, Client};
 use serde_json::json;
 use tokio::time::{Instant, sleep};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::AgentSandboxConfig;
 use crate::crd::{OperatingMode, Sandbox};
@@ -82,6 +82,7 @@ impl AgentSandboxEngine {
                 )
                 .await
                 .map_err(kube_error)?;
+            debug!(sandbox = %id.0, kind = %"Secret", %name, "applied a resource");
         }
         Ok(())
     }
@@ -135,6 +136,7 @@ impl AgentSandboxEngine {
             .patch(&id.0, &PatchParams::default(), &Patch::Json::<()>(resume))
             .await
             .map_err(kube_error)?;
+        debug!(sandbox = %id.0, kind = %"Sandbox", name = %id.0, "patched a resource");
         waking.booted();
         Ok(true)
     }
@@ -144,22 +146,38 @@ impl AgentSandboxEngine {
             .patch(&id.0, &PatchParams::default(), &Patch::Merge(patch))
             .await
             .map_err(kube_error)?;
+        debug!(sandbox = %id.0, kind = %"Sandbox", name = %id.0, "patched a resource");
         Ok(())
     }
+}
+
+/// Logs `operation` on the sandbox: done at debug, failed at warn with the reason. A refusal,
+/// such as the running limit, is its caller's to log.
+fn logged<T>(operation: &str, id: &SandboxId, result: Result<T>) -> Result<T> {
+    match &result {
+        Ok(_) => debug!(%operation, sandbox = %id.0, "an agent-sandbox operation succeeded"),
+        Err(error) if !error.is_refusal() => {
+            let reason = error.to_string();
+            warn!(%operation, sandbox = %id.0, reason, "an agent-sandbox operation failed");
+        }
+        Err(_) => {}
+    }
+    result
 }
 
 #[async_trait]
 impl SandboxEngine for AgentSandboxEngine {
     async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()> {
         let sandbox = manifest::build(id, spec, &self.config);
-        match self
+        let created = match self
             .sandboxes
             .create(&PostParams::default(), &sandbox)
             .await
         {
             Err(kube::Error::Api(status)) if status.is_already_exists() => Ok(()),
             created => created.map(drop).map_err(kube_error),
-        }
+        };
+        logged("create", id, created)
     }
 
     async fn start(
@@ -169,61 +187,70 @@ impl SandboxEngine for AgentSandboxEngine {
         boot: Boot,
         deadline: Duration,
     ) -> Result<Started> {
-        let started = Instant::now();
-        let booted = self.resume(id, spec, &boot).await?;
-        let readiness = loop {
-            if self.observe(id).await? == SandboxStatus::Running {
-                break Readiness::Ready;
-            }
-            let remaining = deadline.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                break Readiness::Waking;
-            }
-            sleep(POLL_INTERVAL.min(remaining)).await;
+        let woken = async {
+            let started = Instant::now();
+            let booted = self.resume(id, spec, &boot).await?;
+            let readiness = loop {
+                if self.observe(id).await? == SandboxStatus::Running {
+                    break Readiness::Ready;
+                }
+                let remaining = deadline.saturating_sub(started.elapsed());
+                if remaining.is_zero() {
+                    break Readiness::Waking;
+                }
+                sleep(POLL_INTERVAL.min(remaining)).await;
+            };
+            Ok(Started { readiness, booted })
         };
-        Ok(Started { readiness, booted })
+        logged("start", id, woken.await)
     }
 
     async fn stop(&self, id: &SandboxId) -> Result<()> {
         // A wake during the stop, such as a client reconnecting, brings up a new pod under the
         // same name, so the stop waits only for the pod that ran before it.
-        let running = self.pod_uid(id).await?;
-        self.merge_patch(
-            id,
-            json!({"spec": {"operatingMode": OperatingMode::Suspended}}),
-        )
-        .await?;
-        let started = Instant::now();
-        while running.is_some() && self.pod_uid(id).await? == running {
-            if started.elapsed() > STOP_PATIENCE {
-                return Err(Error::internal(
-                    format!("stop sandbox {}", id.0),
-                    format!("its pod is still running after {STOP_PATIENCE:?}"),
-                ));
+        let stopped = async {
+            let running = self.pod_uid(id).await?;
+            self.merge_patch(
+                id,
+                json!({"spec": {"operatingMode": OperatingMode::Suspended}}),
+            )
+            .await?;
+            let started = Instant::now();
+            while running.is_some() && self.pod_uid(id).await? == running {
+                if started.elapsed() > STOP_PATIENCE {
+                    return Err(Error::internal(
+                        format!("stop sandbox {}", id.0),
+                        format!("its pod is still running after {STOP_PATIENCE:?}"),
+                    ));
+                }
+                sleep(POLL_INTERVAL).await;
             }
-            sleep(POLL_INTERVAL).await;
-        }
-        Ok(())
+            Ok(())
+        };
+        logged("stop", id, stopped.await)
     }
 
     async fn delete(&self, id: &SandboxId) -> Result<()> {
-        let params = DeleteParams::default();
-        self.sandboxes
-            .delete_opt(&id.0, &params)
-            .await
-            .map_err(kube_error)?;
-        for secret in [manifest::secret_name(id), manifest::home_secret_name(id)] {
-            self.secrets
-                .delete_opt(&secret, &params)
+        let deleted = async {
+            let params = DeleteParams::default();
+            self.sandboxes
+                .delete_opt(&id.0, &params)
                 .await
                 .map_err(kube_error)?;
-        }
-        let claims = ListParams::default().labels(&format!("{SANDBOX_ID}={}", id.0));
-        self.claims
-            .delete_collection(&params, &claims)
-            .await
-            .map_err(kube_error)?;
-        Ok(())
+            for secret in [manifest::secret_name(id), manifest::home_secret_name(id)] {
+                self.secrets
+                    .delete_opt(&secret, &params)
+                    .await
+                    .map_err(kube_error)?;
+            }
+            let claims = ListParams::default().labels(&format!("{SANDBOX_ID}={}", id.0));
+            self.claims
+                .delete_collection(&params, &claims)
+                .await
+                .map_err(kube_error)?;
+            Ok(())
+        };
+        logged("delete", id, deleted.await)
     }
 
     async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {

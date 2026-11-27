@@ -10,7 +10,7 @@ use corral_core::domain::{
     Allocation, FileMode, Handle, HomeFile, HomeFiles, HomePath, IdleLimits, Resources, SandboxId,
     SandboxName, SandboxStatus, UserId, VariableName,
 };
-use corral_core::fakes::{FakeRegistry, MemorySandboxRepo};
+use corral_core::fakes::{FakeRegistry, Logs, MemorySandboxRepo};
 use corral_core::ports::{
     ActivitySignals, Boot, EventKind, Inspection, Readiness, RunningLimit, SandboxEngine,
     SandboxSpec, SandboxStreams, Usage, VariableMap,
@@ -839,6 +839,56 @@ async fn a_remake_cut_short_finishes_at_the_next_start() {
     engine.delete(&id).await.unwrap();
     assert!(!exists("container", &name));
     assert!(!exists("container", &replacement));
+}
+
+// On one thread, so that the log captures the engine's work.
+#[tokio::test]
+async fn operations_log_at_debug_and_failures_at_warn() {
+    let Some(lab) = Lab::open("logs") else {
+        return;
+    };
+    let engine = lab.engine(1).await;
+    let logs = Logs::capture();
+    let id = lab.create(&engine, "box").await;
+    engine
+        .start(&id, None, Boot::default(), Duration::from_secs(30))
+        .await
+        .unwrap();
+    engine.stop(&id).await.unwrap();
+    engine.delete(&id).await.unwrap();
+    let mut starved = spec("starved");
+    starved.resources.memory_bytes = Allocation::new(1 << 20, 1 << 20).unwrap();
+    let starved_id = SandboxId::generate(&starved.owner, &starved.name);
+    let refused = engine.create(&starved_id, &starved).await;
+    engine.delete(&starved_id).await.unwrap();
+    assert!(
+        matches!(refused, Err(Error::Internal { .. })),
+        "{refused:?}"
+    );
+
+    let done: Vec<_> = logs
+        .of("a Docker operation succeeded")
+        .into_iter()
+        .map(|line| {
+            assert!(line.starts_with("DEBUG"), "{line}");
+            line.split("succeeded ").nth(1).unwrap().to_owned()
+        })
+        .collect();
+    let starved_id = &starved_id.0;
+    assert_eq!(
+        done,
+        [
+            format!("operation=create sandbox={}", id.0),
+            format!("operation=start sandbox={}", id.0),
+            format!("operation=stop sandbox={}", id.0),
+            format!("operation=delete sandbox={}", id.0),
+            format!("operation=delete sandbox={starved_id}"),
+        ]
+    );
+    let failed = logs.one("a Docker operation failed");
+    assert!(failed.starts_with(" WARN"), "{failed}");
+    let shown = format!("failed operation=create sandbox={starved_id} reason=\"create corral-");
+    assert!(failed.contains(&shown), "{failed}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 use corral_core::domain::SandboxId;
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
+use tracing::info;
 
 /// What is known of a running sandbox since it last booted. Kept only in memory: a restart of
 /// Corral starts every sandbox's idle period again.
@@ -58,8 +60,17 @@ impl Waking<'_> {
 
 impl ActivityLock {
     pub async fn wake(&self, id: &SandboxId) -> Waking<'_> {
+        let held = if let Ok(held) = self.wakes.try_lock() {
+            held
+        } else {
+            let began = Instant::now();
+            let held = self.wakes.lock().await;
+            let ms = began.elapsed().as_millis();
+            info!(sandbox = %id.0, ms, "a wake waited on the running limit");
+            held
+        };
         Waking {
-            _held: self.wakes.lock().await,
+            _held: held,
             lock: self,
             id: id.clone(),
         }
@@ -72,5 +83,37 @@ impl ActivityLock {
 
     pub(crate) fn seen(&self) -> MutexGuard<'_, HashMap<SandboxId, Seen>> {
         self.seen.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use corral_core::domain::SandboxId;
+    use corral_core::fakes::Logs;
+
+    use super::ActivityLock;
+
+    #[tokio::test]
+    async fn a_wake_that_waits_for_another_is_logged_with_its_wait() {
+        let lock = ActivityLock::default();
+        let logs = Logs::capture();
+        let first = lock.wake(&SandboxId("adam-main-1a2b3c".to_owned())).await;
+        assert!(logs.lines().is_empty(), "{:#?}", logs.lines());
+        let second = async {
+            drop(lock.wake(&SandboxId("eve-main-4d5e6f".to_owned())).await);
+        };
+        let release = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(first);
+        };
+        tokio::join!(second, release);
+
+        let waited = logs.one("a wake waited on the running limit");
+        assert!(waited.starts_with(" INFO"), "{waited}");
+        let ms: u64 = waited.split(" ms=").nth(1).unwrap().parse().unwrap();
+        assert!(waited.contains(" sandbox=eve-main-4d5e6f "), "{waited}");
+        assert!(ms >= 50, "{waited}");
     }
 }

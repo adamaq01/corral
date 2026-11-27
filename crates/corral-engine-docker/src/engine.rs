@@ -16,7 +16,7 @@ use corral_core::ports::{
     Boot, Inspection, Readiness, RegistryLogins, RunningLimit, SandboxEngine, SandboxSpec, Started,
 };
 use corral_core::{Error, Result};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::container;
 use crate::docker_error::is_not_found;
@@ -164,6 +164,7 @@ impl DockerEngine {
         self.create_container(&replacement, body).await?;
         self.remove(&name, false).await?;
         self.rename(&replacement, &name).await?;
+        debug!(sandbox = %id.0, image = definition.image, "remade a container");
         self.inspect(id).await?.ok_or_else(|| missing(id))
     }
 
@@ -257,21 +258,38 @@ fn missing(id: &SandboxId) -> Error {
     Error::NotFound(format!("sandbox {}", id.0))
 }
 
+/// Logs `operation` on the sandbox: done at debug, failed at warn with the reason. A refusal,
+/// such as the running limit, is its caller's to log.
+fn logged<T>(operation: &str, id: &SandboxId, result: Result<T>) -> Result<T> {
+    match &result {
+        Ok(_) => debug!(%operation, sandbox = %id.0, "a Docker operation succeeded"),
+        Err(error) if !error.is_refusal() => {
+            let reason = error.to_string();
+            warn!(%operation, sandbox = %id.0, reason, "a Docker operation failed");
+        }
+        Err(_) => {}
+    }
+    result
+}
+
 #[async_trait]
 impl SandboxEngine for DockerEngine {
     async fn create(&self, id: &SandboxId, spec: &SandboxSpec) -> Result<()> {
-        if self.inspect(id).await?.is_some() {
-            return Ok(());
-        }
-        let definition = container::Definition::new(id, spec)?;
-        let registries = self.logins.registries().await?;
-        image::ensure_present(&self.docker, &spec.image, &registries).await?;
-        self.docker
-            .create_volume(container::volume(id, spec))
-            .await
-            .map_err(|err| Error::internal("create home volume", err))?;
-        let body = container::body(id, &definition, &self.wiring());
-        self.create_container(&container::name(id), body).await
+        let created = async {
+            if self.inspect(id).await?.is_some() {
+                return Ok(());
+            }
+            let definition = container::Definition::new(id, spec)?;
+            let registries = self.logins.registries().await?;
+            image::ensure_present(&self.docker, &spec.image, &registries).await?;
+            self.docker
+                .create_volume(container::volume(id, spec))
+                .await
+                .map_err(|err| Error::internal("create home volume", err))?;
+            let body = container::body(id, &definition, &self.wiring());
+            self.create_container(&container::name(id), body).await
+        };
+        logged("create", id, created.await)
     }
 
     async fn start(
@@ -281,53 +299,60 @@ impl SandboxEngine for DockerEngine {
         boot: Boot,
         deadline: Duration,
     ) -> Result<Started> {
-        let called = Instant::now();
-        let (current, booted) = {
-            let waking = self.activity.wake(id).await;
-            let mut current = self.settled(id).await?.ok_or_else(|| missing(id))?;
-            let booted = !status::is_running(&current);
-            if booted {
-                current = Box::pin(self.boot(id, spec, current, &boot)).await?;
-                waking.booted();
-            }
-            (current, booted)
+        let started = async {
+            let called = Instant::now();
+            let (current, booted) = {
+                let waking = self.activity.wake(id).await;
+                let mut current = self.settled(id).await?.ok_or_else(|| missing(id))?;
+                let booted = !status::is_running(&current);
+                if booted {
+                    current = Box::pin(self.boot(id, spec, current, &boot)).await?;
+                    waking.booted();
+                }
+                (current, booted)
+            };
+            // A container running since before it marked its readiness takes no session until its
+            // next start, which the session's refusal says.
+            let patience = deadline.saturating_sub(called.elapsed());
+            let readiness = if !container::marks_readiness(&current)
+                || self.wait_until_ready(id, patience).await?
+            {
+                Readiness::Ready
+            } else {
+                Readiness::Waking
+            };
+            Ok(Started { readiness, booted })
         };
-        // A container running since before it marked its readiness takes no session until its
-        // next start, which the session's refusal says.
-        let patience = deadline.saturating_sub(called.elapsed());
-        let readiness = if !container::marks_readiness(&current)
-            || self.wait_until_ready(id, patience).await?
-        {
-            Readiness::Ready
-        } else {
-            Readiness::Waking
-        };
-        Ok(Started { readiness, booted })
+        logged("start", id, started.await)
     }
 
     async fn stop(&self, id: &SandboxId) -> Result<()> {
         let name = container::name(id);
-        match self.docker.stop_container(&name, None).await {
+        let stopped = match self.docker.stop_container(&name, None).await {
             Err(err) if is_not_found(&err) => Err(missing(id)),
             stopped => stopped.map_err(|err| Error::internal(format!("stop {name}"), err)),
-        }
+        };
+        logged("stop", id, stopped)
     }
 
     async fn delete(&self, id: &SandboxId) -> Result<()> {
-        for name in [container::name(id), container::replacement_name(id)] {
-            self.remove(&name, true).await?;
-        }
-        let volume = container::volume_name(id);
-        match self
-            .docker
-            .remove_volume(&volume, None::<RemoveVolumeOptions>)
-            .await
-        {
-            Err(err) if !is_not_found(&err) => {
-                Err(Error::internal(format!("remove volume {volume}"), err))
+        let deleted = async {
+            for name in [container::name(id), container::replacement_name(id)] {
+                self.remove(&name, true).await?;
             }
-            _ => Ok(()),
-        }
+            let volume = container::volume_name(id);
+            match self
+                .docker
+                .remove_volume(&volume, None::<RemoveVolumeOptions>)
+                .await
+            {
+                Err(err) if !is_not_found(&err) => {
+                    Err(Error::internal(format!("remove volume {volume}"), err))
+                }
+                _ => Ok(()),
+            }
+        };
+        logged("delete", id, deleted.await)
     }
 
     async fn status(&self, id: &SandboxId) -> Result<SandboxStatus> {
